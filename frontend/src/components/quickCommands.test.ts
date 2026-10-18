@@ -4,7 +4,7 @@ vi.mock('../notify', () => ({ notify: vi.fn() }))
 vi.mock('../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/client')>()),
   tradingApi: {
-    refreshShortlist: vi.fn(), startRefreshAndPrune: vi.fn(), reconcileTrades: vi.fn(), runPipeline: vi.fn(),
+    refreshShortlist: vi.fn(), startRefreshAndPrune: vi.fn(), startRealizedRebuild: vi.fn(), runPipeline: vi.fn(),
   },
 }))
 

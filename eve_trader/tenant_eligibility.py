@@ -11,10 +11,10 @@ Two independent questions:
 Kept out of scheduler.py because production/jita_price_cache.py needs the same
 answers and scheduler.py imports that module.
 
-Production realized-profit retention (D10,
-docs/PRODUCTION_REALIZED_PROFIT_PLAN.md): inactive tenants that still hold
-the `production` grant keep syncing a narrow set of archive kinds so ESI's
-short wallet/jobs windows are not lost.
+Realized-profit retention (D10, extended by the unified plan): inactive
+tenants that still hold `production`, `trading`, `doctrine` or
+`station_trading` keep syncing a narrow set of archive kinds so ESI's
+short wallet/jobs/contract windows are not lost.
 """
 from __future__ import annotations
 
@@ -24,9 +24,15 @@ from typing import Mapping, Optional
 from . import storage
 from .config import ACCESS_CONFIG, SCHEDULER_OPERATOR_CONFIG
 
-# Kinds the Production ledger must keep archiving for inactive tenants (D10).
+# Kinds the realized-profit ledger must keep archiving for inactive tenants (D10).
 PRODUCTION_ARCHIVE_KINDS: frozenset[str] = frozenset({
     "wallet", "industry_jobs", "market_orders", "contracts",
+})
+
+# Grants that keep that archive alive. Gate off (grants is None) still counts
+# as allowed, same as may_use.
+REALIZED_RETENTION_TOOLS: frozenset[str] = frozenset({
+    "production", "trading", "doctrine", "station_trading",
 })
 
 
@@ -92,9 +98,12 @@ def production_archive_retention(
     grants: Optional[set[str]] = None,
 ) -> bool:
     """Inactive-tenant exception (D10): keep archiving wallet / industry_jobs
-    / market_orders / contracts when this tenant holds the `production`
-    grant. Gate off (grants is None) counts as allowed - trusted local
-    operator, same as may_use."""
+    / market_orders / contracts when this tenant holds any realized-profit
+    tool (`production`, `trading`, `doctrine`, `station_trading`). Gate off
+    (grants is None) counts as allowed - trusted local operator, same as
+    may_use."""
     if grants is None:
         grants = granted_tools(str(tenant_id))
-    return may_use("production", grants)
+    if grants is None:
+        return True
+    return bool(REALIZED_RETENTION_TOOLS & set(grants))

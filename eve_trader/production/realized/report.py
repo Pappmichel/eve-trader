@@ -10,9 +10,11 @@ period. Capital in BPOs and inventory at cost are balances as of the latest
 rebuild, not flows inside the period. Sales tax is listed in the cost
 structure and is already removed from revenue, so it is not added to COGS.
 
-D11: a run stores the fingerprint of the owners shared with Production.
-When the current sharing no longer matches, every read returns nothing
-from that run (`sharing_changed`) until the next rebuild.
+D11: a run stores the fingerprint of the owners shared with any realized
+tool. When the current sharing no longer matches, every read returns
+nothing from that run (`sharing_changed`) until the next rebuild. This
+page then keeps only channel `production`, and only for owners shared
+with Production (U3a).
 """
 from __future__ import annotations
 
@@ -21,8 +23,17 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
-from . import access, db, names as display_names
-from .costing import ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+from ...realized import access, db, names as display_names
+from ...realized.costing import ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+
+def _production_scope() -> dict:
+    """Channel and owner filter for the Production report (U1, U3a)."""
+    return {
+        "channel": "production",
+        "wallet_owners": list(access.shared_owners_for("wallet", "production")),
+        "contract_owners": list(access.shared_owners_for("contracts", "production")),
+    }
+
 
 _EPS = 1e-9
 _CHAIN_DEPTH = 24
@@ -190,7 +201,23 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "by_day": [],
         "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": _flags(estimated=False, price_missing=False, coverage=None),
+        "sold_through_doctrine": {"contracts": 0, "units": 0.0, "cost": 0.0},
     }
+
+
+def _sold_through_doctrine(start: datetime, end: datetime) -> dict:
+    """Produced goods that left through a doctrine contract (U1).
+
+    Those sales stay on the doctrine channel. This line is the quantity and
+    cost of the produced draws, so Production can still see that output.
+    """
+    owners = list(access.shared_owners_for("contracts", "doctrine"))
+    if not owners:
+        return {"contracts": 0, "units": 0.0, "cost": 0.0}
+    contracts, units, cost = db.produced_draw_totals(
+        start, end, channel="doctrine", contract_owners=owners,
+    )
+    return {"contracts": int(contracts or 0), "units": _num(units), "cost": _num(cost)}
 
 
 def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float) -> dict:
@@ -199,7 +226,7 @@ def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float
     consumed (datacores, decryptors, copies, fees). Plus two balances as of
     the latest rebuild: produced goods still in stock at cost, and the cost
     sitting in running jobs."""
-    from . import names as display_names
+    from ...realized import names as display_names
 
     fees = []
     invention_total = 0.0
@@ -306,7 +333,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
     with storage.batch_session():
         run, t0, changed = _run_state()
         archive_since, wallet_sync, jobs_sync, any_sync = _sync_times()
-        results_ever = db.count_realized_results() if run is not None else 0
+        scope = _production_scope()
+        results_ever = db.count_realized_results(**scope) if run is not None else 0
         status = _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever,
                          sharing_changed=changed, last_sync=any_sync)
         window = None if run is None or changed else _window(start, end, since_t0, t0)
@@ -314,7 +342,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         if window is None:
             return _empty_summary(period, status)
         start_at, end_at = window
-        totals = db.realized_totals(start_at, end_at)
+        sold_through = _sold_through_doctrine(start_at, end_at)
+        totals = db.realized_totals(start_at, end_at, **scope)
         components = CostComponents(
             materials_bought=_num(totals[4]), materials_estimated=_num(totals[5]),
             freight=_num(totals[6]), job=_num(totals[7]), invention=_num(totals[8]),
@@ -341,7 +370,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
                              db.produced_stock_value())
         by_day = [
             {"date": _iso(row[0]), "revenue": _num(row[1]), "cost": _num(row[2]), "profit": _num(row[3])}
-            for row in db.realized_by_day(start_at, end_at)
+            for row in db.realized_by_day(start_at, end_at, **scope)
         ]
     flags = _flags(
         estimated=estimated, price_missing=price_missing, coverage=cov,
@@ -373,6 +402,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "by_day": by_day,
         "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": flags,
+        "sold_through_doctrine": sold_through,
     }
 
 
@@ -427,10 +457,11 @@ def products(*, start: Optional[datetime], end: datetime, since_t0: bool, days: 
         if window is None:
             return {"period": period, "rows": [], "needs_rebuild": run is None or changed}
         start_at, end_at = window
-        rows = db.realized_by_type(start_at, end_at)
-        flags = {int(r[0]): (bool(r[1]), bool(r[2])) for r in db.realized_draw_flags_by_type(start_at, end_at)}
+        scope = _production_scope()
+        rows = db.realized_by_type(start_at, end_at, **scope)
+        flags = {int(r[0]): (bool(r[1]), bool(r[2])) for r in db.realized_draw_flags_by_type(start_at, end_at, **scope)}
         warn: dict[int, list[str]] = defaultdict(list)
-        for type_id, text in db.realized_warnings_by_type(start_at, end_at):
+        for type_id, text in db.realized_warnings_by_type(start_at, end_at, **scope):
             warn[int(type_id)].append(str(text))
         names = _names({int(r[0]) for r in rows})
         planned = db.planned_unit_cost_by_type(start_at, end_at)
@@ -487,7 +518,9 @@ def product(*, type_id: int, start: Optional[datetime], end: datetime,
     with storage.batch_session():
         run, t0, changed = _run_state()
         window = None if run is None or changed else _window(start, end, since_t0, t0)
-        sales = [] if window is None else db.list_sales_for_type(int(type_id), window[0], window[1])
+        sales = [] if window is None else db.list_sales_for_type(
+            int(type_id), window[0], window[1], **_production_scope(),
+        )
         names = _names({int(type_id)} | {int(row[1]) for row in sales})
     if match is None:
         match = {
@@ -649,7 +682,7 @@ def sale_chain(sale_ref: str) -> Optional[dict]:
         run, _t0, changed = _run_state()
         if run is None or changed:
             return None
-        row = db.get_realized_sale(sale_ref)
+        row = db.get_realized_sale(sale_ref, **_production_scope())
         if row is None:
             return None
         draws = db.list_draws("sale", [sale_ref])
@@ -1000,6 +1033,7 @@ def warnings() -> dict:
         outside = [] if hidden else db.realized_warnings_by_type(
             datetime(1970, 1, 1, tzinfo=timezone.utc),
             datetime(9999, 1, 1, tzinfo=timezone.utc),
+            **_production_scope(),
         )
     seen_outside = set()
     for type_id, text in outside:
@@ -1105,7 +1139,7 @@ def courier_comparison() -> dict:
     rate (D9). An unset home structure returns no months."""
     from ..config import PRODUCTION_CONFIG
     from ...config import TRADING_CONFIG
-    from .ingest import _freight_rate_for_forge
+    from ...realized.ingest import _freight_rate_for_forge
 
     home = PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))

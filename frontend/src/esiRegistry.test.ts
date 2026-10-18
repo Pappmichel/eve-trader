@@ -16,7 +16,11 @@ describe('esiRegistry Character Management kinds', () => {
   it('lets Character Info read the wallet balance through the merged Wallet row', () => {
     const wallet = kindByKey('wallet')!
     expect(wallet.consumingTools).toContain('char_info')
+    expect(wallet.consumingTools).toContain('production')
+    expect(wallet.consumingTools).toContain('station_trading')
     expect(wallet.toolDataKind?.char_info).toBe('wallet_balance')
+    expect(wallet.toolDataKind?.station_trading).toBeUndefined()
+    expect(kindByKey('contracts')!.consumingTools).toEqual(['doctrine', 'production'])
   })
 
   it('puts every kind into exactly one known section', () => {

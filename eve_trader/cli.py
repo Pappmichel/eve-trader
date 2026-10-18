@@ -12,7 +12,7 @@ Examples:
     eve-trader find-new-candidates --safe
     eve-trader add-to-shortlist
     eve-trader refresh-shortlist
-    eve-trader reconcile-trades
+    eve-trader realized compare-trading --days 30
     eve-trader pipeline
 """
 from __future__ import annotations
@@ -205,19 +205,43 @@ def refresh_shortlist():
         click.echo(f"Audit warnings: {result['audit']}")
 
 
-@main.command("reconcile-trades")
-def reconcile_trades():
-    """Matches buyer/seller wallet transactions into realized trades."""
+@main.group("realized")
+def realized_group():
+    """Read-only checks against the shared realized-profit ledger."""
+
+
+@realized_group.command("compare-trading")
+@click.option("--days", default=30, show_default=True, type=int,
+              help="Window ending now, applied to both the old table and the ledger.")
+def realized_compare_trading(days: int):
+    """Print old realized_trades totals beside the Trading channel.
+
+    Does not rebuild and does not write. Run it after a recompute so the
+    ledger side is current.
+    """
+    from .trade_realized.actions import do_compare_trading
     try:
-        result = actions.do_reconcile_trades()
+        result = do_compare_trading(days)
     except actions.ActionError as e:
-        click.echo(str(e))
-        return
-    click.echo(f"{result['matched_trades']} matched trades. "
-               f"Total profit={result['total_realized_profit']:,.0f} ISK, "
-               f"Avg margin={result['average_margin']:.1%}")
-    for item, profit in result["top3_items_by_profit"]:
-        click.echo(f"  Top: {item:<40} {profit:,.0f} ISK")
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+    click.echo(f"Trading realized profit, last {result['days']} days")
+    if result["needs_rebuild"]:
+        click.echo("Ledger side is empty until the next recompute (sharing changed or no run yet).")
+    click.echo(
+        f"{'type':>8}  {'item':<32}  {'old qty':>12}  {'old profit':>16}  "
+        f"{'new qty':>12}  {'new profit':>16}"
+    )
+    for row in result["rows"]:
+        click.echo(
+            f"{row['type_id']:>8}  {str(row['item'])[:32]:<32}  "
+            f"{row['old_units']:>12,.0f}  {row['old_profit']:>16,.0f}  "
+            f"{row['new_units']:>12,.0f}  {row['new_profit']:>16,.0f}"
+        )
+    click.echo(
+        f"{'TOTAL':>8}  {'':<32}  {result['old_units']:>12,.0f}  {result['old_profit']:>16,.0f}  "
+        f"{result['new_units']:>12,.0f}  {result['new_profit']:>16,.0f}"
+    )
 
 
 @main.command()

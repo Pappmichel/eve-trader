@@ -9,10 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ... import storage
-from ...esi_data.access import is_shared, read_esi
-from .. import config as production_config
-from ..constants import (
+from .. import storage
+from ..esi_data.access import is_shared, read_esi
+from ..production import config as production_config
+from ..production.constants import (
     ACTIVITY_INVENTION,
     ACTIVITY_MANUFACTURING,
     ACTIVITY_MODS,
@@ -20,7 +20,7 @@ from ..constants import (
     DECRYPTORS,
     structure_rig_multiplier,
 )
-from ..engine import (
+from ..production.engine import (
     _material_qty,
     _security_multiplier_for,
     _structure_profile,

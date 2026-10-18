@@ -8,9 +8,9 @@ import pytest
 from eve_trader.esi_data import fetchers
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.constants import DECRYPTORS
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import ingest as ledger_ingest
-from eve_trader.production.realized import inputs
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import ingest as ledger_ingest
+from eve_trader.realized import inputs
 
 T1_BLUEPRINT = 1000
 T2_BLUEPRINT = 2000

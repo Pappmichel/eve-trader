@@ -25,11 +25,7 @@ from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, Unliste
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
                         average_market_daily_isk_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
-from .trade_reconciliation import (
-    collect_trading_wallet_streams,
-    fetch_recent_transactions,
-    reconcile_realized_trades, summarize_realized,
-)
+from .trade_reconciliation import fetch_recent_transactions
 
 log = logging.getLogger("eve_trader.actions")
 
@@ -71,10 +67,8 @@ def _require_trading_wallet_role_key(role_key: str) -> str:
 
     So: accept any syntactically valid role_key (`validate_role_key` -
     the full F-05 domain, all seven prefixes), then gate purely on the
-    "wallet" sharing row for the resolved character_id (the same check
-    trade_reconciliation.collect_trading_wallet_streams already applies
-    for reconciliation) - sharing, not prefix, is what actually
-    authorizes a wallet read here. do_remove_trading_character is
+    "wallet" sharing row for the resolved character_id - sharing, not
+    prefix, is what actually authorizes a wallet read here. do_remove_trading_character is
     unaffected by this - it deliberately keeps its own buyer:/seller:-
     only gate (a token from another tool must stay removable only from
     the Characters page, matching TradingLayout.tsx's disabled "Unshare
@@ -147,15 +141,9 @@ def list_shared_trading_characters(tm: TokenManager | None = None,
     and lets its own per-character filtering (e.g. fetch_own_sell_orders
     only ever finds sell orders; fetch_buyer_already_covered only ever
     finds buy orders) naturally no-op for a character that has none of
-    that kind. The one place this isn't purely cosmetic is
-    do_reconcile_trades's collect_trading_wallet_streams, which used
-    buyer/seller membership to pick a shorter/longer transaction lookback
-    window and whether to fetch journal entries - passing this same list as
-    both its buyer_characters and seller_characters arguments there
-    deliberately makes every shared character use the longer (buyer)
-    lookback and always fetch journal, a safe superset of the old
-    behavior (never misses data, may do marginally more ESI paging) rather
-    than trying to guess which role a character "really" is.
+    that kind. The retired reconcile command used this same list for both
+    the old buyer and seller arguments. Realized profit now reads the
+    shared ledger, which archives every wallet shared with a realized tool.
 
     `auth_role` is resolved via the Phase 4 selector (largest-matching-
     scope token, same tie-break as everywhere else), preferring a token
@@ -1276,73 +1264,6 @@ def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dic
     }
 
 
-def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
-                         oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    tm = TokenManager(oauth_cfg)
-    # Buyer/seller merged into one sharing-based list (see
-    # list_shared_trading_characters's own docstring) - passed as both
-    # arguments below so collect_trading_wallet_streams treats every shared
-    # character with the longer (buyer) lookback window and always fetches
-    # journal, a safe superset of the old buyer-only/seller-only split.
-    shared_characters = list_shared_trading_characters(tm)
-    buyer_characters = shared_characters
-    seller_characters = shared_characters
-    if not shared_characters:
-        raise ActionError("At least one character needs to be shared with Trading (Characters page).")
-    client = ESIClient(cfg, tm)
-
-    items = storage.load_shortlist()
-    item_names = {i.item_id: i.item for i in items}
-    item_volumes = {i.item_id: i.volume_m3 for i in items}
-
-    # Per-owner: unshared wallets are omitted; shared+empty snapshots
-    # live-fetch that owner only. AccessorError / missing-tenant raise.
-    try:
-        snapshot_txns, snapshot_journal, readable_owners = collect_trading_wallet_streams(
-            [(cid, role) for role, cid, _name in buyer_characters],
-            [(cid, role) for role, cid, _name in seller_characters],
-            client, cfg,
-        )
-        # Refuse to "reconcile" when not one wallet was readable. Every
-        # shared character can pass the guard above on Market Orders or
-        # Assets sharing alone, while collect_trading_wallet_streams gates
-        # each owner on *Wallet* sharing specifically - so the result would
-        # be a perfectly empty, perfectly silent [], which
-        # storage.save_realized_trades turns into DELETE FROM
-        # realized_trades with nothing to insert. Confirmed real 2026-09-21:
-        # that wipes the entire realized-trade history (and with it
-        # Portfolio's realized profit and every Shortlist "Profit / Day")
-        # on a config that never shared a wallet. A genuine zero-match run
-        # with at least one readable wallet still saves [], which is
-        # correct - the emptiness is then the actual answer.
-        if readable_owners == 0:
-            raise ActionError(
-                "No character or corporation shares Wallet with Trading, so there is "
-                "nothing to reconcile - share Wallet on the Characters page. "
-                "(Existing realized trades were left untouched.)"
-            )
-        # Pooled across every registered buyer/seller character (GitHub issue
-        # #46) - every buyer's Jita buys are matched against every seller's
-        # structure sells, not paired 1:1 by character.
-        trades = reconcile_realized_trades(
-            [(cid, role) for role, cid, _name in buyer_characters],
-            [(cid, role) for role, cid, _name in seller_characters],
-            client, item_names, item_volumes, cfg,
-            snapshot_txns=snapshot_txns,
-            snapshot_journal=snapshot_journal,
-        )
-    except ESIError as e:
-        # Wallet/journal fetches have no per-character isolation of their
-        # own (unlike shortlist refresh's per-seller skip). A 401/timeout
-        # here used to reach POST /trades/reconcile as a raw 500 - _wrap
-        # only converts ActionError. do_pipeline already caught ESIError
-        # one level up, so the scheduled path was fine and the button wasn't.
-        raise ActionError(f"ESI access failed ({e}).") from e
-    storage.save_realized_trades(trades, now_ts())
-    summary = summarize_realized(trades)
-    return {"matched_trades": len(trades), **summary}
-
-
 # Steps do_pipeline isolates. Present in the result dict only when that
 # step actually ran (build_universe/build_focused are opt-in via
 # rebuild_universe; a failure in that combined try records build_universe
@@ -1351,7 +1272,7 @@ PIPELINE_STEP_KEYS = (
     "build_universe",
     "build_focused",
     "refresh_and_prune_candidates",
-    "reconcile_trades",
+    "rebuild_realized",
 )
 
 
@@ -1384,8 +1305,10 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
                  progress_callback=None) -> dict:
     """Runs the daily workflow. `rebuild_universe` re-crawls the *entire* ESI
     market-group tree (hundreds/thousands of requests) and is off by default -
-    that's an occasional setup step, not something to redo every day. Each
-    step is isolated so a failure (missing auth, network hiccup) in one step
+    that's an occasional setup step, not something to redo every day. The
+    last step recomputes the shared realized-profit ledger (the Trading
+    channel included) instead of replacing `realized_trades`. Each step is
+    isolated so a failure (missing auth, network hiccup) in one step
     doesn't prevent the others from running.
 
     Uses do_refresh_and_prune_candidates (not the separate find-candidates +
@@ -1421,12 +1344,13 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
         results["refresh_and_prune_candidates"] = {"error": str(e)}
 
     _emit_progress(progress_callback, {
-        "phase": "reconcile", "message": "Reconciling trades",
+        "phase": "rebuild_realized", "message": "Recomputing realized profit",
     })
     try:
-        results["reconcile_trades"] = do_reconcile_trades()
+        from .production.actions import do_rebuild_realized
+        results["rebuild_realized"] = do_rebuild_realized()
     except (ActionError, ESIError) as e:
-        results["reconcile_trades"] = {"error": str(e)}
+        results["rebuild_realized"] = {"error": str(e)}
 
     failed = pipeline_failed_steps(results)
     if failed:

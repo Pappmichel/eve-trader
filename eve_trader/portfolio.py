@@ -16,13 +16,54 @@ from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 
 
+def realized_cards(tool_keys) -> dict:
+    """Last-30-day realized profit for each granted tool, plus a total.
+
+    The total is present only when at least two of those tools have a
+    figure. A tool that still needs a recompute contributes no number, so
+    a zero from an empty archive is not added in as a result. The page
+    shows `total` as returned.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    keys = {str(key) for key in (tool_keys or ())}
+    now = datetime.now(timezone.utc)
+    period = {"start": now - timedelta(days=30), "end": now, "since_t0": False, "days": 30}
+    readers = []
+    if "production" in keys:
+        from .production.realized.report import summary as production_summary
+        readers.append(("production", production_summary))
+    if "trading" in keys:
+        from .trade_realized.report import summary as trading_summary
+        readers.append(("trading", trading_summary))
+    if "doctrine" in keys:
+        from .doctrine.realized import summary as doctrine_summary
+        readers.append(("doctrine", doctrine_summary))
+    if "station_trading" in keys:
+        from .station_trading.realized import summary as station_summary
+        readers.append(("station_trading", station_summary))
+    rows = []
+    for tool, reader in readers:
+        data = reader(**period)
+        empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
+        rows.append({
+            "tool": tool,
+            "profit": None if empty else data["realized_profit"],
+            "coverage": None if empty else data.get("coverage"),
+            "estimated": False if empty else bool(data.get("estimated")),
+            "empty": empty,
+        })
+    ready = [row["profit"] for row in rows if row["profit"] is not None]
+    return {"rows": rows, "total": sum(ready) if len(ready) >= 2 else None}
+
+
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
-    """Combines Trading's realized P&L (latest reconciliation run) with
-    Production's stock value into one read-only summary, plus a simple
-    day-to-day profit volatility signal. Each half degrades independently to
-    zero/None if that tool has no data yet, rather than failing the whole
-    overview - e.g. a fresh install with Trading data but no Production stock
-    targets configured still shows what it has.
+    """Combines Trading's realized P&L (last 30 days of the ledger's Trading
+    channel) with Production's stock value into one read-only summary, plus
+    a simple day-to-day profit volatility signal. Each half degrades
+    independently to zero/None if that tool has no data yet, rather than
+    failing the whole overview - e.g. a fresh install with Trading data but
+    no Production stock targets configured still shows what it has.
 
     daily_profit_volatility is a plain population standard deviation of
     per-day realized profit (not a formal Value-at-Risk model - this app has
@@ -31,21 +72,12 @@ def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     trading tools use for an at-a-glance risk indicator). None below 2 days
     of data - a single day has no meaningful spread.
     """
-    trades_df = storage.read_table("realized_trades")
-    if trades_df.empty:
-        trading_realized_profit = 0.0
-        trading_average_margin = 0.0
-        daily_profit_volatility: Optional[float] = None
-        trade_count = 0
-    else:
-        latest_run = trades_df["run_ts"].max()
-        latest = trades_df[trades_df["run_ts"] == latest_run]
-        trading_realized_profit = float(latest["realized_profit"].sum())
-        weighted_denom = float((latest["buy_unit_price"] * latest["matched_qty"]).sum())
-        trading_average_margin = (trading_realized_profit / weighted_denom) if weighted_denom else 0.0
-        daily = latest.assign(day=latest["sell_date"].str.slice(0, 10)).groupby("day")["realized_profit"].sum()
-        daily_profit_volatility = float(daily.std(ddof=0)) if len(daily) >= 2 else None
-        trade_count = int(len(latest))
+    from .trade_realized.report import portfolio_figures
+    trading = portfolio_figures()
+    trading_realized_profit = trading["trading_realized_profit"]
+    trading_average_margin = trading["trading_average_margin"]
+    daily_profit_volatility = trading["trading_daily_profit_volatility"]
+    trade_count = trading["trading_trade_count"]
 
     production_stock_value = 0.0
     stock_targets_configured = bool(storage.load_stock_targets())

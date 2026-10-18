@@ -1,7 +1,5 @@
-"""Production realized profit ledger (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).
+"""Production realized-profit report.
 
-Phase 1: append-only ESI archive (`ingest`, `inputs`, `db`).
-Phase 2: pure `costing` + thin `loader` that rebuilds derived tables.
-Phase 3: `report` reads the derived tables (flags included); actions and
-`/api/production/realized` are the API.
+The archive, costing engine and rebuild live in ``eve_trader.realized``.
+This package keeps the Production report and the planned-cost freeze.
 """

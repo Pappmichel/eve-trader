@@ -3,9 +3,9 @@
 Each fetcher calls an existing `ESIClient` method and writes the matching
 Phase 1/2 snapshot table. Group 3 is not a fetcher (name resolution stays
 opportunistic). This module imports no tool package at module level; the
-one deliberate exception is the lazily imported Production ledger archive
-(`production.realized`, docs/PRODUCTION_REALIZED_PROFIT_PLAN.md), which only
-runs for kinds shared with Production.
+one deliberate exception is the lazily imported realized-profit archive
+(`realized`, docs/REALIZED_PROFIT_UNIFIED_PLAN.md), which runs for an
+owner shared with any realized-profit tool and never fails the snapshot.
 """
 from __future__ import annotations
 
@@ -158,14 +158,14 @@ def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
 
 
 def _archive_for_production(data_kind: str, owner_type: str, owner_id: int) -> bool:
-    """The Production ledger archives an owner's data only while that kind is
-    shared with Production. A wallet shared only with Trading, or contracts
-    shared only with Doctrine, are neither stored in the archive nor cost the
-    archive's extra ESI calls (order history, completed jobs, contract
-    items). Reads are gated again at read time (D11)."""
-    from .access import is_shared
+    """Archive an owner while any realized-profit tool shares this kind
+    (U3a). The name is historical. A wallet shared only with Trading, or
+    contracts shared only with Doctrine, are stored. Reads are gated again
+    at read time. The check is the one lazy import of the shared package's
+    access helper; the write imports stay in the archive functions."""
     try:
-        return is_shared(data_kind, "production", owner_type, int(owner_id))
+        from ..realized.access import owner_in_scope
+        return owner_in_scope(data_kind, owner_type, int(owner_id))
     except Exception:  # noqa: BLE001 - never fail the snapshot sync
         log.exception("ledger share check failed for %s %s %s", data_kind, owner_type, owner_id)
         return False
@@ -178,7 +178,7 @@ def _archive_wallet(owner_type: str, owner_id: int, txn_rows: list[tuple],
     already happened; this never deletes or changes the snapshot."""
     if not _archive_for_production("wallet", owner_type, owner_id):
         return
-    from ..production.realized import ingest as ledger_ingest
+    from ..realized import ingest as ledger_ingest
     try:
         if owner_type == "corporation" and journal_by_division is not None:
             ledger_ingest.archive_corp_wallet(
@@ -199,7 +199,7 @@ def _archive_industry_jobs(client: ESIClient, owner_type: str, owner_id: int,
     """Second ESI pass with include_completed=true for the ledger only."""
     if not _archive_for_production("industry_jobs", owner_type, owner_id):
         return
-    from ..production.realized import ingest as ledger_ingest
+    from ..realized import ingest as ledger_ingest
     try:
         if owner_type == "character":
             jobs = client.character_industry_jobs(
@@ -219,7 +219,7 @@ def _archive_industry_jobs(client: ESIClient, owner_type: str, owner_id: int,
 def _archive_blueprints(owner_type: str, owner_id: int, bps: list[dict]) -> None:
     if not _archive_for_production("blueprints", owner_type, owner_id):
         return
-    from ..production.realized import ingest as ledger_ingest
+    from ..realized import ingest as ledger_ingest
     try:
         ledger_ingest.archive_blueprints(
             owner_type=owner_type, owner_id=owner_id, blueprints=bps,
@@ -232,7 +232,7 @@ def _archive_market_orders(client: ESIClient, owner_type: str, owner_id: int,
                            auth_role: str, open_orders: list[dict]) -> None:
     if not _archive_for_production("market_orders", owner_type, owner_id):
         return
-    from ..production.realized import ingest as ledger_ingest
+    from ..realized import ingest as ledger_ingest
     try:
         if owner_type == "character":
             history = client.character_orders_history(owner_id, auth_role=auth_role)
@@ -264,8 +264,8 @@ def _archive_contracts_pass(
     asked again."""
     if not _archive_for_production("contracts", owner_type, owner_id):
         return
-    from ..production.realized import db as ledger_db
-    from ..production.realized import ingest as ledger_ingest
+    from ..realized import db as ledger_db
+    from ..realized import ingest as ledger_ingest
     try:
         candidates = [
             c for c in raw_list

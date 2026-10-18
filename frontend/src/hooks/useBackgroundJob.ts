@@ -67,8 +67,8 @@ export function formatBackgroundProgress(
       body = 'Searching for new import candidates…'
     } else if (progress.phase === 'build_universe') {
       body = 'Loading market groups…'
-    } else if (progress.phase === 'reconcile') {
-      body = 'Reconciling trades…'
+    } else if (progress.phase === 'rebuild_realized') {
+      body = 'Recomputing realized profit…'
     }
   }
   const label = (jobName && labels[jobName]) || defaultLabel

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from .. import schemas
 from ...doctrine import actions
+from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
 from ...actions import ConflictError
 from ...doctrine.config import DOCTRINE_CONFIG
@@ -228,3 +229,51 @@ def update_settings(updates: DoctrineSettings):
 def get_hangar_division_options():
     from ...production.constants import HANGAR_DIVISION_FLAGS
     return {"hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}
+
+
+# ------------------------------------------------------------- realized profit
+@router.get("/realized/summary")
+def doctrine_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
+                              end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        doctrine_realized.do_get_doctrine_realized_summary,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/fittings")
+def doctrine_realized_fittings(days: Optional[int] = None, start: Optional[str] = None,
+                               end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        doctrine_realized.do_get_doctrine_realized_fittings,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/contracts")
+def doctrine_realized_contracts(days: Optional[int] = None, start: Optional[str] = None,
+                                end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        doctrine_realized.do_get_doctrine_realized_contracts,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/contract")
+def doctrine_realized_contract(sale_ref: str):
+    return _wrap(doctrine_realized.do_get_doctrine_realized_contract, sale_ref=sale_ref)
+
+
+@router.get("/realized/warnings")
+def doctrine_realized_warnings():
+    return _wrap(doctrine_realized.do_get_doctrine_realized_warnings)
+
+
+@router.post("/realized/rebuild")
+def doctrine_realized_rebuild():
+    return _wrap(doctrine_realized.do_start_doctrine_realized_rebuild)
+
+
+@router.get("/realized/rebuild/status")
+def doctrine_realized_rebuild_status():
+    return _wrap(doctrine_realized.do_doctrine_realized_rebuild_status)

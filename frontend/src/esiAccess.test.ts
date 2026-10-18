@@ -103,14 +103,14 @@ describe('merged Wallet row (2026-09-27: Wallet Balance folded into Wallet)', ()
     expect(shared.sort()).toEqual(['char_info', 'portfolio', 'trading'])
   })
 
-  it('reports the merged cell as fully shared once both underlying rows exist', () => {
+  it('reports the merged cell as partly shared when only some wallet tools are on', () => {
     const cell = deriveCellState({
       ownerType: 'character', ownerId: 5, dataKind: 'wallet',
       sharing: walletSharing, freshness: [], pendingKinds: new Set(),
     })
-    expect(cell.kind).toBe('all')
+    expect(cell.kind).toBe('some')
     expect(cell.sharedCount).toBe(3)
-    expect(cell.capableCount).toBe(3)
+    expect(cell.capableCount).toBe(5)
   })
 
   it('does not count a wallet_balance row as shared under a different owner', () => {

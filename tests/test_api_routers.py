@@ -14,6 +14,9 @@ from eve_trader.actions import ActionError, ConflictError
 from eve_trader.api.app import FRONTEND_DIST, create_app
 from eve_trader.models import ShortlistItem
 from eve_trader.production import actions as production_actions
+from eve_trader.doctrine import realized as doctrine_realized
+from eve_trader.station_trading import realized as station_realized
+from eve_trader.trade_realized import actions as trade_realized_actions
 from eve_trader.production.models import AssetLocationRow, BuildCandidate, ShipMarginRow
 from eve_trader.sorting import actions as sorting_actions
 
@@ -2343,3 +2346,156 @@ def test_realized_ledger_tab_routes(monkeypatch):
     assert client.delete("/api/production/realized/entries/5").json() == {"deleted": 5}
     body = client.get("/api/production/realized/archive-status").json()
     assert body["rows"][0]["hidden_kinds"] == ["wallet"]
+
+
+def test_trading_realized_routes_call_the_trading_actions(monkeypatch):
+    seen = {}
+
+    def summary(**kw):
+        seen["summary"] = kw
+        return {"realized_profit": 3.0, "status": {"empty": False, "needs_rebuild": False}}
+
+    def items(**kw):
+        seen["items"] = kw
+        return {"needs_rebuild": False, "rows": [{"type_id": 34, "profit": 3.0}]}
+
+    def item(**kw):
+        seen["item"] = kw
+        return {"needs_rebuild": False, "item": {"type_id": kw["type_id"]}, "sales": []}
+
+    def sale(**kw):
+        seen["sale"] = kw
+        return {"sale": {"sale_ref": kw["sale_ref"]}, "lots": []}
+
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_summary", summary)
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_items", items)
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_item", item)
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_sale", sale)
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_inventory",
+                        lambda: {"needs_rebuild": False, "rows": []})
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_warnings",
+                        lambda: {"needs_rebuild": True, "rows": []})
+    monkeypatch.setattr(trade_realized_actions, "do_start_trading_realized_rebuild",
+                        lambda: {"run_id": "r", "status": "running", "job_name": "rebuild_realized"})
+    monkeypatch.setattr(trade_realized_actions, "do_trading_realized_rebuild_status",
+                        lambda: {"status": "idle", "job_name": "rebuild_realized"})
+
+    assert client.get("/api/trading/realized/summary", params={"days": 7}).json()["realized_profit"] == 3.0
+    assert seen["summary"]["days"] == 7
+    assert client.get("/api/trading/realized/items", params={"since_t0": "true"}).status_code == 200
+    assert seen["items"]["since_t0"] is True
+    assert client.get("/api/trading/realized/items/34").json()["item"]["type_id"] == 34
+    assert seen["item"]["type_id"] == 34
+    assert client.get("/api/trading/realized/sales", params={"sale_ref": "tx:1"}).json()["lots"] == []
+    assert seen["sale"]["sale_ref"] == "tx:1"
+    assert client.get("/api/trading/realized/inventory").json()["rows"] == []
+    assert client.get("/api/trading/realized/warnings").json()["needs_rebuild"] is True
+    assert client.post("/api/trading/realized/rebuild").json()["status"] == "running"
+    assert client.get("/api/trading/realized/rebuild/status").json()["status"] == "idle"
+
+
+def test_trading_realized_bad_period_is_400():
+    resp = client.get("/api/trading/realized/summary", params={"days": 0})
+    assert resp.status_code == 400
+    assert "days" in resp.json()["detail"]
+
+
+def test_doctrine_realized_routes_call_the_doctrine_actions(monkeypatch):
+    seen = {}
+
+    def summary(**kw):
+        seen["summary"] = kw
+        return {"realized_profit": 4.0, "contracts": 1, "status": {"empty": False, "needs_rebuild": False}}
+
+    def fittings(**kw):
+        seen["fittings"] = kw
+        return {"needs_rebuild": False, "rows": [{"fitting_id": "fit"}]}
+
+    def contracts(**kw):
+        seen["contracts"] = kw
+        return {"needs_rebuild": False, "rows": [], "before_archive": []}
+
+    def one(**kw):
+        seen["contract"] = kw
+        return {"sale_ref": kw["sale_ref"], "lines": []}
+
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_summary", summary)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_fittings", fittings)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_contracts", contracts)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_contract", one)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_warnings",
+                        lambda: {"needs_rebuild": True, "rows": []})
+    monkeypatch.setattr(doctrine_realized, "do_start_doctrine_realized_rebuild",
+                        lambda: {"run_id": "r", "status": "running", "job_name": "rebuild_realized"})
+    monkeypatch.setattr(doctrine_realized, "do_doctrine_realized_rebuild_status",
+                        lambda: {"status": "idle", "job_name": "rebuild_realized"})
+
+    assert client.get("/api/doctrine/realized/summary", params={"days": 7}).json()["realized_profit"] == 4.0
+    assert seen["summary"]["days"] == 7
+    assert client.get("/api/doctrine/realized/fittings", params={"since_t0": "true"}).status_code == 200
+    assert seen["fittings"]["since_t0"] is True
+    assert client.get("/api/doctrine/realized/contracts").json()["before_archive"] == []
+    body = client.get("/api/doctrine/realized/contract", params={"sale_ref": "contract:70"}).json()
+    assert body["sale_ref"] == "contract:70"
+    assert seen["contract"]["sale_ref"] == "contract:70"
+    assert client.get("/api/doctrine/realized/warnings").json()["needs_rebuild"] is True
+    assert client.post("/api/doctrine/realized/rebuild").json()["status"] == "running"
+    assert client.get("/api/doctrine/realized/rebuild/status").json()["status"] == "idle"
+
+
+def test_doctrine_realized_bad_period_is_400():
+    resp = client.get("/api/doctrine/realized/summary", params={"days": 0})
+    assert resp.status_code == 400
+    assert "days" in resp.json()["detail"]
+
+
+def test_station_realized_routes_call_the_station_actions(monkeypatch):
+    seen = {}
+
+    def summary(**kw):
+        seen["summary"] = kw
+        return {"realized_profit": 5.0, "status": {"empty": False, "needs_rebuild": False}}
+
+    def items(**kw):
+        seen["items"] = kw
+        return {"needs_rebuild": False, "rows": [{"type_id": 34, "profit": 5.0}]}
+
+    def item(**kw):
+        seen["item"] = kw
+        return {"needs_rebuild": False, "item": {"type_id": kw["type_id"]}, "sales": []}
+
+    def sale(**kw):
+        seen["sale"] = kw
+        return {"sale": {"sale_ref": kw["sale_ref"]}, "lots": []}
+
+    monkeypatch.setattr(station_realized, "do_get_station_realized_summary", summary)
+    monkeypatch.setattr(station_realized, "do_get_station_realized_items", items)
+    monkeypatch.setattr(station_realized, "do_get_station_realized_item", item)
+    monkeypatch.setattr(station_realized, "do_get_station_realized_sale", sale)
+    monkeypatch.setattr(station_realized, "do_get_station_realized_position",
+                        lambda: {"needs_rebuild": False, "rows": [], "cost": 0.0, "units": 0.0})
+    monkeypatch.setattr(station_realized, "do_get_station_realized_warnings",
+                        lambda: {"needs_rebuild": True, "rows": []})
+    monkeypatch.setattr(station_realized, "do_start_station_realized_rebuild",
+                        lambda: {"run_id": "r", "status": "running", "job_name": "rebuild_realized"})
+    monkeypatch.setattr(station_realized, "do_station_realized_rebuild_status",
+                        lambda: {"status": "idle", "job_name": "rebuild_realized"})
+
+    assert client.get("/api/station-trading/realized/summary", params={"days": 7}).json()["realized_profit"] == 5.0
+    assert seen["summary"]["days"] == 7
+    assert client.get("/api/station-trading/realized/items", params={"since_t0": "true"}).status_code == 200
+    assert seen["items"]["since_t0"] is True
+    assert client.get("/api/station-trading/realized/items/34").json()["item"]["type_id"] == 34
+    assert seen["item"]["type_id"] == 34
+    assert client.get("/api/station-trading/realized/sales", params={"sale_ref": "tx:1"}).json()["lots"] == []
+    assert seen["sale"]["sale_ref"] == "tx:1"
+    assert client.get("/api/station-trading/realized/position").json()["cost"] == 0.0
+    assert client.get("/api/station-trading/realized/warnings").json()["needs_rebuild"] is True
+    assert client.post("/api/station-trading/realized/rebuild").json()["status"] == "running"
+    assert client.get("/api/station-trading/realized/rebuild/status").json()["status"] == "idle"
+
+
+def test_station_realized_bad_period_is_400():
+    resp = client.get("/api/station-trading/realized/summary", params={"days": 0})
+    assert resp.status_code == 400
+    assert "days" in resp.json()["detail"]

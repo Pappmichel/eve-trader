@@ -118,15 +118,15 @@ export default function TradingSettings() {
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Corp wallets</Title>
       <Text size="xs" c="dimmed">
         Corp-funded market orders are recorded on the corporation wallet, not the placing character&apos;s
-        personal wallet, so Reconcile Trades would miss them without this. Select which of the seven ESI
+        personal wallet, so the realized-profit archive would miss them without this. Select which of the seven ESI
         wallet divisions to page. Leave empty to read every division (the default). The fetching character
         needs the Accountant or Junior Accountant role in that corp — not Director, and not Station Manager.
         A buyer or seller added before this scope existed needs a one-time re-login before corp fills appear.
         Corp fills are counted regardless of which member placed them; that is correct for a single-member
-        corp. In a shared corp this would pull other members&apos; trades into realized profit and into
-        average_daily_sold_by_type, which feeds Profit / Day on the shortlist.
+        corp. In a shared corp this pulls other members&apos; trades into the wallet archive and therefore
+        into realized profit. Profit / Day on the shortlist uses market-wide volume, not these fills.
       </Text>
-      <MultiSelect label="Corp wallet divisions included in Reconcile Trades"
+      <MultiSelect label="Corp wallet divisions included in the wallet archive"
         data={divisionOptions.wallet_division_ids.map((id) => ({ value: String(id), label: `Division ${id}` }))}
         value={(form.wallet_division_ids ?? []).map(String)}
         onChange={(v) => set('wallet_division_ids', v.map(Number))}

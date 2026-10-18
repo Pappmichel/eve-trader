@@ -61,6 +61,7 @@ const ContractHistory = lazy(() => import('./pages/doctrine/ContractHistory'))
 const Stockpile = lazy(() => import('./pages/doctrine/Stockpile'))
 const ShoppingList = lazy(() => import('./pages/doctrine/ShoppingList'))
 const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
+const DoctrineRealized = lazy(() => import('./pages/doctrine/RealizedProfit'))
 
 const OreLayout = lazy(() => import('./pages/refining/OreLayout'))
 const OreOverview = lazy(() => import('./pages/refining/Overview'))
@@ -74,6 +75,7 @@ const StationTradingOverview = lazy(() => import('./pages/station_trading/Overvi
 const StationTradingShortlist = lazy(() => import('./pages/station_trading/Shortlist'))
 const StationTradingUndercutCheck = lazy(() => import('./pages/station_trading/UndercutCheck'))
 const StationTradingSettings = lazy(() => import('./pages/station_trading/StationTradingSettings'))
+const StationTradingRealized = lazy(() => import('./pages/station_trading/RealizedProfit'))
 
 const SortingLayout = lazy(() => import('./pages/sorting/SortingLayout'))
 const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
@@ -293,6 +295,7 @@ function App() {
               <Route path="contracts/history" element={<ContractHistory />} />
               <Route path="stockpile" element={<Stockpile />} />
               <Route path="shopping-list" element={<ShoppingList />} />
+              <Route path="realized" element={<DoctrineRealized />} />
               <Route path="settings" element={<DoctrineSettings />} />
             </Route>
 
@@ -308,6 +311,7 @@ function App() {
               <Route index element={<StationTradingOverview />} />
               <Route path="shortlist" element={<StationTradingShortlist />} />
               <Route path="undercut" element={<StationTradingUndercutCheck />} />
+              <Route path="realized" element={<StationTradingRealized />} />
               <Route path="settings" element={<StationTradingSettings />} />
             </Route>
 

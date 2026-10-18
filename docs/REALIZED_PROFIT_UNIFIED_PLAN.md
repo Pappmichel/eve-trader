@@ -1,10 +1,382 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **planned, all decisions (U1-U11, ST1-ST3) confirmed 2026-10-18.**
-Nothing in this plan is built yet. Each phase ends with a review and a
+Status: **Phase 5 done (2026-10-17).** All phases of this plan have landed.
+Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
+has no test server, so the section 2 counts were not re-measured; the
+reviewer measures them there. Each later phase ends with a review and a
 test-server check like the Production realized-profit work
 (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`, referred to as "the Production
 plan" below).
+
+## Status
+
+### Phase 0 - confirm against the code (no code change)
+
+Checked 2026-10-17. The plan's description of today's code matches the
+tree. Nothing here re-decides U1-U11 or ST1-ST3.
+
+- **Channel.** `costing._on_sell` books a `RealizedResult` only when the
+  type is in `production_type_ids`. Every other market sale only consumes
+  layers, and its broker-fee share lands in `fees_on_other_trading`.
+  Contract sales are per type (`_on_contract_give` / `_book_contract_sale`,
+  `sale_ref` `contract:<id>` or `contract:<id>:<type>`), and only
+  Production types become results. There is no `channel`, no doctrine
+  flag, and no station pool.
+- **Sharing.** `access.shared_owners` and `owner_scope_hash` ask
+  `is_shared(..., "production")` only. `fetchers._archive_for_production`
+  skips a wallet shared only with Trading and contracts shared only with
+  Doctrine. `tenant_eligibility.production_archive_retention` requires the
+  `production` grant; the scheduler passes `archive_tools = {"production"}`.
+- **Wallet consumers.** `registry.py` `wallet.consuming_tools` is
+  `("trading", "production")`. `station_trading` is not a wallet consumer
+  yet (ST2). `market_orders` already lists `station_trading`.
+- **Freight.** `_TxnEnricher.freight` returns nothing unless the buy's
+  region is The Forge (`db.THE_FORGE_REGION_ID`), and also nothing when
+  the location is the home structure. A home-region buy outside The Forge
+  (the Insmother / C-J buys in section 2) therefore already has no freight.
+  A buy in another hub region (Domain, and any Forge station that is not
+  the home structure) is the gap U4 closes: only The Forge is priced, at
+  Production's `haul_cost_per_m3` via `_freight_rate_for_forge`, not from
+  the shared hub table. `reapply_freight_rates` writes that one rate onto
+  every row that already has `freight_m3`.
+- **Fees.** `_attribute_broker_fees` already builds one pool per
+  `(owner, UTC day)` from `brokers_fee` and `market_provider_tax` and
+  spreads it over that day's order-based fills of every type. The pool is
+  paid once. Non-production sells do not become results, so their share is
+  parked on `fees_on_other_trading` instead of a Trading result. Sales tax
+  uses `_tax_entry_after` (first `transaction_tax` after the market
+  transaction in the same wallet and timestamp, before the next market
+  transaction), so a journal id gap is already handled.
+  `contract_brokers_fee` is named in the Production plan's Phase 0 notes
+  and is not applied.
+- **Opening and valuation.** `COSTING_VERSION` in `loader.py` is **3**
+  (CLAUDE.md still says 2). A run whose `costing_version` is NULL or lower
+  resets `prod_opening_frozen` once. Opening and unknown stock use
+  `engine.planner_unit_values`, frozen per `(type, day)` in
+  `ledger_valuation_prices`, with The Forge daily average only as
+  fallback. `planned.MAX_JOB_AGE` is 24 hours. Tenant characters are the
+  registry entry plus every token character (`loader._tenant_character_ids`).
+- **Doctrine and Station Trading.** `match_and_validate_contract` and
+  `doctrine_contract_history` exist and carry no cost. A doctrine contract
+  is not marked on `ledger_contracts`. `StationTradingConfig.station_id`
+  defaults to 60003760 (Jita 4-4). Station Trading reads orders and skills
+  only.
+- **`realized_trades`.** `do_reconcile_trades` still replaces the table.
+  Portfolio's `trading_realized_profit` and daily volatility read it. The
+  shortlist does not (issue #100). U10's "one release later" has not
+  started: this change is the release that makes the ledger the reader.
+  Phase 5 keeps the table and leaves a TODO.
+- **Internal transfers and corp contracts.** `_classify_contract` already
+  skips a contract whose issuer and acceptor are both tenant characters
+  or the tenant's own corp, and a corp-only side is not booked (D7). A
+  corp-issued contract counts when `issuer_id` is a tenant character.
+  U8 attributes that contract to the issuing character; the code already
+  books it through that character, and the corp wallet is not a second
+  sale.
+- **Names.** `production/realized/names.py` resolves type, owner and
+  location ids for the report. The API already returns names alongside ids.
+
+Test-server measurements still owed to the reviewer (section 2, not
+re-run here): doctrine contracts per month and their item types; a
+read-only comparison of `realized_trades` with the new Trading rules for
+the same window (Phase 3's `eve-trader realized compare-trading`); buy
+locations per region and which of them receive freight under U4.
+
+### Phase 1 - shared archive scope - done 2026-10-17
+
+- Moved the generic ledger (`access`, `costing`, `db`, `ingest`, `inputs`,
+  `loader`, `names`) to `eve_trader/realized/` with no behaviour change
+  (3262 passed). Production keeps `report.py` and `planned.py`.
+- `shared_owners` is the union over `KIND_TOOLS`. `shared_owners_for`
+  filters one tool. `owner_scope_hash` covers the union. The fetcher
+  archives when `owner_in_scope` is true. `station_trading` consumes
+  `wallet`. Inactive-tenant retention keeps the archive for
+  `production`, `trading`, `doctrine` or `station_trading`, and the
+  scheduler syncs only the realized tools that tenant still holds.
+- Characters page mirror (`frontend/src/esiRegistry.ts`) now lists
+  `production` and `station_trading` on Wallet, and `production` on
+  Contracts. The backend already had Production on both; the hand-kept
+  mirror did not, so those switches were not on the page.
+- Tests: union scope (Trading-only wallet, Doctrine-only contracts,
+  Station Trading keeps the wallet visible until the last share is
+  revoked, fingerprint changes), retention, scheduler. Full suite
+  3264 passed, 4 skipped. Frontend lint, vitest and build passed.
+- Live check on the local database: a character shared only with
+  Trading for wallet was in `shared_owners`, absent from
+  `shared_owners_for(..., "production")`, visible to the archive read,
+  and `archive_status` marked wallet shared. The seed was deleted.
+  `GET /api/production/realized/archive-status` on the running server
+  returned 401 because the access gate is on; the read above is the
+  same function that route calls.
+
+### Phase 2 - channels in the costing - done 2026-10-17
+
+- Channel on every external item sale. Doctrine item-exchange is one
+  result (`quantity` 1, `sale_ref` `contract:<id>`, `fitting_id` from
+  `doctrine_contract_history` when present, warning `unmatched_doctrine`
+  when it is not). A market sale at `StationTradingConfig.station_id` by
+  an owner whose wallet is shared with Station Trading is
+  `station_trading`. Other contract sales and market sales of Production
+  types stay `production`. Other market sales, and contract sales of
+  non-Production item types, are `trading`. A lone Production type on a
+  mixed contract keeps `sale_ref` `contract:<id>`; the trading lines use
+  `contract:<id>:<type>`.
+- Station pool (`CostLayer.pool`): a buy at the station enters that pool.
+  A sale at the station draws the station pool, then global. Every other
+  consumption draws global, then the station pool. Production types still
+  use the D6 order inside a pool. `COSTING_VERSION` is 4, so the next
+  rebuild resets `prod_opening_frozen` once.
+- Freight freezes from the shared hub table (`hubs.hub_freight_per_m3`,
+  fallback `haul_cost_per_m3`) for every hub region, not only The Forge
+  and not only in All-hubs mode. Home location and home region freeze no
+  freight. Reapply writes one rate per region and clears freight on those
+  two. It does not invent
+  freight for a row archived with `freight_m3` NULL, and it does not
+  rewrite contract-item freight.
+- Review fix: the Station Trading station is a hub station too (Jita 4-4
+  by default, where imports are bought), so a buy there keeps its frozen
+  freight. Costing drops the freight on a draw only when a station-pool
+  layer is used at the station itself (ST3); a station unit sold at home
+  keeps it. The loader passes no station id unless an owner shares a
+  wallet with Station Trading, so a tenant without Station Trading keeps
+  one global pool and the old draw order.
+- Market broker fees stay one pool per owner and UTC day, spread over
+  that day's order-based fills of every channel, and the sell share sits
+  on the result. `contract_brokers_fee` carries `context_id_type`
+  `contract_id`, so the fee goes to that contract's sale (a fee for a
+  contract that is not a sale is a fee without sale). Only an entry
+  without that link falls back to a pool per wallet owner and day of issue
+  (personal contracts key on the character, corp-issued on the
+  corporation), spread by contract price. `fees_on_other_trading` stays
+  on the result shape and is 0 for new runs. Sales tax is unchanged,
+  including the journal-id gap; contract sales still have no sales tax.
+- The Production report filters `channel = 'production'` and owners
+  shared with Production (a NULL owner stays visible until the rebuild).
+  Inventory layers are not filtered by channel.
+- Tests: the pure costing cases named in the task (each channel rule,
+  doctrine origin split, internal transfer, corp-issued contract, station
+  pool order, hub freight vs home buy, one broker-fee pool across
+  channels, contract broker fee). Production regression: the same
+  Production results except the doctrine contract moving off the
+  Production channel. Full suite 3278 passed, 1 skipped. Frontend lint,
+  vitest and build passed (the only UI change is the freight dialog
+  copy).
+- Live check on a throwaway tenant (deleted afterwards): a Production-type
+  sale at the home structure booked `production` (revenue 40, cost 10);
+  a non-production sale at Jita 4-4 by a Station Trading wallet owner
+  booked `station_trading` (revenue 9, cost 5); a Forge buy away from
+  that station froze freight 1600. `do_get_realized_summary(days=30)`
+  reported revenue 40, profit 30, units 1. `GET /api/production/realized/summary`
+  on the running server returned 401 because the access gate is on.
+
+### Deviations
+
+- Blueprint contract lines stay off the result list. A BPC sale would mix
+  run units into the Trading report, so those lines are consumed and not
+  booked. BPO hand-overs stay capital, as before.
+- U4's hub rate is used even when the tool is not in All-hubs mode.
+  `_freight_rate_for_forge` used to read the hub table only in that mode.
+  On a tenant whose hub table sets The Forge below `haul_cost_per_m3`,
+  the next ingest and a freight reapply move Forge purchases to the
+  table rate.
+- Reapply clears home freight that was already frozen, and
+  updates rows that already have `freight_m3`. It does not backfill a
+  historical non-Forge buy archived with `freight_m3` NULL, and it does
+  not rewrite contract-item freight. New ingests use U4.
+- `test_contract_sale_has_no_tax_and_follows_produced_fifo` now expects a
+  Trading result for the non-Production line (`sale_ref`
+  `contract:9:999`). That is U1 rule 5. The Production line on the same
+  contract is unchanged.
+
+### Phase 3 - Trading report and page - done 2026-10-17
+
+- `eve_trader/trade_realized/` reads the ledger and keeps channel
+  `trading`. Summary, per item (units, average buy landed, average net
+  sell, profit, margin), per sale with the purchase lots, inventory of
+  unsold Trading goods in the global pool, and warnings. Routes under
+  `/api/trading/realized/*`. `POST /realized/rebuild` starts the same
+  background job as Production.
+- The Realized Trades page (`/trading/trades`) shows those API numbers.
+  The side-menu button and the spotlight command say Recompute and start
+  that job. The trading pipeline's last step calls the same rebuild
+  in-process (`rebuild_realized`) instead of `do_reconcile_trades`.
+- Portfolio's trading profit, margin, trade count and daily volatility
+  come from the last 30 days of the Trading channel. The three trading
+  stats and the trading history charts render only when the session's
+  gate status includes `trading`.
+- `eve-trader realized compare-trading [--days N]` prints the latest
+  `realized_trades` run next to the Trading channel for the same window,
+  per item and overall. It does not rebuild and does not write.
+  `realized_trades` and `do_reconcile_trades` stay (U10). The page no
+  longer reads them.
+- Tests: pure comparison and volatility; Postgres report (trading-only
+  wallet sale, station-trading sale and a doctrine-only contract sale
+  stay off the Trading page, revoking the share hides the run, compare
+  does not write); router tests for every new route. Full suite
+  3286 passed, 1 skipped. Frontend lint, vitest and build passed.
+- Live check on a throwaway tenant (deleted afterwards): a non-production
+  sale booked trading, revenue 40, cost 10, profit 30, margin 0.75.
+  `compare-trading` printed old profit 12 beside new profit 30.
+  `GET /api/trading/realized/summary` on the running server returned 401
+  because the access gate is on. The page was exercised in vitest
+  (empty / needs-rebuild, item table, period, sale and lot drill-down,
+  Portfolio gating). A browser session was not opened: the gate has no
+  local login that does not touch `config.yaml`.
+
+### Deviations (Phase 3)
+
+- A contract sale on the trading channel is shown when its archive owner
+  shares **wallet** with Trading. Trading has no contracts share (U3a
+  names wallet for market sales and contracts-with-Doctrine for doctrine).
+  A doctrine-only contract owner therefore stays off the Trading page
+  until that owner also shares wallet with Trading.
+- Portfolio's average margin is profit divided by cost of goods for the
+  last 30 days (freight and fees included), not profit divided by the
+  old reconcile run's buy cost.
+- Trading inventory is the global pool only. Leftovers in the station
+  pool wait for the Station Trading report (Phase 4b).
+- The pipeline result key is `rebuild_realized`. `POST /api/trading/trades/reconcile`
+  still exists and still writes `realized_trades`; nothing in the UI or
+  the pipeline calls it. Phase 5 removes that use.
+
+### Phase 4 - Doctrine report and page - done 2026-10-17
+
+- `eve_trader/doctrine/realized.py` reads the doctrine channel. Summary
+  (contracts, revenue, cost, profit, margin, coverage, production saving,
+  cost by origin), per fitting, per contract with item lines and the
+  production chain, and finished doctrine history rows that are not in
+  the archive (`before_archive`, profit null). Routes under
+  `/api/doctrine/realized/*`. Contract detail takes `sale_ref` as a query
+  parameter because the ref contains a colon. Recompute starts the same
+  background job as Production.
+- A doctrine result with no `doctrine_contract_history` fitting is
+  resolved once per rebuild by `match_and_validate_contract`. History
+  wins and the matcher is not called. An unmatched contract keeps
+  `fitting_id` null and the warning `unmatched_doctrine`.
+- The Doctrine page (`/doctrine/realized`) shows those API numbers, the
+  origin split, the fitting and contract tables, the before-archive list,
+  and the contract drill-down (lines and `CostChainTree` for produced
+  lines). The side-menu tab says Realized.
+- Production's overview adds "Produced goods sold through Doctrine"
+  (`sold_through_doctrine`: contracts, units, cost of produced-origin
+  draws). That cost is not added to Production profit.
+- Portfolio shows a Doctrine card only when the session holds `doctrine`.
+  `GET /api/portfolio/realized-cards` returns last-30-day profit per
+  granted tool among production, trading and doctrine, and a total only
+  when at least two of those tools have a figure. The page shows that
+  total; it does not add the cards itself. Station Trading is not in the
+  sum yet (Phase 4b).
+- Tests: Postgres report (origin split sums to cost, doctrine-only share,
+  trading and station-trading sales stay off the Doctrine page, a
+  production-only contract at the doctrine structure stays off it,
+  before-archive row, revoking the doctrine share sets `sharing_changed`,
+  matcher fills a missing fitting); router tests for every new route;
+  `realized_cards` unit test. Full suite 3292 passed, 1 skipped.
+  Frontend lint, vitest (371) and build passed.
+- Live check on a throwaway tenant (deleted afterwards, id
+  `a0696dad-6ae1-446d-ace0-303069eaec93`): one finished doctrine contract
+  booked revenue 100, cost 35 (produced 15 + market 20), profit 65,
+  production saving 65, fitting "Stabber Fleet". Production revenue 0 and
+  sold-through cost 15. The cross-tool total stayed null because only
+  Doctrine had a figure. `GET /api/doctrine/realized/summary` on the
+  running server returned 401 because the access gate is on. The page
+  was exercised in vitest (needs-rebuild, summary and tables, period,
+  drill-down, Portfolio gating). A browser session was not opened: the
+  gate has no local login that does not touch `config.yaml`.
+
+### Deviations (Phase 4)
+
+- Contract detail loads the scoped results for a wide date window and
+  filters to the requested `sale_ref` in Python. The test server has on
+  the order of 50 doctrine contracts, so a dedicated SQL lookup was not
+  required.
+- The production-chain walk stays in `production.realized.report`
+  (`_children`, `_walk`). The doctrine report imports those two helpers.
+  Production does not import the doctrine report.
+- Production saving is null unless every produced line has a frozen
+  `buy_home` or `buy_hub` price on or before the sale date. A partial
+  saving is not shown.
+- The cross-tool total does not include Station Trading until Phase 4b.
+
+### Phase 4b - Station Trading report and page - done 2026-10-17
+
+- `eve_trader/station_trading/realized.py` reads the station_trading
+  channel for owners whose wallet is shared with Station Trading.
+  Summary (revenue, cost, profit, margin, average buy, average sell net,
+  spread, turnover days, fees per day, open-position cost), per item,
+  per sale with the buy lots, and the station-pool leftover at cost.
+  Routes under `/api/station-trading/realized/*`. Recompute starts the
+  same background job as Production.
+- Turnover days are the quantity-weighted time from a draw's layer date
+  to the sale. A draw with no layer date stays out of that average.
+- The Station Trading page (`/station-trading/realized`) shows those API
+  numbers, the fee table, the item table, the sale and lot drill-down,
+  and the open position. The side-menu tab says Realized.
+- Portfolio shows a Station Trading card only when the session holds
+  `station_trading`. `GET /api/portfolio/realized-cards` now includes
+  that tool in the per-tool rows and in the total.
+- Tests: Postgres report (station sale of a stock-target hull stays on
+  this channel, a trading-only Jita sale stays off it, a home sale by a
+  station-trading owner stays off it, leftover station quantity is the
+  open position, turnover is three days, revoking the share sets
+  `sharing_changed`); router tests for every new route; realized-cards
+  sum includes station trading. Full suite 3296 passed, 1 skipped.
+  Frontend lint, vitest and build passed.
+- Live check on a throwaway tenant (deleted afterwards, id
+  `c4530b59-095a-46d5-bbf2-91d3d724f80d`): one station sale booked
+  revenue 12, cost 5, profit 7, spread 7, turnover 3 days, open position
+  5. The cross-tool total stayed null because only Station Trading had
+  a figure. `GET /api/station-trading/realized/summary` on the running
+  server returned 401 because the access gate is on. The page was
+  exercised in vitest (needs-rebuild, summary, fees, open position,
+  period, drill-down, Portfolio gating). A browser session was not
+  opened: the gate has no local login that does not touch `config.yaml`.
+
+### Deviations (Phase 4b)
+
+- Fees per day are the broker fee and sales tax booked on
+  station-trading sales. The unmatched fee pool is shared across
+  channels, so this report does not take it.
+- Average buy is cost of goods per unit. A broker fee that landed on
+  the sale is inside that average, and the spread is average sell net
+  minus that average.
+- A sale away from the station by an owner who shares wallet only with
+  Station Trading is channel `trading`. It stays off this page, and it
+  stays off the Trading page until that owner also shares wallet with
+  Trading (same U3a shape as Phase 3).
+- This page matches contract-channel rows with the wallet share.
+  Station Trading has no contracts share of its own.
+
+### Phase 5 - stop calling the old matcher - done 2026-10-17
+
+- The app no longer calls `do_reconcile_trades`. `POST /api/trading/trades/reconcile`,
+  `GET /api/trading/trades/realized` and `eve-trader reconcile-trades` are
+  gone. The trading pipeline, the pages and Portfolio already read the
+  ledger.
+- `trade_reconciliation.py` stays in the tree. Nothing in the running app
+  imports it except `fetch_recent_transactions`, which the Transactions
+  page still uses. `eve-trader realized compare-trading` is the one
+  remaining read of `realized_trades`.
+- CLAUDE.md (realized section, price-sources matrix, fetcher import,
+  costing version 4, Trading Profit / Day), the root README and
+  `deploy/README.md` describe the ledger instead of Reconcile Trades.
+- Full suite after the removal: 3293 passed, 1 skipped. Frontend lint,
+  vitest and build passed. No new seeded live check: this phase deletes
+  call sites and does not change a figure. The earlier throwaway-tenant
+  checks still cover the four reports.
+- With the access gate off, a TestClient gets 404 for
+  `GET /api/trading/trades/realized` and `POST /api/trading/trades/reconcile`.
+  `GET /api/trading/realized/summary?days=30` still returns 200. The running
+  server answers 401 on all three because the gate runs before routing, so
+  that 401 is not evidence the old routes are gone.
+
+### TODO (U10, not this release)
+
+Drop `realized_trades`, `storage.save_realized_trades`,
+`trade_reconciliation.py` (keep `fetch_recent_transactions` if the
+Transactions page still needs it, or move that helper first) and
+`eve-trader realized compare-trading` on the release after this one.
+The comparison window is not over. Do not drop the table in this change.
 
 ## 1. Goal
 

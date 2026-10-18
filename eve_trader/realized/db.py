@@ -10,7 +10,7 @@ from typing import Iterable, Optional
 
 from psycopg.types.json import Jsonb
 
-from ... import storage
+from .. import storage
 
 # The Forge (Jita's region) - freight is applied only for buys here (D9).
 THE_FORGE_REGION_ID = 10000002
@@ -674,16 +674,33 @@ def insert_planned_costs(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def contract_titles(contract_ids: list[int]) -> dict[int, str]:
+    """First non-empty title stored for each contract id."""
+    ids = [int(i) for i in contract_ids]
+    if not ids:
+        return {}
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, title FROM ledger_contracts "
+            "WHERE contract_id = ANY(?) AND title IS NOT NULL AND title <> ''",
+            (ids,),
+        ).fetchall()
+    out: dict[int, str] = {}
+    for contract_id, title in rows:
+        out.setdefault(int(contract_id), str(title))
+    return out
+
+
 def list_contracts_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
     """(owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id,
     acceptor_id, start_location_id, end_location_id, type, status, price,
-    reward, date_completed, volume, collateral, region_id)."""
+    reward, date_completed, volume, collateral, region_id, date_issued)."""
     where, params = _owner_in_clause(owners)
     with storage.connect() as conn:
         return conn.execute(
             "SELECT owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id, "
             "acceptor_id, start_location_id, end_location_id, type, status, price, reward, "
-            "date_completed, volume, collateral, region_id "
+            "date_completed, volume, collateral, region_id, date_issued "
             "FROM ledger_contracts "
             f"WHERE {where} ORDER BY date_completed, contract_id",
             tuple(params),
@@ -1001,8 +1018,8 @@ def replace_derived_costing(
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, layer_date, job_id, "
                 "quantity_original, assumed_me, assumed_decryptor, estimated_origin, "
-                "price_missing, logical_layer_id, source) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "price_missing, logical_layer_id, source, pool) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 layers,
             )
         if result_params:
@@ -1012,8 +1029,9 @@ def replace_derived_costing(
                 "coverage_share, sale_date, gross, sales_tax, broker_fee, "
                 "location_id, price_missing, estimated, warnings, "
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
-                "cost_job, cost_invention, cost_fees, source) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "cost_job, cost_invention, cost_fees, source, channel, "
+                "owner_type, owner_id, fitting_id, issuer_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 result_params,
             )
         if draws:
@@ -1024,8 +1042,9 @@ def replace_derived_costing(
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, unit_cost, "
                 "estimated_origin, price_missing, assumed_me, assumed_decryptor, "
-                "layer_date, job_id, location_id, unit_price, freight_rate_per_m3, source) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "layer_date, job_id, location_id, unit_price, freight_rate_per_m3, source, "
+                "channel) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 draws,
             )
         if jobs:
@@ -1111,16 +1130,78 @@ def latest_ledger_run() -> Optional[tuple]:
         ).fetchone()
 
 
-def count_realized_results() -> int:
+def _owner_match_sql(owners: list, prefix: str) -> tuple[str, list]:
+    bits = []
+    params: list = []
+    for owner_type, owner_id in owners:
+        bits.append(f"({prefix}owner_type = ? AND {prefix}owner_id = ?)")
+        params.extend([str(owner_type), int(owner_id)])
+    return "(" + " OR ".join(bits) + ")", params
+
+
+def _result_scope_sql(
+    channel: Optional[str] = None,
+    *,
+    alias: str = "",
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> tuple[str, list]:
+    """AND-clause for one tool's report.
+
+    `channel` None leaves every channel visible. Owner lists, when passed,
+    keep a row whose owner is still NULL (written before channels existed)
+    and otherwise require the archive owner to be shared with this tool:
+    wallet for a market sale, contracts for a contract sale (U3a).
+    """
+    if not channel:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    sql = f" AND {prefix}channel = ?"
+    params: list = [channel]
+    if wallet_owners is None and contract_owners is None:
+        return sql, params
+    parts = [f"{prefix}owner_id IS NULL"]
+    if wallet_owners:
+        match, match_params = _owner_match_sql(wallet_owners, prefix)
+        parts.append(f"({prefix}source = 'market' AND {match})")
+        params.extend(match_params)
+    if contract_owners:
+        match, match_params = _owner_match_sql(contract_owners, prefix)
+        parts.append(f"({prefix}source IS DISTINCT FROM 'market' AND {match})")
+        params.extend(match_params)
+    return sql + " AND (" + " OR ".join(parts) + ")", params
+
+
+def count_realized_results(
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> int:
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
-        row = conn.execute("SELECT COUNT(*) FROM prod_realized_results").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM prod_realized_results WHERE TRUE" + scope, extra,
+        ).fetchone()
     return int(row[0]) if row else 0
 
 
-def realized_totals(start: datetime, end: datetime) -> tuple:
+def realized_totals(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> tuple:
     """One row of period aggregates. Sums ignore NULL sales tax; the tax-null
     count is separate so a missing tax is not reported as zero tax. A
     contract sale stores NULL tax on purpose and is not a missing tax."""
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT COALESCE(SUM(revenue), 0), COALESCE(SUM(cost), 0), "
@@ -1132,23 +1213,101 @@ def realized_totals(start: datetime, end: datetime) -> tuple:
             "COALESCE(SUM(sales_tax), 0), "
             "COUNT(*) FILTER (WHERE sales_tax IS NULL AND source IS DISTINCT FROM 'contract'), "
             "COALESCE(BOOL_OR(price_missing), FALSE), COUNT(*) "
-            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?",
-            (start, end),
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
+            + scope,
+            (start, end, *extra),
         ).fetchone()
 
 
-def realized_by_day(start: datetime, end: datetime) -> list[tuple]:
+def realized_by_day(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT (sale_date AT TIME ZONE 'UTC')::date, "
             "COALESCE(SUM(revenue), 0), COALESCE(SUM(cost), 0), COALESCE(SUM(profit), 0) "
-            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ? "
-            "GROUP BY 1 ORDER BY 1",
-            (start, end),
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
+            + scope + " GROUP BY 1 ORDER BY 1",
+            (start, end, *extra),
         ).fetchall()
 
 
-def realized_by_type(start: datetime, end: datetime) -> list[tuple]:
+def turnover_weighted_by_type(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """(type_id, dated_quantity, weighted_seconds) from buy layer to sale.
+
+    Draws with no layer date are left out of both the quantity and the
+    seconds, so a missing buy date stays missing instead of counting as zero.
+    """
+    scope, extra = _result_scope_sql(
+        channel, alias="r", wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT r.type_id, "
+            "COALESCE(SUM(d.quantity) FILTER (WHERE d.layer_date IS NOT NULL), 0), "
+            "COALESCE(SUM(d.quantity * EXTRACT(EPOCH FROM (r.sale_date - d.layer_date))) "
+            "FILTER (WHERE d.layer_date IS NOT NULL), 0) "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "WHERE r.sale_date >= ? AND r.sale_date < ?"
+            + scope + " GROUP BY r.type_id",
+            (start, end, *extra),
+        ).fetchall()
+
+
+def fees_by_day(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """(utc_date, broker_fee, sales_tax, tax_missing_sales) for sales in the window.
+
+    `sales_tax` is NULL when every sale that day stored no tax. Known taxes
+    still sum; a contract sale's NULL tax is not a missing tax.
+    """
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT (sale_date AT TIME ZONE 'UTC')::date, "
+            "COALESCE(SUM(broker_fee), 0), SUM(sales_tax), "
+            "COUNT(*) FILTER (WHERE sales_tax IS NULL AND source IS DISTINCT FROM 'contract') "
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
+            + scope + " GROUP BY 1 ORDER BY 1",
+            (start, end, *extra),
+        ).fetchall()
+
+
+def realized_by_type(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT type_id, COALESCE(SUM(quantity), 0), COALESCE(SUM(revenue), 0), "
@@ -1158,38 +1317,69 @@ def realized_by_type(start: datetime, end: datetime) -> list[tuple]:
             "COALESCE(SUM(cost_freight), 0), COALESCE(SUM(cost_job), 0), "
             "COALESCE(SUM(cost_invention), 0), COALESCE(SUM(cost_fees), 0), "
             "COALESCE(BOOL_OR(price_missing), FALSE) "
-            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ? "
-            "GROUP BY type_id ORDER BY type_id",
-            (start, end),
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
+            + scope + " GROUP BY type_id ORDER BY type_id",
+            (start, end, *extra),
         ).fetchall()
 
 
-def realized_draw_flags_by_type(start: datetime, end: datetime) -> list[tuple]:
+def realized_draw_flags_by_type(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
     """(type_id, assumed_me, assumed_decryptor) for sales in the period."""
+    scope, extra = _result_scope_sql(
+        channel, alias="r", wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT r.type_id, COALESCE(BOOL_OR(d.assumed_me), FALSE), "
             "COALESCE(BOOL_OR(d.assumed_decryptor), FALSE) "
             "FROM prod_realized_results r "
             "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
-            "WHERE r.sale_date >= ? AND r.sale_date < ? "
-            "GROUP BY r.type_id",
-            (start, end),
+            "WHERE r.sale_date >= ? AND r.sale_date < ?"
+            + scope + " GROUP BY r.type_id",
+            (start, end, *extra),
         ).fetchall()
 
 
-def realized_warnings_by_type(start: datetime, end: datetime) -> list[tuple]:
+def realized_warnings_by_type(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    scope, extra = _result_scope_sql(
+        channel, alias="r", wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT r.type_id, w "
             "FROM prod_realized_results r, "
             "LATERAL jsonb_array_elements_text(COALESCE(r.warnings, '[]'::jsonb)) AS w "
-            "WHERE r.sale_date >= ? AND r.sale_date < ?",
-            (start, end),
+            "WHERE r.sale_date >= ? AND r.sale_date < ?" + scope,
+            (start, end, *extra),
         ).fetchall()
 
 
-def list_sales_for_type(type_id: int, start: datetime, end: datetime) -> list[tuple]:
+def list_sales_for_type(
+    type_id: int,
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
@@ -1197,21 +1387,91 @@ def list_sales_for_type(type_id: int, start: datetime, end: datetime) -> list[tu
             "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
             "cost_freight, cost_job, cost_invention, cost_fees, source "
             "FROM prod_realized_results "
-            "WHERE type_id = ? AND sale_date >= ? AND sale_date < ? "
-            "ORDER BY sale_date, sale_ref",
-            (int(type_id), start, end),
+            "WHERE type_id = ? AND sale_date >= ? AND sale_date < ?"
+            + scope + " ORDER BY sale_date, sale_ref",
+            (int(type_id), start, end, *extra),
         ).fetchall()
 
 
-def get_realized_sale(sale_ref: str) -> Optional[tuple]:
+def list_scoped_results(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """Sales in the window, including the doctrine fitting and the issuer.
+
+    Column order matches `get_realized_sale`, then owner_type, owner_id,
+    fitting_id, issuer_id.
+    """
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
+            "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
+            "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
+            "cost_freight, cost_job, cost_invention, cost_fees, source, "
+            "owner_type, owner_id, fitting_id, issuer_id "
+            "FROM prod_realized_results "
+            "WHERE sale_date >= ? AND sale_date < ?"
+            + scope + " ORDER BY sale_date, sale_ref",
+            (start, end, *extra),
+        ).fetchall()
+
+
+def produced_draw_totals(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> tuple:
+    """(contracts, units, cost) of produced-origin draws on sales in the window.
+
+    Cost is the draw's own components (materials, freight, job, invention,
+    fees on the draw). The sale's broker fee is not in that cost.
+    """
+    scope, extra = _result_scope_sql(
+        channel, alias="r", wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT r.sale_ref) FILTER (WHERE d.origin = 'produced'), "
+            "COALESCE(SUM(d.quantity) FILTER (WHERE d.origin = 'produced'), 0), "
+            "COALESCE(SUM(d.cost_materials_bought + d.cost_materials_estimated "
+            "+ d.cost_freight + d.cost_job + d.cost_invention + d.cost_fees) "
+            "FILTER (WHERE d.origin = 'produced'), 0) "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "WHERE r.sale_date >= ? AND r.sale_date < ?" + scope,
+            (start, end, *extra),
+        ).fetchone()
+    return row
+
+
+def get_realized_sale(
+    sale_ref: str,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> Optional[tuple]:
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
     with storage.connect() as conn:
         return conn.execute(
             "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
             "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
             "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
             "cost_freight, cost_job, cost_invention, cost_fees, source "
-            "FROM prod_realized_results WHERE sale_ref = ?",
-            (sale_ref,),
+            "FROM prod_realized_results WHERE sale_ref = ?" + scope,
+            (sale_ref, *extra),
         ).fetchone()
 
 
@@ -1266,7 +1526,7 @@ def list_remaining_layers() -> list[tuple]:
     with storage.connect() as conn:
         return conn.execute(
             "SELECT type_id, unit, quantity_left, unit_cost, origin, "
-            "assumed_me, assumed_decryptor, estimated_origin, price_missing "
+            "assumed_me, assumed_decryptor, estimated_origin, price_missing, pool "
             "FROM prod_cost_layers WHERE quantity_left > 0 "
             "ORDER BY type_id, logical_layer_id",
         ).fetchall()
@@ -1447,28 +1707,77 @@ def replace_opening_cost(type_id: int, unit_cost: float, entry_date: datetime) -
     return int(row[0])
 
 
-def count_freight_rate_changes(rate: float) -> int:
-    """Purchases `reapply_freight_rates(rate)` would change."""
-    with storage.connect() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM ledger_wallet_transactions "
-            "WHERE freight_m3 IS NOT NULL AND freight_rate_per_m3 IS DISTINCT FROM ?",
-            (float(rate),),
-        ).fetchone()
-    return int(row[0]) if row else 0
+def count_freight_rate_changes(
+    rates: dict,
+    *,
+    clear_location_ids: Optional[list] = None,
+    clear_region_ids: Optional[list] = None,
+) -> int:
+    """Purchases `reapply_freight_rates` would change: a hub rate that no
+    longer matches, or freight that U4/ST3 now says should be absent."""
+    return _freight_reapply(rates, clear_location_ids or [], clear_region_ids or [], apply=False)
 
 
-def reapply_freight_rates(rate: float) -> int:
-    """Set the frozen ISK/m3 rate on purchases that already have a freight
-    volume and a different rate. Rows frozen with no freight (not a Forge
-    buy, or the home structure) are left alone."""
+def reapply_freight_rates(
+    rates: dict,
+    *,
+    clear_location_ids: Optional[list] = None,
+    clear_region_ids: Optional[list] = None,
+) -> int:
+    """Write the current per-hub rate onto purchases that already have a
+    freight volume. Home-structure, home-region and station-trade buys lose
+    a rate that an earlier ingest froze. Rows that never had freight stay
+    without it."""
+    return _freight_reapply(rates, clear_location_ids or [], clear_region_ids or [], apply=True)
+
+
+def _freight_reapply(rates: dict, clear_locations: list, clear_regions: list, *, apply: bool) -> int:
+    location_ids = [int(v) for v in clear_locations if v is not None]
+    region_ids = [int(v) for v in clear_regions if v is not None]
+    changed = 0
     with storage.connect() as conn:
-        cur = conn.execute(
-            "UPDATE ledger_wallet_transactions SET freight_rate_per_m3 = ? "
-            "WHERE freight_m3 IS NOT NULL AND freight_rate_per_m3 IS DISTINCT FROM ?",
-            (float(rate), float(rate)),
-        )
-    return int(cur.rowcount or 0)
+        if location_ids or region_ids:
+            clauses = []
+            params: list = []
+            if location_ids:
+                clauses.append("location_id = ANY(?)")
+                params.append(location_ids)
+            if region_ids:
+                clauses.append("region_id = ANY(?)")
+                params.append(region_ids)
+            where = "freight_m3 IS NOT NULL AND (" + " OR ".join(clauses) + ")"
+            if apply:
+                cur = conn.execute(
+                    "UPDATE ledger_wallet_transactions SET freight_rate_per_m3 = NULL, "
+                    "freight_m3 = NULL WHERE " + where,
+                    params,
+                )
+                changed += int(cur.rowcount or 0)
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM ledger_wallet_transactions WHERE " + where, params,
+                ).fetchone()
+                changed += int(row[0]) if row else 0
+        for region_id, rate in rates.items():
+            if int(region_id) in region_ids:
+                continue
+            if apply:
+                cur = conn.execute(
+                    "UPDATE ledger_wallet_transactions SET freight_rate_per_m3 = ? "
+                    "WHERE freight_m3 IS NOT NULL AND region_id = ? "
+                    "AND freight_rate_per_m3 IS DISTINCT FROM ?",
+                    (float(rate), int(region_id), float(rate)),
+                )
+                changed += int(cur.rowcount or 0)
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM ledger_wallet_transactions "
+                    "WHERE freight_m3 IS NOT NULL AND region_id = ? "
+                    "AND freight_rate_per_m3 IS DISTINCT FROM ?",
+                    (int(region_id), float(rate)),
+                ).fetchone()
+                changed += int(row[0]) if row else 0
+    return changed
 
 
 def list_frozen_opening() -> list[tuple]:

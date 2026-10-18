@@ -127,7 +127,20 @@ export const tradingApi = {
   historyTypeIds: () => get<T.HistoryTypeIdOption[]>('/api/trading/history/type-ids'),
   sparklines: (typeIds: number[]) => get<Record<string, T.SparklineSeries>>(`/api/trading/history/sparklines?type_ids=${typeIds.join(',')}`),
   history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
-  realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
+  realizedSummary: (periodQuery: string) =>
+    get<T.TradingRealizedSummary>(`/api/trading/realized/summary?${periodQuery}`),
+  realizedItems: (periodQuery: string) =>
+    get<T.TradingRealizedItemList>(`/api/trading/realized/items?${periodQuery}`),
+  realizedItem: (typeId: number, periodQuery: string) =>
+    get<T.TradingRealizedItemDetail>(`/api/trading/realized/items/${typeId}?${periodQuery}`),
+  realizedSale: (saleRef: string) =>
+    get<T.TradingRealizedSaleDetail>(`/api/trading/realized/sales?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedInventory: () =>
+    get<{ needs_rebuild: boolean; rows: T.TradingRealizedInventoryRow[] }>('/api/trading/realized/inventory'),
+  realizedWarnings: () =>
+    get<{ needs_rebuild: boolean; rows: T.TradingRealizedWarning[] }>('/api/trading/realized/warnings'),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
   walletDivisionOptions: () => get<{ wallet_division_ids: number[] }>(
@@ -146,7 +159,6 @@ export const tradingApi = {
     post<T.PipelineRunStatus>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
   refreshAndPruneStatus: () =>
     get<T.PipelineRunStatus>('/api/trading/candidates/refresh-and-prune/status'),
-  reconcileTrades: () => post<Record<string, unknown>>('/api/trading/trades/reconcile'),
   runPipeline: (safe = true, rebuildUniverse = false) =>
     post<T.PipelineRunStatus>(
       `/api/trading/pipeline/run?safe=${safe}&rebuild_universe=${rebuildUniverse}`,
@@ -496,6 +508,7 @@ export const portfolioApi = {
       '/api/portfolio/manual-prices', { item_name: itemName, price },
     ),
   removeManualPrice: (typeId: number) => del(`/api/portfolio/manual-prices/${typeId}`),
+  realizedCards: () => get<T.RealizedToolCards>('/api/portfolio/realized-cards'),
 }
 
 // -------------------------------------------------------------- doctrine
@@ -573,6 +586,23 @@ export const doctrineApi = {
   hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
     '/api/doctrine/settings/hangar-division-options',
   ),
+  realizedSummary: (periodQuery: string) =>
+    get<T.DoctrineRealizedSummary>(`/api/doctrine/realized/summary?${periodQuery}`),
+  realizedFittings: (periodQuery: string) =>
+    get<{ needs_rebuild: boolean; rows: T.DoctrineRealizedFitting[] }>(
+      `/api/doctrine/realized/fittings?${periodQuery}`,
+    ),
+  realizedContracts: (periodQuery: string) =>
+    get<{ needs_rebuild: boolean; rows: T.DoctrineRealizedContract[]; before_archive: T.DoctrineRealizedContract[] }>(
+      `/api/doctrine/realized/contracts?${periodQuery}`,
+    ),
+  realizedContract: (saleRef: string) =>
+    get<T.DoctrineRealizedContractDetail>(`/api/doctrine/realized/contract?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedWarnings: () => get<{ needs_rebuild: boolean; rows: { type_id: number; warning: string }[] }>(
+    '/api/doctrine/realized/warnings',
+  ),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/doctrine/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/doctrine/realized/rebuild/status'),
 }
 
 // ------------------------------------------------------------- ore & minerals
@@ -620,6 +650,22 @@ export const stationTradingApi = {
 
   traderCharacters: () => get<T.ProducerCharacter[]>('/api/station-trading/trader-characters'),
   removeCharacter: (roleKey: string) => del(`/api/station-trading/auth/character/${roleKey}`),
+  realizedSummary: (periodQuery: string) =>
+    get<T.StationRealizedSummary>(`/api/station-trading/realized/summary?${periodQuery}`),
+  realizedItems: (periodQuery: string) =>
+    get<T.StationRealizedItemList>(`/api/station-trading/realized/items?${periodQuery}`),
+  realizedItem: (typeId: number, periodQuery: string) =>
+    get<T.StationRealizedItemDetail>(`/api/station-trading/realized/items/${typeId}?${periodQuery}`),
+  realizedSale: (saleRef: string) =>
+    get<T.StationRealizedSaleDetail>(`/api/station-trading/realized/sales?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedPosition: () =>
+    get<{ needs_rebuild: boolean; rows: T.StationRealizedPositionRow[]; cost: number | null; units: number | null }>(
+      '/api/station-trading/realized/position',
+    ),
+  realizedWarnings: () =>
+    get<{ needs_rebuild: boolean; rows: T.TradingRealizedWarning[] }>('/api/station-trading/realized/warnings'),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/station-trading/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/station-trading/realized/rebuild/status'),
 }
 
 // ------------------------------------------------------------------- admin

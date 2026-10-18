@@ -1,133 +1,249 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Text, Title, Stack } from '@mantine/core'
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from 'recharts'
+import { Button, Card, Group, SegmentedControl, SimpleGrid, Stack, Text, Title } from '@mantine/core'
+import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { tradingApi } from '../../api/client'
-import type { RealizedTrade } from '../../api/types'
+import type { TradingRealizedItem, TradingRealizedLot, TradingRealizedSale } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { JobProgress } from '../../components/JobProgress'
 import { isk, pct, qty } from '../../format'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { COLORS } from '../../theme'
+import { compactIsk, profitSeries } from '../production/realized/chart'
+import { CoverageBadge } from '../production/realized/flags'
+import { periodLongerThan90Days, realizedPeriodSearch, type RealizedPeriod } from '../production/realized/period'
 
-interface ItemSummary {
-  type_id: number
-  item: string
-  trades: number
-  matchedQty: number
-  avgBuyPrice: number
-  avgSellPrice: number
-  avgMargin: number
-  totalProfit: number
+const PERIOD_OPTIONS = [
+  { value: '7', label: '7 days' },
+  { value: '30', label: '30 days' },
+  { value: '90', label: '90 days' },
+  { value: 'since_t0', label: 'Since T0' },
+]
+
+function money(value: number | null | undefined): string {
+  return value == null ? '–' : isk(value)
 }
 
-// One row per item (not per trade) - price/margin columns are the
-// quantity-weighted average across that item's matched trades (T3-07,
-// business-logic audit follow-up, 2026-09-26: a plain per-trade mean let
-// one tiny, oddly-priced trade skew the row's average just as much as a
-// trade covering thousands of units), quantity/profit are summed.
-// avgMargin is derived from the weighted totals (totalProfit / total buy
-// cost), not an average of per-trade margin ratios - dimensionally
-// consistent with avgBuyPrice/avgSellPrice above it, and avoids the same
-// small-trade-skew problem a ratio average would reintroduce. Exported
-// (not inlined in the component) so it's directly unit-testable - see
-// RealizedTrades.test.ts.
-export function aggregateByItem(trades: RealizedTrade[]): ItemSummary[] {
-  const groups = new Map<number, RealizedTrade[]>()
-  for (const t of trades) {
-    const list = groups.get(t.type_id) ?? []
-    list.push(t)
-    groups.set(t.type_id, list)
-  }
-  return [...groups.values()].map((rows) => {
-    const matchedQty = rows.reduce((sum, t) => sum + t.matched_qty, 0)
-    const totalBuyCost = rows.reduce((sum, t) => sum + t.buy_unit_price * t.matched_qty, 0)
-    const totalSellValue = rows.reduce((sum, t) => sum + t.sell_unit_price * t.matched_qty, 0)
-    const totalProfit = rows.reduce((sum, t) => sum + t.realized_profit, 0)
-    return {
-      type_id: rows[0].type_id,
-      item: rows[0].item,
-      trades: rows.length,
-      matchedQty,
-      avgBuyPrice: matchedQty > 0 ? totalBuyCost / matchedQty : 0,
-      avgSellPrice: matchedQty > 0 ? totalSellValue / matchedQty : 0,
-      avgMargin: totalBuyCost > 0 ? totalProfit / totalBuyCost : 0,
-      totalProfit,
-    }
-  }).sort((a, b) => b.totalProfit - a.totalProfit)
+function rate(value: number | null | undefined): string {
+  return value == null ? '–' : pct(value)
+}
+
+function periodFromPreset(preset: string): RealizedPeriod {
+  if (preset === 'since_t0') return { mode: 'since_t0' }
+  return { mode: 'days', days: Number(preset) as 7 | 30 | 90 }
 }
 
 export default function RealizedTrades() {
-  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['trading', 'trades', 'realized'], queryFn: tradingApi.realizedTrades })
-  const total = useMemo(() => (data ?? []).reduce((sum, t) => sum + t.realized_profit, 0), [data])
+  const [preset, setPreset] = useState('30')
+  const [typeId, setTypeId] = useState<number | null>(null)
+  const [saleRef, setSaleRef] = useState<string | null>(null)
+  const period = periodFromPreset(preset)
+  const periodQuery = realizedPeriodSearch(period)
 
-  const byItem = useMemo<ItemSummary[]>(() => aggregateByItem(data ?? []), [data])
+  const summaryQuery = useQuery({
+    queryKey: ['trading', 'realized', 'summary', periodQuery],
+    queryFn: () => tradingApi.realizedSummary(periodQuery),
+  })
+  const itemsQuery = useQuery({
+    queryKey: ['trading', 'realized', 'items', periodQuery],
+    queryFn: () => tradingApi.realizedItems(periodQuery),
+  })
+  const inventoryQuery = useQuery({
+    queryKey: ['trading', 'realized', 'inventory'],
+    queryFn: tradingApi.realizedInventory,
+  })
+  const warningsQuery = useQuery({
+    queryKey: ['trading', 'realized', 'warnings'],
+    queryFn: tradingApi.realizedWarnings,
+  })
+  const detailQuery = useQuery({
+    queryKey: ['trading', 'realized', 'item', typeId, periodQuery],
+    queryFn: () => tradingApi.realizedItem(typeId as number, periodQuery),
+    enabled: typeId != null,
+  })
+  const saleQuery = useQuery({
+    queryKey: ['trading', 'realized', 'sale', saleRef],
+    queryFn: () => tradingApi.realizedSale(saleRef as string),
+    enabled: saleRef != null,
+  })
 
-  const topByProfit = useMemo(() => byItem.slice(0, 15), [byItem])
+  const job = useBackgroundJob({
+    queryKey: ['trading', 'realized', 'rebuild'],
+    fetchStatus: tradingApi.realizedRebuildStatus,
+    resultKeys: [['trading', 'realized']],
+    labels: { rebuild_realized: 'Recompute' },
+    defaultLabel: 'Recompute',
+  })
+  const rebuild = useBackgroundJobStart(job, () => tradingApi.startRealizedRebuild())
 
-  const cumulativeProfit = useMemo(() => {
-    const byDay = new Map<string, number>()
-    for (const t of data ?? []) {
-      const day = t.sell_date.slice(0, 10)
-      byDay.set(day, (byDay.get(day) ?? 0) + t.realized_profit)
-    }
-    const days = [...byDay.keys()].sort()
-    let running = 0
-    return days.map((date) => {
-      running += byDay.get(date) ?? 0
-      return { date, cumulative: running }
-    })
-  }, [data])
+  const summary = summaryQuery.data
+  const waiting = !summary || summary.status.empty || summary.status.needs_rebuild
+  const weekly = periodLongerThan90Days(period, summary?.status.cutover_t0)
+  const points = profitSeries(summary?.by_day ?? [], weekly)
 
-  const columns = useMemo<ColumnDef<ItemSummary, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
-    { header: 'Trades', accessorKey: 'trades', size: 90, cell: (i) => qty(i.getValue()) },
-    { header: 'Total Qty', accessorKey: 'matchedQty', size: 120, cell: (i) => qty(i.getValue()) },
-    { header: 'Avg Buy Price', accessorKey: 'avgBuyPrice', size: 130, cell: (i) => isk(i.getValue()) },
-    { header: 'Avg Sell Price', accessorKey: 'avgSellPrice', size: 130, cell: (i) => isk(i.getValue()) },
-    { header: 'Avg Margin', accessorKey: 'avgMargin', size: 110, cell: (i) => pct(i.getValue()) },
-    { header: 'Total Profit', accessorKey: 'totalProfit', size: 140, cell: (i) => isk(i.getValue()) },
+  const itemColumns = useMemo<ColumnDef<TradingRealizedItem, unknown>[]>(() => [
+    { header: 'Item', accessorKey: 'type_name', size: 220, cell: (info) => info.getValue() ?? '–' },
+    { header: 'Units', accessorKey: 'units_sold', size: 100, cell: (info) => qty(Number(info.getValue())) },
+    { header: 'Avg buy landed', accessorKey: 'avg_buy_landed', size: 140, cell: (info) => money(info.getValue() as number | null) },
+    { header: 'Avg net sell', accessorKey: 'avg_net_sell', size: 140, cell: (info) => money(info.getValue() as number | null) },
+    { header: 'Profit', accessorKey: 'profit', size: 140, cell: (info) => isk(Number(info.getValue())) },
+    { header: 'Margin', accessorKey: 'margin', size: 110, cell: (info) => rate(info.getValue() as number | null) },
   ], [])
 
-  if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={480} />
-  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={480} />
-  if (!data || data.length === 0) {
-    return <HintCard>No realized trades yet. Click <b>Reconcile Trades</b> in the side menu once Wallet is shared with Trading.</HintCard>
-  }
+  const saleColumns = useMemo<ColumnDef<TradingRealizedSale, unknown>[]>(() => [
+    { header: 'Date', accessorKey: 'sale_date', size: 180, cell: (info) => String(info.getValue() ?? '–').slice(0, 16) },
+    { header: 'Location', accessorKey: 'location_name', size: 180, cell: (info) => info.getValue() ?? '–' },
+    { header: 'Qty', accessorKey: 'quantity', size: 80, cell: (info) => qty(Number(info.getValue())) },
+    { header: 'Revenue', accessorKey: 'revenue', size: 120, cell: (info) => isk(Number(info.getValue())) },
+    { header: 'Cost', accessorKey: 'cost', size: 120, cell: (info) => isk(Number(info.getValue())) },
+    { header: 'Profit', accessorKey: 'profit', size: 120, cell: (info) => isk(Number(info.getValue())) },
+    { header: 'Margin', accessorKey: 'margin', size: 100, cell: (info) => rate(info.getValue() as number | null) },
+  ], [])
+
+  const lotColumns = useMemo<ColumnDef<TradingRealizedLot, unknown>[]>(() => [
+    { header: 'Bought', accessorKey: 'layer_date', size: 160, cell: (info) => String(info.getValue() ?? '–').slice(0, 16) },
+    { header: 'Where', accessorKey: 'location_name', size: 180, cell: (info) => info.getValue() ?? '–' },
+    { header: 'Origin', accessorKey: 'origin', size: 110 },
+    { header: 'Qty', accessorKey: 'quantity', size: 80, cell: (info) => qty(Number(info.getValue())) },
+    { header: 'Price', accessorKey: 'unit_price', size: 120, cell: (info) => money(info.getValue() as number | null) },
+    { header: 'Freight', accessorKey: 'freight', size: 120, cell: (info) => isk(Number(info.getValue())) },
+    { header: 'Fees', accessorKey: 'fees', size: 120, cell: (info) => isk(Number(info.getValue())) },
+  ], [])
 
   return (
     <Stack>
-      <Card withBorder padding="sm" w={260}>
-        <Text size="xs" c="dimmed" tt="uppercase">Total Profit</Text>
-        <Title order={3} c="accent">{isk(total)}</Title>
-      </Card>
+      <Group justify="space-between" align="flex-end">
+        <SegmentedControl
+          value={preset}
+          onChange={(value) => { setPreset(value); setTypeId(null); setSaleRef(null) }}
+          data={PERIOD_OPTIONS}
+          aria-label="Period"
+        />
+        <Button onClick={() => rebuild.mutate()} loading={job.runningStatus || rebuild.isPending}>Recompute</Button>
+      </Group>
+      {job.runningStatus && (
+        <JobProgress label={job.formatProgress(job.status?.progress, job.jobName)} progress={job.status?.progress} />
+      )}
 
-      <Text size="sm" c="dimmed">{byItem.length} items, {data.length} trades total</Text>
+      {summaryQuery.isLoading && <Text size="sm" c="dimmed">Loading…</Text>}
+      {summaryQuery.isError && <HintCard>Failed to load realized profit.</HintCard>}
+      {waiting && summary && (
+        <HintCard>{summary.status.hint || 'Recompute to build realized profit from the archive.'}</HintCard>
+      )}
 
-      <DataTable tableId="trading-realized-trades" rowDetail data={byItem} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
+      {summary && !waiting && (
+        <>
+          <SimpleGrid cols={{ base: 1, xs: 2, md: 4 }}>
+            <Card withBorder padding="sm">
+              <Text size="xs" c="dimmed" tt="uppercase">Revenue</Text>
+              <Title order={3}>{isk(summary.revenue)}</Title>
+            </Card>
+            <Card withBorder padding="sm">
+              <Text size="xs" c="dimmed" tt="uppercase">Cost of goods sold</Text>
+              <Title order={3}>{isk(summary.cost_of_goods_sold)}</Title>
+            </Card>
+            <Card withBorder padding="sm">
+              <Text size="xs" c="dimmed" tt="uppercase">Realized profit</Text>
+              <Title order={3}>{isk(summary.realized_profit)}</Title>
+              <Text size="xs" c="dimmed">{qty(summary.sale_count)} sales · {qty(summary.units_sold)} units</Text>
+            </Card>
+            <Card withBorder padding="sm">
+              <Text size="xs" c="dimmed" tt="uppercase">Margin</Text>
+              <Title order={3}>{rate(summary.margin)}</Title>
+              <CoverageBadge coverage={summary.coverage} />
+            </Card>
+          </SimpleGrid>
 
-      <Title order={6} c="dimmed" tt="uppercase" mt="lg">Cumulative Profit Over Time</Title>
-      <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={cumulativeProfit}>
-          <CartesianGrid stroke={COLORS.border} />
-          <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
-          <YAxis stroke={COLORS.textDim} tickFormatter={(v) => isk(v)} width={110} />
-          <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}` }}
-            formatter={(v) => isk(Number(v))} />
-          <Line type="monotone" dataKey="cumulative" stroke={COLORS.accent} dot={false} />
-        </LineChart>
-      </ResponsiveContainer>
+          <Title order={6} c="dimmed" tt="uppercase">
+            {weekly ? 'Realized profit per week' : 'Realized profit per day'}
+          </Title>
+          {points.length === 0 ? <HintCard>No sales in this period.</HintCard> : (
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={points}>
+                <CartesianGrid stroke={COLORS.border} />
+                <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+                <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} tickFormatter={(value) => compactIsk(Number(value))} width={64} />
+                <Tooltip
+                  contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}` }}
+                  formatter={(value, name) => [isk(Number(value)), name === 'cumulative' ? 'Cumulative' : 'Profit']}
+                />
+                <Bar dataKey="profit" fill={COLORS.accent} name="Profit" />
+                <Line type="monotone" dataKey="cumulative" stroke={COLORS.info} dot={false} name="Cumulative" />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+        </>
+      )}
 
-      <Title order={6} c="dimmed" tt="uppercase" mt="lg">Top Items by Profit</Title>
-      <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={topByProfit} layout="vertical" margin={{ left: 120 }}>
-          <XAxis type="number" stroke={COLORS.textDim} />
-          <YAxis type="category" dataKey="item" width={200} stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}` }} />
-          <Bar dataKey="totalProfit" fill={COLORS.accent} />
-        </BarChart>
-      </ResponsiveContainer>
+      {!waiting && (
+        <DataTable
+          tableId="trading-realized-items"
+          data={itemsQuery.data?.rows ?? []}
+          columns={itemColumns}
+          isLoading={itemsQuery.isLoading}
+          isError={itemsQuery.isError}
+          onRetry={() => { void itemsQuery.refetch() }}
+          onRowClick={(row) => { setTypeId(row.type_id); setSaleRef(null) }}
+          rowDetail={false}
+          maxHeight={420}
+          dataUpdatedAt={itemsQuery.dataUpdatedAt}
+        />
+      )}
+
+      {typeId != null && detailQuery.data && (
+        <Stack gap="xs">
+          <Title order={6}>{detailQuery.data.item.type_name ?? `Type ${typeId}`}</Title>
+          <DataTable
+            tableId="trading-realized-sales"
+            data={detailQuery.data.sales}
+            columns={saleColumns}
+            onRowClick={(row) => setSaleRef(row.sale_ref)}
+            rowDetail={false}
+            maxHeight={280}
+          />
+        </Stack>
+      )}
+
+      {saleRef != null && saleQuery.data && (
+        <Stack gap="xs">
+          <Title order={6}>Purchase lots</Title>
+          <DataTable
+            tableId="trading-realized-lots"
+            data={saleQuery.data.lots}
+            columns={lotColumns}
+            rowDetail={false}
+            maxHeight={240}
+          />
+        </Stack>
+      )}
+
+      {!waiting && (
+        <>
+          <Title order={6} c="dimmed" tt="uppercase">Inventory at cost</Title>
+          {(inventoryQuery.data?.rows.length ?? 0) === 0
+            ? <HintCard>No unsold Trading goods.</HintCard>
+            : (
+              <Stack gap={4}>
+                {inventoryQuery.data?.rows.map((row) => (
+                  <Text key={`${row.type_id}-${row.pool}`} size="sm">
+                    {row.type_name ?? row.type_id}: {qty(row.quantity)} at {money(row.cost_per_unit)} ({isk(row.total)})
+                  </Text>
+                ))}
+              </Stack>
+            )}
+          <Title order={6} c="dimmed" tt="uppercase">Warnings</Title>
+          {(warningsQuery.data?.rows.length ?? 0) === 0
+            ? <Text size="sm" c="dimmed">None</Text>
+            : warningsQuery.data?.rows.map((row) => (
+              <Text key={`${row.type_id}-${row.message}`} size="sm">
+                {row.type_name ?? row.type_id}: {row.message}
+              </Text>
+            ))}
+        </>
+      )}
     </Stack>
   )
 }
