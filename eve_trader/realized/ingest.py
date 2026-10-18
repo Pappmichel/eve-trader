@@ -460,9 +460,11 @@ def archive_contracts(
     now: Optional[datetime] = None,
 ) -> dict:
     """Item-exchange contracts where this owner is issuer or acceptor, plus
-    finished courier contracts this owner issued. Couriers are archived for
-    the freight comparison and never enter costing. Item lines freeze The
-    Forge freight the first time they are inserted."""
+    finished and failed courier contracts this owner issued. Couriers are
+    archived so costing can price freight (F5); they never enter costing as
+    buys or sales, and this path never fetches their items. Expired and
+    deleted couriers are not archived. Item lines freeze the configured
+    freight the first time they are inserted."""
     now = _now(now)
     rows: list[tuple] = []
     item_rows: list[tuple] = []
@@ -471,7 +473,9 @@ def archive_contracts(
         ctype = c.get("type")
         issued = contract_issuer_matches(c, owner_type=owner_type, owner_id=owner_id)
         if ctype == _COURIER:
-            if (c.get("status") or "") != "finished" or not issued:
+            # F5: finished couriers set a rate; a failed one is a collateral
+            # warning. Expired and deleted are ignored and not stored.
+            if (c.get("status") or "") not in ("finished", "failed") or not issued:
                 continue
         elif ctype != _ITEM_EXCHANGE:
             continue

@@ -30,10 +30,12 @@ Cost components and coverage
 ----------------------------
 Every layer carries per-unit `CostComponents`. Coverage = real / (real +
 estimated) with real = materials_bought + job + invention + fees and
-estimated = materials_estimated; freight is the configured rate (D9) and
-never lowers coverage. Opening layers at the reference price, unknown-origin
-layers (D5) and the consumed inputs of a job whose frozen inputs are
-`assumed_me`/`assumed_decryptor` are materials_estimated.
+estimated = materials_estimated; freight never lowers coverage (D9).
+A purchase covered by a shipment uses that shipment's courier rate;
+otherwise freight is the configured rate frozen at ingest. Opening layers
+at the reference price, unknown-origin layers (D5) and the consumed inputs
+of a job whose frozen inputs are `assumed_me`/`assumed_decryptor` are
+materials_estimated.
 
 A value that has no price at all (no reference price for an opening or
 unknown-origin quantity) is booked at 0 and marks the layer, every layer
@@ -68,7 +70,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional, Sequence
 
 # Same numbers as production.constants / ESI; not imported to keep this pure.
@@ -140,6 +142,14 @@ MAX_PLAUSIBLE_TAX_RATE = 0.15
 
 _EPS = 1e-9
 
+# F1/F7. A bought layer is `courier` when a shipment covers it, else
+# `configured` when the frozen rate applies. None means no freight.
+FREIGHT_COURIER = "courier"
+FREIGHT_CONFIGURED = "configured"
+# F2: couriers with the same issuer, start and end, whose issue times span
+# at most this long, are one shipment.
+SHIPMENT_GAP = timedelta(hours=2)
+
 
 # ====================================================================== costs
 @dataclass(frozen=True)
@@ -150,6 +160,11 @@ class CostComponents:
     job: float = 0.0
     invention: float = 0.0
     fees: float = 0.0
+    # Split of `freight` (courier rate vs configured rate). Not part of
+    # `total` on their own: `freight` is already the sum, and coverage
+    # keeps excluding that sum (F7).
+    freight_courier: float = 0.0
+    freight_configured: float = 0.0
 
     @property
     def total(self) -> float:
@@ -177,6 +192,8 @@ class CostComponents:
         return CostComponents(
             self.materials_bought * r, self.materials_estimated * r, self.freight * r,
             self.job * r, self.invention * r, self.fees * r,
+            freight_courier=self.freight_courier * r,
+            freight_configured=self.freight_configured * r,
         )
 
     def add(self, other: "CostComponents") -> "CostComponents":
@@ -187,12 +204,17 @@ class CostComponents:
             self.job + other.job,
             self.invention + other.invention,
             self.fees + other.fees,
+            freight_courier=self.freight_courier + other.freight_courier,
+            freight_configured=self.freight_configured + other.freight_configured,
         )
 
     def as_estimated(self) -> "CostComponents":
         """Everything except freight becomes materials_estimated (inputs of
         a job with an assumed ME or decryptor)."""
-        return CostComponents(materials_estimated=self.total - self.freight, freight=self.freight)
+        return CostComponents(
+            materials_estimated=self.total - self.freight, freight=self.freight,
+            freight_courier=self.freight_courier, freight_configured=self.freight_configured,
+        )
 
     def as_invention(self) -> "CostComponents":
         """Real parts roll into invention; estimates and freight keep their
@@ -201,6 +223,8 @@ class CostComponents:
             materials_estimated=self.materials_estimated,
             freight=self.freight,
             invention=self.real,
+            freight_courier=self.freight_courier,
+            freight_configured=self.freight_configured,
         )
 
 
@@ -375,6 +399,59 @@ class IndustryJob:
 
 
 @dataclass(frozen=True)
+class CourierContract:
+    """One archived courier. ESI has no items for it (F1). Only `finished`
+    rows become a shipment; `failed` is a warning; `expired` and `deleted`
+    are ignored (F5)."""
+    contract_id: int
+    issuer_id: Optional[int]
+    start_location_id: Optional[int]
+    end_location_id: Optional[int]
+    date_issued: Optional[datetime]
+    volume: Optional[float]
+    reward: float
+    collateral: float
+    status: str
+
+
+@dataclass(frozen=True)
+class Shipment:
+    """Finished couriers grouped by F2. `rate_per_m3` is sum(reward) / sum(volume).
+    `shipment_ref` is the contract ids in issue order, comma-separated."""
+    shipment_ref: str
+    contract_ids: tuple
+    issuer_id: Optional[int]
+    start_location_id: int
+    end_location_id: int
+    date_issued: datetime
+    volume: float
+    reward: float
+    collateral: float
+    rate_per_m3: float
+
+
+@dataclass(frozen=True)
+class FreightPurchase:
+    """A hub purchase costing will freight. `ref` is the wallet tx ref or
+    `contract:<id>:<record_id>`."""
+    ref: str
+    when: datetime
+    location_id: Optional[int]
+    freight_m3: float
+    configured_rate: Optional[float]
+
+
+@dataclass(frozen=True)
+class FreightRate:
+    """The rate applied to one purchase. `rate` is None when there is no
+    frozen volume to price."""
+    rate: Optional[float]
+    source: Optional[str]
+    shipment_ref: Optional[str]
+    contract_ids: tuple = ()
+
+
+@dataclass(frozen=True)
 class LedgerSnapshot:
     t0: datetime
     reference_prices: dict = field(default_factory=dict)  # (type_id, date) -> ISK/unit
@@ -397,8 +474,10 @@ class LedgerSnapshot:
     # and owner scope. None or missing types: computed from ESI stock now.
     frozen_opening: Optional[dict] = None
     # Finished item-exchange contracts, deduped. Courier contracts never
-    # enter costing.
+    # enter costing as buys or sales; they only price freight.
     contracts: Sequence[ItemExchangeContract] = ()
+    # Couriers whose contracts are shared with a realized tool (F4/D11).
+    couriers: Sequence[CourierContract] = ()
     # Corporation ids this tenant owns (registry corp + corp owners shared
     # for the ledger). Used only with `corp_issued`, never as "anyone in
     # this corp".
@@ -435,6 +514,10 @@ class CostLayer:
     source: Optional[str] = None
     # "global", or the Station Trading station id as text (ST1).
     pool: str = POOL_GLOBAL
+    # F7. None when this layer has no freight.
+    freight_source: Optional[str] = None
+    shipment_ref: Optional[str] = None
+    freight_rate_per_m3: Optional[float] = None
 
     @property
     def unit_cost(self) -> float:
@@ -457,6 +540,9 @@ class LayerDraw:
     estimated_origin: bool
     price_missing: bool = False
     source: Optional[str] = None
+    freight_source: Optional[str] = None
+    shipment_ref: Optional[str] = None
+    freight_rate_per_m3: Optional[float] = None
 
     @property
     def cost(self) -> float:
@@ -645,6 +731,326 @@ def split_exact(total: float, weights: Sequence[float]) -> list[float]:
     return shares
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _format_rate(rate: float) -> str:
+    text = f"{float(rate):.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def freight_label(source: Optional[str], shipment_ref: Optional[str],
+                  rate: Optional[float]) -> Optional[str]:
+    """Cost-chain text for a bought draw (F7)."""
+    if source == FREIGHT_COURIER and shipment_ref:
+        ids = ", ".join(part for part in str(shipment_ref).split(",") if part)
+        if rate is None:
+            return f"Courier {ids}"
+        return f"Courier {ids} · {_format_rate(rate)} ISK/m3"
+    if source == FREIGHT_CONFIGURED:
+        return "Configured rate (no courier yet)"
+    return None
+
+
+def _isk_amount(amount: float) -> str:
+    if abs(float(amount) - round(float(amount))) < 1e-6:
+        return str(int(round(float(amount))))
+    return f"{float(amount):.2f}"
+
+
+def group_shipments(
+    couriers: Sequence[CourierContract], *, home_location_id: Optional[int],
+) -> tuple[list, list[str]]:
+    """Group finished couriers that end at the home structure (F2).
+
+    Returns (shipments, warnings). A failed courier warns with its
+    collateral and does not set a rate. Expired and deleted couriers are
+    ignored. A shipment's issue times span at most `SHIPMENT_GAP` from the
+    first courier in the group.
+    """
+    warnings: list[str] = []
+    seen: set[int] = set()
+    finished: list[CourierContract] = []
+    for raw in couriers:
+        contract_id = int(raw.contract_id)
+        if contract_id in seen:
+            continue
+        seen.add(contract_id)
+        status = (raw.status or "").lower()
+        if status == "failed":
+            warnings.append(
+                f"failed_courier: contract {contract_id} collateral {_isk_amount(raw.collateral or 0)}"
+            )
+            continue
+        if status in ("expired", "deleted"):
+            continue
+        if status != "finished" or home_location_id is None:
+            continue
+        if raw.end_location_id is None or int(raw.end_location_id) != int(home_location_id):
+            continue
+        if raw.start_location_id is None or raw.date_issued is None:
+            warnings.append(f"courier_unusable: contract {contract_id}")
+            continue
+        volume = 0.0 if raw.volume is None else float(raw.volume)
+        if volume <= _EPS:
+            warnings.append(f"courier_without_volume: contract {contract_id}")
+            continue
+        finished.append(raw)
+
+    buckets: dict[tuple, list[CourierContract]] = defaultdict(list)
+    for row in finished:
+        key = (
+            None if row.issuer_id is None else int(row.issuer_id),
+            int(row.start_location_id),
+            int(row.end_location_id),
+        )
+        buckets[key].append(row)
+
+    shipments: list[Shipment] = []
+    for key in sorted(buckets, key=lambda item: (item[0] is None, item[0] or 0, item[1], item[2])):
+        rows = sorted(buckets[key], key=lambda row: (_as_utc(row.date_issued), int(row.contract_id)))
+        group: list[CourierContract] = []
+        group_start: Optional[datetime] = None
+        for row in rows:
+            issued = _as_utc(row.date_issued)
+            if group and group_start is not None and issued - group_start > SHIPMENT_GAP:
+                shipments.append(_shipment_from(group))
+                group = []
+                group_start = None
+            if not group:
+                group_start = issued
+            group.append(row)
+        if group:
+            shipments.append(_shipment_from(group))
+    shipments.sort(key=lambda row: (_as_utc(row.date_issued), row.shipment_ref))
+    return shipments, warnings
+
+
+def _shipment_from(rows: Sequence[CourierContract]) -> Shipment:
+    ordered = sorted(rows, key=lambda row: (_as_utc(row.date_issued), int(row.contract_id)))
+    ids = tuple(int(row.contract_id) for row in ordered)
+    volume = sum(float(row.volume or 0) for row in ordered)
+    reward = sum(float(row.reward or 0) for row in ordered)
+    collateral = sum(float(row.collateral or 0) for row in ordered)
+    return Shipment(
+        shipment_ref=",".join(str(cid) for cid in ids),
+        contract_ids=ids,
+        issuer_id=None if ordered[0].issuer_id is None else int(ordered[0].issuer_id),
+        start_location_id=int(ordered[0].start_location_id),
+        end_location_id=int(ordered[0].end_location_id),
+        date_issued=_as_utc(ordered[0].date_issued),
+        volume=volume,
+        reward=reward,
+        collateral=collateral,
+        rate_per_m3=(reward / volume) if volume > _EPS else 0.0,
+    )
+
+
+def assign_shipment_rates(
+    purchases: Sequence[FreightPurchase], shipments: Sequence[Shipment],
+) -> dict:
+    """F1: each purchase takes the first shipment issued at or after it
+    that starts at the purchase's station. F3: the buyer does not have to
+    be the courier's issuer. Anything else keeps `configured_rate`."""
+    by_station: dict[int, list[Shipment]] = defaultdict(list)
+    for shipment in shipments:
+        by_station[int(shipment.start_location_id)].append(shipment)
+    for rows in by_station.values():
+        rows.sort(key=lambda row: (_as_utc(row.date_issued), row.shipment_ref))
+
+    out: dict[str, FreightRate] = {}
+    for purchase in purchases:
+        configured = purchase.configured_rate
+        station_rows: list[Shipment] = []
+        if purchase.location_id is not None:
+            station_rows = by_station.get(int(purchase.location_id), [])
+        when = _as_utc(purchase.when)
+        chosen = None
+        for shipment in station_rows:
+            if _as_utc(shipment.date_issued) >= when:
+                chosen = shipment
+                break
+        if chosen is None:
+            source = FREIGHT_CONFIGURED if configured is not None else None
+            out[purchase.ref] = FreightRate(configured, source, None, ())
+        else:
+            out[purchase.ref] = FreightRate(
+                float(chosen.rate_per_m3), FREIGHT_COURIER, chosen.shipment_ref, chosen.contract_ids,
+            )
+    return out
+
+
+def _components_for_freight(materials: float, fees: float, freight: float,
+                            source: Optional[str]) -> CostComponents:
+    return CostComponents(
+        materials_bought=materials,
+        fees=fees,
+        freight=freight,
+        freight_courier=freight if source == FREIGHT_COURIER else 0.0,
+        freight_configured=freight if source == FREIGHT_CONFIGURED else 0.0,
+    )
+
+
+def _applied_freight(assigned: Optional[FreightRate], configured_rate, freight_m3):
+    """(total freight, source, shipment_ref, applied rate per m3)."""
+    if freight_m3 is None or float(freight_m3) <= _EPS:
+        return 0.0, None, None, None
+    if assigned is not None and assigned.source == FREIGHT_COURIER and assigned.rate is not None:
+        rate = float(assigned.rate)
+        return rate * float(freight_m3), FREIGHT_COURIER, assigned.shipment_ref, rate
+    if configured_rate is None:
+        return 0.0, None, None, None
+    rate = float(configured_rate)
+    return rate * float(freight_m3), FREIGHT_CONFIGURED, None, rate
+
+
+def _uniform_freight(draws: Sequence) -> tuple:
+    """(source, shipment_ref, rate) when every freighted draw agrees."""
+    sources = []
+    refs = []
+    rates = []
+    for draw in draws:
+        freight = float(draw.components.freight)
+        courier = float(draw.components.freight_courier)
+        configured = float(draw.components.freight_configured)
+        if draw.freight_source is None:
+            if freight > _EPS or courier > _EPS or configured > _EPS:
+                return None, None, None
+            continue
+        if freight <= _EPS and courier <= _EPS and configured <= _EPS:
+            continue
+        sources.append(draw.freight_source)
+        refs.append(draw.shipment_ref)
+        rates.append(draw.freight_rate_per_m3)
+    if not sources:
+        return None, None, None
+    if len(set(sources)) != 1:
+        return None, None, None
+    source = sources[0]
+    if source == FREIGHT_COURIER and len(set(refs)) != 1:
+        return None, None, None
+    ref = refs[0] if source == FREIGHT_COURIER else None
+    rate = rates[0] if len(set(rates)) == 1 else None
+    return source, ref, rate
+
+
+def contract_sides(contract: ItemExchangeContract, chars, corps) -> tuple:
+    """(issuer character, acceptor character, issuer corp, acceptor corp)."""
+    issuer_char = contract.issuer_id is not None and int(contract.issuer_id) in chars
+    acceptor_char = contract.acceptor_id is not None and int(contract.acceptor_id) in chars
+    issuer_corp = bool(
+        contract.corp_issued
+        and contract.issuer_corporation_id is not None
+        and int(contract.issuer_corporation_id) in corps
+    )
+    acceptor_corp = contract.acceptor_id is not None and int(contract.acceptor_id) in corps
+    return issuer_char, acceptor_char, issuer_corp, acceptor_corp
+
+
+def classify_contract(contract: ItemExchangeContract, *, tenant_character_ids,
+                      tenant_corporation_ids, t0: datetime):
+    """(view, warning). `warning` is set for an unknown party. None view
+    means the contract is not a finished item exchange against an outsider."""
+    if contract.contract_type != CONTRACT_ITEM_EXCHANGE:
+        return None, None
+    if (contract.status or "").lower() != "finished" or contract.date_completed is None:
+        return None, None
+    if contract.date_completed < t0:
+        return None, None
+    issuer_char, acceptor_char, issuer_corp, acceptor_corp = contract_sides(
+        contract, tenant_character_ids, tenant_corporation_ids,
+    )
+    if (issuer_char or issuer_corp) and (acceptor_char or acceptor_corp):
+        return None, None
+    if not issuer_char and not acceptor_char:
+        if not issuer_corp and not acceptor_corp:
+            return None, f"contract_party_unknown: {contract.ref}"
+        return None, None
+    items = list(contract.items)
+    if acceptor_char:
+        view = _ContractView(
+            contract,
+            [item for item in items if item.is_included],
+            [item for item in items if not item.is_included],
+            float(contract.price or 0),
+            float(contract.reward or 0),
+        )
+    else:
+        view = _ContractView(
+            contract,
+            [item for item in items if not item.is_included],
+            [item for item in items if item.is_included],
+            float(contract.reward or 0),
+            float(contract.price or 0),
+        )
+    return view, None
+
+
+def freight_purchases(ledger: LedgerSnapshot) -> list:
+    """Purchases costing freights: market buys with frozen m3 (not BPOs)
+    and contract-buy lines with frozen m3, at or after T0."""
+    out: list[FreightPurchase] = []
+    bpo = ledger.bpo_type_ids
+    for tx in ledger.wallet_transactions:
+        if not tx.is_buy or tx.date < ledger.t0:
+            continue
+        if tx.freight_m3 is None or float(tx.freight_m3) <= _EPS:
+            continue
+        if int(tx.type_id) in bpo:
+            continue
+        out.append(FreightPurchase(
+            ref=tx.ref,
+            when=tx.date,
+            location_id=int(tx.location_id),
+            freight_m3=float(tx.freight_m3),
+            configured_rate=None if tx.freight_rate_per_m3 is None else float(tx.freight_rate_per_m3),
+        ))
+    for contract in ledger.contracts:
+        view, _warning = classify_contract(
+            contract,
+            tenant_character_ids=ledger.tenant_character_ids,
+            tenant_corporation_ids=ledger.tenant_corporation_ids,
+            t0=ledger.t0,
+        )
+        if view is None:
+            continue
+        for item in view.received:
+            if item.freight_m3 is None or float(item.freight_m3) <= _EPS:
+                continue
+            out.append(FreightPurchase(
+                ref=f"{contract.ref}:{int(item.record_id)}",
+                when=contract.date_completed,
+                location_id=None if contract.start_location_id is None else int(contract.start_location_id),
+                freight_m3=float(item.freight_m3),
+                configured_rate=None if item.freight_rate_per_m3 is None else float(item.freight_rate_per_m3),
+            ))
+    return out
+
+
+def plan_freight(ledger: LedgerSnapshot):
+    """Shipments, the rate of every freighted purchase, and F5 warnings."""
+    shipments, warnings = group_shipments(ledger.couriers, home_location_id=ledger.home_structure_id)
+    purchases = freight_purchases(ledger)
+    rates = assign_shipment_rates(purchases, shipments)
+    return shipments, purchases, rates, warnings
+
+
+def booked_by_shipment(purchases: Sequence[FreightPurchase], rates: dict) -> dict:
+    """Freight booked on the purchases assigned to each shipment (rate x m3)."""
+    out: dict[str, float] = defaultdict(float)
+    for purchase in purchases:
+        assigned = rates.get(purchase.ref)
+        if assigned is None or assigned.source != FREIGHT_COURIER or not assigned.shipment_ref:
+            continue
+        if assigned.rate is None:
+            continue
+        out[assigned.shipment_ref] += float(assigned.rate) * float(purchase.freight_m3)
+    return dict(out)
+
+
 def _contract_line_key(line: ContractItem) -> tuple:
     if line.is_blueprint:
         kind = "bpo" if line.blueprint_runs == -1 else "bpc"
@@ -706,6 +1112,7 @@ class _Costing:
         self.fee_by_tx: dict[tuple, float] = {}
         self.contract_fee_by_ref: dict[str, float] = {}
         self.price_requests: set[tuple] = set()
+        self._rates: dict = {}
 
     # ---------------------------------------------------------------- helpers
     def warn(self, msg: str) -> None:
@@ -765,7 +1172,9 @@ class _Costing:
                    job_id: Optional[int] = None, assumed_me: bool = False,
                    assumed_decryptor: bool = False, estimated_origin: bool = False,
                    price_missing: bool = False, source: Optional[str] = None,
-                   pool: str = POOL_GLOBAL) -> CostLayer:
+                   pool: str = POOL_GLOBAL, freight_source: Optional[str] = None,
+                   shipment_ref: Optional[str] = None,
+                   freight_rate_per_m3: Optional[float] = None) -> CostLayer:
         layer = CostLayer(
             layer_id=len(self.all_layers) + 1,
             type_id=int(type_id), unit=unit, quantity=float(quantity), quantity_left=float(quantity),
@@ -773,6 +1182,8 @@ class _Costing:
             layer_date=layer_date, job_id=job_id, assumed_me=assumed_me,
             assumed_decryptor=assumed_decryptor, estimated_origin=estimated_origin,
             price_missing=price_missing, source=source, pool=pool,
+            freight_source=freight_source, shipment_ref=shipment_ref,
+            freight_rate_per_m3=freight_rate_per_m3,
         )
         self.all_layers.append(layer)
         self.layers_by_key[(layer.type_id, unit)].append(layer)
@@ -845,13 +1256,23 @@ class _Costing:
         if abs(layer.quantity_left) <= _EPS:
             layer.quantity_left = 0.0
         components = layer.unit_components.scale(qty)
+        freight_source = layer.freight_source
+        shipment_ref = layer.shipment_ref
+        freight_rate = layer.freight_rate_per_m3
         if no_freight:
-            components = replace(components, freight=0.0)
+            # ST3: a station-pool unit used at the station was never hauled.
+            components = replace(
+                components, freight=0.0, freight_courier=0.0, freight_configured=0.0,
+            )
+            freight_source = None
+            shipment_ref = None
+            freight_rate = None
         return LayerDraw(
             layer_id=layer.layer_id, type_id=layer.type_id, unit=layer.unit, quantity=qty,
             origin=layer.origin, components=components,
             estimated_origin=layer.estimated_origin, price_missing=layer.price_missing,
-            source=layer.source,
+            source=layer.source, freight_source=freight_source, shipment_ref=shipment_ref,
+            freight_rate_per_m3=freight_rate,
         )
 
     # ---------------------------------------------------------------- events
@@ -905,23 +1326,6 @@ class _Costing:
         events.sort(key=lambda e: e[:6])
         return events
 
-    def _contract_sides(self, contract: ItemExchangeContract) -> tuple[bool, bool, bool, bool]:
-        """(issuer character, acceptor character, issuer corp, acceptor corp)
-        of this tenant. A corp side is never booked on its own (D7: corp data
-        is shared across tenants and corp wallets are not used); it only marks
-        a character-to-own-corp contract as an internal transfer."""
-        chars = self.ledger.tenant_character_ids
-        corps = self.ledger.tenant_corporation_ids
-        issuer_char = contract.issuer_id is not None and int(contract.issuer_id) in chars
-        acceptor_char = contract.acceptor_id is not None and int(contract.acceptor_id) in chars
-        issuer_corp = bool(
-            contract.corp_issued
-            and contract.issuer_corporation_id is not None
-            and int(contract.issuer_corporation_id) in corps
-        )
-        acceptor_corp = contract.acceptor_id is not None and int(contract.acceptor_id) in corps
-        return issuer_char, acceptor_char, issuer_corp, acceptor_corp
-
     def _classify_contract(self, contract: ItemExchangeContract) -> Optional[_ContractView]:
         """None when the contract is not a finished item exchange that one of
         the tenant's characters issued or accepted against an outside party.
@@ -929,41 +1333,15 @@ class _Costing:
         tenant's own corp) are skipped. A contract whose only tenant side is a
         corporation is skipped too (D7): a corp contract counts only through
         the member character that issued or accepted it."""
-        if contract.contract_type != CONTRACT_ITEM_EXCHANGE:
-            return None
-        if (contract.status or "").lower() != "finished" or contract.date_completed is None:
-            return None
-        if contract.date_completed < self.t0:
-            return None
-        issuer_char, acceptor_char, issuer_corp, acceptor_corp = self._contract_sides(contract)
-        if (issuer_char or issuer_corp) and (acceptor_char or acceptor_corp):
-            return None
-        if not issuer_char and not acceptor_char:
-            if not issuer_corp and not acceptor_corp:
-                self.warn(f"contract_party_unknown: {contract.ref}")
-            return None
-        acceptor = acceptor_char
-        items = list(contract.items)
-        if acceptor:
-            # Acceptor pays `price` for what the issuer included, and hands
-            # over what the issuer asked for in exchange for `reward` (a buy
-            # contract, e.g. a buyback): that hand-over is a sale.
-            return _ContractView(
-                contract,
-                [item for item in items if item.is_included],
-                [item for item in items if not item.is_included],
-                float(contract.price or 0),
-                float(contract.reward or 0),
-            )
-        # Issuer receives `price` for included items and pays `reward` for
-        # the items they asked for.
-        return _ContractView(
+        view, warning = classify_contract(
             contract,
-            [item for item in items if not item.is_included],
-            [item for item in items if item.is_included],
-            float(contract.reward or 0),
-            float(contract.price or 0),
+            tenant_character_ids=self.ledger.tenant_character_ids,
+            tenant_corporation_ids=self.ledger.tenant_corporation_ids,
+            t0=self.t0,
         )
+        if warning:
+            self.warn(warning)
+        return view
 
     def _net_item_flows(self, events: list[tuple]) -> dict[int, float]:
         flows: dict[int, float] = defaultdict(float)
@@ -1124,17 +1502,18 @@ class _Costing:
         if type_id in self.ledger.bpo_type_ids:
             self.capital[type_id] += value + fee
             return
-        freight = 0.0
-        if tx.freight_rate_per_m3 is not None and tx.freight_m3 is not None:
-            freight = float(tx.freight_rate_per_m3) * float(tx.freight_m3)
+        freight, source, shipment_ref, rate = _applied_freight(
+            self._rates.get(tx.ref), tx.freight_rate_per_m3, tx.freight_m3,
+        )
         qty = float(tx.quantity)
         if qty <= _EPS:
             return
-        total = CostComponents(materials_bought=value, freight=freight, fees=fee)
+        total = _components_for_freight(value, fee, freight, source)
         self._new_layer(
             type_id=type_id, unit=UNIT_ITEM, quantity=qty, unit_components=total.scale(1.0 / qty),
             origin=ORIGIN_BOUGHT, source_ref=tx.ref, layer_date=tx.date, source=SOURCE_MARKET,
             pool=self._pool_for_location(tx.location_id),
+            freight_source=source, shipment_ref=shipment_ref, freight_rate_per_m3=rate,
         )
 
     def _market_channel(self, tx: WalletTransaction) -> str:
@@ -1192,9 +1571,10 @@ class _Costing:
         return prices
 
     def _book_contract_acquisition(self, contract: ItemExchangeContract, item: ContractItem, share: float) -> None:
-        freight = 0.0
-        if item.freight_rate_per_m3 is not None and item.freight_m3 is not None:
-            freight = float(item.freight_rate_per_m3) * float(item.freight_m3)
+        ref = f"{contract.ref}:{int(item.record_id)}"
+        freight, source, shipment_ref, rate = _applied_freight(
+            self._rates.get(ref), item.freight_rate_per_m3, item.freight_m3,
+        )
         if item.is_blueprint and item.blueprint_runs == -1:
             self.capital[int(item.type_id)] += share + freight
             return
@@ -1213,11 +1593,12 @@ class _Costing:
             unit = UNIT_ITEM
         if qty <= _EPS:
             return
-        components = CostComponents(materials_bought=share / qty, freight=freight / qty)
+        components = _components_for_freight(share / qty, 0.0, freight / qty, source)
         self._new_layer(
             type_id=int(item.type_id), unit=unit, quantity=qty, unit_components=components,
             origin=ORIGIN_BOUGHT, source_ref=contract.ref, layer_date=contract.date_completed,
             source=SOURCE_CONTRACT, pool=self._pool_for_location(contract.start_location_id),
+            freight_source=source, shipment_ref=shipment_ref, freight_rate_per_m3=rate,
         )
         if unit == UNIT_ITEM and int(item.type_id) in self.ledger.production_type_ids:
             self.warn(
@@ -1500,12 +1881,15 @@ class _Costing:
             self.warn(f"job_without_output: {job.ref} output type/quantity unknown, cost stays in progress")
             return
         self.pending.pop(job.ref)
+        freight_source, shipment_ref, freight_rate = _uniform_freight(rec.draws)
         layer = self._new_layer(
             type_id=int(out_type), unit=unit, quantity=qty,
             unit_components=rec.components.scale(1.0 / qty), origin=ORIGIN_PRODUCED,
             source_ref=job.ref, layer_date=when, job_id=int(job.job_id),
             assumed_me=rec.assumed_me, assumed_decryptor=rec.assumed_decryptor,
             price_missing=rec.price_missing,
+            freight_source=freight_source, shipment_ref=shipment_ref,
+            freight_rate_per_m3=freight_rate,
         )
         rec.state = "produced"
         rec.output_layer_id = layer.layer_id
@@ -1560,6 +1944,9 @@ class _Costing:
                 self.contract_fee_by_ref[ref] = self.contract_fee_by_ref.get(ref, 0.0) + share
 
     def run(self) -> CostingResult:
+        _shipments, _purchases, self._rates, freight_warnings = plan_freight(self.ledger)
+        for warning in freight_warnings:
+            self.warn(warning)
         events = self._build_events()
         self._index_journal()
         self._attribute_broker_fees()

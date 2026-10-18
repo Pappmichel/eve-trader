@@ -1867,6 +1867,30 @@ def job_refs_with_contract_draws() -> set[str]:
     return {str(r[0]) for r in rows}
 
 
+def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
+    """Archived couriers for the shared owners, one row per contract_id.
+
+    (contract_id, issuer_id, start_location_id, end_location_id, date_issued,
+    volume, reward, collateral, status). A row that already has a volume
+    wins when the same contract was archived twice. Courier rows never
+    enter costing as buys or sales; the loader uses them only to price
+    freight.
+    """
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT DISTINCT ON (contract_id) contract_id, issuer_id, "
+            "start_location_id, end_location_id, date_issued, volume, reward, "
+            "collateral, status "
+            "FROM ledger_contracts "
+            f"WHERE {where} AND type = 'courier' "
+            "ORDER BY contract_id, (volume IS NULL), date_issued NULLS LAST",
+            tuple(params),
+        ).fetchall()
+
+
 def list_forge_home_couriers(
     owners: list[tuple[str, int]], home_location_id: int,
 ) -> list[tuple]:

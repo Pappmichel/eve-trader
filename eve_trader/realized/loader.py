@@ -46,6 +46,7 @@ from .costing import (
     ORIGIN_BOUGHT,
     UNIT_ITEM,
     ContractItem,
+    CourierContract,
     IndustryJob,
     ItemExchangeContract,
     JobInput,
@@ -225,6 +226,32 @@ def _match_doctrine_fitting(contract_id: int, title: Optional[str], items, candi
         int(contract_id), title, rows, candidates,
     )
     return None if not fitting_id else str(fitting_id)
+
+
+def _load_couriers() -> tuple:
+    """Couriers whose contracts are shared with a realized tool (D11).
+
+    Finished rows become shipments in costing. A failed row is a warning.
+    Expired and deleted rows are loaded and then ignored. Item-exchange
+    contracts stay on `_load_contracts` and are never mixed in here.
+    """
+    owners = access.shared_owners("contracts")
+    if not owners:
+        return ()
+    out = []
+    for row in db.list_couriers_for_owners(owners):
+        out.append(CourierContract(
+            contract_id=int(row[0]),
+            issuer_id=None if row[1] is None else int(row[1]),
+            start_location_id=None if row[2] is None else int(row[2]),
+            end_location_id=None if row[3] is None else int(row[3]),
+            date_issued=None if row[4] is None else _as_utc(row[4]),
+            volume=None if row[5] is None else float(row[5]),
+            reward=0.0 if row[6] is None else float(row[6]),
+            collateral=0.0 if row[7] is None else float(row[7]),
+            status=str(row[8] or ""),
+        ))
+    return tuple(out)
 
 
 def _load_contracts() -> tuple:
@@ -738,6 +765,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         bpo_type_ids=bpo_types,
         frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
         contracts=contracts,
+        couriers=_load_couriers(),
         tenant_corporation_ids=_tenant_corporation_ids(),
         # No station pool until someone shares a wallet with Station Trading,
         # so a tenant without it keeps one global pool (ST1).

@@ -1291,3 +1291,287 @@ def test_ingest_freight_follows_the_hub_table(monkeypatch):
     assert enricher.freight(10000020, 333, 34, 1, True) == (None, None)
     assert enricher.freight(10000002, 60000042, 34, 3, False) == (None, None)
 
+
+# ------------------------------------------------------- courier freight (F1-F5)
+AMARR = 60008494
+HAULER = 92267134
+
+
+def courier(contract_id, issued, *, start=JITA, end=HOME, volume=100.0, reward=80_000.0,
+            collateral=0.0, status="finished", issuer=HAULER):
+    return c.CourierContract(
+        contract_id=contract_id, issuer_id=issuer, start_location_id=start,
+        end_location_id=end, date_issued=issued, volume=volume, reward=reward,
+        collateral=collateral, status=status,
+    )
+
+
+def _parts(comp):
+    return (
+        comp.materials_bought, comp.materials_estimated, comp.freight,
+        comp.job, comp.invention, comp.fees,
+    )
+
+
+def test_full_chain_without_couriers_matches_the_pre_courier_numbers():
+    """Regression: an empty courier list leaves every layer, draw and result
+    numerically identical to the engine before shipment rates existed.
+    Freight that was frozen stays on the configured rate."""
+    result = rebuild_costing(full_chain_ledger())
+    layers = [
+        (l.type_id, l.origin, l.unit, l.quantity, l.quantity_left, _parts(l.unit_components),
+         l.freight_source, l.shipment_ref, l.unit_components.freight_courier,
+         l.unit_components.freight_configured)
+        for l in result.all_layers
+    ]
+    assert layers == [
+        (100, "bought", "item", 100, 0, pytest.approx((10, 0, 1, 0, 0, 0)), "configured", None, 0, 1),
+        (101, "bought", "item", 50, 0, pytest.approx((4, 0, 0, 0, 0, 0)), None, None, 0, 0),
+        (310, "bought", "item", 4, 0, pytest.approx((50, 0, 0, 0, 0, 0)), None, None, 0, 0),
+        (300, "produced", "bpc_run", 2, 0, pytest.approx((0, 0, 0, 20, 0, 0)), None, None, 0, 0),
+        (201, "produced", "item", 200, 100, pytest.approx((6, 0, 0.5, 1.5, 0, 0)),
+         "configured", None, 0, pytest.approx(0.5)),
+        (320, "produced", "bpc_run", 10, 5, pytest.approx((0, 0, 0, 0, 30, 0)), None, None, 0, 0),
+        (211, "produced", "item", 10, 0, pytest.approx((60, 0, 5, 25, 0, 0)),
+         "configured", None, 0, pytest.approx(5)),
+        (330, "produced", "item", 5, 0, pytest.approx((120, 0, 10, 80, 30, 0)),
+         "configured", None, 0, pytest.approx(10)),
+    ]
+    [sale] = result.realized_results
+    assert sale.quantity == 5
+    assert _parts(sale.components) == pytest.approx((600, 0, 50, 400, 150, 0))
+    assert sale.components.freight_configured == pytest.approx(50)
+    assert sale.components.freight_courier == pytest.approx(0)
+    assert sale.gross == pytest.approx(2000)
+    assert sale.sales_tax == pytest.approx(67.5)
+    assert sale.revenue == pytest.approx(1932.5)
+    assert sale.cost == pytest.approx(1200)
+    assert sale.profit == pytest.approx(732.5)
+    assert sale.coverage_share == pytest.approx(1.0)
+    [draw] = sale.draws
+    assert (draw.type_id, draw.quantity, draw.origin) == (330, 5, "produced")
+    assert _parts(draw.components) == pytest.approx(_parts(sale.components))
+    jobs = {j.activity_id: j for j in result.jobs if j.activity_id != 1}
+    reaction, copy, invention = jobs[11], jobs[5], jobs[8]
+    assert reaction.output_quantity == 200
+    assert _parts(reaction.components) == pytest.approx((1200, 0, 100, 300, 0, 0))
+    assert reaction.components.freight_configured == pytest.approx(100)
+    assert [(d.type_id, d.quantity, _parts(d.components)) for d in reaction.draws] == [
+        (100, 100, pytest.approx((1000, 0, 100, 0, 0, 0))),
+        (101, 50, pytest.approx((200, 0, 0, 0, 0, 0))),
+    ]
+    assert copy.output_quantity == 2 and copy.components.job == pytest.approx(40)
+    assert invention.output_quantity == 10
+    assert invention.components.invention == pytest.approx(300)
+    assert [(d.type_id, d.quantity, d.components.total) for d in invention.draws] == [
+        (300, 2, pytest.approx(40)),
+        (310, 4, pytest.approx(200)),
+    ]
+    manufacturing = [j for j in result.jobs if j.activity_id == 1]
+    component, module = manufacturing
+    assert component.output_quantity == 10
+    assert _parts(component.components) == pytest.approx((600, 0, 50, 250, 0, 0))
+    assert [(d.type_id, d.quantity, d.components.total, d.components.freight) for d in component.draws] == [
+        (201, 100, pytest.approx(800), pytest.approx(50)),
+    ]
+    assert module.output_quantity == 5
+    assert _parts(module.components) == pytest.approx((600, 0, 50, 400, 150, 0))
+    assert [(d.type_id, d.quantity, d.components.total, d.components.freight) for d in module.draws] == [
+        (211, 10, pytest.approx(900), pytest.approx(50)),
+        (320, 5, pytest.approx(150), pytest.approx(0)),
+    ]
+    assert result.warnings == []
+    assert all(layer.components.freight_courier == 0 for layer in result.all_layers)
+    assert sale.components.freight_courier == 0
+
+
+def test_purchase_before_between_and_after_shipments():
+    early = courier(1, at(2, 10), volume=100, reward=80_000)       # 800 ISK/m3
+    late = courier(2, at(5, 10), volume=100, reward=50_000)        # 500 ISK/m3
+    before = buy(MINERAL, 1, 10.0, at(1, 8), location=JITA, rate=900.0, m3=2.0, tx_id=1)
+    between = buy(MINERAL, 1, 10.0, at(3, 8), location=JITA, rate=900.0, m3=2.0, tx_id=2)
+    after = buy(MINERAL, 1, 10.0, at(6, 8), location=JITA, rate=900.0, m3=2.0, tx_id=3)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[before, between, after],
+        couriers=[early, late],
+    ))
+    by_tx = {layer.source_ref: layer for layer in result.all_layers}
+    assert by_tx[before.ref].unit_components.freight == pytest.approx(1600.0)
+    assert by_tx[before.ref].freight_source == "courier"
+    assert by_tx[before.ref].shipment_ref == "1"
+    assert by_tx[before.ref].freight_rate_per_m3 == pytest.approx(800.0)
+    assert by_tx[between.ref].freight_rate_per_m3 == pytest.approx(500.0)
+    assert by_tx[between.ref].shipment_ref == "2"
+    assert by_tx[between.ref].unit_components.freight_courier == pytest.approx(1000.0)
+    assert by_tx[between.ref].unit_components.freight_configured == pytest.approx(0.0)
+    assert by_tx[after.ref].freight_source == "configured"
+    assert by_tx[after.ref].shipment_ref is None
+    assert by_tx[after.ref].freight_rate_per_m3 == pytest.approx(900.0)
+    assert by_tx[after.ref].unit_components.freight == pytest.approx(1800.0)
+    assert by_tx[after.ref].unit_components.freight_configured == pytest.approx(1800.0)
+    # A purchase at the shipment's own issue time is covered (>=).
+    exact = buy(MINERAL, 1, 10.0, at(2, 10), location=JITA, rate=900.0, m3=1.0, tx_id=4)
+    exact_result = rebuild_costing(snapshot(wallet_transactions=[exact], couriers=[early]))
+    [layer] = exact_result.all_layers
+    assert layer.shipment_ref == "1"
+    assert layer.freight_rate_per_m3 == pytest.approx(800.0)
+
+
+def test_two_couriers_one_minute_apart_are_one_shipment():
+    first = courier(236650353, at(2, 10, 0), volume=100, reward=80_000)
+    second = courier(236650362, at(2, 10, 1), volume=50, reward=40_000)
+    shipments, warnings = c.group_shipments([second, first], home_location_id=HOME)
+    assert warnings == []
+    [shipment] = shipments
+    assert shipment.contract_ids == (236650353, 236650362)
+    assert shipment.shipment_ref == "236650353,236650362"
+    assert shipment.volume == pytest.approx(150)
+    assert shipment.reward == pytest.approx(120_000)
+    assert shipment.rate_per_m3 == pytest.approx(800.0)
+    # Issued 30s after the first courier: that shipment has already started,
+    # so this purchase keeps the configured rate.
+    during = buy(MINERAL, 2, 10.0, at(2, 10, 0) + timedelta(seconds=30),
+                 location=JITA, rate=900.0, m3=4.0, tx_id=11)
+    before = buy(MINERAL, 2, 10.0, at(1, 8), location=JITA, rate=900.0, m3=4.0, tx_id=12)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[during, before], couriers=[first, second],
+    ))
+    by_ref = {layer.source_ref: layer for layer in result.all_layers}
+    assert by_ref[before.ref].freight_source == "courier"
+    assert by_ref[before.ref].shipment_ref == "236650353,236650362"
+    assert by_ref[before.ref].unit_components.freight == pytest.approx(1600.0)  # 800 x 2 units? m3 is total
+    # m3 is the transaction total, quantity is 2, so unit freight is 800*4/2 = 1600. Yes.
+    assert by_ref[during.ref].freight_source == "configured"
+    assert by_ref[during.ref].freight_rate_per_m3 == pytest.approx(900.0)
+    assert c.freight_label("courier", shipment.shipment_ref, 800.0) == (
+        "Courier 236650353, 236650362 · 800 ISK/m3"
+    )
+    # Exactly two hours from the first stays in the group; one second over splits.
+    edge = courier(3, at(2, 10) + timedelta(hours=2), volume=10, reward=9_000)
+    over = courier(4, at(2, 10) + timedelta(hours=2, seconds=1), volume=10, reward=7_000)
+    grouped, _ = c.group_shipments([first, edge], home_location_id=HOME)
+    assert len(grouped) == 1 and grouped[0].contract_ids == (236650353, 3)
+    split, _ = c.group_shipments([first, over], home_location_id=HOME)
+    assert [row.contract_ids for row in split] == [(236650353,), (4,)]
+
+
+def test_another_characters_purchase_takes_the_issuers_shipment():
+    """F3: the buyer does not have to be the courier's issuer."""
+    haul = courier(8, at(3), issuer=HAULER, volume=200, reward=100_000)  # 500 ISK/m3
+    purchase = buy(MINERAL, 4, 10.0, at(1), location=JITA, rate=900.0, m3=8.0,
+                   owner=OTHER_CHAR, tx_id=21)
+    result = rebuild_costing(snapshot(wallet_transactions=[purchase], couriers=[haul]))
+    [layer] = result.all_layers
+    assert layer.freight_source == "courier"
+    assert layer.freight_rate_per_m3 == pytest.approx(500.0)
+    assert layer.unit_components.freight * layer.quantity == pytest.approx(4000.0)
+    booked = c.booked_by_shipment(
+        c.freight_purchases(snapshot(wallet_transactions=[purchase], couriers=[haul])),
+        c.plan_freight(snapshot(wallet_transactions=[purchase], couriers=[haul]))[2],
+    )
+    assert booked == {"8": pytest.approx(4000.0)}
+
+
+def test_contract_buy_uses_the_shipment_rate():
+    haul = courier(15, at(3), volume=100, reward=70_000)  # 700 ISK/m3
+    bought = exchange(50, at(2), [
+        item_line(MINERAL, 2, record=1, rate=900.0, m3=3.0),
+    ], issuer=7001, acceptor=CHAR, price=40.0, start=JITA)
+    result = rebuild_costing(snapshot(contracts=[bought], couriers=[haul]))
+    [layer] = result.all_layers
+    assert layer.source == "contract"
+    assert layer.freight_source == "courier"
+    assert layer.shipment_ref == "15"
+    assert layer.freight_rate_per_m3 == pytest.approx(700.0)
+    # Share 40 over 2 units; freight 700 x 3 m3 stays on the layer total.
+    assert layer.unit_components.materials_bought == pytest.approx(20.0)
+    assert layer.unit_components.freight == pytest.approx(700.0 * 3.0 / 2.0)
+    assert layer.unit_components.freight_courier == pytest.approx(1050.0)
+    assert layer.components.coverage() == pytest.approx(1.0)
+
+
+def test_purchase_at_a_station_without_a_courier_keeps_the_configured_rate():
+    haul = courier(1, at(2), start=JITA, volume=100, reward=80_000)
+    elsewhere = buy(MINERAL, 1, 10.0, at(1), location=AMARR, rate=750.0, m3=2.0, tx_id=31)
+    result = rebuild_costing(snapshot(wallet_transactions=[elsewhere], couriers=[haul]))
+    [layer] = result.all_layers
+    assert layer.freight_source == "configured"
+    assert layer.shipment_ref is None
+    assert layer.freight_rate_per_m3 == pytest.approx(750.0)
+    assert layer.unit_components.freight == pytest.approx(1500.0)
+    assert layer.unit_components.freight_configured == pytest.approx(1500.0)
+    # A courier that does not end at home is not a shipment either.
+    wrong_end = courier(2, at(2), start=AMARR, end=JITA, volume=100, reward=10_000)
+    shipments, warnings = c.group_shipments([wrong_end], home_location_id=HOME)
+    assert shipments == [] and warnings == []
+
+
+def test_failed_courier_warns_with_collateral_and_sets_no_rate():
+    failed = courier(99, at(2), status="failed", collateral=1_500_000_000, volume=100, reward=80_000)
+    purchase = buy(MINERAL, 1, 10.0, at(1), location=JITA, rate=900.0, m3=2.0, tx_id=41)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[purchase], couriers=[failed], esi_stock_by_type={MINERAL: 1},
+    ))
+    [layer] = result.all_layers
+    assert layer.freight_source == "configured"
+    assert layer.freight_rate_per_m3 == pytest.approx(900.0)
+    assert result.warnings == ["failed_courier: contract 99 collateral 1500000000"]
+    fractional = courier(100, at(2), status="failed", collateral=12.5)
+    _shipments, warnings = c.group_shipments([fractional], home_location_id=HOME)
+    assert warnings == ["failed_courier: contract 100 collateral 12.50"]
+
+
+def test_expired_and_deleted_couriers_are_ignored():
+    expired = courier(70, at(2), status="expired", volume=100, reward=50_000)
+    deleted = courier(71, at(2), status="deleted", volume=100, reward=50_000)
+    purchase = buy(MINERAL, 1, 10.0, at(1), location=JITA, rate=900.0, m3=1.0, tx_id=51)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[purchase], couriers=[expired, deleted],
+        esi_stock_by_type={MINERAL: 1},
+    ))
+    [layer] = result.all_layers
+    assert layer.freight_source == "configured"
+    assert layer.freight_rate_per_m3 == pytest.approx(900.0)
+    assert result.warnings == []
+    # A finished courier with no volume warns and does not set a rate.
+    empty = courier(72, at(2), volume=0, reward=50_000)
+    shipments, warnings = c.group_shipments([empty, expired], home_location_id=HOME)
+    assert shipments == []
+    assert warnings == ["courier_without_volume: contract 72"]
+
+
+def test_station_pool_sale_drops_courier_freight():
+    """ST3 still zeros freight on a station-pool unit sold at the station,
+    including when a courier would otherwise have priced that purchase."""
+    haul = courier(1, at(2), volume=100, reward=80_000)  # 800, configured was 900
+    result = rebuild_costing(snapshot(
+        station_trading_station_id=JITA,
+        station_trading_wallet_owners={("character", CHAR)},
+        wallet_transactions=[
+            buy(WIDGET, 2, 10.0, at(1), location=JITA, rate=900.0, m3=2.0, tx_id=61),
+            sell(WIDGET, 1, 50.0, at(3), location=JITA, tx_id=62),
+            sell(WIDGET, 1, 50.0, at(4), location=HOME, tx_id=63),
+        ],
+        couriers=[haul],
+        esi_stock_by_type={WIDGET: 0},
+    ))
+    station_sale, home_sale = result.realized_results
+    assert station_sale.components.freight == pytest.approx(0.0)
+    assert station_sale.components.freight_courier == pytest.approx(0.0)
+    assert station_sale.components.freight_configured == pytest.approx(0.0)
+    assert station_sale.cost == pytest.approx(10.0)
+    [station_draw] = station_sale.draws
+    assert station_draw.freight_source is None
+    assert station_draw.shipment_ref is None
+    assert station_draw.freight_rate_per_m3 is None
+    assert home_sale.components.freight == pytest.approx(800.0)
+    assert home_sale.components.freight_courier == pytest.approx(800.0)
+    [home_draw] = home_sale.draws
+    assert home_draw.freight_source == "courier"
+    assert home_draw.shipment_ref == "1"
+    # The layer keeps the source; only the station draw drops it.
+    [layer] = [row for row in result.all_layers if row.type_id == WIDGET]
+    assert layer.freight_source == "courier"
+    assert layer.freight_rate_per_m3 == pytest.approx(800.0)
+    assert layer.quantity_left == 0
+
