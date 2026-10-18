@@ -7,18 +7,19 @@ import {
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
 import { Link } from 'react-router-dom'
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
+import { Bar, ComposedChart, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { gateApi, portfolioApi } from '../api/client'
+import { portfolioApi } from '../api/client'
 import { DataTable } from '../components/DataTable'
+import { HintCard } from '../components/HintCard'
 import { SearchableSelect } from '../components/SearchableSelect'
 import { useAction } from '../hooks/useAction'
 import { useItemNameOptions } from '../hooks/useStaticOptions'
 import { isk, qty, pct, dateTime } from '../format'
-import { COLORS } from '../theme'
+import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
-import type { ManualItemPriceRow, PortfolioSnapshotRow, RealizedToolCard, WealthChange } from '../api/types'
+import type { ManualItemPriceRow, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthChange } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
 
 const PERIOD_KEY = 'portfolio-realized-period'
@@ -303,15 +304,51 @@ function TotalWealthSection() {
   )
 }
 
+function RealizedHistoryChart({ history }: { history: RealizedHistory | undefined }) {
+  const rows = history?.rows ?? []
+  const channels = history?.channels ?? []
+  const title = history?.bucket === 'week' ? 'Realized profit per week' : 'Realized profit per day'
+  if (rows.length === 0) {
+    return (
+      <Card withBorder padding="lg" radius="md" className="et-panel">
+        <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
+        <HintCard>No realized profit in this period.</HintCard>
+      </Card>
+    )
+  }
+  return (
+    <Card withBorder padding="lg" radius="md" className="et-panel">
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={rows}>
+          <CartesianGrid stroke={COLORS.border} />
+          <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+          <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={90} tickFormatter={(v: number) => isk(v)} />
+          <Tooltip contentStyle={tooltipStyle()} formatter={(v, name) => [typeof v === 'number' ? isk(v) : v, name]} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          {channels.map((channel) => (
+            <Bar key={channel} dataKey={channel} name={toolLabel(channel)} stackId="profit"
+              fill={CHANNEL_COLORS[channel] ?? COLORS.textDim} />
+          ))}
+          <Line type="monotone" dataKey="cumulative" name="Cumulative" stroke={COLORS.text} dot={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </Card>
+  )
+}
+
 export default function Portfolio() {
-  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
-  const showTrading = Array.isArray(gate.data?.tools) && gate.data.tools.includes('trading')
   const overview = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
   const wealth = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
   const [period, setPeriod] = useState(readPeriod)
   const cards = useQuery({
     queryKey: ['portfolio', 'realized-cards', period],
     queryFn: () => portfolioApi.realizedCards(period),
+    retry: false,
+  })
+  const realized = useQuery({
+    queryKey: ['portfolio', 'realized-history', period],
+    queryFn: () => portfolioApi.realizedHistory(period),
     retry: false,
   })
   const [range, setRange] = useState('30')
@@ -351,27 +388,12 @@ export default function Portfolio() {
           )}
         </SimpleGrid>
 
+        <RealizedHistoryChart history={realized.data} />
+
         <Group justify="space-between" align="center">
-          <Title order={4}>History</Title>
-          <SegmentedControl size="xs" value={range} onChange={setRange} data={RANGE_OPTIONS} />
+          <Title order={4}>Total Wealth history</Title>
+          <SegmentedControl size="xs" value={range} onChange={setRange} data={RANGE_OPTIONS} aria-label="Wealth history range" />
         </Group>
-
-        {showTrading && (
-          <HistoryChart title="Trading Realized Profit vs. Production Stock Value" rows={history ?? []}
-            lines={[
-              { dataKey: 'trading_realized_profit', name: 'Trading Realized Profit', color: COLORS.accent, formatter: isk },
-              { dataKey: 'production_stock_value', name: 'Production Stock Value', color: COLORS.info, formatter: isk },
-            ]} />
-        )}
-
-        {showTrading && (
-          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
-            <HistoryChart title="Trading Average Margin" rows={history ?? []}
-              lines={[{ dataKey: 'trading_average_margin', name: 'Average Margin', color: COLORS.info, formatter: pct }]} />
-            <HistoryChart title="Trading Daily Profit Volatility" rows={history ?? []}
-              lines={[{ dataKey: 'trading_daily_profit_volatility', name: 'Daily Profit Volatility', color: COLORS.warn, formatter: isk }]} />
-          </SimpleGrid>
-        )}
 
         <HistoryChart title="Total Wealth" rows={history ?? []}
           hint="Assets, blueprints and wallet balances shared with Portfolio"

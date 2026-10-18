@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
     wealth: vi.fn(),
     manualPrices: vi.fn(),
     realizedCards: vi.fn(),
+    realizedHistory: vi.fn(),
   },
   productionApi: {
     itemNameOptions: vi.fn(),
@@ -82,6 +83,9 @@ describe('Portfolio overview', () => {
     vi.mocked(portfolioApi.wealth).mockResolvedValue(wealth)
     vi.mocked(portfolioApi.manualPrices).mockResolvedValue([])
     vi.mocked(portfolioApi.realizedCards).mockResolvedValue(cards([], null))
+    vi.mocked(portfolioApi.realizedHistory).mockResolvedValue({
+      bucket: 'day', channels: [], period: '30', rows: [],
+    })
     vi.mocked(gateApi.status).mockResolvedValue(gate(['portfolio']))
     vi.mocked(productionApi.itemNameOptions).mockResolvedValue([])
   })

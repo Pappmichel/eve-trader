@@ -510,6 +510,8 @@ export const portfolioApi = {
   removeManualPrice: (typeId: number) => del(`/api/portfolio/manual-prices/${typeId}`),
   realizedCards: (period = '30') =>
     get<T.RealizedToolCards>(`/api/portfolio/realized-cards?period=${encodeURIComponent(period)}`),
+  realizedHistory: (period = '30') =>
+    get<T.RealizedHistory>(`/api/portfolio/realized-history?period=${encodeURIComponent(period)}`),
 }
 
 // -------------------------------------------------------------- doctrine

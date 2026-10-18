@@ -44,6 +44,13 @@ def get_realized_cards(request: Request, period: str = "30"):
     return _wrap(portfolio.realized_cards, tool_keys=keys, period=period)
 
 
+@router.get("/realized-history")
+def get_realized_history(request: Request, period: str = "30", bucket: Optional[str] = None):
+    """Stacked realized profit for the tools this session holds."""
+    keys = getattr(request.state, "tool_keys", ())
+    return _wrap(portfolio.realized_history, tool_keys=keys, period=period, bucket=bucket)
+
+
 @router.get("/history", response_model=list[schemas.PortfolioSnapshotRow])
 def get_portfolio_history(days: Optional[int] = None):
     return _wrap(portfolio.do_get_portfolio_history, days=days)

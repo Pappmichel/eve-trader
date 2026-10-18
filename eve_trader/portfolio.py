@@ -95,6 +95,80 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
     return {"rows": rows, "total": sum(ready) if ready else None, "period": str(period or "30")}
 
 
+def _day(value) -> date:
+    return date.fromisoformat(str(value)[:10])
+
+
+def _week_start(day: date) -> date:
+    """Monday, matching the tool pages' weekly bars."""
+    return day - timedelta(days=day.weekday())
+
+
+def _history_bucket(period: str, bucket: Optional[str], summaries: list[dict]) -> str:
+    if bucket in ("day", "week"):
+        return bucket
+    if bucket not in (None, ""):
+        raise ActionError("bucket must be day or week.")
+    key = str(period or "30").strip()
+    if key in _PERIOD_DAYS:
+        return "week" if _PERIOD_DAYS[key] > 90 else "day"
+    starts = []
+    for data in summaries:
+        start = (data.get("period") or {}).get("start")
+        if start:
+            starts.append(_day(start))
+    if not starts:
+        return "day"
+    return "week" if (date.today() - min(starts)).days > 90 else "day"
+
+
+def realized_history(tool_keys, period: str = "30", bucket: Optional[str] = None) -> dict:
+    """Per-bucket realized profit for the channels this session holds.
+
+    Built from each tool's summary()['by_day']. Days with no sale in any
+    held channel are omitted. A held channel with no sale in a bucket is 0.
+    Week buckets start on Monday. The running total is `cumulative`.
+    """
+    window = _realized_window(period)
+    channels = []
+    days_by_tool: dict[str, dict[date, float]] = {}
+    summaries = []
+    for tool, reader in _card_readers(tool_keys):
+        data = reader(**window)
+        channels.append(tool)
+        summaries.append(data)
+        empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
+        grouped: dict[date, float] = {}
+        if not empty:
+            for row in data.get("by_day") or []:
+                day = _day(row["date"])
+                grouped[day] = grouped.get(day, 0.0) + float(row["profit"])
+        days_by_tool[tool] = grouped
+    chosen = _history_bucket(period, bucket, summaries)
+    buckets: dict[date, dict[str, float]] = {}
+    for tool, grouped in days_by_tool.items():
+        for day, profit in grouped.items():
+            key = _week_start(day) if chosen == "week" else day
+            slot = buckets.setdefault(key, {})
+            slot[tool] = slot.get(tool, 0.0) + profit
+    rows = []
+    running = 0.0
+    for key in sorted(buckets):
+        slot = buckets[key]
+        total = sum(slot.get(tool, 0.0) for tool in channels)
+        running += total
+        row = {"date": key.isoformat(), "total": total, "cumulative": running}
+        for tool in channels:
+            row[tool] = slot.get(tool, 0.0)
+        rows.append(row)
+    return {
+        "bucket": chosen,
+        "channels": channels,
+        "period": str(period or "30"),
+        "rows": rows,
+    }
+
+
 def wealth_change(today: Optional[date] = None) -> dict:
     """ISK and percent change of total_wealth versus the snapshot 1, 7 and
     30 days earlier. A missing row, or a row whose total_wealth is still

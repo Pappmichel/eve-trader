@@ -2701,6 +2701,25 @@ export interface TradingRealizedSummary {
   cost_structure: CostStructureLine[]
   by_day: RealizedDay[]
   flags: RealizedFlags
+  portfolio_average_margin?: number
+  portfolio_daily_profit_volatility?: number | null
+}
+
+export interface RealizedHistoryRow {
+  date: string
+  total: number
+  cumulative: number
+  production?: number
+  trading?: number
+  doctrine?: number
+  station_trading?: number
+}
+
+export interface RealizedHistory {
+  bucket: 'day' | 'week'
+  channels: string[]
+  period: string
+  rows: RealizedHistoryRow[]
 }
 
 export interface TradingRealizedItem {

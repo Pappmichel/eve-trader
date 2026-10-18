@@ -1,8 +1,8 @@
 # Portfolio overview - plan
 
 Status: **in progress 2026-10-18**. Decisions P1-P7 stand as confirmed.
-Phase 1 (cards, period, header, wealth change) is built. Phases 2-5 are
-not. Deviations: none yet. Phase 1 tests: `tests/test_realized_cards.py`
+Phases 1 and 2 are built. Phases 3-5 are not. Deviations: none yet.
+Phase 1 tests: `tests/test_realized_cards.py`
 (periods, since_t0 window, single-tool total, recompute adds nothing),
 `tests/test_portfolio.py` wealth_change gaps and percent, router period
 forwarding, vitest `Portfolio.test.tsx` (4). Full pytest 3316 passed;
