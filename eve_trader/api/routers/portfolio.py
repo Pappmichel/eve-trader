@@ -56,6 +56,12 @@ def get_portfolio_history(days: Optional[int] = None):
     return _wrap(portfolio.do_get_portfolio_history, days=days)
 
 
+@router.get("/capital", response_model=schemas.PortfolioCapital)
+def get_portfolio_capital():
+    """Cost and market value from the realized-profit ledger."""
+    return _wrap(portfolio.do_get_portfolio_capital)
+
+
 @router.get("/wealth/breakdown", response_model=schemas.WealthBreakdown)
 def get_wealth_breakdown():
     """Shares of Total Wealth. Separate from /wealth so the headline renders first."""

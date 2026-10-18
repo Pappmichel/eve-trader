@@ -521,3 +521,22 @@ def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypat
     failed = next(row for row in rows if int(row[0]) == 2)
     assert failed[7] == pytest.approx(1_500_000_000)
     assert failed[8] == "failed"
+
+
+def test_buy_order_escrow_survives_a_later_history_row_without_it(tenant):
+    order = {
+        "order_id": 77, "type_id": TYPE_ID, "location_id": LOCATION_ID,
+        "region_id": 10000002, "is_buy_order": True, "price": 5.0,
+        "volume_total": 10, "volume_remain": 4, "issued": DATE1, "state": "open",
+        "escrow": 12.5,
+    }
+    ledger_ingest.archive_market_orders(owner_type="character", owner_id=ALICE, orders=[order])
+    later = {key: value for key, value in order.items() if key != "escrow"}
+    later["volume_remain"] = 2
+    ledger_ingest.archive_market_orders(owner_type="character", owner_id=ALICE, orders=[later])
+    assert ledger_db.open_buy_escrow_by_owner([("character", ALICE)]) == [("character", ALICE, 12.5)]
+
+    unknown = {**order, "order_id": 78}
+    unknown.pop("escrow")
+    ledger_ingest.archive_market_orders(owner_type="character", owner_id=ALICE, orders=[unknown])
+    assert ledger_db.open_buy_escrow_by_owner([("character", ALICE)]) is None

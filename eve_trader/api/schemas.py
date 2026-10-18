@@ -902,6 +902,32 @@ class UnpricedWealthItem(_Base):
     component: str
 
 
+class CapitalBucket(_Base):
+    key: str
+    label: str
+    quantity: Optional[float] = None
+    cost_basis: Optional[float] = None
+    market_value: Optional[float] = None
+    unrealized: Optional[float] = None
+    coverage: Optional[float] = None
+    estimated: bool = False
+    comparison_value: Optional[float] = None
+
+
+class CapitalTotal(_Base):
+    cost_basis: Optional[float] = None
+    market_value: Optional[float] = None
+    unrealized: Optional[float] = None
+    estimated: bool = False
+    coverage: Optional[float] = None
+
+
+class PortfolioCapital(_Base):
+    source: str
+    buckets: list[CapitalBucket] = []
+    total: CapitalTotal = CapitalTotal()
+
+
 class WealthBreakdown(_Base):
     total: Optional[float] = None
     by_owner: list[WealthShareRow] = []

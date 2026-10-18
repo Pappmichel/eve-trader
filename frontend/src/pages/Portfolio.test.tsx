@@ -16,6 +16,7 @@ vi.mock('../api/client', () => ({
     history: vi.fn(),
     wealth: vi.fn(),
     wealthBreakdown: vi.fn(),
+    capital: vi.fn(),
     manualPrices: vi.fn(),
     realizedCards: vi.fn(),
     realizedHistory: vi.fn(),
@@ -99,6 +100,14 @@ describe('Portfolio overview', () => {
     vi.mocked(portfolioApi.history).mockResolvedValue([])
     vi.mocked(portfolioApi.wealth).mockResolvedValue(wealth)
     vi.mocked(portfolioApi.wealthBreakdown).mockResolvedValue(breakdown)
+    vi.mocked(portfolioApi.capital).mockResolvedValue({
+      source: 'realized-profit ledger',
+      buckets: [{
+        key: 'stock', label: 'Stock', quantity: 1, cost_basis: 40, market_value: 50,
+        unrealized: 10, coverage: 1, estimated: false,
+      }],
+      total: { cost_basis: 40, market_value: 50, unrealized: 10, estimated: false, coverage: 1 },
+    })
     vi.mocked(portfolioApi.manualPrices).mockResolvedValue([])
     vi.mocked(portfolioApi.realizedCards).mockResolvedValue(cards([], null))
     vi.mocked(portfolioApi.realizedHistory).mockResolvedValue({
@@ -123,6 +132,9 @@ describe('Portfolio overview', () => {
     expect(await screen.findByText('Tritanium · Alice · Jita · 5')).toBeInTheDocument()
     expect(screen.getAllByText('Alice').length).toBeGreaterThan(0)
     expect(screen.getAllByText('100 ISK · 100%').length).toBeGreaterThan(0)
+    expect(await screen.findByText('From the realized-profit ledger. Cost is the oldest layer of that type.')).toBeInTheDocument()
+    expect(screen.getByText('Stock')).toBeInTheDocument()
+    expect(screen.getByText('Unrealized 10 ISK')).toBeInTheDocument()
   })
 
   it('renders one card per tool from realized-cards, including a single-tool total', async () => {

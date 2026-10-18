@@ -783,6 +783,30 @@ export interface UnpricedWealthItem {
   component: string
 }
 
+export interface CapitalBucket {
+  key: string
+  label: string
+  quantity: number | null
+  cost_basis: number | null
+  market_value: number | null
+  unrealized: number | null
+  coverage: number | null
+  estimated: boolean
+  comparison_value?: number | null
+}
+
+export interface PortfolioCapital {
+  source: string
+  buckets: CapitalBucket[]
+  total: {
+    cost_basis: number | null
+    market_value: number | null
+    unrealized: number | null
+    estimated: boolean
+    coverage: number | null
+  }
+}
+
 export interface WealthBreakdown {
   total: number | null
   by_owner: WealthShareRow[]

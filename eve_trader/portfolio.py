@@ -427,10 +427,12 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
         storage.wallet_balances_by_owner(wallet_chars, wallet_corps)
         if (wallet_chars or wallet_corps) else []
     )
+    escrow_rows = []
     escrow_known = True
     if order_chars or order_corps:
-        from .realized.db import open_buys_have_unknown_escrow
-        escrow_known = not open_buys_have_unknown_escrow(_owner_pairs(order_chars, order_corps))
+        from .realized.db import open_buy_escrow_by_owner
+        escrow_rows = open_buy_escrow_by_owner(_owner_pairs(order_chars, order_corps))
+        escrow_known = escrow_rows is not None
 
     items = []
     for owner_type, owner_id, location_id, type_id, quantity in assets:
@@ -474,7 +476,10 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
     return {
         "items": items,
         "wallets": wallets,
-        "escrow": [] if escrow_known else None,
+        "escrow": None if not escrow_known else [
+            {"owner_type": owner_type, "owner_id": owner_id, "amount": amount}
+            for owner_type, owner_id, amount in (escrow_rows or [])
+        ],
         "shares": shares,
         "escrow_known": escrow_known,
         "structure_id": cfg.structure_id,
@@ -592,6 +597,45 @@ def do_get_portfolio_breakdown(cfg: TradingConfig = TRADING_CONFIG) -> dict:
         "top": built["top"],
         "unpriced": built["unpriced"],
     }
+
+
+def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Cost and market value of capital in the realized-profit ledger.
+
+    Owners are the union of realized-tool shares, not the Portfolio share.
+    Prices are the same manual / home sell / Jita sell function as Total Wealth.
+    """
+    from .portfolio_capital import report
+    from .realized.access import shared_item_exchange_owners, shared_owners
+    from .realized import db as ledger_db
+
+    order_owners = shared_owners("market_orders")
+    contract_owners = shared_item_exchange_owners()
+    layers = [
+        {
+            "type_id": row[0], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
+            "assumed_me": row[5], "assumed_decryptor": row[6], "estimated_origin": row[7],
+            "price_missing": row[8],
+        }
+        for row in ledger_db.list_remaining_layers()
+    ]
+    listed = [
+        {"type_id": type_id, "quantity": quantity, "order_price": price}
+        for type_id, quantity, price in ledger_db.open_sell_order_lines(order_owners)
+    ]
+    contracts = [
+        {"contract_id": contract_id, "type_id": type_id, "quantity": quantity, "contract_price": price}
+        for contract_id, type_id, quantity, price in ledger_db.outstanding_priced_contract_items(contract_owners)
+    ]
+    escrow_rows = ledger_db.open_buy_escrow_by_owner(order_owners)
+    escrow = None if escrow_rows is None else sum(amount for _ot, _oid, amount in escrow_rows)
+    type_ids = {int(layer["type_id"]) for layer in layers}
+    type_ids.update(int(row["type_id"]) for row in listed)
+    type_ids.update(int(row["type_id"]) for row in contracts)
+    prices = _priced(type_ids)
+    count, cost = ledger_db.running_job_cost()
+    in_production = {"count": int(count or 0), "cost": float(cost or 0)}
+    return report(layers, listed, contracts, escrow, prices, in_production)
 
 
 def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:

@@ -19,7 +19,7 @@ import { useItemNameOptions } from '../hooks/useStaticOptions'
 import { isk, qty, pct, dateTime } from '../format'
 import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
-import type { ManualItemPriceRow, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
+import type { ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
 
 const PERIOD_KEY = 'portfolio-realized-period'
@@ -402,6 +402,36 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
   )
 }
 
+function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) {
+  if (!capital) return null
+  return (
+    <Stack gap="sm">
+      <Title order={4}>Capital</Title>
+      <Text size="xs" c="dimmed">From the {capital.source}. Cost is the oldest layer of that type.</Text>
+      {capital.buckets.map((row) => (
+        <Card key={row.key} withBorder padding="sm" radius="md" className="et-panel">
+          <Group justify="space-between" align="flex-start">
+            <Text fw={600}>{row.label}</Text>
+            <Group gap="md">
+              <Text size="sm">Cost {isk(row.cost_basis)}</Text>
+              <Text size="sm">Market {isk(row.market_value)}</Text>
+              <Text size="sm">Unrealized {isk(row.unrealized)}</Text>
+              <CoverageBadge coverage={row.coverage} />
+              {row.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
+            </Group>
+          </Group>
+          {row.comparison_value != null && (
+            <Text size="xs" c="dimmed" mt={4}>Wealth price {isk(row.comparison_value)}</Text>
+          )}
+        </Card>
+      ))}
+      <Text size="sm">
+        Total cost {isk(capital.total.cost_basis)} · Market {isk(capital.total.market_value)} · Unrealized {isk(capital.total.unrealized)}
+      </Text>
+    </Stack>
+  )
+}
+
 function RealizedHistoryChart({ history }: { history: RealizedHistory | undefined }) {
   const rows = history?.rows ?? []
   const channels = history?.channels ?? []
@@ -439,6 +469,7 @@ export default function Portfolio() {
   const overview = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
   const wealth = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
   const breakdown = useQuery({ queryKey: ['portfolio', 'breakdown'], queryFn: portfolioApi.wealthBreakdown })
+  const capital = useQuery({ queryKey: ['portfolio', 'capital'], queryFn: portfolioApi.capital })
   const [period, setPeriod] = useState(readPeriod)
   const cards = useQuery({
     queryKey: ['portfolio', 'realized-cards', period],
@@ -488,6 +519,7 @@ export default function Portfolio() {
         </SimpleGrid>
 
         <RealizedHistoryChart history={realized.data} />
+        <CapitalSection capital={capital.data} />
 
         <Group justify="space-between" align="center">
           <Title order={4}>Total Wealth history</Title>

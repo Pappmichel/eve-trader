@@ -139,7 +139,7 @@ def test_listed_quantity_is_added_to_assets_for_portfolio_owners_only(monkeypatc
         return [("character", 1, JITA_44, 34, 4)]
 
     monkeypatch.setattr(storage, "load_sell_orders_grouped", _listed)
-    monkeypatch.setattr("eve_trader.realized.db.open_buys_have_unknown_escrow", lambda owners: False)
+    monkeypatch.setattr("eve_trader.realized.db.open_buy_escrow_by_owner", lambda owners: [])
     monkeypatch.setattr(portfolio, "_priced", lambda ids: {34: 2.0})
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
         _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
@@ -165,7 +165,7 @@ def test_open_buys_without_escrow_leave_the_component_empty(monkeypatch):
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
     monkeypatch.setattr(portfolio, "_priced", lambda ids: {34: 2.0})
     monkeypatch.setattr(
-        "eve_trader.realized.db.open_buys_have_unknown_escrow", lambda owners: True,
+        "eve_trader.realized.db.open_buy_escrow_by_owner", lambda owners: None,
     )
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
         _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),

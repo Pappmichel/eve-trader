@@ -115,6 +115,11 @@ CREATE INDEX IF NOT EXISTS idx_ledger_market_orders_owner_issued
     ON ledger_market_orders (owner_type, owner_id, issued);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_market_orders TO eve_trader_app;
 
+-- Buy-order escrow (docs/PORTFOLIO_OVERVIEW_PLAN.md 3.5). Nullable: a row
+-- archived before ESI's escrow field was stored stays NULL, and the page
+-- shows that as unknown rather than zero.
+ALTER TABLE ledger_market_orders ADD COLUMN IF NOT EXISTS escrow DOUBLE PRECISION;
+
 -- ====================================================== archive: industry jobs
 CREATE TABLE IF NOT EXISTS ledger_industry_jobs (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,

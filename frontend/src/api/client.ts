@@ -503,6 +503,7 @@ export const portfolioApi = {
     get<T.PortfolioSnapshotRow[]>(days == null ? '/api/portfolio/history' : `/api/portfolio/history?days=${days}`),
   wealth: () => get<T.TotalWealth>('/api/portfolio/wealth'),
   wealthBreakdown: () => get<T.WealthBreakdown>('/api/portfolio/wealth/breakdown'),
+  capital: () => get<T.PortfolioCapital>('/api/portfolio/capital'),
   manualPrices: () => get<T.ManualItemPriceRow[]>('/api/portfolio/manual-prices'),
   setManualPrice: (itemName: string, price: number) =>
     post<{ type_id: number; type_name: string; price: number }>(
