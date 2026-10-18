@@ -47,6 +47,19 @@ def test_do_list_contracts_resolves_source_role_to_character_name(monkeypatch):
     assert result["rows"][0]["source_role"] == "doctrine:1560510246"  # raw key still present too
 
 
+def test_do_list_contracts_leaves_out_contracts_without_a_doctrine_hull(monkeypatch):
+    rows = [
+        _contract_db_row(contract_id=1),
+        _contract_db_row(contract_id=2, matched_fitting_id=None, match_score=0.0,
+                         validation_status=engine.NO_HULL_MATCH),
+    ]
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: rows)
+    monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
+
+    assert [r["contract_id"] for r in actions.do_list_contracts()["rows"]] == [1]
+
+
 def test_do_list_contracts_falls_back_to_raw_role_key_when_character_unknown(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [_contract_db_row()])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])

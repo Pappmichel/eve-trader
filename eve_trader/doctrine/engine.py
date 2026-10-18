@@ -131,10 +131,10 @@ def load_match_candidates() -> list[_Candidate]:
     return candidates
 
 
-#: Internal-only status sentinel - never added to constants.VALIDATION_STATUSES
-#: and never persisted (esi_sync.sync_contracts drops any contract that gets
-#: this status before it ever reaches storage.replace_doctrine_sync_snapshot,
-#: see that function's own docstring). Distinct from the ordinary "unmatched"
+#: Status sentinel, never added to constants.VALIDATION_STATUSES. Matching
+#: stores it (score 0.0) so the contract is not re-matched on every read,
+#: and actions.do_list_contracts leaves such rows out of the contract list.
+#: Distinct from the ordinary "unmatched"
 #: status (hull present, but score below threshold - a genuine near-miss
 #: worth keeping visible) - this one means no candidate fitting's hull was
 #: found in the contract at all, i.e. it isn't a Doctrine ship sale.
