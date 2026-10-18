@@ -89,10 +89,29 @@ def test_unpriced_rows_are_excluded_and_listed():
     assert built["total"] == 3.0
     assert built["unpriced_items"] == 1
     assert built["unpriced"] == [{
-        "type_id": 34, "type_name": "Tritanium", "quantity": 5.0,
+        "type_id": 34, "type_name": "Tritanium", "quantity": 5.0, "positions": 1,
         "owner_name": "Alice", "location_name": "Jita", "component": "assets",
     }]
+    assert built["unpriced_types"] == 1
     assert sum(row["value"] for row in built["by_category"]) == 3.0
+
+
+def test_unpriced_rows_are_one_per_type_and_capped():
+    from eve_trader.portfolio_wealth import UNPRICED_LIMIT
+
+    items = [
+        _item("assets", 34, 5, None, location_id=JITA_44),
+        _item("listed", 34, 2, None, location_id=99),
+    ] + [_item("assets", 1000 + n, 1, None) for n in range(UNPRICED_LIMIT + 5)]
+    built = assemble(items, [], [], type_names={34: "Tritanium"}, owner_names={1: "Alice"})
+    assert built["unpriced_items"] == UNPRICED_LIMIT + 7
+    assert built["unpriced_types"] == UNPRICED_LIMIT + 6
+    assert len(built["unpriced"]) == UNPRICED_LIMIT
+    first = built["unpriced"][0]
+    assert (first["type_id"], first["quantity"], first["positions"]) == (34, 7.0, 2)
+    assert first["location_name"] == "2 locations"
+    assert first["component"] == "2 components"
+    assert first["owner_name"] == "Alice"
 
 
 def test_orders_not_shared_with_portfolio_add_nothing(monkeypatch):

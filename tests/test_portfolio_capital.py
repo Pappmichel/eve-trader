@@ -59,8 +59,10 @@ def test_missing_escrow_is_unknown_and_left_out_of_the_total():
     assert escrow["cost_basis"] is None
     assert escrow["market_value"] is None
     assert escrow["unrealized"] is None
-    assert result["total"]["market_value"] is None
+    assert result["total"]["market_value"] == 30.0
     assert result["total"]["cost_basis"] == 20.0
+    assert result["total"]["unrealized"] == 10.0
+    assert result["total"]["excluded"] == ["escrow"]
 
 
 def test_opening_stock_is_estimated_and_still_has_unrealized_profit():
@@ -81,12 +83,23 @@ def test_opening_stock_is_estimated_and_still_has_unrealized_profit():
 
 
 def test_running_jobs_show_their_cost_and_no_market_value():
-    result = report([], [], [], 0.0, {}, in_production={"count": 2, "cost": 100})
+    result = report(
+        layers=[{"type_id": 34, "quantity": 2, "unit_cost": 10, "origin": "bought"}],
+        listed=[],
+        contracts=[],
+        escrow=5.0,
+        prices={34: 15},
+        in_production={"count": 2, "cost": 100},
+    )
     row = _bucket(result, "in_production")
     assert row["cost_basis"] == 100
     assert row["market_value"] is None
     assert row["unrealized"] is None
-    assert result["total"]["market_value"] is None
+    # Running jobs keep their row but do not blank the total.
+    assert result["total"]["cost_basis"] == 25.0
+    assert result["total"]["market_value"] == 35.0
+    assert result["total"]["unrealized"] == 10.0
+    assert result["total"]["excluded"] == ["in_production"]
 
 
 def test_unpriced_stock_is_left_out_of_both_sides():

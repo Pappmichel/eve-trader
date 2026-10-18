@@ -356,7 +356,12 @@ function WealthBreakdownSection({ breakdown }: { breakdown: WealthBreakdown | un
       {unpriced.length > 0 && (
         <Stack id="unpriced" gap="xs">
           <Title order={6}>Unpriced</Title>
-          <Text size="xs" c="dimmed">Excluded from the total until a manual price is set.</Text>
+          <Text size="xs" c="dimmed">
+            Excluded from the total until a manual price is set. One row per type
+            {breakdown.unpriced_types > unpriced.length
+              ? `, largest quantity first: ${unpriced.length} of ${breakdown.unpriced_types} types shown.`
+              : '.'}
+          </Text>
           {unpriced.map((row) => (
             <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
               <Text size="sm">{row.type_name ?? `Type ${row.type_id}`} · {row.owner_name} · {row.location_name} · {qty(row.quantity)}</Text>
@@ -430,6 +435,12 @@ function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) 
       <Text size="sm">
         Total cost {isk(capital.total.cost_basis)} · Market {isk(capital.total.market_value)} · Unrealized {isk(capital.total.unrealized)}
       </Text>
+      {capital.total.excluded.length > 0 && (
+        <Text size="xs" c="dimmed">
+          Without {capital.buckets.filter((row) => capital.total.excluded.includes(row.key)).map((row) => row.label).join(', ')}
+          {' '}(no market value).
+        </Text>
+      )}
     </Stack>
   )
 }

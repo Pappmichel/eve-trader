@@ -518,7 +518,8 @@ _EMPTY_WEALTH = {
     "sync": dict(_EMPTY_SYNC),
 }
 _EMPTY_BREAKDOWN = {
-    "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [], "unpriced": [],
+    "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [],
+    "unpriced": [], "unpriced_types": 0,
 }
 
 
@@ -755,6 +756,7 @@ def do_get_portfolio_breakdown(cfg: TradingConfig = TRADING_CONFIG) -> dict:
         "by_category": built["by_category"],
         "top": built["top"],
         "unpriced": built["unpriced"],
+        "unpriced_types": built["unpriced_types"],
     }
 
 

@@ -897,6 +897,8 @@ class UnpricedWealthItem(_Base):
     type_id: int
     type_name: Optional[str] = None
     quantity: float
+    # Positions (owner x location x pile) summed into this type's row.
+    positions: int = 1
     owner_name: str
     location_name: str
     component: str
@@ -920,6 +922,9 @@ class CapitalTotal(_Base):
     unrealized: Optional[float] = None
     estimated: bool = False
     coverage: Optional[float] = None
+    # Bucket keys left out of the total because they lack a cost or a
+    # market value (running jobs, escrow not stored yet).
+    excluded: list[str] = []
 
 
 class PortfolioCapital(_Base):
@@ -935,6 +940,8 @@ class WealthBreakdown(_Base):
     by_category: list[WealthShareRow] = []
     top: list[WealthTopRow] = []
     unpriced: list[UnpricedWealthItem] = []
+    # Every unpriced type; `unpriced` is capped at the first 100 of them.
+    unpriced_types: int = 0
 
 
 class ManualItemPriceRow(_Base):

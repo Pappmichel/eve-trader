@@ -110,18 +110,21 @@ def _bucket(key: str, label: str, quantity: float, cost: Optional[float], market
 
 
 def _finish(buckets: list[dict]) -> dict:
-    known_cost = [row["cost_basis"] for row in buckets if row["cost_basis"] is not None]
-    markets = [row["market_value"] for row in buckets]
-    market_known = all(value is not None for value in markets) and markets
-    cost = sum(known_cost) if known_cost else None
-    market = sum(markets) if market_known else None
+    """The total covers the buckets that have both a cost and a market
+    value, so market - cost is unrealized for the same goods. A bucket
+    without one (running jobs, escrow not stored yet) keeps its own row and
+    is named in `excluded`; it does not blank the whole total."""
+    included = [
+        row for row in buckets
+        if row["cost_basis"] is not None and row["market_value"] is not None
+    ]
+    excluded = [row["key"] for row in buckets if row not in included]
+    cost = sum(row["cost_basis"] for row in included) if included else None
+    market = sum(row["market_value"] for row in included) if included else None
     unrealized = None if cost is None or market is None else market - cost
-    # When a bucket is unknown, its cost was left out of `cost` too if it
-    # was None. Unrealized then matches the known buckets only when every
-    # bucket has both figures.
-    estimated = any(row["estimated"] for row in buckets)
-    coverages = [row["coverage"] for row in buckets if row["coverage"] is not None]
-    coverage = min(coverages) if coverages and market_known else None
+    estimated = any(row["estimated"] for row in included)
+    coverages = [row["coverage"] for row in included if row["coverage"] is not None]
+    coverage = min(coverages) if coverages else None
     return {
         "source": "realized-profit ledger",
         "buckets": buckets,
@@ -131,6 +134,7 @@ def _finish(buckets: list[dict]) -> dict:
             "unrealized": unrealized,
             "estimated": estimated,
             "coverage": coverage,
+            "excluded": excluded,
         },
     }
 

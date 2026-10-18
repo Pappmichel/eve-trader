@@ -778,6 +778,7 @@ export interface UnpricedWealthItem {
   type_id: number
   type_name: string | null
   quantity: number
+  positions: number
   owner_name: string
   location_name: string
   component: string
@@ -804,6 +805,7 @@ export interface PortfolioCapital {
     unrealized: number | null
     estimated: boolean
     coverage: number | null
+    excluded: string[]
   }
 }
 
@@ -814,6 +816,7 @@ export interface WealthBreakdown {
   by_category: WealthShareRow[]
   top: WealthTopRow[]
   unpriced: UnpricedWealthItem[]
+  unpriced_types: number
 }
 
 export interface ManualItemPriceRow {

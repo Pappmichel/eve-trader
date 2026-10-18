@@ -13,6 +13,13 @@ from typing import Optional
 JITA_44 = 60003760
 _OTHER_SHARE = 0.02
 _PROTECTED_LOCATIONS = ("C-J", "Jita", "Contracts", "Wallet")
+UNPRICED_LIMIT = 100
+
+
+def _one_or_count(values: set, noun: str) -> str:
+    if len(values) == 1:
+        return next(iter(values))
+    return f"{len(values)} {noun}"
 
 
 def _share(value: float, total: float) -> Optional[float]:
@@ -74,7 +81,7 @@ def assemble(
     by_owner: dict[str, float] = {}
     by_category: dict[str, float] = {}
     raw_locations: dict[str, float] = {}
-    unpriced: list[dict] = []
+    unpriced_by_type: dict[int, dict] = {}
     positions: dict[tuple, dict] = {}
 
     for item in items:
@@ -85,14 +92,15 @@ def assemble(
         place = location_label(item["component"], item.get("location_id"), structure_id, location_names)
         if item.get("price") is None:
             unpriced_items += 1
-            unpriced.append({
-                "type_id": type_id,
-                "type_name": type_names.get(type_id),
-                "quantity": quantity,
-                "owner_name": owner,
-                "location_name": place,
-                "component": item["component"],
+            slot = unpriced_by_type.setdefault(type_id, {
+                "type_id": type_id, "type_name": type_names.get(type_id), "quantity": 0.0,
+                "positions": 0, "owners": set(), "locations": set(), "components": set(),
             })
+            slot["quantity"] += quantity
+            slot["positions"] += 1
+            slot["owners"].add(owner)
+            slot["locations"].add(place)
+            slot["components"].add(item["component"])
             continue
         value = quantity * float(item["price"])
         priced_value += value
@@ -151,6 +159,24 @@ def assemble(
     for row in top:
         row["share"] = _share(row["value"], total)
 
+    # One row per type: a manual price is per type, and a tenant can hold
+    # thousands of unpriced positions. Capped so the page stays usable.
+    unpriced = [
+        {
+            "type_id": slot["type_id"],
+            "type_name": slot["type_name"],
+            "quantity": slot["quantity"],
+            "positions": slot["positions"],
+            "owner_name": _one_or_count(slot["owners"], "owners"),
+            "location_name": _one_or_count(slot["locations"], "locations"),
+            "component": _one_or_count(slot["components"], "components"),
+        }
+        for slot in sorted(
+            unpriced_by_type.values(),
+            key=lambda slot: (-slot["quantity"], slot["type_name"] or "", slot["type_id"]),
+        )[:UNPRICED_LIMIT]
+    ]
+
     return {
         "total": total,
         "components": {
@@ -164,6 +190,7 @@ def assemble(
         "priced_items": priced_items,
         "unpriced_items": unpriced_items,
         "unpriced": unpriced,
+        "unpriced_types": len(unpriced_by_type),
         "by_owner": _rows(by_owner, total),
         "by_location": _rows(by_location, total),
         "by_category": _rows(by_category, total),

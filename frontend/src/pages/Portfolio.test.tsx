@@ -71,9 +71,10 @@ const breakdown = {
   by_category: [{ label: 'Material', value: 100, share: 1 }],
   top: [],
   unpriced: [{
-    type_id: 34, type_name: 'Tritanium', quantity: 5,
+    type_id: 34, type_name: 'Tritanium', quantity: 5, positions: 1,
     owner_name: 'Alice', location_name: 'Jita', component: 'assets',
   }],
+  unpriced_types: 1,
 }
 
 function cards(rows: RealizedToolCards['rows'], total: number | null): RealizedToolCards {
@@ -107,7 +108,7 @@ describe('Portfolio overview', () => {
         key: 'stock', label: 'Stock', quantity: 1, cost_basis: 40, market_value: 50,
         unrealized: 10, coverage: 1, estimated: false,
       }],
-      total: { cost_basis: 40, market_value: 50, unrealized: 10, estimated: false, coverage: 1 },
+      total: { cost_basis: 40, market_value: 50, unrealized: 10, estimated: false, coverage: 1, excluded: [] },
     })
     vi.mocked(portfolioApi.manualPrices).mockResolvedValue([])
     vi.mocked(portfolioApi.attention).mockResolvedValue({ items: [] })
@@ -196,5 +197,29 @@ describe('Portfolio overview', () => {
     expect(link).toHaveAttribute('href', '/character-management/characters')
     expect(await screen.findByText('Freight from couriers 12 ISK · configured rate 3 ISK')).toBeInTheDocument()
     expect(screen.queryByText('Wallet balance not included for some characters')).toBeNull()
+  })
+
+  it('names capital buckets left out of the total and the unpriced cap', async () => {
+    vi.mocked(portfolioApi.capital).mockResolvedValue({
+      source: 'realized-profit ledger',
+      buckets: [
+        {
+          key: 'stock', label: 'Stock', quantity: 1, cost_basis: 40, market_value: 50,
+          unrealized: 10, coverage: 1, estimated: false,
+        },
+        {
+          key: 'in_production', label: 'In production', quantity: 2, cost_basis: 100, market_value: null,
+          unrealized: null, coverage: null, estimated: false,
+        },
+      ],
+      total: {
+        cost_basis: 40, market_value: 50, unrealized: 10, estimated: false, coverage: 1,
+        excluded: ['in_production'],
+      },
+    })
+    vi.mocked(portfolioApi.wealthBreakdown).mockResolvedValue({ ...breakdown, unpriced_types: 250 })
+    renderPortfolio()
+    expect(await screen.findByText(/Without In production/)).toBeInTheDocument()
+    expect(await screen.findByText(/1 of 250 types shown/)).toBeInTheDocument()
   })
 })

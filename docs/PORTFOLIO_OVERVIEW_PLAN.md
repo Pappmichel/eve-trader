@@ -18,9 +18,14 @@ Deviations:
   minus that cost, and coverage falls by the unpriced quantity.
 - Contract price shares use current wealth prices as weights, then
   quantity weights. The historical reference split is not recomputed.
-- While a running job is included, its market value is None, so the
-  capital total's market value and unrealized are None. Its cost is still
-  listed on the bucket.
+- A bucket without a market value (running jobs, escrow not stored yet)
+  keeps its own row but is left out of the capital total, and the total
+  names it in `excluded`. Review on the test server: with jobs almost
+  always running, a total that went None with them was never shown.
+- The unpriced list is one row per type (positions summed, owners and
+  locations counted when there is more than one), largest quantity
+  first, capped at 100 rows; `unpriced_types` is the full count. The
+  test server's real data had 10,232 unpriced positions, one input each.
 - `tenant_tokens` is read `ORDER BY role`. Corp-wallet member order is
   that role-key order. An unordered read made the later-member wallet
   test fail inside the full suite.
