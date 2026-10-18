@@ -1169,9 +1169,13 @@ def courier_comparison() -> dict:
     and failed couriers (F5, F6).
 
     Booked freight is replayed from the archive (shipment rate x frozen m3)
-    and does not require a rebuild. An unset home structure yields no
-    shipments; failed couriers are still listed. The configured rate is the
-    fallback for purchases no shipment covers.
+    and does not require a rebuild. Purchases a shipment covers that are
+    older than cutover T0 are opening stock, which costing never freights;
+    they are reported as `before_cutover_freight` and left out of `gap`.
+    An unset home structure yields no shipments; failed couriers are still
+    listed. The configured rate is the fallback for purchases no shipment
+    covers. A reward that was refunded (expired or deleted contract) is not
+    an F6 row.
     """
     from ..config import PRODUCTION_CONFIG
     from ...config import TRADING_CONFIG
@@ -1183,9 +1187,14 @@ def courier_comparison() -> dict:
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
     with storage.batch_session():
         run, _t0, changed = _run_state()
-        snapshot = load_freight_snapshot()
+        snapshot, cutover = load_freight_snapshot()
         shipments, purchases, rates, _warnings = plan_freight(snapshot)
-        booked = booked_by_shipment(purchases, rates)
+        booked = booked_by_shipment(
+            [p for p in purchases if cutover is None or p.when >= cutover], rates,
+        )
+        before_cutover = booked_by_shipment(
+            [p for p in purchases if cutover is not None and p.when < cutover], rates,
+        )
         owners = access.shared_owners("contracts")
         archived_ids = {
             int(row[2]) for row in (db.list_contracts_for_owners(owners) if owners else [])
@@ -1197,6 +1206,7 @@ def courier_comparison() -> dict:
         vol = float(shipment.volume)
         reward = float(shipment.reward)
         booked_amt = float(booked.get(shipment.shipment_ref, 0.0))
+        before_amt = float(before_cutover.get(shipment.shipment_ref, 0.0))
         couriers = []
         for contract_id in shipment.contract_ids:
             row = by_id.get(int(contract_id))
@@ -1218,20 +1228,26 @@ def courier_comparison() -> dict:
             "isk_per_m3": (reward / vol) if vol > _EPS else None,
             "collateral": float(shipment.collateral),
             "booked_freight": booked_amt,
-            "gap": reward - booked_amt,
+            "before_cutover_freight": before_amt,
+            "gap": reward - booked_amt - before_amt,
             "couriers": couriers,
         })
+    refunded = {
+        int(row[7]) for row in journal
+        if str(row[5]) == "contract_reward_refund" and row[7] is not None
+    }
     rewards = []
     for row in journal:
         if str(row[5]) != "contract_reward_deposited":
             continue
         contract_id = None if row[7] is None else int(row[7])
-        if contract_id is not None and contract_id in archived_ids:
+        if contract_id is not None and (contract_id in archived_ids or contract_id in refunded):
             continue
         rewards.append({
             "contract_id": contract_id,
             "date": _iso(row[4]),
-            "amount": float(row[6] or 0),
+            # The journal books the deposit as a debit; the list shows the reward.
+            "amount": abs(float(row[6] or 0)),
             "label": "reward without courier details",
         })
     failed = []

@@ -498,6 +498,7 @@ class CourierShipment(BaseModel):
     isk_per_m3: Optional[float] = None
     collateral: float
     booked_freight: float
+    before_cutover_freight: float = 0.0
     gap: float
     couriers: list[CourierContractRow]
 

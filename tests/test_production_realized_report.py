@@ -588,8 +588,14 @@ def test_shipment_list_books_the_gap_and_rewards_without_a_courier(tenant, monke
          10000002, 80.0, 4.0),
     ])
     ledger_db.upsert_ledger_wallet_journal([
-        ("character", ALICE, 0, 9, bought, "contract_reward_deposited", 12345.0,
+        # The journal books a deposit as a debit; the list shows it positive.
+        ("character", ALICE, 0, 9, bought, "contract_reward_deposited", -12345.0,
          999, "contract_id", None, None, None, None, None),
+        # Refunded (expired, not archived): not an F6 row either.
+        ("character", ALICE, 0, 11, bought, "contract_reward_deposited", -77.0,
+         998, "contract_id", None, None, None, None, None),
+        ("character", ALICE, 0, 12, issued, "contract_reward_refund", 77.0,
+         998, "contract_id", None, None, None, None, None),
         # This reward's contract is archived, so it is not an F6 row.
         ("character", ALICE, 0, 10, bought, "contract_reward_deposited", 500.0,
          11, "contract_id", None, None, None, None, None),
@@ -606,7 +612,7 @@ def test_shipment_list_books_the_gap_and_rewards_without_a_courier(tenant, monke
     assert shipment["isk_per_m3"] == pytest.approx(40.0)
     assert shipment["collateral"] == pytest.approx(1200.0)
     # 40 ISK/m3 x the buy's frozen 4 m3. The configured 80 ISK/m3 is not booked.
-    assert shipment["booked_freight"] == pytest.approx(160.0)
+    assert shipment["booked_freight"] + shipment["before_cutover_freight"] == pytest.approx(160.0)
     assert shipment["gap"] == pytest.approx(640.0)
     assert [row["contract_id"] for row in shipment["couriers"]] == [11, 12]
     [reward] = report["rewards_without_courier"]
@@ -619,6 +625,35 @@ def test_shipment_list_books_the_gap_and_rewards_without_a_courier(tenant, monke
     assert 13 not in shipment["contract_ids"]
     assert 15 not in shipment["contract_ids"]
     assert all(row["contract_id"] != 15 for row in report["failed"])
+
+
+def test_shipment_list_reports_purchases_before_cutover_apart(tenant, monkeypatch):
+    """A shipment that carried opening stock: costing books freight only on
+    purchases since cutover T0; the older part is listed apart, not as gap."""
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.realized import access as ledger_access
+
+    _share(ALICE, "contracts")
+    _share(ALICE, "wallet")
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", 42)
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    monkeypatch.setattr(ledger_access, "cutover_t0_for_production", lambda: T0)
+    ledger_db.upsert_ledger_contracts([
+        ("character", ALICE, 21, ALICE, None, 5, LOC, 42,
+         "courier", "finished", "jita", 0, 1000.0, T_JOB, T_SALE, None,
+         20.0, 1.0, 10000002),
+    ])
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0 - timedelta(hours=1), TYPE_A, LOC, 100.0, 1, True, 1,
+         10000002, 80.0, 6.0),
+        ("character", ALICE, 0, 2, T0 + timedelta(hours=1), TYPE_A, LOC, 100.0, 1, True, 2,
+         10000002, 80.0, 4.0),
+    ])
+    [shipment] = production_actions.do_get_realized_courier()["shipments"]
+    assert shipment["isk_per_m3"] == pytest.approx(50.0)
+    assert shipment["booked_freight"] == pytest.approx(200.0)
+    assert shipment["before_cutover_freight"] == pytest.approx(300.0)
+    assert shipment["gap"] == pytest.approx(500.0)
 
 
 def test_hidden_archive_delete_refuses_while_shared(tenant):

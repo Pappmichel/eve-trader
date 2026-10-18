@@ -71,6 +71,7 @@ function CourierComparison() {
     { header: 'ISK/m³', accessorKey: 'isk_per_m3', size: 120, cell: (info) => info.getValue() == null ? '–' : isk(info.getValue()) },
     { header: 'Collateral', accessorKey: 'collateral', size: 130, cell: (info) => isk(info.getValue()) },
     { header: 'Booked', accessorKey: 'booked_freight', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Before T0', accessorKey: 'before_cutover_freight', size: 130, cell: (info) => isk(info.getValue()) },
     { header: 'Gap', accessorKey: 'gap', size: 130, cell: (info) => isk(info.getValue()) },
   ]
   const rewardColumns: ColumnDef<RealizedRewardWithoutCourier, any>[] = [
@@ -90,7 +91,7 @@ function CourierComparison() {
     <Stack gap="xs" mb="sm">
       <Text size="sm" c="dimmed">
         Finished couriers to the home structure, grouped into shipments. A purchase takes the first shipment issued at or after it from the same station. Purchases with no shipment keep the configured rate
-        {rate == null ? '' : ` (${isk(rate)} / m³)`}. Gap is the courier reward minus freight booked on the purchases assigned to that shipment.
+        {rate == null ? '' : ` (${isk(rate)} / m³)`}. Booked is the freight on assigned purchases since cutover T0. Before T0 is the same for older purchases, which are opening stock and carry no freight. Gap is the reward minus both.
       </Text>
       {data?.needs_rebuild && (
         <Text size="sm" c="dimmed">Recompute to refresh cost of goods sold. Booked freight below is read from the archive.</Text>

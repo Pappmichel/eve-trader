@@ -3302,6 +3302,7 @@ export interface RealizedCourierShipment {
   isk_per_m3: number | null
   collateral: number
   booked_freight: number
+  before_cutover_freight: number
   gap: number
   couriers: RealizedCourierContract[]
 }

@@ -447,7 +447,7 @@ describe('RealizedProfit', () => {
         shipment_ref: '11,12', contract_ids: [11, 12], issued: '2026-10-03T06:32:00Z',
         start_location_id: 60003760, end_location_id: 42,
         volume_m3: 20, reward: 800, isk_per_m3: 40, collateral: 1200,
-        booked_freight: 160, gap: 640,
+        booked_freight: 160, before_cutover_freight: 0, gap: 640,
         couriers: [],
       }],
       rewards_without_courier: [{

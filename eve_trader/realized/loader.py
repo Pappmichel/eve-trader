@@ -254,8 +254,9 @@ def _load_couriers() -> tuple:
     return tuple(out)
 
 
-# Used only when cutover T0 is unknown, so a shipment list can still be
-# built. Purchases before this date are not booked; couriers still list.
+# Purchase window of the shipment list. It starts before any archive row
+# so a shipment also matches purchases from before cutover T0; the list
+# reports those apart from freight that costing books.
 _FREIGHT_LIST_T0 = datetime(2003, 1, 1, tzinfo=timezone.utc)
 
 
@@ -317,15 +318,17 @@ def _load_item_exchanges_readonly() -> tuple:
     return tuple(contracts)
 
 
-def load_freight_snapshot() -> LedgerSnapshot:
-    """Purchases and couriers for the shipment list.
+def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
+    """(snapshot, cutover T0) for the shipment list.
 
-    Read-only: no freight freeze, no region update, no ledger run. When
-    cutover T0 is unknown the purchase window starts at `_FREIGHT_LIST_T0`
-    so finished couriers still appear.
+    Read-only: no freight freeze, no region update, no ledger run. The
+    snapshot holds every archived purchase (`_FREIGHT_LIST_T0`), so the
+    caller can tell purchases before cutover T0, which costing never
+    freights, from the ones it does.
     """
-    t0 = access.cutover_t0_for_production()
-    t0 = _FREIGHT_LIST_T0 if t0 is None else _as_utc(t0)
+    cutover = access.cutover_t0_for_production()
+    cutover = None if cutover is None else _as_utc(cutover)
+    t0 = _FREIGHT_LIST_T0
     txs = [
         WalletTransaction(
             owner_type=r[0], owner_id=int(r[1]), division=int(r[2]),
@@ -338,7 +341,7 @@ def load_freight_snapshot() -> LedgerSnapshot:
         )
         for r in access.list_all_wallet_transactions_for_production()
     ]
-    return LedgerSnapshot(
+    snapshot = LedgerSnapshot(
         t0=t0,
         tenant_character_ids=_tenant_character_ids(),
         wallet_transactions=tuple(txs),
@@ -348,6 +351,7 @@ def load_freight_snapshot() -> LedgerSnapshot:
         couriers=_load_couriers(),
         tenant_corporation_ids=_tenant_corporation_ids(),
     )
+    return snapshot, cutover
 
 
 def _load_contracts() -> tuple:
