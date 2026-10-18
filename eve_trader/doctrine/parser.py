@@ -66,6 +66,10 @@ class FittingParseError(Exception):
 _EMPTY_MARKER_RE = re.compile(r"^\[\s*empty\s+\S+(?:\s+\S+)*\s+slot\s*\]$", re.IGNORECASE)
 _OFFLINE_SUFFIX_RE = re.compile(r"\s*/offline\s*$", re.IGNORECASE)
 _QTY_SUFFIX_RE = re.compile(r"\s+x(\d+)\s*$", re.IGNORECASE)
+# Bay lines copied from the game: "Name<TAB>117500" or "Name   117,500".
+# Commas, periods and spaces inside the number are thousands separators.
+_BARE_QTY = r"\d{1,3}(?:[,. ]\d{3})+|\d+"
+_BARE_QTY_SUFFIX_RE = re.compile(r"\s+(" + _BARE_QTY + r")$")
 _HEADER_RE = re.compile(r"^\[(.*)\]$")
 
 
@@ -329,6 +333,16 @@ def parse_fitting(raw_text: str, resolve_name: NameResolver, resolve_slot: SlotR
                           items=items, issues=issues)
 
 
+def _bare_quantity(raw: str) -> Optional[int]:
+    """A whole quantity >= 1 from "117500", "117,500", "117.500" or
+    "117 500"; None for anything else."""
+    text = raw.strip()
+    if not re.fullmatch(_BARE_QTY, text):
+        return None
+    value = int(re.sub(r"\D", "", text))
+    return value if value >= 1 else None
+
+
 def parse_bay_items(text: str, resolve_name: NameResolver, slot_section: str,
                      line_no_start: int = 1) -> tuple[list[ParsedItem], list[ParsedIssue]]:
     """GitHub issue #18 - Fuel Bay / Ship Maintenance Bay contents, entered
@@ -339,6 +353,10 @@ def parse_bay_items(text: str, resolve_name: NameResolver, slot_section: str,
     grammar parse_fitting's own body lines use, just without any slot/
     section classification, since every resolved line here becomes exactly
     `slot_section` (the caller passes "fuelbay" or "shipmaintenancebay").
+    A line copied from the game's inventory also works: "Item Name<TAB>N"
+    (further tab columns are ignored) or "Item Name   N", with thousands
+    separators allowed. A bare trailing number is read as the quantity only
+    when the whole line is not itself an item name.
 
     Deliberately no comma/charge-pairing logic (Ship Maintenance Bay holds
     plain ships/haulers, Fuel Bay holds a single fuel material - neither
@@ -351,19 +369,35 @@ def parse_bay_items(text: str, resolve_name: NameResolver, slot_section: str,
     items: list[ParsedItem] = []
     issues: list[ParsedIssue] = []
     line_no = line_no_start
-    for raw_line in _normalize(text):
+    # Same line split as _normalize, with the tabs still in place.
+    tabbed = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for raw_line, tab_line in zip(_normalize(text), tabbed):
         if not raw_line:
             continue
         remainder = raw_line
         has_qty = False
         qty = 1
-        qty_match = _QTY_SUFFIX_RE.search(remainder)
-        if qty_match:
-            qty = int(qty_match.group(1))
-            if qty >= 1:
-                remainder = _QTY_SUFFIX_RE.sub("", remainder)
-                has_qty = True
-        remainder = remainder.strip()
+        fields = [field.strip() for field in tab_line.split("\t")]
+        tab_qty = _bare_quantity(fields[1]) if len(fields) >= 2 and fields[0] else None
+        if tab_qty is not None:
+            remainder = re.sub(r" {2,}", " ", fields[0])
+            qty = tab_qty
+            has_qty = True
+        else:
+            qty_match = _QTY_SUFFIX_RE.search(remainder)
+            if qty_match:
+                qty = int(qty_match.group(1))
+                if qty >= 1:
+                    remainder = _QTY_SUFFIX_RE.sub("", remainder)
+                    has_qty = True
+            remainder = remainder.strip()
+            if not has_qty and remainder and resolve_name(remainder) is None:
+                bare = _BARE_QTY_SUFFIX_RE.search(remainder)
+                bare_qty = _bare_quantity(bare.group(1)) if bare else None
+                if bare_qty is not None:
+                    remainder = remainder[:bare.start()].strip()
+                    qty = bare_qty
+                    has_qty = True
         resolved = resolve_name(remainder) if remainder else None
         if resolved is None:
             issues.append(ParsedIssue(line_no, raw_line, ISSUE_KIND_UNRESOLVED_NAME,

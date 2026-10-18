@@ -253,6 +253,32 @@ def test_parse_bay_items_blank_lines_are_skipped():
     assert issues == []
 
 
+def test_parse_bay_items_reads_a_quantity_copied_from_the_game():
+    # Inventory copy: tab-separated columns, quantity second.
+    items, issues = parse_bay_items(
+        "Tritanium\t117500\tMineral\tMaterial\n"
+        "Warrior II\t1,250\n"
+        "Rifter      825\n"
+        "Tritanium 117.500",
+        _resolve_name, "fuelbay",
+    )
+    assert issues == []
+    assert [(i.type_id, i.quantity) for i in items] == [
+        (8, 117500.0), (7, 1250.0), (1, 825.0), (8, 117500.0),
+    ]
+
+
+def test_parse_bay_items_keeps_a_number_that_is_part_of_the_name():
+    item = ResolvedType(9, 900, 4, None, None, "Item 300")
+
+    def resolve(name):
+        return item if name.strip().lower() == "item 300" else _resolve_name(name)
+
+    items, issues = parse_bay_items("Item 300", resolve, "fuelbay")
+    assert issues == []
+    assert [(i.type_id, i.quantity) for i in items] == [(9, 1.0)]
+
+
 def test_parse_bay_items_empty_text_returns_nothing():
     items, issues = parse_bay_items("", _resolve_name, "fuelbay")
     assert items == []
