@@ -564,6 +564,8 @@ def test_total_wealth_bpc_without_manual_price_is_unpriced_not_bpo_priced(monkey
     # the BPC must still not use it.
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
     monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {})
+    # No invention recipe either (a copy of a BPO): nothing to value it by.
+    monkeypatch.setattr(portfolio, "_bpc_run_values", lambda type_ids: {})
     import eve_trader.auth as auth_module
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
         _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
@@ -574,6 +576,67 @@ def test_total_wealth_bpc_without_manual_price_is_unpriced_not_bpo_priced(monkey
     assert result["wealth_blueprints_value"] == 0.0
     assert result["wealth_priced_items"] == 0
     assert result["wealth_unpriced_items"] == 1
+
+
+def _one_invented_copy(monkeypatch, manual, per_run):
+    _stub_sharing(monkeypatch, blueprints_character=[1])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [
+        ("character", 1, 10, 12345, -2, 10),  # one T2 BPC with 10 runs left
+    ])
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {})
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: manual)
+    asked = []
+
+    def _per_run(type_ids):
+        asked.append(set(type_ids))
+        return per_run
+
+    monkeypatch.setattr(portfolio, "_bpc_run_values", _per_run)
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
+    ]))
+    return asked
+
+
+def test_total_wealth_values_an_invented_copy_at_invention_cost_per_remaining_run(monkeypatch):
+    _one_invented_copy(monkeypatch, manual={}, per_run={12345: 80_000.0})
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["wealth_blueprints_value"] == 800_000.0  # 10 runs x 80k
+    assert result["wealth_unpriced_items"] == 0
+
+
+def test_total_wealth_manual_copy_price_wins_over_invention_cost(monkeypatch):
+    asked = _one_invented_copy(monkeypatch, manual={12345: 5.0}, per_run={12345: 80_000.0})
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["wealth_blueprints_value"] == 5.0
+    assert asked == [set()]  # a manually priced type is not estimated
+
+
+def test_bpc_run_values_are_cached_per_tenant(monkeypatch):
+    monkeypatch.setattr(portfolio, "_bpc_cache", {})
+    monkeypatch.setattr(portfolio, "_bpc_cache_at", {})
+    tenant = ["a"]
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: tenant[0])
+    computed = []
+
+    def _compute(type_ids):
+        computed.append(sorted(type_ids))
+        return {tid: (None if tid == 2 else 7.0) for tid in type_ids}
+
+    monkeypatch.setattr(portfolio, "_compute_bpc_run_values", _compute)
+
+    assert portfolio._bpc_run_values({1, 2}) == {1: 7.0}
+    assert portfolio._bpc_run_values({1, 2}) == {1: 7.0}
+    tenant[0] = "b"
+    assert portfolio._bpc_run_values({1}) == {1: 7.0}
+    assert computed == [[1, 2], [1]]
 
 
 def test_total_wealth_bpc_with_manual_price_is_priced_against_it(monkeypatch):

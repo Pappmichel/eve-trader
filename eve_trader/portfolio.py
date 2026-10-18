@@ -8,6 +8,8 @@ either (confirmed with the user).
 """
 from __future__ import annotations
 
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -508,6 +510,78 @@ def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float,
     return value, priced, unpriced
 
 
+_BPC_CACHE_TTL_SECONDS = 6 * 3600
+_bpc_cache: dict[tuple, Optional[float]] = {}
+_bpc_cache_at: dict[str, float] = {}
+_bpc_lock = threading.Lock()
+
+
+def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
+    """Invention cost per blueprint-copy run for invented blueprints
+    (Tech II, Tech III): the cheapest relic grade and decryptor, expected
+    attempt cost (datacores, decryptor, relic, job fee) over success
+    chance and output runs - production/invention's own estimate, with
+    no build-side ME credit. Datacores and decryptors are priced from the
+    same Goonmetrics quotes as Total Wealth through the buy-list rule.
+    A type without an invention recipe or with an unpriced input is left
+    out (the copy stays unpriced).
+
+    Cached per tenant for six hours behind one lock (a cold run took 15 s
+    on the test server for ~450 types): a few hundred types
+    each compare every decryptor, and Total Wealth is read several times
+    per page load. Tenant-keyed because skills, structure and fees are
+    tenant settings."""
+    if not type_ids:
+        return {}
+    tenant = str(storage.get_current_tenant())
+    with _bpc_lock:
+        now = time.time()
+        if now - _bpc_cache_at.get(tenant, 0.0) > _BPC_CACHE_TTL_SECONDS:
+            for key in [key for key in _bpc_cache if key[0] == tenant]:
+                del _bpc_cache[key]
+            _bpc_cache_at[tenant] = now
+        missing = [tid for tid in type_ids if (tenant, tid) not in _bpc_cache]
+        if missing:
+            for tid, value in _compute_bpc_run_values(missing).items():
+                _bpc_cache[(tenant, tid)] = value
+        return {
+            tid: _bpc_cache[(tenant, tid)]
+            for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
+        }
+
+
+def _compute_bpc_run_values(type_ids: list[int]) -> dict[int, Optional[float]]:
+    from .production import invention
+    from .production.config import PRODUCTION_CONFIG
+    from .production.pricing import JITA_MARKET, _goonmetrics_prices
+
+    out: dict[int, Optional[float]] = {tid: None for tid in type_ids}
+    inventable = [
+        tid for tid in type_ids
+        if storage.find_invention_recipe_candidates_by_product_type_id(tid)
+    ]
+    if not inventable:
+        return out
+    inputs: set[int] = set()
+    for tid in inventable:
+        for candidate in storage.find_invention_recipe_candidates_by_product_type_id(tid):
+            recipe = storage.get_invention_recipe(candidate, tid)
+            if recipe:
+                inputs.update(int(material_id) for material_id, _qty in recipe["datacores"])
+            inputs.add(int(candidate))
+    inputs.update(d.type_id for d in invention.DECRYPTORS.values() if d.type_id)
+    ids = sorted(inputs)
+    cfg = PRODUCTION_CONFIG
+    home = _goonmetrics_prices(cfg.home_market, ids) if cfg.home_market else {}
+    jita = _goonmetrics_prices(JITA_MARKET, ids)
+    rates = invention.fee_rates(cfg)
+    for tid in inventable:
+        best = invention.best_recipe_and_decryptor(tid, home, jita, cfg, 0.0, rates=rates)
+        if best is not None and best.expected_cost_per_run is not None:
+            out[tid] = float(best.expected_cost_per_run)
+    return out
+
+
 def _blueprint_effective_quantity(quantity: int) -> int:
     """ESI's `quantity` field on a blueprint item is usually a sentinel
     (-1 original / -2 copy), not a real stack size - same interpretation
@@ -659,6 +733,7 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
             "location_id": location_id, "type_id": type_id,
             "quantity": _blueprint_effective_quantity(quantity),
             "manual_only": runs != -1,
+            "runs": runs,
         })
     for owner_type, owner_id, location_id, type_id, quantity in listed:
         items.append({
@@ -677,9 +752,16 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
     manual_ids = {item["type_id"] for item in items if item["manual_only"]}
     prices = _priced(market_ids)
     manuals = _manual_only_priced(manual_ids)
+    per_run = _bpc_run_values(manual_ids - set(manuals))
     for item in items:
         book = manuals if item["manual_only"] else prices
         item["price"] = book.get(item["type_id"])
+        # A copy without a manual price: what re-inventing its remaining
+        # runs would cost. Copies of a BPO (no invention recipe) stay unpriced.
+        if item["price"] is None and item["manual_only"] and (item.get("runs") or 0) > 0:
+            value = per_run.get(item["type_id"])
+            if value is not None:
+                item["price"] = value * item["runs"]
 
     wallets = [
         {"owner_type": owner_type, "owner_id": owner_id, "amount": amount}
