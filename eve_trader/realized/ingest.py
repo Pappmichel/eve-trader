@@ -434,12 +434,14 @@ def archive_market_orders(
         oid = o.get("order_id")
         if oid is None:
             continue
+        escrow = o.get("escrow")
         rows.append((
             owner_type, int(owner_id), int(oid), int(o["type_id"]),
             int(o["location_id"]), o.get("region_id"),
             bool(o.get("is_buy_order")), float(o["price"]),
             int(o.get("volume_total") or o.get("volume_remain") or 0),
             o.get("volume_remain"), o.get("issued"), o.get("state"),
+            None if escrow is None else float(escrow),
         ))
     _check_gap(
         owner_type=owner_type, owner_id=owner_id, data_kind="market_orders",

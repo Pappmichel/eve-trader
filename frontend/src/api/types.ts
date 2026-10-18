@@ -690,6 +690,17 @@ export interface ProductionUnlistedStockRow {
   margin: number | null
 }
 
+export interface WealthDelta {
+  isk: number
+  pct: number | null
+}
+
+export interface WealthChange {
+  d1: WealthDelta | null
+  d7: WealthDelta | null
+  d30: WealthDelta | null
+}
+
 export interface PortfolioOverview {
   trading_realized_profit: number
   trading_average_margin: number
@@ -698,6 +709,7 @@ export interface PortfolioOverview {
   production_stock_value: number
   production_stock_targets_configured: boolean
   combined_value: number
+  wealth_change: WealthChange
 }
 
 export interface PortfolioSnapshotRow {
@@ -712,6 +724,9 @@ export interface PortfolioSnapshotRow {
   total_wealth: number | null
   wealth_assets_value: number | null
   wealth_wallet_balance: number | null
+  wealth_listed_value: number | null
+  wealth_contract_value: number | null
+  wealth_escrow: number | null
 }
 
 export interface CharacterMissingWalletScope {
@@ -719,14 +734,89 @@ export interface CharacterMissingWalletScope {
   character_name: string
 }
 
+export interface WealthSync {
+  assets: string | null
+  blueprints: string | null
+  listed: string | null
+  contracts: string | null
+  wallet: string | null
+  escrow: string | null
+}
+
 export interface TotalWealth {
   total_wealth: number | null
   wealth_assets_value: number | null
   wealth_blueprints_value: number | null
   wealth_wallet_balance: number | null
+  wealth_listed_value: number | null
+  wealth_contract_value: number | null
+  wealth_escrow: number | null
   wealth_priced_items: number
   wealth_unpriced_items: number
   characters_missing_wallet_scope: CharacterMissingWalletScope[]
+  sync: WealthSync
+}
+
+export interface WealthShareRow {
+  label: string
+  value: number
+  share: number | null
+}
+
+export interface WealthTopRow {
+  type_id: number
+  type_name: string
+  quantity: number
+  value: number
+  share: number | null
+  owner_name: string
+  location_name: string
+  component: string
+}
+
+export interface UnpricedWealthItem {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  positions: number
+  owner_name: string
+  location_name: string
+  component: string
+}
+
+export interface CapitalBucket {
+  key: string
+  label: string
+  quantity: number | null
+  cost_basis: number | null
+  market_value: number | null
+  unrealized: number | null
+  coverage: number | null
+  estimated: boolean
+  comparison_value?: number | null
+}
+
+export interface PortfolioCapital {
+  source: string
+  buckets: CapitalBucket[]
+  total: {
+    cost_basis: number | null
+    market_value: number | null
+    unrealized: number | null
+    estimated: boolean
+    coverage: number | null
+    excluded: string[]
+  }
+}
+
+export interface WealthBreakdown {
+  total: number | null
+  by_owner: WealthShareRow[]
+  by_location: WealthShareRow[]
+  by_category: WealthShareRow[]
+  top: WealthTopRow[]
+  unpriced: UnpricedWealthItem[]
+  unpriced_types: number
 }
 
 export interface ManualItemPriceRow {
@@ -2689,6 +2779,25 @@ export interface TradingRealizedSummary {
   cost_structure: CostStructureLine[]
   by_day: RealizedDay[]
   flags: RealizedFlags
+  portfolio_average_margin?: number
+  portfolio_daily_profit_volatility?: number | null
+}
+
+export interface RealizedHistoryRow {
+  date: string
+  total: number
+  cumulative: number
+  production?: number
+  trading?: number
+  doctrine?: number
+  station_trading?: number
+}
+
+export interface RealizedHistory {
+  bucket: 'day' | 'week'
+  channels: string[]
+  period: string
+  rows: RealizedHistoryRow[]
 }
 
 export interface TradingRealizedItem {
@@ -2966,14 +3075,35 @@ export interface DoctrineRealizedContractDetail extends DoctrineRealizedContract
 export interface RealizedToolCard {
   tool: string
   profit: number | null
+  revenue: number | null
+  margin: number | null
   coverage: number | null
   estimated: boolean
   empty: boolean
+  sales_count: number | null
+  link: string
+}
+
+export interface RealizedFreight {
+  courier: number
+  configured: number
 }
 
 export interface RealizedToolCards {
   rows: RealizedToolCard[]
   total: number | null
+  period: string
+  freight: RealizedFreight | null
+}
+
+export interface AttentionItem {
+  key: string
+  text: string
+  link: string
+}
+
+export interface PortfolioAttention {
+  items: AttentionItem[]
 }
 
 export interface RealizedJobFeeLine {

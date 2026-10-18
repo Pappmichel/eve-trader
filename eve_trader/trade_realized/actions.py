@@ -43,7 +43,13 @@ def _period(days: int | None, start: str | None, end: str | None, since_t0: bool
 
 def do_get_trading_realized_summary(days: int | None = None, start: str | None = None,
                                     end: str | None = None, since_t0: bool = False) -> dict:
-    return report.summary(**_period(days, start, end, since_t0))
+    data = report.summary(**_period(days, start, end, since_t0))
+    # The two figures Portfolio used to chart, still the fixed 30-day
+    # portfolio_figures() numbers (P3), not the page's selected period.
+    figures = report.portfolio_figures()
+    data["portfolio_average_margin"] = figures["trading_average_margin"]
+    data["portfolio_daily_profit_volatility"] = figures["trading_daily_profit_volatility"]
+    return data
 
 
 def do_get_trading_realized_items(days: int | None = None, start: str | None = None,

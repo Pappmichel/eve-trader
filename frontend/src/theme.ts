@@ -15,6 +15,14 @@ export const COLORS = {
   danger: '#E5595C', // inactive / loss
 }
 
+// Fixed colours for the four realized-profit channels on Portfolio.
+export const CHANNEL_COLORS: Record<string, string> = {
+  trading: COLORS.accent,
+  production: COLORS.info,
+  doctrine: COLORS.warn,
+  station_trading: COLORS.danger,
+}
+
 // Mantine wants a 10-shade tuple per color; shade index 5 is what "accent"/
 // "danger" etc. resolve to by default (see primaryShade below) - the ramp
 // around it doesn't need to be perfect since this app mostly uses fixed

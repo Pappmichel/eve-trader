@@ -8,27 +8,45 @@ either (confirmed with the user).
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from . import storage
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
+from .portfolio_wealth import assemble
+
+# Same window vocabulary as the tool pages (production/realized/period.ts).
+# "since_t0" leaves `start` unset so each tool's summary applies the ledger T0.
+_PERIOD_DAYS = {"7": 7, "30": 30, "90": 90}
+_CARD_LINKS = {
+    "production": "/production/realized",
+    "trading": "/trading/trades",
+    "doctrine": "/doctrine/realized",
+    "station_trading": "/station-trading/realized",
+}
+_CARD_ORDER = ("production", "trading", "doctrine", "station_trading")
+_TOOL_LABELS = {
+    "production": "Production",
+    "trading": "Trading",
+    "doctrine": "Doctrine",
+    "station_trading": "Station Trading",
+}
 
 
-def realized_cards(tool_keys) -> dict:
-    """Last-30-day realized profit for each granted tool, plus a total.
-
-    The total is present only when at least two of those tools have a
-    figure. A tool that still needs a recompute contributes no number, so
-    a zero from an empty archive is not added in as a result. The page
-    shows `total` as returned.
-    """
-    from datetime import datetime, timedelta, timezone
-
-    keys = {str(key) for key in (tool_keys or ())}
+def _realized_window(period: str) -> dict:
+    key = str(period or "30").strip()
     now = datetime.now(timezone.utc)
-    period = {"start": now - timedelta(days=30), "end": now, "since_t0": False, "days": 30}
+    if key == "since_t0":
+        return {"start": None, "end": now, "since_t0": True, "days": None}
+    if key not in _PERIOD_DAYS:
+        raise ActionError("period must be 7, 30, 90, or since_t0.")
+    days = _PERIOD_DAYS[key]
+    return {"start": now - timedelta(days=days), "end": now, "since_t0": False, "days": days}
+
+
+def _card_readers(tool_keys):
+    keys = {str(key) for key in (tool_keys or ())}
     readers = []
     if "production" in keys:
         from .production.realized.report import summary as production_summary
@@ -42,19 +60,296 @@ def realized_cards(tool_keys) -> dict:
     if "station_trading" in keys:
         from .station_trading.realized import summary as station_summary
         readers.append(("station_trading", station_summary))
+    return readers
+
+
+def _sales_count(data: dict):
+    if "sale_count" in data:
+        return data["sale_count"]
+    if "contracts" in data:
+        return data["contracts"]
+    return None
+
+
+def _freight_of(data: dict) -> tuple[float, float]:
+    """Courier and configured-rate freight from one tool's summary.
+
+    Production and Trading put the split on `cost_structure`. Doctrine and
+    Station Trading put it on `freight_from_couriers` / `freight_configured`.
+    """
+    rows = data.get("cost_structure")
+    if isinstance(rows, list):
+        amounts = {
+            row.get("key"): row.get("amount")
+            for row in rows if isinstance(row, dict)
+        }
+        if "freight_courier" in amounts or "freight_configured" in amounts:
+            return (
+                float(amounts.get("freight_courier") or 0.0),
+                float(amounts.get("freight_configured") or 0.0),
+            )
+    courier = data.get("freight_from_couriers")
+    if courier is None:
+        courier = data.get("freight_courier")
+    return float(courier or 0.0), float(data.get("freight_configured") or 0.0)
+
+
+def realized_cards(tool_keys, period: str = "30") -> dict:
+    """Realized profit for each granted tool over `period`, plus a total.
+
+    `period` is 7, 30, 90, or since_t0. since_t0 is passed through to each
+    tool's summary, which applies that ledger's T0. The total is the sum of
+    every tool that has a figure, including when only one does (P2). A tool
+    that still needs a recompute contributes no number, so a zero from an
+    empty archive is not added in as a result. The page shows these numbers
+    as returned.
+    """
+    window = _realized_window(period)
     rows = []
-    for tool, reader in readers:
-        data = reader(**period)
+    courier = 0.0
+    configured = 0.0
+    saw_figure = False
+    for tool, reader in _card_readers(tool_keys):
+        data = reader(**window)
         empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
+        if not empty:
+            saw_figure = True
+            part_courier, part_configured = _freight_of(data)
+            courier += part_courier
+            configured += part_configured
         rows.append({
             "tool": tool,
             "profit": None if empty else data["realized_profit"],
+            "revenue": None if empty else data.get("revenue"),
+            "margin": None if empty else data.get("margin"),
             "coverage": None if empty else data.get("coverage"),
             "estimated": False if empty else bool(data.get("estimated")),
             "empty": empty,
+            "sales_count": None if empty else _sales_count(data),
+            "link": _CARD_LINKS[tool],
         })
+    rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
     ready = [row["profit"] for row in rows if row["profit"] is not None]
-    return {"rows": rows, "total": sum(ready) if len(ready) >= 2 else None}
+    return {
+        "rows": rows,
+        "total": sum(ready) if ready else None,
+        "period": str(period or "30"),
+        "freight": None if not saw_figure else {"courier": courier, "configured": configured},
+    }
+
+
+def _day(value) -> date:
+    return date.fromisoformat(str(value)[:10])
+
+
+def _week_start(day: date) -> date:
+    """Monday, matching the tool pages' weekly bars."""
+    return day - timedelta(days=day.weekday())
+
+
+def _history_bucket(period: str, bucket: Optional[str], summaries: list[dict]) -> str:
+    if bucket in ("day", "week"):
+        return bucket
+    if bucket not in (None, ""):
+        raise ActionError("bucket must be day or week.")
+    key = str(period or "30").strip()
+    if key in _PERIOD_DAYS:
+        return "week" if _PERIOD_DAYS[key] > 90 else "day"
+    starts = []
+    for data in summaries:
+        start = (data.get("period") or {}).get("start")
+        if start:
+            starts.append(_day(start))
+    if not starts:
+        return "day"
+    return "week" if (date.today() - min(starts)).days > 90 else "day"
+
+
+def realized_history(tool_keys, period: str = "30", bucket: Optional[str] = None) -> dict:
+    """Per-bucket realized profit for the channels this session holds.
+
+    Built from each tool's summary()['by_day']. Days with no sale in any
+    held channel are omitted. A held channel with no sale in a bucket is 0.
+    Week buckets start on Monday. The running total is `cumulative`.
+    """
+    window = _realized_window(period)
+    channels = []
+    days_by_tool: dict[str, dict[date, float]] = {}
+    summaries = []
+    for tool, reader in _card_readers(tool_keys):
+        data = reader(**window)
+        channels.append(tool)
+        summaries.append(data)
+        empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
+        grouped: dict[date, float] = {}
+        if not empty:
+            for row in data.get("by_day") or []:
+                day = _day(row["date"])
+                grouped[day] = grouped.get(day, 0.0) + float(row["profit"])
+        days_by_tool[tool] = grouped
+    chosen = _history_bucket(period, bucket, summaries)
+    buckets: dict[date, dict[str, float]] = {}
+    for tool, grouped in days_by_tool.items():
+        for day, profit in grouped.items():
+            key = _week_start(day) if chosen == "week" else day
+            slot = buckets.setdefault(key, {})
+            slot[tool] = slot.get(tool, 0.0) + profit
+    rows = []
+    running = 0.0
+    for key in sorted(buckets):
+        slot = buckets[key]
+        total = sum(slot.get(tool, 0.0) for tool in channels)
+        running += total
+        row = {"date": key.isoformat(), "total": total, "cumulative": running}
+        for tool in channels:
+            row[tool] = slot.get(tool, 0.0)
+        rows.append(row)
+    return {
+        "bucket": chosen,
+        "channels": channels,
+        "period": str(period or "30"),
+        "rows": rows,
+    }
+
+
+def _parse_time(value) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _portfolio_data_kinds():
+    from .esi_data.registry import OWNED_DATA_KINDS
+    return [
+        kind for kind in OWNED_DATA_KINDS
+        if "portfolio" in kind.consuming_tools and not kind.live_only
+    ]
+
+
+def _tier_hours(cfg: TradingConfig, tier: str) -> float:
+    return {
+        "frequent": cfg.esi_frequent_interval_hours,
+        "normal": cfg.esi_normal_interval_hours,
+        "rare": cfg.esi_rare_interval_hours,
+    }.get(tier, cfg.esi_normal_interval_hours)
+
+
+def _stale_portfolio_labels(cfg: TradingConfig, now: datetime) -> list[str]:
+    """Labels of Portfolio kinds whose shared owners are past the tier interval."""
+    shares = storage.list_esi_sharing("portfolio")
+    freshness = {
+        (row[0], int(row[1]), row[2]): row[3]
+        for row in storage.list_esi_freshness()
+    }
+    labels = []
+    for kind in _portfolio_data_kinds():
+        owners = [
+            (owner_type, int(owner_id))
+            for owner_type, owner_id, data_kind, _tool in shares
+            if data_kind == kind.key
+        ]
+        if not owners:
+            continue
+        limit = now - timedelta(hours=_tier_hours(cfg, kind.freshness_tier))
+        stale = False
+        for owner in owners:
+            synced = _parse_time(freshness.get((*owner, kind.key)))
+            if synced is None or synced <= limit:
+                stale = True
+                break
+        if stale:
+            labels.append(kind.label)
+    return labels
+
+
+def attention(tool_keys, cfg: TradingConfig = TRADING_CONFIG, now: Optional[datetime] = None) -> dict:
+    """What the Portfolio page should ask the viewer to do.
+
+    Each item is `{key, text, link}`. A realized tool is listed only when
+    its summary says `needs_rebuild`. An empty archive that already has a
+    run is not a recompute. Stale ESI is one line naming the Portfolio
+    kinds that are past their tier interval for an owner shared with
+    Portfolio. Stock targets are listed only when this session holds
+    Production and none are saved.
+    """
+    now = now or datetime.now(timezone.utc)
+    items = []
+    wealth = total_wealth(cfg)
+    missing = wealth.get("characters_missing_wallet_scope") or []
+    if missing:
+        names = ", ".join(row["character_name"] for row in missing)
+        verb = "has" if len(missing) == 1 else "have"
+        items.append({
+            "key": "wallet_scope",
+            "text": (
+                f"{names} {verb} no wallet scope, so their balance is left "
+                "out of Total Wealth."
+            ),
+            "link": "/character-management/characters",
+        })
+    for tool, reader in _card_readers(tool_keys):
+        data = reader(**_realized_window("30"))
+        status = data.get("status") or {}
+        if status.get("needs_rebuild"):
+            items.append({
+                "key": f"recompute_{tool}",
+                "text": f"{_TOOL_LABELS[tool]} realized profit needs a recompute.",
+                "link": _CARD_LINKS[tool],
+            })
+    unpriced = int(wealth.get("wealth_unpriced_items") or 0)
+    if unpriced:
+        noun = "item is" if unpriced == 1 else "items are"
+        items.append({
+            "key": "unpriced",
+            "text": f"{unpriced} unpriced {noun} excluded from Total Wealth.",
+            "link": "#unpriced",
+        })
+    stale = _stale_portfolio_labels(cfg, now)
+    if stale:
+        items.append({
+            "key": "stale_esi",
+            "text": "ESI data shared with Portfolio is stale: " + ", ".join(stale) + ".",
+            "link": "/character-management/characters",
+        })
+    if "production" in {str(key) for key in (tool_keys or ())} and not storage.load_stock_targets():
+        items.append({
+            "key": "stock_targets",
+            "text": "Production has no stock targets configured.",
+            "link": "/production/stock-targets",
+        })
+    return {"items": items}
+
+
+def wealth_change(today: Optional[date] = None) -> dict:
+    """ISK and percent change of total_wealth versus the snapshot 1, 7 and
+    30 days earlier. A missing row, or a row whose total_wealth is still
+    NULL, is None for that horizon. Percent is None when the earlier
+    wealth is 0. The page shows these numbers as returned.
+    """
+    today = today or date.today()
+    rows = storage.load_portfolio_snapshots(since=today - timedelta(days=30))
+    columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
+    by_date = {row[0]: dict(zip(columns, row)) for row in rows}
+    current = by_date.get(today, {}).get("total_wealth")
+
+    def point(days: int):
+        past = by_date.get(today - timedelta(days=days))
+        if current is None or past is None or past.get("total_wealth") is None:
+            return None
+        earlier = past["total_wealth"]
+        isk = current - earlier
+        return {"isk": isk, "pct": None if earlier == 0 else isk / earlier}
+
+    return {"d1": point(1), "d7": point(7), "d30": point(30)}
 
 
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -204,17 +499,194 @@ def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
     ]
 
 
+_WEALTH_KINDS = ("assets", "blueprints", "wallet_balance", "market_orders", "contracts")
+_EMPTY_SYNC = {
+    "assets": None, "blueprints": None, "listed": None,
+    "contracts": None, "wallet": None, "escrow": None,
+}
+_EMPTY_WEALTH = {
+    "total_wealth": None,
+    "wealth_assets_value": None,
+    "wealth_blueprints_value": None,
+    "wealth_wallet_balance": None,
+    "wealth_listed_value": None,
+    "wealth_contract_value": None,
+    "wealth_escrow": None,
+    "wealth_priced_items": 0,
+    "wealth_unpriced_items": 0,
+    "characters_missing_wallet_scope": [],
+    "sync": dict(_EMPTY_SYNC),
+}
+_EMPTY_BREAKDOWN = {
+    "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [],
+    "unpriced": [], "unpriced_types": 0,
+}
+
+
+def _portfolio_shares() -> dict[str, tuple[list[int], list[int]]]:
+    from .esi_data.access import shared_owner_ids
+    return {
+        kind: (
+            shared_owner_ids(kind, "portfolio", "character"),
+            shared_owner_ids(kind, "portfolio", "corporation"),
+        )
+        for kind in _WEALTH_KINDS
+    }
+
+
+def _any_shared(shares: dict) -> bool:
+    return any(ids for pair in shares.values() for ids in pair)
+
+
+def _owner_pairs(chars: list[int], corps: list[int]) -> list[tuple[str, int]]:
+    return [("character", int(i)) for i in chars] + [("corporation", int(i)) for i in corps]
+
+
+def _sync_times(shares: dict, escrow_known: bool) -> dict:
+    rows = storage.list_esi_freshness()
+    kind_for = {
+        "assets": "assets", "blueprints": "blueprints", "listed": "market_orders",
+        "contracts": "contracts", "wallet": "wallet_balance", "escrow": "market_orders",
+    }
+    out = {}
+    for label, kind in kind_for.items():
+        if label == "escrow" and not escrow_known:
+            out[label] = None
+            continue
+        chars, corps = shares[kind]
+        owners = set(_owner_pairs(chars, corps))
+        times = [
+            row[3] for row in rows
+            if row[2] == kind and (row[0], int(row[1])) in owners and row[3]
+        ]
+        out[label] = max(times) if times else None
+    return out
+
+
+def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
+    """Rows Total Wealth and the breakdown both price. None when nobody
+    shares any Portfolio kind. Listed sells and outstanding contracts are
+    their own rows, never folded into assets."""
+    shares = _portfolio_shares()
+    if not _any_shared(shares):
+        return None
+    asset_chars, asset_corps = shares["assets"]
+    bp_chars, bp_corps = shares["blueprints"]
+    wallet_chars, wallet_corps = shares["wallet_balance"]
+    order_chars, order_corps = shares["market_orders"]
+    contract_chars, contract_corps = shares["contracts"]
+
+    assets = storage.load_assets_grouped(asset_chars, asset_corps) if (asset_chars or asset_corps) else []
+    blueprints = storage.load_blueprints_grouped(bp_chars, bp_corps) if (bp_chars or bp_corps) else []
+    listed = storage.load_sell_orders_grouped(order_chars, order_corps) if (order_chars or order_corps) else []
+    contract_rows = []
+    if contract_chars or contract_corps:
+        from .realized.db import outstanding_contract_lines
+        contract_rows = outstanding_contract_lines(_owner_pairs(contract_chars, contract_corps))
+    wallet_rows = (
+        storage.wallet_balances_by_owner(wallet_chars, wallet_corps)
+        if (wallet_chars or wallet_corps) else []
+    )
+    escrow_rows = []
+    escrow_known = True
+    if order_chars or order_corps:
+        from .realized.db import open_buy_escrow_by_owner
+        escrow_rows = open_buy_escrow_by_owner(_owner_pairs(order_chars, order_corps))
+        escrow_known = escrow_rows is not None
+
+    items = []
+    for owner_type, owner_id, location_id, type_id, quantity in assets:
+        items.append({
+            "component": "assets", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id, "quantity": quantity,
+            "manual_only": False,
+        })
+    for owner_type, owner_id, location_id, type_id, quantity, runs in blueprints:
+        items.append({
+            "component": "blueprints", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id,
+            "quantity": _blueprint_effective_quantity(quantity),
+            "manual_only": runs != -1,
+        })
+    for owner_type, owner_id, location_id, type_id, quantity in listed:
+        items.append({
+            "component": "listed", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id, "quantity": quantity,
+            "manual_only": False,
+        })
+    for owner_type, owner_id, type_id, quantity in contract_rows:
+        items.append({
+            "component": "contracts", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": None, "type_id": type_id, "quantity": quantity,
+            "manual_only": False,
+        })
+
+    market_ids = {item["type_id"] for item in items if not item["manual_only"]}
+    manual_ids = {item["type_id"] for item in items if item["manual_only"]}
+    prices = _priced(market_ids)
+    manuals = _manual_only_priced(manual_ids)
+    for item in items:
+        book = manuals if item["manual_only"] else prices
+        item["price"] = book.get(item["type_id"])
+
+    wallets = [
+        {"owner_type": owner_type, "owner_id": owner_id, "amount": amount}
+        for owner_type, owner_id, amount in wallet_rows
+    ]
+    return {
+        "items": items,
+        "wallets": wallets,
+        "escrow": None if not escrow_known else [
+            {"owner_type": owner_type, "owner_id": owner_id, "amount": amount}
+            for owner_type, owner_id, amount in (escrow_rows or [])
+        ],
+        "shares": shares,
+        "escrow_known": escrow_known,
+        "structure_id": cfg.structure_id,
+    }
+
+
+def _wealth_from(collected: dict) -> dict:
+    built = assemble(
+        collected["items"], collected["wallets"], collected["escrow"],
+        structure_id=collected["structure_id"],
+    )
+    parts = built["components"]
+    shared_characters = set()
+    for kind in ("assets", "blueprints", "wallet_balance"):
+        shared_characters.update(collected["shares"][kind][0])
+    return {
+        "total_wealth": built["total"],
+        "wealth_assets_value": parts["assets"],
+        "wealth_blueprints_value": parts["blueprints"],
+        "wealth_wallet_balance": parts["wallet"],
+        "wealth_listed_value": parts["listed"],
+        "wealth_contract_value": parts["contracts"],
+        "wealth_escrow": parts["escrow"],
+        "wealth_priced_items": built["priced_items"],
+        "wealth_unpriced_items": built["unpriced_items"],
+        "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),
+        "sync": _sync_times(collected["shares"], collected["escrow_known"]),
+        "_built": built,
+    }
+
+
 def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Assets + blueprints + wallet balances across every owner sharing
     with "portfolio" specifically - sharing the same data with another
     tool does not expose it here (PORTFOLIO_REWORK_PLAN.md section 4).
 
-    total_wealth/wealth_assets_value/wealth_blueprints_value/wealth_
-    wallet_balance stay None (not 0.0) until any owner shares anything
-    with "portfolio" at all - a real gap ("nobody has opted in yet"), not
-    "everything they own is worthless" (confirmed real bug in review: the
-    original version returned 0.0 here, which the History chart then drew
-    as an indistinguishable flat zero line).
+    total_wealth and each component stay None (not 0.0) until any owner
+    shares anything with "portfolio" at all - a real gap ("nobody has
+    opted in yet"), not "everything they own is worthless" (confirmed
+    real bug in review: the original version returned 0.0 here, which the
+    History chart then drew as an indistinguishable flat zero line).
+
+    Listed sell orders and outstanding contract items are added on top of
+    assets. ESI does not list those in the asset endpoint, so the same
+    type in both piles is not subtracted. Buy-order escrow is None until
+    a sync stores it, and that None is not added into the total. A kind
+    that is not shared is 0 (known empty), not None.
 
     Blueprint pricing caveat, stated in the UI, not silently approximated
     away: a blueprint's ME/TE materially changes what it would actually
@@ -242,58 +714,89 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     this is just that design's visible edge case for blueprints
     specifically, since (unlike assets/wallet) there's no partial-credit
     fallback for them."""
-    from .esi_data.access import shared_owner_ids
+    collected = _collect_wealth(cfg)
+    if collected is None:
+        return {**_EMPTY_WEALTH, "sync": dict(_EMPTY_SYNC)}
+    result = _wealth_from(collected)
+    result.pop("_built", None)
+    return result
 
-    asset_char_ids = shared_owner_ids("assets", "portfolio", "character")
-    asset_corp_ids = shared_owner_ids("assets", "portfolio", "corporation")
-    bp_char_ids = shared_owner_ids("blueprints", "portfolio", "character")
-    bp_corp_ids = shared_owner_ids("blueprints", "portfolio", "corporation")
-    wallet_char_ids = shared_owner_ids("wallet_balance", "portfolio", "character")
-    wallet_corp_ids = shared_owner_ids("wallet_balance", "portfolio", "corporation")
 
-    shared_character_ids = set(asset_char_ids) | set(bp_char_ids) | set(wallet_char_ids)
+def do_get_portfolio_breakdown(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Owner, location, category and top-20 shares of Total Wealth.
 
-    if not (asset_char_ids or asset_corp_ids or bp_char_ids or bp_corp_ids
-            or wallet_char_ids or wallet_corp_ids):
-        return {
-            "total_wealth": None,
-            "wealth_assets_value": None,
-            "wealth_blueprints_value": None,
-            "wealth_wallet_balance": None,
-            "wealth_priced_items": 0,
-            "wealth_unpriced_items": 0,
-            "characters_missing_wallet_scope": [],
-        }
-
-    assets = storage.load_all_assets(asset_char_ids, asset_corp_ids)
-    raw_blueprints = storage.load_owned_blueprints(bp_char_ids, bp_corp_ids)
-    # is_original = runs == -1, same convention production/actions.py's
-    # do_list_owned_blueprints already uses for this same field - a BPC's
-    # own runs count is never -1 (that sentinel is BPO-only).
-    bpo_rows = [(type_id, _blueprint_effective_quantity(quantity))
-                for type_id, quantity, _me, _te, runs in raw_blueprints if runs == -1]
-    bpc_rows = [(type_id, _blueprint_effective_quantity(quantity))
-                for type_id, quantity, _me, _te, runs in raw_blueprints if runs != -1]
-    wallet_total = storage.sum_wallet_balances(wallet_char_ids, wallet_corp_ids)
-
-    type_ids = {type_id for type_id, _qty in assets} | {type_id for type_id, _qty in bpo_rows}
-    prices = _priced(type_ids)
-    bpc_prices = _manual_only_priced({type_id for type_id, _qty in bpc_rows})
-
-    assets_value, assets_priced, assets_unpriced = _value_and_gaps(assets, prices)
-    bpo_value, bpo_priced, bpo_unpriced = _value_and_gaps(bpo_rows, prices)
-    bpc_value, bpc_priced, bpc_unpriced = _value_and_gaps(bpc_rows, bpc_prices)
-    blueprints_value = bpo_value + bpc_value
-
+    The same rows as total_wealth(), so the three full breakdowns sum to
+    that total. Top 20 is a slice. Unpriced rows are listed and excluded
+    from the sums. Names are resolved here; the pure totals do not need them.
+    """
+    collected = _collect_wealth(cfg)
+    if collected is None:
+        return dict(_EMPTY_BREAKDOWN)
+    from .realized.names import owner_names
+    items = collected["items"]
+    wallets = collected["wallets"]
+    escrow = collected["escrow"] or []
+    owner_ids = {int(item["owner_id"]) for item in items}
+    owner_ids.update(int(row["owner_id"]) for row in wallets)
+    owner_ids.update(int(row["owner_id"]) for row in escrow)
+    location_ids = [item["location_id"] for item in items if item.get("location_id") is not None]
+    type_ids = {int(item["type_id"]) for item in items}
+    built = assemble(
+        items, wallets, collected["escrow"],
+        structure_id=collected["structure_id"],
+        owner_names=owner_names(owner_ids),
+        location_names=storage.get_location_names(location_ids),
+        category_names=storage.sde_categories_for_types(type_ids),
+        type_names=storage.sde_type_names(type_ids),
+    )
     return {
-        "total_wealth": assets_value + blueprints_value + wallet_total,
-        "wealth_assets_value": assets_value,
-        "wealth_blueprints_value": blueprints_value,
-        "wealth_wallet_balance": wallet_total,
-        "wealth_priced_items": assets_priced + bpo_priced + bpc_priced,
-        "wealth_unpriced_items": assets_unpriced + bpo_unpriced + bpc_unpriced,
-        "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_character_ids),
+        "total": built["total"],
+        "by_owner": built["by_owner"],
+        "by_location": built["by_location"],
+        "by_category": built["by_category"],
+        "top": built["top"],
+        "unpriced": built["unpriced"],
+        "unpriced_types": built["unpriced_types"],
     }
+
+
+def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Cost and market value of capital in the realized-profit ledger.
+
+    Owners are the union of realized-tool shares, not the Portfolio share.
+    Prices are the same manual / home sell / Jita sell function as Total Wealth.
+    """
+    from .portfolio_capital import report
+    from .realized.access import shared_item_exchange_owners, shared_owners
+    from .realized import db as ledger_db
+
+    order_owners = shared_owners("market_orders")
+    contract_owners = shared_item_exchange_owners()
+    layers = [
+        {
+            "type_id": row[0], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
+            "assumed_me": row[5], "assumed_decryptor": row[6], "estimated_origin": row[7],
+            "price_missing": row[8],
+        }
+        for row in ledger_db.list_remaining_layers()
+    ]
+    listed = [
+        {"type_id": type_id, "quantity": quantity, "order_price": price}
+        for type_id, quantity, price in ledger_db.open_sell_order_lines(order_owners)
+    ]
+    contracts = [
+        {"contract_id": contract_id, "type_id": type_id, "quantity": quantity, "contract_price": price}
+        for contract_id, type_id, quantity, price in ledger_db.outstanding_priced_contract_items(contract_owners)
+    ]
+    escrow_rows = ledger_db.open_buy_escrow_by_owner(order_owners)
+    escrow = None if escrow_rows is None else sum(amount for _ot, _oid, amount in escrow_rows)
+    type_ids = {int(layer["type_id"]) for layer in layers}
+    type_ids.update(int(row["type_id"]) for row in listed)
+    type_ids.update(int(row["type_id"]) for row in contracts)
+    prices = _priced(type_ids)
+    count, cost = ledger_db.running_job_cost()
+    in_production = {"count": int(count or 0), "cost": float(cost or 0)}
+    return report(layers, listed, contracts, escrow, prices, in_production)
 
 
 def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -304,12 +807,10 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     same function, never portfolio_overview()/total_wealth() directly, so
     there is one write path, not two implementations that could drift.
 
-    wealth_blueprints_value/wealth_priced_items/wealth_unpriced_items/
-    characters_missing_wallet_scope are not portfolio_snapshots columns
-    (blueprint value = total_wealth - wealth_assets_value -
-    wealth_wallet_balance, per that table's own comment) - they pass
-    through in the returned dict for the live overview read, but only the
-    declared snapshot columns are persisted.
+    wealth_blueprints_value, the priced/unpriced counts, the wallet-scope
+    list and sync times are not snapshot columns. wealth_listed_value,
+    wealth_contract_value and wealth_escrow are. Escrow stays NULL until
+    a sync stores it. Only the declared snapshot columns are persisted.
     """
     overview = portfolio_overview(cfg)
     wealth = total_wealth(cfg)
@@ -327,8 +828,10 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     is the cheap, plain live read - take_portfolio_snapshot() is never
     called more than once per day from here."""
     if storage.latest_portfolio_snapshot_date() != date.today():
-        return take_portfolio_snapshot(cfg)
-    return portfolio_overview(cfg)
+        overview = take_portfolio_snapshot(cfg)
+    else:
+        overview = portfolio_overview(cfg)
+    return {**overview, "wealth_change": wealth_change()}
 
 
 def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:

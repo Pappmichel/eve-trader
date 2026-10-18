@@ -1108,9 +1108,12 @@ def load_all_tenant_tokens() -> dict[str, dict]:
     """Returns {role: record} for every token stored under the current
     tenant - TokenManager always operates on its whole store at once (same
     "read everything in one go" shape its old file-based _load() had), not
-    a single role in isolation."""
+    a single role in isolation. Ordered by role so a later listing sees a
+    stable first-seen order."""
     with connect() as conn:
-        rows = conn.execute("SELECT role, record FROM tenant_tokens").fetchall()
+        rows = conn.execute(
+            "SELECT role, record FROM tenant_tokens ORDER BY role"
+        ).fetchall()
     return {role: record for role, record in rows}
 
 
@@ -5471,6 +5474,32 @@ def load_all_assets(owner_character_ids: Optional[list[int]] = None,
     return rows
 
 
+def wallet_balances_by_owner(char_ids: Optional[list[int]] = None,
+                              corp_ids: Optional[list[int]] = None) -> list[tuple]:
+    """(owner_type, owner_id, balance) for the given owners. Empty lists
+    return [] and do not query. Portfolio's breakdown attributes ISK to
+    the owner who shared wallet_balance."""
+    rows: list[tuple] = []
+    with connect() as conn:
+        if char_ids:
+            fetched = conn.execute(
+                "SELECT owner_character_id, COALESCE(SUM(balance), 0) "
+                "FROM character_wallet_balances WHERE owner_character_id = ANY(?) "
+                "GROUP BY owner_character_id",
+                ([int(c) for c in char_ids],),
+            ).fetchall()
+            rows.extend(("character", int(owner_id), float(balance)) for owner_id, balance in fetched)
+        if corp_ids:
+            fetched = conn.execute(
+                "SELECT owner_corporation_id, COALESCE(SUM(balance), 0) "
+                "FROM corp_wallet_balances WHERE owner_corporation_id = ANY(?) "
+                "GROUP BY owner_corporation_id",
+                ([int(c) for c in corp_ids],),
+            ).fetchall()
+            rows.extend(("corporation", int(owner_id), float(balance)) for owner_id, balance in fetched)
+    return rows
+
+
 def sum_wallet_balances(char_ids: Optional[list[int]] = None,
                          corp_ids: Optional[list[int]] = None) -> float:
     """Sums character_wallet_balances + corp_wallet_balances (every
@@ -5516,6 +5545,123 @@ def load_owned_blueprints(owner_character_ids: Optional[list[int]] = None,
                 id_params,
             ).fetchall())
     return rows
+
+
+def load_assets_grouped(owner_character_ids: Optional[list[int]] = None,
+                        owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
+    """(owner_type, owner_id, location_id, type_id, quantity). Blueprints
+    are excluded the same way as load_all_assets. Location is the resolved
+    station or structure. Assembled ships stay: valuation still counts them.
+    Both owner lists empty returns [] and does not query."""
+    if not owner_character_ids and not owner_corporation_ids:
+        return []
+    rows: list[tuple] = []
+    with connect() as conn:
+        if owner_character_ids:
+            fetched = conn.execute(
+                "SELECT owner_character_id, COALESCE(resolved_location_id, location_id), "
+                "type_id, quantity FROM character_assets "
+                "WHERE owner_character_id = ANY(?) "
+                "AND item_id NOT IN (SELECT item_id FROM character_blueprints)",
+                ([int(c) for c in owner_character_ids],),
+            ).fetchall()
+            rows.extend(
+                ("character", int(owner), int(loc) if loc is not None else None, int(type_id), int(qty or 0))
+                for owner, loc, type_id, qty in fetched
+            )
+        if owner_corporation_ids:
+            fetched = conn.execute(
+                "SELECT owner_corporation_id, COALESCE(resolved_location_id, location_id), "
+                "type_id, quantity FROM corp_assets "
+                "WHERE owner_corporation_id = ANY(?) "
+                "AND item_id NOT IN (SELECT item_id FROM corp_blueprints)",
+                ([int(c) for c in owner_corporation_ids],),
+            ).fetchall()
+            rows.extend(
+                ("corporation", int(owner), int(loc) if loc is not None else None, int(type_id), int(qty or 0))
+                for owner, loc, type_id, qty in fetched
+            )
+    return rows
+
+
+def load_blueprints_grouped(owner_character_ids: Optional[list[int]] = None,
+                            owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
+    """(owner_type, owner_id, location_id, type_id, quantity, runs). Both
+    owner lists empty returns [] and does not query."""
+    if not owner_character_ids and not owner_corporation_ids:
+        return []
+    rows: list[tuple] = []
+    with connect() as conn:
+        if owner_character_ids:
+            fetched = conn.execute(
+                "SELECT owner_character_id, COALESCE(resolved_location_id, location_id), "
+                "type_id, quantity, runs FROM character_blueprints "
+                "WHERE owner_character_id = ANY(?)",
+                ([int(c) for c in owner_character_ids],),
+            ).fetchall()
+            rows.extend(
+                ("character", int(owner), int(loc) if loc is not None else None,
+                 int(type_id), int(qty or 0), int(runs if runs is not None else 0))
+                for owner, loc, type_id, qty, runs in fetched
+            )
+        if owner_corporation_ids:
+            fetched = conn.execute(
+                "SELECT owner_corporation_id, COALESCE(resolved_location_id, location_id), "
+                "type_id, quantity, runs FROM corp_blueprints "
+                "WHERE owner_corporation_id = ANY(?)",
+                ([int(c) for c in owner_corporation_ids],),
+            ).fetchall()
+            rows.extend(
+                ("corporation", int(owner), int(loc) if loc is not None else None,
+                 int(type_id), int(qty or 0), int(runs if runs is not None else 0))
+                for owner, loc, type_id, qty, runs in fetched
+            )
+    return rows
+
+
+def load_sell_orders_grouped(owner_character_ids: Optional[list[int]] = None,
+                             owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
+    """Open sell orders as (owner_type, owner_id, location_id, type_id,
+    volume_remain). character_sell_orders holds sells only. Both owner
+    lists empty returns [] and does not query."""
+    if not owner_character_ids and not owner_corporation_ids:
+        return []
+    with connect() as conn:
+        fetched = conn.execute(
+            "SELECT owner_character_id, owner_corporation_id, location_id, type_id, volume_remain "
+            "FROM character_sell_orders "
+            "WHERE (owner_character_id = ANY(?) OR owner_corporation_id = ANY(?)) "
+            "AND COALESCE(volume_remain, 0) > 0",
+            ([int(c) for c in owner_character_ids or []], [int(c) for c in owner_corporation_ids or []]),
+        ).fetchall()
+    rows = []
+    for char_id, corp_id, loc, type_id, qty in fetched:
+        if char_id is not None:
+            owner_type, owner_id = "character", int(char_id)
+        elif corp_id is not None:
+            owner_type, owner_id = "corporation", int(corp_id)
+        else:
+            continue
+        rows.append((
+            owner_type, owner_id, int(loc) if loc is not None else None, int(type_id), int(qty or 0),
+        ))
+    return rows
+
+
+def sde_categories_for_types(type_ids: Iterable[int]) -> dict[int, str]:
+    """type_id -> SDE category name. Types missing from the cache are absent."""
+    ids = list({int(t) for t in type_ids})
+    if not ids:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id, c.category_name FROM sde_types t "
+            "JOIN sde_groups g ON g.group_id = t.group_id "
+            "JOIN sde_categories c ON c.category_id = g.category_id "
+            "WHERE t.type_id = ANY(?)",
+            (ids,),
+        ).fetchall()
+    return {int(type_id): name for type_id, name in rows}
 
 
 def get_owned_bpo_best_me_te(blueprint_type_id: int,
@@ -7301,6 +7447,7 @@ PORTFOLIO_SNAPSHOT_COLUMNS = (
     "trading_realized_profit", "trading_average_margin", "trading_daily_profit_volatility",
     "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
     "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
+    "wealth_listed_value", "wealth_contract_value", "wealth_escrow",
 )
 
 

@@ -38,15 +38,41 @@ def get_portfolio_overview():
 
 
 @router.get("/realized-cards")
-def get_realized_cards(request: Request):
+def get_realized_cards(request: Request, period: str = "30"):
     """Cards for the tools this session holds. The total is already summed."""
     keys = getattr(request.state, "tool_keys", ())
-    return portfolio.realized_cards(keys)
+    return _wrap(portfolio.realized_cards, tool_keys=keys, period=period)
+
+
+@router.get("/attention")
+def get_portfolio_attention(request: Request):
+    """Actions for this session: scope, recompute, unpriced, stale ESI, stock targets."""
+    keys = getattr(request.state, "tool_keys", ())
+    return _wrap(portfolio.attention, tool_keys=keys)
+
+
+@router.get("/realized-history")
+def get_realized_history(request: Request, period: str = "30", bucket: Optional[str] = None):
+    """Stacked realized profit for the tools this session holds."""
+    keys = getattr(request.state, "tool_keys", ())
+    return _wrap(portfolio.realized_history, tool_keys=keys, period=period, bucket=bucket)
 
 
 @router.get("/history", response_model=list[schemas.PortfolioSnapshotRow])
 def get_portfolio_history(days: Optional[int] = None):
     return _wrap(portfolio.do_get_portfolio_history, days=days)
+
+
+@router.get("/capital", response_model=schemas.PortfolioCapital)
+def get_portfolio_capital():
+    """Cost and market value from the realized-profit ledger."""
+    return _wrap(portfolio.do_get_portfolio_capital)
+
+
+@router.get("/wealth/breakdown", response_model=schemas.WealthBreakdown)
+def get_wealth_breakdown():
+    """Shares of Total Wealth. Separate from /wealth so the headline renders first."""
+    return _wrap(portfolio.do_get_portfolio_breakdown)
 
 
 @router.get("/wealth", response_model=schemas.TotalWealth)

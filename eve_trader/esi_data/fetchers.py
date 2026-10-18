@@ -157,6 +157,22 @@ def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
     ]
 
 
+def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int) -> bool:
+    """True when this owner shares `data_kind` with Portfolio.
+
+    Portfolio's Total Wealth reads listed orders and outstanding contracts
+    through its own share (P4). Those rows live in the ledger, which the
+    realized-profit union does not archive for a Portfolio-only share.
+    Archiving them here does not add Portfolio to the costing union.
+    """
+    try:
+        from .access import is_shared
+        return is_shared(data_kind, "portfolio", owner_type, int(owner_id))
+    except Exception:  # noqa: BLE001 - never fail the snapshot sync
+        log.exception("portfolio share check failed for %s %s %s", data_kind, owner_type, owner_id)
+        return False
+
+
 def _archive_for_production(data_kind: str, owner_type: str, owner_id: int) -> bool:
     """Archive an owner while any realized-profit tool shares this kind
     (U3a). The name is historical. A wallet shared only with Trading, or
@@ -230,7 +246,8 @@ def _archive_blueprints(owner_type: str, owner_id: int, bps: list[dict]) -> None
 
 def _archive_market_orders(client: ESIClient, owner_type: str, owner_id: int,
                            auth_role: str, open_orders: list[dict]) -> None:
-    if not _archive_for_production("market_orders", owner_type, owner_id):
+    if not (_archive_for_production("market_orders", owner_type, owner_id)
+            or _shared_with_portfolio("market_orders", owner_type, owner_id)):
         return
     from ..realized import ingest as ledger_ingest
     try:
@@ -262,7 +279,8 @@ def _archive_contracts_pass(
     Items never change after creation (ESI guarantee), so they are fetched
     once per contract - contracts whose items are already archived are not
     asked again."""
-    if not _archive_for_production("contracts", owner_type, owner_id):
+    if not (_archive_for_production("contracts", owner_type, owner_id)
+            or _shared_with_portfolio("contracts", owner_type, owner_id)):
         return
     from ..realized import db as ledger_db
     from ..realized import ingest as ledger_ingest

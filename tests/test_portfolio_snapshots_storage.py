@@ -23,6 +23,9 @@ _VALUES = {
     "total_wealth": None,
     "wealth_assets_value": None,
     "wealth_wallet_balance": None,
+    "wealth_listed_value": None,
+    "wealth_contract_value": None,
+    "wealth_escrow": None,
 }
 
 

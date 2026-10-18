@@ -2,140 +2,117 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, SegmentedControl,
-  NumberInput, ActionIcon, Alert, Divider, Badge, Anchor,
+  NumberInput, ActionIcon, Divider, Badge, Anchor, Tabs, Progress,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
 import { Link } from 'react-router-dom'
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
+import { Bar, ComposedChart, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { doctrineApi, gateApi, portfolioApi, productionApi, stationTradingApi } from '../api/client'
+import { portfolioApi } from '../api/client'
 import { DataTable } from '../components/DataTable'
 import { HintCard } from '../components/HintCard'
 import { SearchableSelect } from '../components/SearchableSelect'
 import { useAction } from '../hooks/useAction'
 import { useItemNameOptions } from '../hooks/useStaticOptions'
 import { isk, qty, pct, dateTime } from '../format'
-import { COLORS } from '../theme'
-import type { ManualItemPriceRow, PortfolioSnapshotRow } from '../api/types'
+import { CHANNEL_COLORS, COLORS } from '../theme'
+import { toolLabel } from '../esiRegistry'
+import type { AttentionItem, ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
 
-function ProductionRealizedCard() {
-  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
-  const tools = gate.data?.tools
-  const allowed = Array.isArray(tools) && tools.includes('production')
-  const summary = useQuery({
-    queryKey: ['production', 'realized', 'summary', 'days=30'],
-    queryFn: () => productionApi.realizedSummary('days=30'),
-    enabled: allowed,
-    retry: false,
-  })
-  if (!allowed) return null
-  // No figure until a recompute produced one: 0 ISK would read as a result.
-  const data = summary.data && !summary.data.status.empty && !summary.data.status.needs_rebuild
-    ? summary.data
-    : undefined
+const PERIOD_KEY = 'portfolio-realized-period'
+const TAB_KEY = 'portfolio-wealth-tab'
+const WEALTH_TABS = ['owner', 'location', 'category', 'top'] as const
+const PERIOD_OPTIONS = [
+  { label: '7d', value: '7' },
+  { label: '30d', value: '30' },
+  { label: '90d', value: '90' },
+  { label: 'Since T0', value: 'since_t0' },
+]
+
+function readPeriod(): string {
+  try {
+    const value = localStorage.getItem(PERIOD_KEY)
+    if (value === '7' || value === '30' || value === '90' || value === 'since_t0') return value
+  } catch {
+    // Private mode can throw. The page still opens on the default period.
+  }
+  return '30'
+}
+
+function writePeriod(value: string) {
+  try {
+    localStorage.setItem(PERIOD_KEY, value)
+  } catch {
+    // Remembering the period is optional.
+  }
+}
+
+function readTab(): string {
+  try {
+    const value = localStorage.getItem(TAB_KEY)
+    if (value === 'owner' || value === 'location' || value === 'category' || value === 'top') return value
+  } catch {
+    // Private mode can throw. The owner tab is the default.
+  }
+  return 'owner'
+}
+
+function writeTab(value: string | null) {
+  if (!value || !WEALTH_TABS.includes(value as typeof WEALTH_TABS[number])) return
+  try {
+    localStorage.setItem(TAB_KEY, value)
+  } catch {
+    // Remembering the tab is optional.
+  }
+}
+
+function WealthChanges({ change }: { change: WealthChange | undefined }) {
+  const rows: { label: string; point: WealthChange['d1'] }[] = [
+    { label: '1 day', point: change?.d1 ?? null },
+    { label: '7 days', point: change?.d7 ?? null },
+    { label: '30 days', point: change?.d30 ?? null },
+  ]
   return (
-    <Card withBorder padding="lg" radius="md" className="et-panel">
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized Production profit</Title>
-      <Text size="xl" fw={700}>{data ? isk(data.realized_profit) : '–'}</Text>
-      {data && (
-        <Group gap={6} mt={4}>
-          <CoverageBadge coverage={data.coverage} />
-          {data.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
-        </Group>
-      )}
-      <Text size="xs" c="dimmed" mt={4}>
-        {summary.data && !data ? 'Not computed yet - recompute on the Realized Profit page.' : 'Last 30 days'}
-      </Text>
-      <Anchor component={Link} to="/production/realized" size="xs">Realized profit</Anchor>
-    </Card>
+    <Stack gap={2} mt="xs">
+      {rows.map((row) => (
+        <Text key={row.label} size="xs" c="dimmed">
+          {row.label}: {row.point ? `${isk(row.point.isk)} (${pct(row.point.pct)})` : '–'}
+        </Text>
+      ))}
+    </Stack>
   )
 }
 
-function DoctrineRealizedCard() {
-  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
-  const tools = gate.data?.tools
-  const allowed = Array.isArray(tools) && tools.includes('doctrine')
-  const summary = useQuery({
-    queryKey: ['doctrine', 'realized', 'summary', 'days=30'],
-    queryFn: () => doctrineApi.realizedSummary('days=30'),
-    enabled: allowed,
-    retry: false,
-  })
-  if (!allowed) return null
-  const data = summary.data && !summary.data.status.empty && !summary.data.status.needs_rebuild
-    ? summary.data
-    : undefined
+function AttentionStrip({ items }: { items: AttentionItem[] | undefined }) {
+  if (!items || items.length === 0) return null
   return (
-    <Card withBorder padding="lg" radius="md" className="et-panel">
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized Doctrine profit</Title>
-      <Text size="xl" fw={700}>{data ? isk(data.realized_profit) : '–'}</Text>
-      {data && (
-        <Group gap={6} mt={4}>
-          <CoverageBadge coverage={data.coverage} />
-          {data.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
-        </Group>
-      )}
-      <Text size="xs" c="dimmed" mt={4}>
-        {summary.data && !data ? 'Not computed yet - recompute on the Doctrine realized page.' : 'Last 30 days'}
-      </Text>
-      <Anchor component={Link} to="/doctrine/realized" size="xs">Doctrine realized profit</Anchor>
-    </Card>
+    <Stack gap={4}>
+      {items.map((item) => (
+        item.link.startsWith('#')
+          ? <Anchor key={item.key} href={item.link} size="sm">{item.text}</Anchor>
+          : <Anchor key={item.key} component={Link} to={item.link} size="sm">{item.text}</Anchor>
+      ))}
+    </Stack>
   )
 }
 
-function StationRealizedCard() {
-  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
-  const tools = gate.data?.tools
-  const allowed = Array.isArray(tools) && tools.includes('station_trading')
-  const summary = useQuery({
-    queryKey: ['station-trading', 'realized', 'summary', 'days=30'],
-    queryFn: () => stationTradingApi.realizedSummary('days=30'),
-    enabled: allowed,
-    retry: false,
-  })
-  if (!allowed) return null
-  const data = summary.data && !summary.data.status.empty && !summary.data.status.needs_rebuild
-    ? summary.data
-    : undefined
+function RealizedProfitCard({ row }: { row: RealizedToolCard }) {
   return (
     <Card withBorder padding="lg" radius="md" className="et-panel">
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized Station Trading profit</Title>
-      <Text size="xl" fw={700}>{data ? isk(data.realized_profit) : '–'}</Text>
-      {data && (
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{toolLabel(row.tool)}</Title>
+      <Text size="xl" fw={700}>{isk(row.profit)}</Text>
+      <Text size="xs" c="dimmed" mt={4}>Revenue {isk(row.revenue)}</Text>
+      <Text size="xs" c="dimmed">Margin {pct(row.margin)} · {qty(row.sales_count)} sales</Text>
+      {!row.empty && (
         <Group gap={6} mt={4}>
-          <CoverageBadge coverage={data.coverage} />
-          {data.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
+          <CoverageBadge coverage={row.coverage} />
+          {row.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
         </Group>
       )}
-      <Text size="xs" c="dimmed" mt={4}>
-        {summary.data && !data ? 'Not computed yet - recompute on the Station Trading realized page.' : 'Last 30 days'}
-      </Text>
-      <Anchor component={Link} to="/station-trading/realized" size="xs">Station Trading realized profit</Anchor>
-    </Card>
-  )
-}
-
-function RealizedTotalCard() {
-  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
-  const tools = gate.data?.tools
-  const held = Array.isArray(tools)
-    ? ['production', 'trading', 'doctrine', 'station_trading'].filter((tool) => tools.includes(tool)).length
-    : 0
-  const cards = useQuery({
-    queryKey: ['portfolio', 'realized-cards'],
-    queryFn: portfolioApi.realizedCards,
-    enabled: held >= 2,
-    retry: false,
-  })
-  if (held < 2 || cards.data?.total == null) return null
-  return (
-    <Card withBorder padding="lg" radius="md" className="et-panel">
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized profit total</Title>
-      <Text size="xl" fw={700}>{isk(cards.data.total)}</Text>
-      <Text size="xs" c="dimmed" mt={4}>Last 30 days, tools this session holds</Text>
+      <Anchor component={Link} to={row.link} size="xs">Open report</Anchor>
     </Card>
   )
 }
@@ -204,7 +181,7 @@ function HistoryChart({ title, hint, rows, lines }: {
 }
 
 const MANUAL_PRICES_KEY = [['portfolio', 'manual-prices']]
-const WEALTH_KEY = [['portfolio', 'wealth']]
+const WEALTH_KEY = [['portfolio', 'wealth'], ['portfolio', 'breakdown']]
 
 // Local draft state, checkmark appears once it differs from the saved
 // value, click to save - same pattern as production/Blueprints.tsx's own
@@ -327,47 +304,197 @@ function ManualPricesSection() {
   )
 }
 
-function TotalWealthSection() {
-  const { data } = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
-  if (!data) return null
+function ShareList({ rows }: { rows: WealthShareRow[] }) {
+  if (rows.length === 0) return <Text size="sm" c="dimmed">Nothing priced in this view.</Text>
+  return (
+    <Stack gap="sm">
+      {rows.map((row) => (
+        <Stack key={row.label} gap={2}>
+          <Group justify="space-between">
+            <Text size="sm">{row.label}</Text>
+            <Text size="sm">{isk(row.value)} · {pct(row.share)}</Text>
+          </Group>
+          <Progress value={(row.share ?? 0) * 100} size="sm" color="accent" />
+        </Stack>
+      ))}
+    </Stack>
+  )
+}
 
+function WealthBreakdownSection({ breakdown }: { breakdown: WealthBreakdown | undefined }) {
+  const [tab, setTab] = useState(readTab)
+  const setPrice = useAction('Set manual price', (args: { itemName: string; price: number }) =>
+    portfolioApi.setManualPrice(args.itemName, args.price), [['portfolio', 'wealth'], ['portfolio', 'breakdown']])
+  if (!breakdown) return null
+  const unpriced = breakdown.unpriced ?? []
   return (
     <Stack gap="md">
-      <Stat label="Total Wealth" value={isk(data.total_wealth)}
-        hint="Every asset, wallet balance and blueprint shared with Portfolio - a separate, broader figure from Combined Value above" />
+      <Tabs value={tab} onChange={(value) => { setTab(value ?? 'owner'); writeTab(value) }}>
+        <Tabs.List>
+          <Tabs.Tab value="owner">By owner</Tabs.Tab>
+          <Tabs.Tab value="location">By location</Tabs.Tab>
+          <Tabs.Tab value="category">By category</Tabs.Tab>
+          <Tabs.Tab value="top">Top 20</Tabs.Tab>
+        </Tabs.List>
+        <Tabs.Panel value="owner" pt="sm"><ShareList rows={breakdown.by_owner} /></Tabs.Panel>
+        <Tabs.Panel value="location" pt="sm"><ShareList rows={breakdown.by_location} /></Tabs.Panel>
+        <Tabs.Panel value="category" pt="sm"><ShareList rows={breakdown.by_category} /></Tabs.Panel>
+        <Tabs.Panel value="top" pt="sm">
+          {breakdown.top.length === 0 ? <Text size="sm" c="dimmed">Nothing priced in this view.</Text> : (
+            <Stack gap="xs">
+              {breakdown.top.map((row) => (
+                <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
+                  <Text size="sm">{row.type_name} · {row.owner_name} · {row.location_name}</Text>
+                  <Text size="sm">{qty(row.quantity)} · {isk(row.value)} · {pct(row.share)}</Text>
+                </Group>
+              ))}
+            </Stack>
+          )}
+        </Tabs.Panel>
+      </Tabs>
 
-      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
-        <Stat label="Assets" value={isk(data.wealth_assets_value)} />
-        <Stat label="Blueprints" value={isk(data.wealth_blueprints_value)}
-          hint="One market quote per BPO, regardless of its own ME/TE - a BPC has no separate quote of its own, so it counts here only once you set a manual price for it" />
-        <Stat label="Wallet" value={isk(data.wealth_wallet_balance)} />
-      </SimpleGrid>
-
-      {data.wealth_unpriced_items > 0 && (
-        <Text size="xs" c="dimmed">
-          {qty(data.wealth_unpriced_items)} owned item type(s) have no price and are excluded from the total above -
-          add a manual price below to include them.
-        </Text>
-      )}
-
-      {data.characters_missing_wallet_scope.length > 0 && (
-        <Alert color="warn" variant="light" title="Wallet balance not included for some characters">
-          {data.characters_missing_wallet_scope.map((c) => c.character_name).join(', ')}{' '}
-          {data.characters_missing_wallet_scope.length === 1 ? 'shares' : 'share'} Assets/Blueprints with Portfolio
-          but {data.characters_missing_wallet_scope.length === 1 ? 'has' : 'have'} no wallet scope
-          shared - reauthorize on the{' '}
-          <Text component={Link} to="/character-management/characters" span c="accent" td="underline">Characters page</Text>
-          {' '}to include their ISK balance.
-        </Alert>
+      {unpriced.length > 0 && (
+        <Stack id="unpriced" gap="xs">
+          <Title order={6}>Unpriced</Title>
+          <Text size="xs" c="dimmed">
+            Excluded from the total until a manual price is set. One row per type
+            {breakdown.unpriced_types > unpriced.length
+              ? `, largest quantity first: ${unpriced.length} of ${breakdown.unpriced_types} types shown.`
+              : '.'}
+          </Text>
+          {unpriced.map((row) => (
+            <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
+              <Text size="sm">{row.type_name ?? `Type ${row.type_id}`} · {row.owner_name} · {row.location_name} · {qty(row.quantity)}</Text>
+              <NumberInput aria-label={`Manual price for ${row.type_name ?? row.type_id}`} min={0} w={160}
+                disabled={!row.type_name || setPrice.isPending}
+                onBlur={(event) => {
+                  const price = Number(event.currentTarget.value)
+                  if (!row.type_name || event.currentTarget.value === '' || Number.isNaN(price)) return
+                  setPrice.mutate({ itemName: row.type_name, price })
+                }} />
+            </Group>
+          ))}
+        </Stack>
       )}
     </Stack>
   )
 }
 
+function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefined }) {
+  const { data } = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
+  if (!data) return null
+  const lines: { label: string; value: number | null; hint?: string; synced?: string | null }[] = [
+    { label: 'Assets', value: data.wealth_assets_value, synced: data.sync?.assets },
+    { label: 'Blueprints', value: data.wealth_blueprints_value, synced: data.sync?.blueprints,
+      hint: 'One market quote per BPO, regardless of its own ME/TE. A BPC counts only with a manual price.' },
+    { label: 'Listed', value: data.wealth_listed_value, synced: data.sync?.listed,
+      hint: 'Open sell orders. ESI leaves these out of the asset list.' },
+    { label: 'Contracts', value: data.wealth_contract_value, synced: data.sync?.contracts,
+      hint: 'Included items of outstanding contracts this owner issued.' },
+    { label: 'Wallet', value: data.wealth_wallet_balance, synced: data.sync?.wallet },
+    { label: 'Escrow', value: data.wealth_escrow, synced: data.sync?.escrow,
+      hint: 'Buy-order escrow. Shown as – until an order sync stores it.' },
+  ]
+
+  return (
+    <Stack gap="md">
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
+        {lines.map((line) => (
+          <Stat key={line.label} label={line.label} value={isk(line.value)}
+            hint={[line.hint, line.synced ? `Synced ${dateTime(line.synced)}` : undefined].filter(Boolean).join(' ')} />
+        ))}
+      </SimpleGrid>
+      <WealthBreakdownSection breakdown={breakdown} />
+    </Stack>
+  )
+}
+
+function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) {
+  if (!capital) return null
+  return (
+    <Stack gap="sm">
+      <Title order={4}>Capital</Title>
+      <Text size="xs" c="dimmed">From the {capital.source}. Cost is the oldest layer of that type.</Text>
+      {capital.buckets.map((row) => (
+        <Card key={row.key} withBorder padding="sm" radius="md" className="et-panel">
+          <Group justify="space-between" align="flex-start">
+            <Text fw={600}>{row.label}</Text>
+            <Group gap="md">
+              <Text size="sm">Cost {isk(row.cost_basis)}</Text>
+              <Text size="sm">Market {isk(row.market_value)}</Text>
+              <Text size="sm">Unrealized {isk(row.unrealized)}</Text>
+              <CoverageBadge coverage={row.coverage} />
+              {row.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
+            </Group>
+          </Group>
+          {row.comparison_value != null && (
+            <Text size="xs" c="dimmed" mt={4}>Wealth price {isk(row.comparison_value)}</Text>
+          )}
+        </Card>
+      ))}
+      <Text size="sm">
+        Total cost {isk(capital.total.cost_basis)} · Market {isk(capital.total.market_value)} · Unrealized {isk(capital.total.unrealized)}
+      </Text>
+      {capital.total.excluded.length > 0 && (
+        <Text size="xs" c="dimmed">
+          Without {capital.buckets.filter((row) => capital.total.excluded.includes(row.key)).map((row) => row.label).join(', ')}
+          {' '}(no market value).
+        </Text>
+      )}
+    </Stack>
+  )
+}
+
+function RealizedHistoryChart({ history }: { history: RealizedHistory | undefined }) {
+  const rows = history?.rows ?? []
+  const channels = history?.channels ?? []
+  const title = history?.bucket === 'week' ? 'Realized profit per week' : 'Realized profit per day'
+  if (rows.length === 0) {
+    return (
+      <Card withBorder padding="lg" radius="md" className="et-panel">
+        <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
+        <HintCard>No realized profit in this period.</HintCard>
+      </Card>
+    )
+  }
+  return (
+    <Card withBorder padding="lg" radius="md" className="et-panel">
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={rows}>
+          <CartesianGrid stroke={COLORS.border} />
+          <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+          <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={90} tickFormatter={(v: number) => isk(v)} />
+          <Tooltip contentStyle={tooltipStyle()} formatter={(v, name) => [typeof v === 'number' ? isk(v) : v, name]} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          {channels.map((channel) => (
+            <Bar key={channel} dataKey={channel} name={toolLabel(channel)} stackId="profit"
+              fill={CHANNEL_COLORS[channel] ?? COLORS.textDim} />
+          ))}
+          <Line type="monotone" dataKey="cumulative" name="Cumulative" stroke={COLORS.text} dot={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </Card>
+  )
+}
+
 export default function Portfolio() {
-  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
-  const showTrading = Array.isArray(gate.data?.tools) && gate.data.tools.includes('trading')
-  const { data, isLoading } = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
+  const attention = useQuery({ queryKey: ['portfolio', 'attention'], queryFn: portfolioApi.attention })
+  const overview = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
+  const wealth = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
+  const breakdown = useQuery({ queryKey: ['portfolio', 'breakdown'], queryFn: portfolioApi.wealthBreakdown })
+  const capital = useQuery({ queryKey: ['portfolio', 'capital'], queryFn: portfolioApi.capital })
+  const [period, setPeriod] = useState(readPeriod)
+  const cards = useQuery({
+    queryKey: ['portfolio', 'realized-cards', period],
+    queryFn: () => portfolioApi.realizedCards(period),
+    retry: false,
+  })
+  const realized = useQuery({
+    queryKey: ['portfolio', 'realized-history', period],
+    queryFn: () => portfolioApi.realizedHistory(period),
+    retry: false,
+  })
   const [range, setRange] = useState('30')
   const { data: history } = useQuery({
     queryKey: ['portfolio', 'history', range],
@@ -377,80 +504,60 @@ export default function Portfolio() {
   return (
     <Container size="md" py="xl">
       <Group justify="space-between" mb="lg">
-        <div>
-          <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>Trading + Production combined</Text>
-          <Title order={1}>Portfolio Overview</Title>
-        </div>
+        <Title order={1}>Portfolio Overview</Title>
         <Button component={Link} to="/" variant="subtle" leftSection={<IconArrowLeft size={14} />}>Back</Button>
       </Group>
 
-      {isLoading && <Center h={120}><Loader color="accent" /></Center>}
+      <Stack gap="lg">
+        <AttentionStrip items={attention.data?.items} />
+        {wealth.isLoading && <Center h={80}><Loader color="accent" /></Center>}
+        {wealth.data && (
+          <Card withBorder padding="lg" radius="md" className="et-panel">
+            <Title order={6} c="dimmed" tt="uppercase" mb="xs">Total Wealth</Title>
+            <Text size="xl" fw={700}>{isk(wealth.data.total_wealth)}</Text>
+            <WealthChanges change={overview.data?.wealth_change} />
+          </Card>
+        )}
+        <TotalWealthSection breakdown={breakdown.data} />
 
-      {data && (
-        <Stack gap="lg">
-          <Stat label="Combined Value" value={isk(data.combined_value)}
-            hint="Trading realized profit (last 30 days of the ledger) + current Production stock value" />
-
-          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
-            {showTrading && (
-              <Stat label="Trading: Realized Profit" value={isk(data.trading_realized_profit)}
-                hint={`${qty(data.trading_trade_count)} sales in the last 30 days`} />
-            )}
-            <ProductionRealizedCard />
-            <DoctrineRealizedCard />
-            <StationRealizedCard />
-            <RealizedTotalCard />
-            {showTrading && (
-              <Stat label="Trading: Average Margin" value={pct(data.trading_average_margin)} />
-            )}
-            {showTrading && (
-              <Stat label="Trading: Daily Profit Volatility"
-                value={data.trading_daily_profit_volatility === null ? '–' : isk(data.trading_daily_profit_volatility)}
-                hint="Standard deviation of realized profit per day - a simple risk signal, not a formal VaR model" />
-            )}
-            <Stat label="Production: Stock Value" value={isk(data.production_stock_value)}
-              hint={data.production_stock_targets_configured ? undefined : 'No stock targets configured yet'} />
-          </SimpleGrid>
-
-          <Group justify="space-between" align="center">
-            <Title order={4}>History</Title>
-            <SegmentedControl size="xs" value={range} onChange={setRange} data={RANGE_OPTIONS} />
-          </Group>
-
-          <HistoryChart title="Combined Value" rows={history ?? []}
-            lines={[{ dataKey: 'combined_value', name: 'Combined Value', color: COLORS.accent, formatter: isk }]} />
-
-          {showTrading && (
-            <HistoryChart title="Trading Realized Profit vs. Production Stock Value" rows={history ?? []}
-              lines={[
-                { dataKey: 'trading_realized_profit', name: 'Trading Realized Profit', color: COLORS.accent, formatter: isk },
-                { dataKey: 'production_stock_value', name: 'Production Stock Value', color: COLORS.info, formatter: isk },
-              ]} />
+        <Group justify="space-between" align="center">
+          <Title order={4}>Realized profit</Title>
+          <SegmentedControl size="xs" value={period} data={PERIOD_OPTIONS} aria-label="Realized period"
+            onChange={(value) => { setPeriod(value); writePeriod(value) }} />
+        </Group>
+        <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
+          {(cards.data?.rows ?? []).map((row) => <RealizedProfitCard key={row.tool} row={row} />)}
+          {cards.data?.total != null && (
+            <Stat label="Realized profit total" value={isk(cards.data.total)}
+              hint="Tools this session holds" />
           )}
+        </SimpleGrid>
+        {cards.data?.freight && (
+          <Text size="sm">
+            Freight from couriers {isk(cards.data.freight.courier)} · configured rate {isk(cards.data.freight.configured)}
+          </Text>
+        )}
 
-          {showTrading && (
-            <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
-              <HistoryChart title="Trading Average Margin" rows={history ?? []}
-                lines={[{ dataKey: 'trading_average_margin', name: 'Average Margin', color: COLORS.info, formatter: pct }]} />
-              <HistoryChart title="Trading Daily Profit Volatility" rows={history ?? []}
-                lines={[{ dataKey: 'trading_daily_profit_volatility', name: 'Daily Profit Volatility', color: COLORS.warn, formatter: isk }]} />
-            </SimpleGrid>
-          )}
+        <RealizedHistoryChart history={realized.data} />
+        <CapitalSection capital={capital.data} />
 
-          <HistoryChart title="Total Wealth" rows={history ?? []}
-            hint="Every asset, wallet balance and blueprint shared with Portfolio - kept separate from Combined Value above"
-            lines={[{ dataKey: 'total_wealth', name: 'Total Wealth', color: COLORS.accent, formatter: isk }]} />
+        <Group justify="space-between" align="center">
+          <Title order={4}>Total Wealth history</Title>
+          <SegmentedControl size="xs" value={range} onChange={setRange} data={RANGE_OPTIONS} aria-label="Wealth history range" />
+        </Group>
 
-          <Divider />
-          <Title order={4}>Total Wealth</Title>
-          <TotalWealthSection />
+        <HistoryChart title="Total Wealth" rows={history ?? []}
+          hint="Assets, blueprints, listed orders, contracts, wallet and escrow shared with Portfolio. Older rows leave the new lines blank."
+          lines={[
+            { dataKey: 'total_wealth', name: 'Total Wealth', color: COLORS.accent, formatter: isk },
+            { dataKey: 'wealth_listed_value', name: 'Listed', color: COLORS.info, formatter: isk },
+            { dataKey: 'wealth_contract_value', name: 'Contracts', color: COLORS.warn, formatter: isk },
+            { dataKey: 'wealth_escrow', name: 'Escrow', color: COLORS.danger, formatter: isk },
+          ]} />
 
-          <Divider />
-          <ManualPricesSection />
-
-          <HintCard>Everything above is read-only.</HintCard>
-        </Stack>
-      )}
+        <Divider />
+        <ManualPricesSection />
+      </Stack>
     </Container>
   )
 }

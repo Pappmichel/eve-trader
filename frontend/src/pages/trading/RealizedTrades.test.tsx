@@ -39,7 +39,10 @@ function summary(partial: Partial<TradingRealizedSummary> = {}): TradingRealized
     revenue: 40, cost_of_goods_sold: 10, realized_profit: 30, margin: 0.75, coverage: 1,
     estimated: false, units_sold: 1, sale_count: 1, price_missing: false, tax_missing_sales: 0,
     cost_structure: [], by_day: [{ date: '2026-10-04', revenue: 40, cost: 10, profit: 30 }],
-    flags, ...partial,
+    flags,
+    portfolio_average_margin: 0.2,
+    portfolio_daily_profit_volatility: 4,
+    ...partial,
   }
 }
 
@@ -103,6 +106,14 @@ describe('Trading realized profit page', () => {
     renderPage()
     expect(await screen.findByText('Freight from couriers: 160 ISK')).toBeInTheDocument()
     expect(screen.getByText('Freight (configured rate): 20 ISK')).toBeInTheDocument()
+  })
+
+  it('shows the 30-day margin and volatility from the portfolio figures', async () => {
+    renderPage()
+    expect(await screen.findByText('Average margin')).toBeInTheDocument()
+    expect(screen.getByText('20%')).toBeInTheDocument()
+    expect(screen.getByText('Daily profit volatility')).toBeInTheDocument()
+    expect(screen.getByText('4 ISK')).toBeInTheDocument()
   })
 
   it('shows API profit and leaves a null margin as a dash', async () => {
