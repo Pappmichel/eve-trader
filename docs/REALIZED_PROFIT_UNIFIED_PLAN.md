@@ -128,15 +128,25 @@ locations per region and which of them receive freight under U4.
   rebuild resets `prod_opening_frozen` once.
 - Freight freezes from the shared hub table (`hubs.hub_freight_per_m3`,
   fallback `haul_cost_per_m3`) for every hub region, not only The Forge
-  and not only in All-hubs mode. Home location, home region, and the
-  exact station-trading station freeze no freight. Reapply writes one
-  rate per region and clears freight on those three. It does not invent
+  and not only in All-hubs mode. Home location and home region freeze no
+  freight. Reapply writes one rate per region and clears freight on those
+  two. It does not invent
   freight for a row archived with `freight_m3` NULL, and it does not
   rewrite contract-item freight.
+- Review fix: the Station Trading station is a hub station too (Jita 4-4
+  by default, where imports are bought), so a buy there keeps its frozen
+  freight. Costing drops the freight on a draw only when a station-pool
+  layer is used at the station itself (ST3); a station unit sold at home
+  keeps it. The loader passes no station id unless an owner shares a
+  wallet with Station Trading, so a tenant without Station Trading keeps
+  one global pool and the old draw order.
 - Market broker fees stay one pool per owner and UTC day, spread over
   that day's order-based fills of every channel, and the sell share sits
-  on the result. `contract_brokers_fee` is a second pool per wallet owner
-  and day (personal contracts key on the character, corp-issued on the
+  on the result. `contract_brokers_fee` carries `context_id_type`
+  `contract_id`, so the fee goes to that contract's sale (a fee for a
+  contract that is not a sale is a fee without sale). Only an entry
+  without that link falls back to a pool per wallet owner and day of issue
+  (personal contracts key on the character, corp-issued on the
   corporation), spread by contract price. `fees_on_other_trading` stays
   on the result shape and is 0 for new runs. Sales tax is unchanged,
   including the journal-id gap; contract sales still have no sales tax.
@@ -169,7 +179,7 @@ locations per region and which of them receive freight under U4.
   On a tenant whose hub table sets The Forge below `haul_cost_per_m3`,
   the next ingest and a freight reapply move Forge purchases to the
   table rate.
-- Reapply clears station and home freight that was already frozen, and
+- Reapply clears home freight that was already frozen, and
   updates rows that already have `freight_m3`. It does not backfill a
   historical non-Forge buy archived with `freight_m3` NULL, and it does
   not rewrite contract-item freight. New ingests use U4.

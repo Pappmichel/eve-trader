@@ -149,8 +149,6 @@ class _TxnEnricher:
         self.home_region_id = None
         if self.home_location_id is not None:
             self.home_region_id = self.region(int(self.home_location_id))
-        from ..station_trading.config import STATION_TRADING_CONFIG
-        self.station_id = STATION_TRADING_CONFIG.station_id
 
     def region(self, location_id: int) -> Optional[int]:
         loc = int(location_id)
@@ -167,10 +165,12 @@ class _TxnEnricher:
     def freight(self, region_id, location_id, type_id, quantity, is_buy):
         """(freight_rate_per_m3, freight_m3) or (None, None).
 
-        U4 / ST3: a buy at the home structure, in the home region, or at the
-        Station Trading station carries no freight. Another station in a hub
-        region (or a region with an explicit hub-table entry) freezes that
-        hub's rate. Anywhere else stays without freight.
+        U4: a buy at the home structure or in the home region carries no
+        freight. A buy in a hub region (or a region with an explicit
+        hub-table entry) freezes that hub's rate, also at the Station Trading
+        station: whether the unit is hauled is only known when it is sold, so
+        costing drops the freight for a station-pool unit sold at the station
+        (ST3).
         """
         if not is_buy or region_id is None:
             return None, None
@@ -178,8 +178,6 @@ class _TxnEnricher:
         if self.home_location_id is not None and int(location_id) == int(self.home_location_id):
             return None, None
         if self.home_region_id is not None and region == int(self.home_region_id):
-            return None, None
-        if self.station_id is not None and int(location_id) == int(self.station_id):
             return None, None
         rates = _regions_with_freight(self.cfg)
         if region not in rates:

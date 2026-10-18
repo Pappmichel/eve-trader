@@ -322,6 +322,7 @@ def _load_contracts() -> tuple:
         contracts.append(ItemExchangeContract(
             contract_id=contract_id, owner_type=chosen[0], owner_id=int(chosen[1]),
             date_completed=_as_utc(chosen[12]),
+            date_issued=_as_utc(chosen[16]) if len(chosen) > 16 and chosen[16] is not None else None,
             issuer_id=issuer_id,
             issuer_corporation_id=None if chosen[4] is None else int(chosen[4]),
             acceptor_id=None if chosen[5] is None else int(chosen[5]),
@@ -719,6 +720,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
     # there is a BPO (capital), never an inventory layer.
     bpo_types = frozenset(_blueprint_type_ids({int(tx.type_id) for tx in txs if tx.is_buy}))
 
+    station_owners = frozenset(access.shared_owners_for("wallet", "station_trading"))
     return LedgerSnapshot(
         t0=t0,
         reference_prices=prices,
@@ -737,10 +739,10 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
         contracts=contracts,
         tenant_corporation_ids=_tenant_corporation_ids(),
-        station_trading_station_id=STATION_TRADING_CONFIG.station_id,
-        station_trading_wallet_owners=frozenset(
-            access.shared_owners_for("wallet", "station_trading"),
-        ),
+        # No station pool until someone shares a wallet with Station Trading,
+        # so a tenant without it keeps one global pool (ST1).
+        station_trading_station_id=STATION_TRADING_CONFIG.station_id if station_owners else None,
+        station_trading_wallet_owners=station_owners,
         doctrine_structure_id=DOCTRINE_CONFIG.effective_structure_id,
         doctrine_contract_owners=frozenset(
             access.shared_owners_for("contracts", "doctrine"),
@@ -821,7 +823,7 @@ def _draw_rows(result, snapshot) -> list[tuple]:
         if layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
             location_id = int(tx.location_id)
             unit_price = float(tx.unit_price)
-            if tx.freight_rate_per_m3 is not None:
+            if tx.freight_rate_per_m3 is not None and draw.components.freight > 0:
                 rate = float(tx.freight_rate_per_m3)
         elif layer is not None and layer.origin == ORIGIN_BOUGHT and str(layer.source_ref).startswith("contract:"):
             contract = contracts.get(int(str(layer.source_ref).split(":", 1)[1]))

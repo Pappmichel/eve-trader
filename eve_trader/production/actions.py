@@ -2035,19 +2035,18 @@ def do_set_opening_cost(type_id: int, unit_cost: float, entry_date: str | None =
 def do_reapply_freight_rate(dry_run: bool = False) -> dict:
     """Write the current per-hub freight rates onto purchases that already
     have a frozen freight volume. Does not rebuild; the next recompute
-    picks the new rates up. Home-region buys and station-trade buys lose
-    freight (U4, ST3). `freight_rate_per_m3` is The Forge rate, reported
+    picks the new rates up. Home-region buys lose freight (U4); a
+    station-trade sale drops freight in costing, not here (ST3). `freight_rate_per_m3` is The Forge rate, reported
     so the confirm dialog can name it; other hubs use their own entry.
     `dry_run` only counts the purchases that would change."""
     from ..realized import db as ledger_db
     from ..realized.ingest import _freight_rate_for_forge, _regions_with_freight
-    from ..station_trading.config import STATION_TRADING_CONFIG
 
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
     rates = _regions_with_freight(PRODUCTION_CONFIG)
     home = PRODUCTION_CONFIG.home_location_id
     home_region = ledger_db.region_id_for_location(int(home)) if home else None
-    clear_locations = [v for v in (home, STATION_TRADING_CONFIG.station_id) if v is not None]
+    clear_locations = [home] if home is not None else []
     clear_regions = [home_region] if home_region is not None else []
     kwargs = {
         "rates": rates,

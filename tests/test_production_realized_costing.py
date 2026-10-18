@@ -1096,6 +1096,42 @@ def test_home_sale_falls_through_to_the_station_pool():
     ]
 
 
+def test_station_sale_drops_freight_and_a_hauled_station_unit_keeps_it():
+    """ST3: a unit bought and sold at the station was never hauled. The
+    same station-pool unit sold at home was, so it keeps its freight."""
+    result = rebuild_costing(snapshot(
+        station_trading_station_id=JITA,
+        station_trading_wallet_owners={("character", CHAR)},
+        wallet_transactions=[
+            buy(WIDGET, 2, 10.0, at(1), location=JITA, rate=800.0, m3=1.0),
+            sell(WIDGET, 1, 50.0, at(2), location=JITA, tx_id=9211),
+            sell(WIDGET, 1, 50.0, at(3), location=HOME, tx_id=9212),
+        ],
+        esi_stock_by_type={WIDGET: 0},
+    ))
+    station_sale, home_sale = result.realized_results
+    assert station_sale.channel == c.CHANNEL_STATION_TRADING
+    assert station_sale.components.freight == pytest.approx(0.0)
+    assert station_sale.cost == pytest.approx(10.0)
+    assert home_sale.channel == c.CHANNEL_TRADING
+    assert home_sale.components.freight == pytest.approx(400.0)
+
+
+def test_without_a_station_trading_wallet_every_layer_is_global():
+    """The loader passes no station id when nobody shares a wallet with
+    Station Trading, so a Jita import keeps one pool and its freight."""
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[
+            buy(WIDGET, 1, 10.0, at(1), location=JITA, rate=800.0, m3=1.0),
+            sell(WIDGET, 1, 50.0, at(2), location=JITA, tx_id=9213),
+        ],
+        esi_stock_by_type={WIDGET: 0},
+    ))
+    [sale] = result.realized_results
+    assert sale.channel == c.CHANNEL_TRADING
+    assert sale.components.freight == pytest.approx(800.0)
+
+
 def test_broker_fee_pool_is_paid_once_across_channels():
     prod = sell(PRODUCT, 1, 100.0, at(2), location=HOME, tx_id=9301)
     trade = sell(WIDGET, 1, 100.0, at(2), location=HOME, tx_id=9302)
@@ -1151,6 +1187,28 @@ def test_contract_broker_fee_is_spread_over_the_issuers_contracts():
     module = by_ref["contract:91:88002"]
     assert widget.broker_fee + module.broker_fee == pytest.approx(30.0)
     assert sum(row.broker_fee for row in result.realized_results) == pytest.approx(40.0)
+
+
+def test_contract_broker_fee_follows_the_contract_id():
+    """ESI links contract_brokers_fee to its contract. The fee is paid on
+    the day of issue, so a contract finished days later still gets it; a
+    fee for a contract that is not a sale is a fee without sale."""
+    sold = exchange(93, at(5), [item_line(PRODUCT, 1)], price=100.0, start=HOME)
+    result = rebuild_costing(snapshot(
+        contracts=[sold],
+        journal_entries=[
+            JournalEntry("character", CHAR, 6, at(1, 8), "contract_brokers_fee", -10.0,
+                         context_id=93, context_id_type="contract_id"),
+            JournalEntry("character", CHAR, 7, at(1, 9), "contract_brokers_fee", -10.0,
+                         context_id=94, context_id_type="contract_id"),
+        ],
+        production_type_ids={PRODUCT},
+        esi_stock_by_type={PRODUCT: 0},
+        reference_prices={(PRODUCT, at(5).date()): 10.0},
+    ))
+    [row] = result.realized_results
+    assert row.broker_fee == pytest.approx(10.0)
+    assert [fee.amount for fee in result.fees_without_sale] == [pytest.approx(10.0)]
 
 
 def test_production_results_match_except_the_doctrine_move():
@@ -1210,8 +1268,9 @@ def test_frozen_freight_on_a_hub_buy_and_not_on_a_home_buy():
 
 
 def test_ingest_freight_follows_the_hub_table(monkeypatch):
-    """U4/ST3: hub station gets that hub's rate, home region and the station
-    trade itself do not, and a region that is not a hub does not."""
+    """U4: a hub station gets that hub's rate, also the Station Trading
+    station (costing drops it for a station sale); the home region and a
+    region that is not a hub do not."""
     from types import SimpleNamespace
 
     from eve_trader.realized import ingest
@@ -1224,7 +1283,7 @@ def test_ingest_freight_follows_the_hub_table(monkeypatch):
         lambda region_id, fallback, cfg=None: {10000002: 800.0, 10000043: 750.0}.get(int(region_id), fallback),
     )
     enricher = ingest._TxnEnricher(cfg)
-    assert enricher.freight(10000002, JITA, 34, 3, True) == (None, None)
+    assert enricher.freight(10000002, JITA, 34, 3, True) == (800.0, 6.0)
     assert enricher.freight(10000002, 60000042, 34, 3, True) == (800.0, 6.0)
     assert enricher.freight(10000043, 60008494, 34, 1, True) == (750.0, 2.0)
     assert enricher.freight(10000049, 111, 34, 3, True) == (None, None)

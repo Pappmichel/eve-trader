@@ -694,13 +694,13 @@ def contract_titles(contract_ids: list[int]) -> dict[int, str]:
 def list_contracts_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
     """(owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id,
     acceptor_id, start_location_id, end_location_id, type, status, price,
-    reward, date_completed, volume, collateral, region_id)."""
+    reward, date_completed, volume, collateral, region_id, date_issued)."""
     where, params = _owner_in_clause(owners)
     with storage.connect() as conn:
         return conn.execute(
             "SELECT owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id, "
             "acceptor_id, start_location_id, end_location_id, type, status, price, reward, "
-            "date_completed, volume, collateral, region_id "
+            "date_completed, volume, collateral, region_id, date_issued "
             "FROM ledger_contracts "
             f"WHERE {where} ORDER BY date_completed, contract_id",
             tuple(params),

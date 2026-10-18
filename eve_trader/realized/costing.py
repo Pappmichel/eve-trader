@@ -67,7 +67,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Iterable, Optional, Sequence
 
@@ -309,6 +309,8 @@ class ItemExchangeContract:
     corp_issued: bool = False
     status: str = "finished"
     contract_type: str = CONTRACT_ITEM_EXCHANGE
+    # The issuer pays the contract broker fee on this day (U6 fallback).
+    date_issued: Optional[datetime] = None
     # Set by the loader (U7). Costing books one doctrine result when this is
     # true; an internal transfer is still skipped before that.
     is_doctrine: bool = False
@@ -808,13 +810,17 @@ class _Costing:
             ordered.extend(self._order_layers([layer for layer in layers if layer.pool not in seen], sale_order))
         else:
             ordered = self._order_layers(layers, sale_order)
+        station = self._station_id()
+        at_station = (station is not None and at_location is not None
+                      and int(at_location) == station)
         for layer in ordered:
             if need <= _EPS:
                 break
             if layer.quantity_left <= _EPS:
                 continue
             take = min(need, layer.quantity_left)
-            draws.append(self._take(layer, take))
+            # ST3: a station-pool unit used at the station was never hauled.
+            draws.append(self._take(layer, take, no_freight=at_station and layer.pool == str(station)))
             need -= take
         if need > _EPS and allow_unknown:
             price = self._reference_price(type_id, unit, when)
@@ -834,13 +840,16 @@ class _Costing:
         return draws, _sum_components(d.components for d in draws)
 
     @staticmethod
-    def _take(layer: CostLayer, qty: float) -> LayerDraw:
+    def _take(layer: CostLayer, qty: float, *, no_freight: bool = False) -> LayerDraw:
         layer.quantity_left -= qty
         if abs(layer.quantity_left) <= _EPS:
             layer.quantity_left = 0.0
+        components = layer.unit_components.scale(qty)
+        if no_freight:
+            components = replace(components, freight=0.0)
         return LayerDraw(
             layer_id=layer.layer_id, type_id=layer.type_id, unit=layer.unit, quantity=qty,
-            origin=layer.origin, components=layer.unit_components.scale(qty),
+            origin=layer.origin, components=components,
             estimated_origin=layer.estimated_origin, price_missing=layer.price_missing,
             source=layer.source,
         )
@@ -1506,27 +1515,41 @@ class _Costing:
 
     # ---------------------------------------------------------------- run
     def _attribute_contract_broker_fees(self) -> None:
-        """U6: contract_brokers_fee for one wallet and UTC day, spread by
-        contract price over the contracts that wallet issued that day, then
-        (later) by line gross so the total is paid once."""
-        pools: dict[tuple, float] = defaultdict(float)
-        for entry in self.ledger.journal_entries:
-            if entry.ref_type == CONTRACT_BROKER_FEE_REF and entry.date >= self.t0:
-                pools[(entry.owner_type, int(entry.owner_id), _day(entry.date))] += abs(float(entry.amount))
-        if not pools:
-            return
+        """U6: contract_brokers_fee. ESI links the entry to its contract
+        (`context_id_type` contract_id), so the fee goes to that contract
+        when it is a sale. A fee for a contract that is not a sale (expired,
+        a buy, a courier) is a fee without sale. An entry without that link
+        falls back to one pool per wallet and UTC day of issue, spread by
+        contract price over the sales that wallet issued that day."""
+        sales_by_id: dict[int, ItemExchangeContract] = {}
         sales: dict[tuple, list] = defaultdict(list)
         for contract in self.ledger.contracts:
             view = self._classify_contract(contract)
             if view is None or view.sale_pool is None or float(view.sale_pool) <= _EPS or not view.given:
                 continue
+            sales_by_id[int(contract.contract_id)] = contract
+            issued = contract.date_issued or contract.date_completed
             if contract.corp_issued and contract.issuer_corporation_id is not None:
-                key = ("corporation", int(contract.issuer_corporation_id), _day(contract.date_completed))
+                key = ("corporation", int(contract.issuer_corporation_id), _day(issued))
             elif contract.issuer_id is not None:
-                key = ("character", int(contract.issuer_id), _day(contract.date_completed))
+                key = ("character", int(contract.issuer_id), _day(issued))
             else:
                 continue
             sales[key].append((contract.ref, float(view.sale_pool)))
+        pools: dict[tuple, float] = defaultdict(float)
+        for entry in self.ledger.journal_entries:
+            if entry.ref_type != CONTRACT_BROKER_FEE_REF or entry.date < self.t0:
+                continue
+            amount = abs(float(entry.amount))
+            if entry.context_id_type == "contract_id" and entry.context_id is not None:
+                contract = sales_by_id.get(int(entry.context_id))
+                if contract is not None:
+                    self.contract_fee_by_ref[contract.ref] = self.contract_fee_by_ref.get(contract.ref, 0.0) + amount
+                else:
+                    self.fees_without_sale.append(
+                        FeePeriod(entry.owner_type, int(entry.owner_id), _day(entry.date), amount))
+                continue
+            pools[(entry.owner_type, int(entry.owner_id), _day(entry.date))] += amount
         for key, amount in pools.items():
             lines = sales.get(key, [])
             if not lines:
