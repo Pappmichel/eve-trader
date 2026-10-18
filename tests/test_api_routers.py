@@ -1699,6 +1699,32 @@ def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypa
     assert calls == [1]
 
 
+def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypatch):
+    from datetime import date
+
+    from eve_trader import portfolio
+    latest = [None]
+    calls = []
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: latest[0])
+    monkeypatch.setattr(portfolio, "take_portfolio_snapshot",
+                        lambda cfg=None: (calls.append(1), latest.__setitem__(0, date.today()))[1])
+    monkeypatch.setattr(portfolio, "wealth_change",
+                        lambda today=None: {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None})
+
+    def _no_overview(cfg=None):
+        raise AssertionError("wealth-change must not compute the overview")
+
+    monkeypatch.setattr(portfolio, "portfolio_overview", _no_overview)
+
+    first = client.get("/api/portfolio/wealth-change")
+    second = client.get("/api/portfolio/wealth-change")
+
+    assert first.status_code == 200
+    assert first.json() == {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None}
+    assert second.json() == first.json()
+    assert calls == [1]
+
+
 def test_realized_cards_forwards_period(monkeypatch):
     from eve_trader import portfolio
     captured = {}

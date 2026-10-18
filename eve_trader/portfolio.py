@@ -886,6 +886,18 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     return {**overview, "wealth_change": wealth_change()}
 
 
+def do_get_wealth_change(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """`GET /api/portfolio/wealth-change`: Total Wealth's 1/7/30-day change
+    for the page header. Takes today's snapshot lazily like
+    do_get_portfolio_overview (same one write path), so the page keeps
+    filling history without reading the overview. Every later read that
+    day is only a snapshot-table read - the overview's Production stock
+    value took ~10 s on production and the page no longer shows it."""
+    if storage.latest_portfolio_snapshot_date() != date.today():
+        take_portfolio_snapshot(cfg)
+    return wealth_change()
+
+
 def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
     """`GET /api/portfolio/history`'s own action. `days=None` returns every
     snapshot this tenant has ever taken (unbounded retention); otherwise

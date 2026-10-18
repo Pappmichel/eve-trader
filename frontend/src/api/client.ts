@@ -499,6 +499,7 @@ export const productionApi = {
 // ------------------------------------------------------------- portfolio
 export const portfolioApi = {
   overview: () => get<T.PortfolioOverview>('/api/portfolio/overview'),
+  wealthChange: () => get<T.WealthChange>('/api/portfolio/wealth-change'),
   history: (days?: number) =>
     get<T.PortfolioSnapshotRow[]>(days == null ? '/api/portfolio/history' : `/api/portfolio/history?days=${days}`),
   wealth: () => get<T.TotalWealth>('/api/portfolio/wealth'),
