@@ -132,8 +132,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         # "production" added for the realized-profit ledger archive
         # (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 1) - Doctrine's
-        # own structure-filtered snapshot is unchanged.
-        consuming_tools=("doctrine", "production"),
+        # own structure-filtered snapshot is unchanged. "trading" prices
+        # courier freight (docs/COURIER_FREIGHT_PLAN.md F4); item-exchange
+        # sales stay on production and doctrine.
+        consuming_tools=("doctrine", "production", "trading"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(

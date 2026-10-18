@@ -67,7 +67,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'contracts', section: 'industry', label: 'Contracts', group: 1,
-    consumingTools: ['doctrine', 'production'],
+    consumingTools: ['doctrine', 'production', 'trading'],
     corpRoles: [],
   },
   {

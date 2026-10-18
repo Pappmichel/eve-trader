@@ -6,8 +6,8 @@ missing.
 
 U3a: the run fingerprint is the union of realized-tool shares. This page
 then keeps channel `trading`. Market sales match a wallet shared with
-Trading. Contract sales of non-Production types use the same wallet list,
-because Trading has no contracts share of its own.
+Trading. Contract sales stay on that same wallet list. A Trading contracts
+share prices courier freight and does not load item-exchange sales (F4).
 """
 from __future__ import annotations
 

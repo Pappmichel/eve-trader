@@ -264,8 +264,9 @@ def _load_item_exchanges_readonly() -> tuple:
 
     The shipment list calls this on a GET. It does not resolve regions or
     freeze freight (that stays on the rebuild path in `_load_contracts`).
+    Item exchanges stay on production and doctrine shares (F4).
     """
-    owners = access.shared_owners("contracts")
+    owners = access.shared_item_exchange_owners()
     if not owners:
         return ()
     headers = db.list_contracts_for_owners(owners)
@@ -354,8 +355,9 @@ def _load_contracts() -> tuple:
     by contract id. Freight is frozen onto item rows the first time the start
     location's region can be resolved. Courier rows are not returned.
     `is_doctrine` is U7: doctrine structure, issuer is a tenant character,
-    archive owner shares contracts with Doctrine."""
-    owners = access.shared_owners("contracts")
+    archive owner shares contracts with Doctrine. Trading's contracts share
+    prices couriers only; it does not add item-exchange sales (F4)."""
+    owners = access.shared_item_exchange_owners()
     if not owners:
         return ()
     headers = db.list_contracts_for_owners(owners)
@@ -707,7 +709,7 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
         [oid for ot, oid in order_owners if ot == "character"],
         [oid for ot, oid in order_owners if ot == "corporation"],
     )
-    in_contracts = db.outstanding_contract_qty_by_type(access.shared_owners("contracts"))
+    in_contracts = db.outstanding_contract_qty_by_type(access.shared_item_exchange_owners())
     for extra in (listed, in_contracts):
         for tid, qty in extra.items():
             if tid in blueprints:

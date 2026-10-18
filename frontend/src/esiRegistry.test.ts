@@ -20,7 +20,7 @@ describe('esiRegistry Character Management kinds', () => {
     expect(wallet.consumingTools).toContain('station_trading')
     expect(wallet.toolDataKind?.char_info).toBe('wallet_balance')
     expect(wallet.toolDataKind?.station_trading).toBeUndefined()
-    expect(kindByKey('contracts')!.consumingTools).toEqual(['doctrine', 'production'])
+    expect(kindByKey('contracts')!.consumingTools).toEqual(['doctrine', 'production', 'trading'])
   })
 
   it('puts every kind into exactly one known section', () => {

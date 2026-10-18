@@ -1,7 +1,6 @@
 # Real freight from courier contracts - plan
 
-Status: **Phase 2 built** (2026-10-18). Decisions F1-F7 stay as confirmed.
-Phase 3 (Trading contracts share, docs) is not started.
+Status: **Phases 1-3 built** (2026-10-18). Decisions F1-F7 stay as confirmed.
 
 Phase 1 assigns a shipment rate in the pure costing engine and loads the
 couriers that rate comes from. A finished courier that ends at the home
@@ -70,6 +69,30 @@ share changes the owner-scope fingerprint and the next rebuild uses the
 configured rate. Phase 1 live log:
 `/opt/cursor/artifacts/phase1-courier-live.log`.
 
+Phase 3 adds `trading` to the contracts consumers in
+`esi_data/registry.py` and `realized/access.KIND_TOOLS`, and the same
+list in `frontend/src/esiRegistry.ts`. A Trading contracts share changes
+the owner-scope fingerprint and supplies couriers for the freight rate.
+Item-exchange reads (sales, buys, outstanding quantity) stay on
+`ITEM_EXCHANGE_TOOLS` (`production`, `doctrine`), so a Trading-only
+contracts share does not book contract sales or change opening stock.
+Trading's report still filters sales by its own wallet owners and
+channels. `CLAUDE.md` and the Production plan's D9 note now say freight
+is the courier rate when a shipment covers the purchase, otherwise the
+configured rate.
+
+Phase 3 tests: `pytest -q` 3308 passed, 1 skipped. Frontend: `npm run
+lint`, `npm test` (380 passed, including `esiRegistry.test.ts`),
+`npm run build`.
+
+Live check (local Postgres, throwaway tenant, seed deleted afterwards):
+wallet and contracts shared with Trading only. The fingerprint changes.
+`shared_item_exchange_owners()` is empty and the item-exchange type is
+not a result. The market buy is covered by courier 236959145
+(280,000,000 / 349,977 ISK/m3). Trading's summary books that freight on
+"Freight from couriers" and zero on the configured rate. Log:
+`/opt/cursor/artifacts/phase3-courier-live.log`.
+
 ### Deviations
 - The checkout is LF (`.gitattributes` forces LF only for shell scripts).
   Edited files stay LF so the diff does not rewrite every line.
@@ -86,8 +109,16 @@ configured rate. Phase 1 live log:
 - Booked freight on the shipment list is computed from the archive at read
   time. It is not a new table, and it stays correct when the derived rows
   are stale (`needs_rebuild` is still reported).
+- Item-exchange sales, buys and outstanding quantity stay on
+  `ITEM_EXCHANGE_TOOLS` (`production`, `doctrine`). Couriers use the
+  widened `shared_owners("contracts")`, which includes Trading. A
+  Trading-only contracts share prices freight and does not book contract
+  sales or change opening stock. The fingerprint still changes because
+  `KIND_TOOLS` includes `trading`.
+
 Builds on `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (U4: freight from the hub
-table) and the Production plan's D9 (freight is the configured rate and is
+table) and the Production plan's D9 (freight is the courier rate when a
+shipment covers the purchase, otherwise the configured rate, and is
 labeled that way).
 
 ## 1. Goal
