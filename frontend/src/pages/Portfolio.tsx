@@ -409,6 +409,13 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
             hint={[line.hint, line.synced ? `Synced ${dateTime(line.synced)}` : undefined].filter(Boolean).join(' ')} />
         ))}
       </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        Prices: a manual price if set, otherwise the cheaper of the C-J sell price and the Jita sell price
+        plus freight ({isk(data.freight_per_m3 ?? null)}/m³, packaged volume) - what it would cost to buy the
+        item in again, as the Production buy list does. Listed items use the same price, not their own
+        order price, so a markup above Jita plus freight is not counted. Blueprint copies count only with a
+        manual price. Capital below shows listed items at their order price.
+      </Text>
       <WealthBreakdownSection breakdown={breakdown} />
     </Stack>
   )

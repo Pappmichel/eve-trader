@@ -874,6 +874,8 @@ class TotalWealth(_Base):
     wealth_unpriced_items: int
     characters_missing_wallet_scope: list[CharacterMissingWalletScope] = []
     sync: WealthSync = WealthSync()
+    # ISK/m3 added to Jita quotes when pricing items (portfolio._priced).
+    freight_per_m3: Optional[float] = None
 
 
 class WealthShareRow(_Base):
