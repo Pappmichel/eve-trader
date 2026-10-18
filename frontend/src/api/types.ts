@@ -690,6 +690,17 @@ export interface ProductionUnlistedStockRow {
   margin: number | null
 }
 
+export interface WealthDelta {
+  isk: number
+  pct: number | null
+}
+
+export interface WealthChange {
+  d1: WealthDelta | null
+  d7: WealthDelta | null
+  d30: WealthDelta | null
+}
+
 export interface PortfolioOverview {
   trading_realized_profit: number
   trading_average_margin: number
@@ -698,6 +709,7 @@ export interface PortfolioOverview {
   production_stock_value: number
   production_stock_targets_configured: boolean
   combined_value: number
+  wealth_change: WealthChange
 }
 
 export interface PortfolioSnapshotRow {
@@ -2966,14 +2978,19 @@ export interface DoctrineRealizedContractDetail extends DoctrineRealizedContract
 export interface RealizedToolCard {
   tool: string
   profit: number | null
+  revenue: number | null
+  margin: number | null
   coverage: number | null
   estimated: boolean
   empty: boolean
+  sales_count: number | null
+  link: string
 }
 
 export interface RealizedToolCards {
   rows: RealizedToolCard[]
   total: number | null
+  period: string
 }
 
 export interface RealizedJobFeeLine {

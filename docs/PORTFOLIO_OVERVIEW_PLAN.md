@@ -1,7 +1,13 @@
 # Portfolio overview - plan
 
-Status: **planned 2026-10-18, decisions P1-P7 confirmed the same day** (all
-as recommended). Nothing is built.
+Status: **in progress 2026-10-18**. Decisions P1-P7 stand as confirmed.
+Phase 1 (cards, period, header, wealth change) is built. Phases 2-5 are
+not. Deviations: none yet. Phase 1 tests: `tests/test_realized_cards.py`
+(periods, since_t0 window, single-tool total, recompute adds nothing),
+`tests/test_portfolio.py` wealth_change gaps and percent, router period
+forwarding, vitest `Portfolio.test.tsx` (4). Full pytest 3316 passed;
+frontend lint, vitest (377) and build passed. Live page check follows
+with the finished page.
 Builds on `docs/PORTFOLIO_REWORK_PLAN.md` (Total Wealth, snapshots, manual
 prices) and `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (one ledger, four
 channels, `GET /api/portfolio/realized-cards`).

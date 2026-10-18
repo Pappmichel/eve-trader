@@ -8,27 +8,38 @@ either (confirmed with the user).
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from . import storage
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 
+# Same window vocabulary as the tool pages (production/realized/period.ts).
+# "since_t0" leaves `start` unset so each tool's summary applies the ledger T0.
+_PERIOD_DAYS = {"7": 7, "30": 30, "90": 90}
+_CARD_LINKS = {
+    "production": "/production/realized",
+    "trading": "/trading/trades",
+    "doctrine": "/doctrine/realized",
+    "station_trading": "/station-trading/realized",
+}
+_CARD_ORDER = ("production", "trading", "doctrine", "station_trading")
 
-def realized_cards(tool_keys) -> dict:
-    """Last-30-day realized profit for each granted tool, plus a total.
 
-    The total is present only when at least two of those tools have a
-    figure. A tool that still needs a recompute contributes no number, so
-    a zero from an empty archive is not added in as a result. The page
-    shows `total` as returned.
-    """
-    from datetime import datetime, timedelta, timezone
-
-    keys = {str(key) for key in (tool_keys or ())}
+def _realized_window(period: str) -> dict:
+    key = str(period or "30").strip()
     now = datetime.now(timezone.utc)
-    period = {"start": now - timedelta(days=30), "end": now, "since_t0": False, "days": 30}
+    if key == "since_t0":
+        return {"start": None, "end": now, "since_t0": True, "days": None}
+    if key not in _PERIOD_DAYS:
+        raise ActionError("period must be 7, 30, 90, or since_t0.")
+    days = _PERIOD_DAYS[key]
+    return {"start": now - timedelta(days=days), "end": now, "since_t0": False, "days": days}
+
+
+def _card_readers(tool_keys):
+    keys = {str(key) for key in (tool_keys or ())}
     readers = []
     if "production" in keys:
         from .production.realized.report import summary as production_summary
@@ -42,19 +53,69 @@ def realized_cards(tool_keys) -> dict:
     if "station_trading" in keys:
         from .station_trading.realized import summary as station_summary
         readers.append(("station_trading", station_summary))
+    return readers
+
+
+def _sales_count(data: dict):
+    if "sale_count" in data:
+        return data["sale_count"]
+    if "contracts" in data:
+        return data["contracts"]
+    return None
+
+
+def realized_cards(tool_keys, period: str = "30") -> dict:
+    """Realized profit for each granted tool over `period`, plus a total.
+
+    `period` is 7, 30, 90, or since_t0. since_t0 is passed through to each
+    tool's summary, which applies that ledger's T0. The total is the sum of
+    every tool that has a figure, including when only one does (P2). A tool
+    that still needs a recompute contributes no number, so a zero from an
+    empty archive is not added in as a result. The page shows these numbers
+    as returned.
+    """
+    window = _realized_window(period)
     rows = []
-    for tool, reader in readers:
-        data = reader(**period)
+    for tool, reader in _card_readers(tool_keys):
+        data = reader(**window)
         empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
         rows.append({
             "tool": tool,
             "profit": None if empty else data["realized_profit"],
+            "revenue": None if empty else data.get("revenue"),
+            "margin": None if empty else data.get("margin"),
             "coverage": None if empty else data.get("coverage"),
             "estimated": False if empty else bool(data.get("estimated")),
             "empty": empty,
+            "sales_count": None if empty else _sales_count(data),
+            "link": _CARD_LINKS[tool],
         })
+    rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
     ready = [row["profit"] for row in rows if row["profit"] is not None]
-    return {"rows": rows, "total": sum(ready) if len(ready) >= 2 else None}
+    return {"rows": rows, "total": sum(ready) if ready else None, "period": str(period or "30")}
+
+
+def wealth_change(today: Optional[date] = None) -> dict:
+    """ISK and percent change of total_wealth versus the snapshot 1, 7 and
+    30 days earlier. A missing row, or a row whose total_wealth is still
+    NULL, is None for that horizon. Percent is None when the earlier
+    wealth is 0. The page shows these numbers as returned.
+    """
+    today = today or date.today()
+    rows = storage.load_portfolio_snapshots(since=today - timedelta(days=30))
+    columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
+    by_date = {row[0]: dict(zip(columns, row)) for row in rows}
+    current = by_date.get(today, {}).get("total_wealth")
+
+    def point(days: int):
+        past = by_date.get(today - timedelta(days=days))
+        if current is None or past is None or past.get("total_wealth") is None:
+            return None
+        earlier = past["total_wealth"]
+        isk = current - earlier
+        return {"isk": isk, "pct": None if earlier == 0 else isk / earlier}
+
+    return {"d1": point(1), "d7": point(7), "d30": point(30)}
 
 
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -327,8 +388,10 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     is the cheap, plain live read - take_portfolio_snapshot() is never
     called more than once per day from here."""
     if storage.latest_portfolio_snapshot_date() != date.today():
-        return take_portfolio_snapshot(cfg)
-    return portfolio_overview(cfg)
+        overview = take_portfolio_snapshot(cfg)
+    else:
+        overview = portfolio_overview(cfg)
+    return {**overview, "wealth_change": wealth_change()}
 
 
 def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:

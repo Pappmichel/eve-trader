@@ -1665,6 +1665,7 @@ def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkey
 
     from eve_trader import portfolio
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg=None: {
         "trading_realized_profit": 1000.0, "trading_average_margin": 0.2,
         "trading_daily_profit_volatility": None, "trading_trade_count": 5,
@@ -1680,6 +1681,7 @@ def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkey
 def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypatch):
     from eve_trader import portfolio
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     calls = []
     monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg=None: (calls.append(1), {
         "trading_realized_profit": 500.0, "trading_average_margin": 0.1,
@@ -1693,7 +1695,29 @@ def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypa
 
     assert resp.status_code == 200
     assert resp.json()["combined_value"] == 600.0
+    assert resp.json()["wealth_change"] == {"d1": None, "d7": None, "d30": None}
     assert calls == [1]
+
+
+def test_realized_cards_forwards_period(monkeypatch):
+    from eve_trader import portfolio
+    captured = {}
+
+    def _cards(tool_keys, period="30"):
+        captured["period"] = period
+        captured["keys"] = tuple(tool_keys)
+        return {"rows": [], "total": None, "period": period}
+
+    monkeypatch.setattr(portfolio, "realized_cards", _cards)
+    resp = client.get("/api/portfolio/realized-cards?period=since_t0")
+    assert resp.status_code == 200
+    assert captured["period"] == "since_t0"
+    assert resp.json()["period"] == "since_t0"
+
+
+def test_realized_cards_unknown_period_is_400():
+    resp = client.get("/api/portfolio/realized-cards?period=14")
+    assert resp.status_code == 400
 
 
 def test_get_portfolio_history_defaults_to_unbounded(monkeypatch):

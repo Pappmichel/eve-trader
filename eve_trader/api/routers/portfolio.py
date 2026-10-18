@@ -38,10 +38,10 @@ def get_portfolio_overview():
 
 
 @router.get("/realized-cards")
-def get_realized_cards(request: Request):
+def get_realized_cards(request: Request, period: str = "30"):
     """Cards for the tools this session holds. The total is already summed."""
     keys = getattr(request.state, "tool_keys", ())
-    return portfolio.realized_cards(keys)
+    return _wrap(portfolio.realized_cards, tool_keys=keys, period=period)
 
 
 @router.get("/history", response_model=list[schemas.PortfolioSnapshotRow])

@@ -803,6 +803,17 @@ class DoctrineStatus(_Base):
     fittings: list[FittingStatus] = []
 
 
+class WealthDelta(_Base):
+    isk: float
+    pct: Optional[float] = None
+
+
+class WealthChange(_Base):
+    d1: Optional[WealthDelta] = None
+    d7: Optional[WealthDelta] = None
+    d30: Optional[WealthDelta] = None
+
+
 class PortfolioOverview(_Base):
     trading_realized_profit: float
     trading_average_margin: float
@@ -811,6 +822,9 @@ class PortfolioOverview(_Base):
     production_stock_value: float
     production_stock_targets_configured: bool
     combined_value: float
+    # Kept on the snapshot response so old history stays readable. The page
+    # shows total_wealth and wealth_change, not combined_value (P1).
+    wealth_change: WealthChange = WealthChange()
 
 
 class PortfolioSnapshotRow(_Base):
