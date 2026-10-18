@@ -391,7 +391,7 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
   const lines: { label: string; value: number | null; hint?: string; synced?: string | null }[] = [
     { label: 'Assets', value: data.wealth_assets_value, synced: data.sync?.assets },
     { label: 'Blueprints', value: data.wealth_blueprints_value, synced: data.sync?.blueprints,
-      hint: 'One market quote per BPO, regardless of its own ME/TE. A BPC counts only with a manual price.' },
+      hint: 'One market quote per BPO, regardless of its own ME/TE. A BPC: manual price, else invention cost per run x remaining runs.' },
     { label: 'Listed', value: data.wealth_listed_value, synced: data.sync?.listed,
       hint: 'Open sell orders. ESI leaves these out of the asset list.' },
     { label: 'Contracts', value: data.wealth_contract_value, synced: data.sync?.contracts,
@@ -413,8 +413,10 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
         Prices: a manual price if set, otherwise the cheaper of the C-J sell price and the Jita sell price
         plus freight ({isk(data.freight_per_m3 ?? null)}/m³, packaged volume) - what it would cost to buy the
         item in again, as the Production buy list does. Listed items use the same price, not their own
-        order price, so a markup above Jita plus freight is not counted. Blueprint copies count only with a
-        manual price. Capital below shows listed items at their order price.
+        order price, so a markup above Jita plus freight is not counted. A blueprint copy uses a manual price,
+        otherwise its invention cost per run (cheapest decryptor, datacores priced the same way, job fee
+        included) times its remaining runs; copies that cannot be invented (T1, faction) need a manual price.
+        Capital below shows listed items at their order price.
       </Text>
       <WealthBreakdownSection breakdown={breakdown} />
     </Stack>
