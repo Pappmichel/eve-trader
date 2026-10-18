@@ -5648,6 +5648,29 @@ def load_sell_orders_grouped(owner_character_ids: Optional[list[int]] = None,
     return rows
 
 
+def sde_volumes_for_types(type_ids: Iterable[int]) -> list[tuple]:
+    """(type_id, sde_volume, category_id, cached_packaged_volume) per type
+    in one read. cached_packaged_volume is None when type_packaged_volume
+    has no row yet. Types missing from the SDE cache are absent."""
+    ids = list({int(t) for t in type_ids})
+    if not ids:
+        return []
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id, t.volume, g.category_id, p.packaged_volume FROM sde_types t "
+            "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "LEFT JOIN type_packaged_volume p ON p.type_id = t.type_id "
+            "WHERE t.type_id = ANY(?)",
+            (ids,),
+        ).fetchall()
+    return [
+        (int(type_id), None if volume is None else float(volume),
+         None if category_id is None else int(category_id),
+         None if packaged is None else float(packaged))
+        for type_id, volume, category_id, packaged in rows
+    ]
+
+
 def sde_categories_for_types(type_ids: Iterable[int]) -> dict[int, str]:
     """type_id -> SDE category name. Types missing from the cache are absent."""
     ids = list({int(t) for t in type_ids})

@@ -254,6 +254,12 @@ also share with Portfolio (consistent scope, but cost basis gaps).
 **P6 Market value price.** *Confirmed:* one price function for wealth
 and capital (manual, home sell, Jita sell). Alternative: Jita buy for a
 liquidation value - a second number to explain.
+*Changed 2026-10-18 after the test-server check:* the market price is the
+buy list's rule - the cheaper of home sell and Jita sell plus freight
+(`haul_cost_per_m3` x packaged m3), manual price first, no broker fee. One
+19M ISK sell order at C-J had valued 14k Fullerene Intercalated Graphite
+(Jita 17k) at 266 bn; Total Wealth on the test server fell from 1,590 to
+1,185 bn with the rule.
 
 **P7 Period default.** *Confirmed:* 30 days. Alternative: since T0.
 

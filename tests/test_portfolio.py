@@ -365,9 +365,51 @@ def test_priced_falls_back_to_jita_when_home_has_no_quote(monkeypatch):
         return {tid: _current_price(tid, 20.0) for tid in ids}
 
     monkeypatch.setattr(production_pricing, "_goonmetrics_prices", _fake_prices)
+    monkeypatch.setattr(portfolio, "_haul_volumes", lambda ids: {})
 
     prices = portfolio._priced({34})
     assert prices[34] == 20.0
+
+
+def _two_markets(monkeypatch, home_sell, jita_sell, volumes, rate=1000.0):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production import pricing as production_pricing
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "insmother")
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", rate)
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {})
+
+    def _fake_prices(market, ids):
+        book = home_sell if market == "insmother" else jita_sell
+        return {tid: _current_price(tid, book[tid]) for tid in ids if tid in book}
+
+    monkeypatch.setattr(production_pricing, "_goonmetrics_prices", _fake_prices)
+    asked = []
+
+    def _volumes(ids):
+        asked.append(sorted(ids))
+        return {tid: volumes[tid] for tid in ids if tid in volumes}
+
+    monkeypatch.setattr(portfolio, "_haul_volumes", _volumes)
+    return asked
+
+
+def test_priced_uses_jita_plus_freight_when_home_is_a_troll_order(monkeypatch):
+    # Buy-list rule: one 19M sell order at home must not value a stack Jita
+    # sells for 5k. Jita 5,000 + 1,000 ISK/m3 x 1 m3 = 6,000.
+    _two_markets(monkeypatch, {34: 19_000_000.0}, {34: 5_000.0}, {34: 1.0})
+    assert portfolio._priced({34}) == {34: 6_000.0}
+
+
+def test_priced_keeps_home_when_jita_plus_freight_is_dearer(monkeypatch):
+    # Home 5,500 < Jita 5,000 + 1,000 freight.
+    _two_markets(monkeypatch, {34: 5_500.0}, {34: 5_000.0}, {34: 1.0})
+    assert portfolio._priced({34}) == {34: 5_500.0}
+
+
+def test_priced_adds_freight_to_a_jita_only_quote_and_skips_volume_when_home_is_cheaper(monkeypatch):
+    asked = _two_markets(monkeypatch, {35: 10.0}, {34: 20.0, 35: 30.0}, {34: 0.01})
+    assert portfolio._priced({34, 35}) == {34: 30.0, 35: 10.0}
+    assert asked == [[34]]
 
 
 def test_priced_excludes_type_with_no_quote_anywhere(monkeypatch):

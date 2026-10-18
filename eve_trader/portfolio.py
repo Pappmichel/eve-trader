@@ -399,7 +399,15 @@ def _priced(type_ids: set[int]) -> dict[int, float]:
     call each) rather than the narrower home_prices/jita_prices - those are
     ESI-first and scoped to explicit stock-target type_ids by design, while
     Total Wealth needs every type_id actually owned, a much larger,
-    unpredictable set (PORTFOLIO_REWORK_PLAN.md section 6)."""
+    unpredictable set (PORTFOLIO_REWORK_PLAN.md section 6).
+
+    Same rule as the buy list (production/pricing.buy_price): the cheaper
+    of the home sell price and Jita sell plus freight
+    (ProductionConfig.haul_cost_per_m3 x packaged m3). One overpriced
+    sell order at home therefore cannot set the value of a stack that
+    Jita sells for a fraction. The buy broker fee is left out: this is a
+    value, not a purchase. A type whose volume is unknown is compared
+    without freight."""
     ids = list(type_ids)
     if not ids:
         return {}
@@ -408,18 +416,62 @@ def _priced(type_ids: set[int]) -> dict[int, float]:
     manual = storage.load_manual_item_prices()
     home = _goonmetrics_prices(PRODUCTION_CONFIG.home_market, ids) if PRODUCTION_CONFIG.home_market else {}
     jita = _goonmetrics_prices(JITA_MARKET, ids)
+    home_sell: dict[int, float] = {}
+    jita_sell: dict[int, float] = {}
+    for tid in ids:
+        if tid in manual:
+            continue
+        home_quote = home.get(tid)
+        jita_quote = jita.get(tid)
+        if home_quote and home_quote.sell > 0:
+            home_sell[tid] = home_quote.sell
+        if jita_quote and jita_quote.sell > 0:
+            jita_sell[tid] = jita_quote.sell
+    # Freight only matters where Jita could win: no home quote, or a home
+    # quote above Jita's. Volumes are looked up for those types only.
+    need_volume = [
+        tid for tid, sell in jita_sell.items()
+        if tid not in home_sell or home_sell[tid] > sell
+    ]
+    volumes = _haul_volumes(need_volume)
+    rate = float(PRODUCTION_CONFIG.haul_cost_per_m3 or 0.0)
     prices: dict[int, float] = {}
     for tid in ids:
         if tid in manual:
             prices[tid] = manual[tid]
             continue
-        home_quote = home.get(tid)
-        jita_quote = jita.get(tid)
-        if home_quote and home_quote.sell > 0:
-            prices[tid] = home_quote.sell
-        elif jita_quote and jita_quote.sell > 0:
-            prices[tid] = jita_quote.sell
+        candidates = []
+        if tid in home_sell:
+            candidates.append(home_sell[tid])
+        if tid in jita_sell:
+            candidates.append(jita_sell[tid] + rate * (volumes.get(tid) or 0.0))
+        if candidates:
+            prices[tid] = min(candidates)
     return prices
+
+
+def _haul_volumes(type_ids: list[int]) -> dict[int, float]:
+    """Packaged m3 per type for freight, the buy list's volume rule
+    (esi_client.resolve_effective_volume). One SDE read for all types;
+    ships and modules without a cached packaged volume go through the
+    shared bulk resolver, which caches what ESI returns."""
+    if not type_ids:
+        return {}
+    from .esi_client import _MODULE_CATEGORY_ID, _SHIP_CATEGORY_ID, resolve_effective_volume_bulk
+    rows = storage.sde_volumes_for_types(type_ids)
+    out: dict[int, float] = {}
+    to_resolve = []
+    for type_id, volume, category_id, packaged in rows:
+        if packaged is not None:
+            out[type_id] = float(packaged)
+        elif category_id in (_SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID):
+            to_resolve.append((type_id, volume, category_id))
+        elif volume is not None:
+            out[type_id] = float(volume)
+    if to_resolve:
+        resolved = resolve_effective_volume_bulk(to_resolve)
+        out.update({tid: float(v) for tid, v in resolved.items() if v is not None})
+    return out
 
 
 def _manual_only_priced(type_ids: set[int]) -> dict[int, float]:
