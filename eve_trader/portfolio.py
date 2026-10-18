@@ -14,6 +14,7 @@ from typing import Optional
 from . import storage
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
+from .portfolio_wealth import assemble
 
 # Same window vocabulary as the tool pages (production/realized/period.ts).
 # "since_t0" leaves `start` unset so each tool's summary applies the ledger T0.
@@ -339,17 +340,188 @@ def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
     ]
 
 
+_WEALTH_KINDS = ("assets", "blueprints", "wallet_balance", "market_orders", "contracts")
+_EMPTY_SYNC = {
+    "assets": None, "blueprints": None, "listed": None,
+    "contracts": None, "wallet": None, "escrow": None,
+}
+_EMPTY_WEALTH = {
+    "total_wealth": None,
+    "wealth_assets_value": None,
+    "wealth_blueprints_value": None,
+    "wealth_wallet_balance": None,
+    "wealth_listed_value": None,
+    "wealth_contract_value": None,
+    "wealth_escrow": None,
+    "wealth_priced_items": 0,
+    "wealth_unpriced_items": 0,
+    "characters_missing_wallet_scope": [],
+    "sync": dict(_EMPTY_SYNC),
+}
+_EMPTY_BREAKDOWN = {
+    "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [], "unpriced": [],
+}
+
+
+def _portfolio_shares() -> dict[str, tuple[list[int], list[int]]]:
+    from .esi_data.access import shared_owner_ids
+    return {
+        kind: (
+            shared_owner_ids(kind, "portfolio", "character"),
+            shared_owner_ids(kind, "portfolio", "corporation"),
+        )
+        for kind in _WEALTH_KINDS
+    }
+
+
+def _any_shared(shares: dict) -> bool:
+    return any(ids for pair in shares.values() for ids in pair)
+
+
+def _owner_pairs(chars: list[int], corps: list[int]) -> list[tuple[str, int]]:
+    return [("character", int(i)) for i in chars] + [("corporation", int(i)) for i in corps]
+
+
+def _sync_times(shares: dict, escrow_known: bool) -> dict:
+    rows = storage.list_esi_freshness()
+    kind_for = {
+        "assets": "assets", "blueprints": "blueprints", "listed": "market_orders",
+        "contracts": "contracts", "wallet": "wallet_balance", "escrow": "market_orders",
+    }
+    out = {}
+    for label, kind in kind_for.items():
+        if label == "escrow" and not escrow_known:
+            out[label] = None
+            continue
+        chars, corps = shares[kind]
+        owners = set(_owner_pairs(chars, corps))
+        times = [
+            row[3] for row in rows
+            if row[2] == kind and (row[0], int(row[1])) in owners and row[3]
+        ]
+        out[label] = max(times) if times else None
+    return out
+
+
+def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
+    """Rows Total Wealth and the breakdown both price. None when nobody
+    shares any Portfolio kind. Listed sells and outstanding contracts are
+    their own rows, never folded into assets."""
+    shares = _portfolio_shares()
+    if not _any_shared(shares):
+        return None
+    asset_chars, asset_corps = shares["assets"]
+    bp_chars, bp_corps = shares["blueprints"]
+    wallet_chars, wallet_corps = shares["wallet_balance"]
+    order_chars, order_corps = shares["market_orders"]
+    contract_chars, contract_corps = shares["contracts"]
+
+    assets = storage.load_assets_grouped(asset_chars, asset_corps) if (asset_chars or asset_corps) else []
+    blueprints = storage.load_blueprints_grouped(bp_chars, bp_corps) if (bp_chars or bp_corps) else []
+    listed = storage.load_sell_orders_grouped(order_chars, order_corps) if (order_chars or order_corps) else []
+    contract_rows = []
+    if contract_chars or contract_corps:
+        from .realized.db import outstanding_contract_lines
+        contract_rows = outstanding_contract_lines(_owner_pairs(contract_chars, contract_corps))
+    wallet_rows = (
+        storage.wallet_balances_by_owner(wallet_chars, wallet_corps)
+        if (wallet_chars or wallet_corps) else []
+    )
+    escrow_known = True
+    if order_chars or order_corps:
+        from .realized.db import open_buys_have_unknown_escrow
+        escrow_known = not open_buys_have_unknown_escrow(_owner_pairs(order_chars, order_corps))
+
+    items = []
+    for owner_type, owner_id, location_id, type_id, quantity in assets:
+        items.append({
+            "component": "assets", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id, "quantity": quantity,
+            "manual_only": False,
+        })
+    for owner_type, owner_id, location_id, type_id, quantity, runs in blueprints:
+        items.append({
+            "component": "blueprints", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id,
+            "quantity": _blueprint_effective_quantity(quantity),
+            "manual_only": runs != -1,
+        })
+    for owner_type, owner_id, location_id, type_id, quantity in listed:
+        items.append({
+            "component": "listed", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id, "quantity": quantity,
+            "manual_only": False,
+        })
+    for owner_type, owner_id, type_id, quantity in contract_rows:
+        items.append({
+            "component": "contracts", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": None, "type_id": type_id, "quantity": quantity,
+            "manual_only": False,
+        })
+
+    market_ids = {item["type_id"] for item in items if not item["manual_only"]}
+    manual_ids = {item["type_id"] for item in items if item["manual_only"]}
+    prices = _priced(market_ids)
+    manuals = _manual_only_priced(manual_ids)
+    for item in items:
+        book = manuals if item["manual_only"] else prices
+        item["price"] = book.get(item["type_id"])
+
+    wallets = [
+        {"owner_type": owner_type, "owner_id": owner_id, "amount": amount}
+        for owner_type, owner_id, amount in wallet_rows
+    ]
+    return {
+        "items": items,
+        "wallets": wallets,
+        "escrow": [] if escrow_known else None,
+        "shares": shares,
+        "escrow_known": escrow_known,
+        "structure_id": cfg.structure_id,
+    }
+
+
+def _wealth_from(collected: dict) -> dict:
+    built = assemble(
+        collected["items"], collected["wallets"], collected["escrow"],
+        structure_id=collected["structure_id"],
+    )
+    parts = built["components"]
+    shared_characters = set()
+    for kind in ("assets", "blueprints", "wallet_balance"):
+        shared_characters.update(collected["shares"][kind][0])
+    return {
+        "total_wealth": built["total"],
+        "wealth_assets_value": parts["assets"],
+        "wealth_blueprints_value": parts["blueprints"],
+        "wealth_wallet_balance": parts["wallet"],
+        "wealth_listed_value": parts["listed"],
+        "wealth_contract_value": parts["contracts"],
+        "wealth_escrow": parts["escrow"],
+        "wealth_priced_items": built["priced_items"],
+        "wealth_unpriced_items": built["unpriced_items"],
+        "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),
+        "sync": _sync_times(collected["shares"], collected["escrow_known"]),
+        "_built": built,
+    }
+
+
 def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Assets + blueprints + wallet balances across every owner sharing
     with "portfolio" specifically - sharing the same data with another
     tool does not expose it here (PORTFOLIO_REWORK_PLAN.md section 4).
 
-    total_wealth/wealth_assets_value/wealth_blueprints_value/wealth_
-    wallet_balance stay None (not 0.0) until any owner shares anything
-    with "portfolio" at all - a real gap ("nobody has opted in yet"), not
-    "everything they own is worthless" (confirmed real bug in review: the
-    original version returned 0.0 here, which the History chart then drew
-    as an indistinguishable flat zero line).
+    total_wealth and each component stay None (not 0.0) until any owner
+    shares anything with "portfolio" at all - a real gap ("nobody has
+    opted in yet"), not "everything they own is worthless" (confirmed
+    real bug in review: the original version returned 0.0 here, which the
+    History chart then drew as an indistinguishable flat zero line).
+
+    Listed sell orders and outstanding contract items are added on top of
+    assets. ESI does not list those in the asset endpoint, so the same
+    type in both piles is not subtracted. Buy-order escrow is None until
+    a sync stores it, and that None is not added into the total. A kind
+    that is not shared is 0 (known empty), not None.
 
     Blueprint pricing caveat, stated in the UI, not silently approximated
     away: a blueprint's ME/TE materially changes what it would actually
@@ -377,57 +549,48 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     this is just that design's visible edge case for blueprints
     specifically, since (unlike assets/wallet) there's no partial-credit
     fallback for them."""
-    from .esi_data.access import shared_owner_ids
+    collected = _collect_wealth(cfg)
+    if collected is None:
+        return {**_EMPTY_WEALTH, "sync": dict(_EMPTY_SYNC)}
+    result = _wealth_from(collected)
+    result.pop("_built", None)
+    return result
 
-    asset_char_ids = shared_owner_ids("assets", "portfolio", "character")
-    asset_corp_ids = shared_owner_ids("assets", "portfolio", "corporation")
-    bp_char_ids = shared_owner_ids("blueprints", "portfolio", "character")
-    bp_corp_ids = shared_owner_ids("blueprints", "portfolio", "corporation")
-    wallet_char_ids = shared_owner_ids("wallet_balance", "portfolio", "character")
-    wallet_corp_ids = shared_owner_ids("wallet_balance", "portfolio", "corporation")
 
-    shared_character_ids = set(asset_char_ids) | set(bp_char_ids) | set(wallet_char_ids)
+def do_get_portfolio_breakdown(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Owner, location, category and top-20 shares of Total Wealth.
 
-    if not (asset_char_ids or asset_corp_ids or bp_char_ids or bp_corp_ids
-            or wallet_char_ids or wallet_corp_ids):
-        return {
-            "total_wealth": None,
-            "wealth_assets_value": None,
-            "wealth_blueprints_value": None,
-            "wealth_wallet_balance": None,
-            "wealth_priced_items": 0,
-            "wealth_unpriced_items": 0,
-            "characters_missing_wallet_scope": [],
-        }
-
-    assets = storage.load_all_assets(asset_char_ids, asset_corp_ids)
-    raw_blueprints = storage.load_owned_blueprints(bp_char_ids, bp_corp_ids)
-    # is_original = runs == -1, same convention production/actions.py's
-    # do_list_owned_blueprints already uses for this same field - a BPC's
-    # own runs count is never -1 (that sentinel is BPO-only).
-    bpo_rows = [(type_id, _blueprint_effective_quantity(quantity))
-                for type_id, quantity, _me, _te, runs in raw_blueprints if runs == -1]
-    bpc_rows = [(type_id, _blueprint_effective_quantity(quantity))
-                for type_id, quantity, _me, _te, runs in raw_blueprints if runs != -1]
-    wallet_total = storage.sum_wallet_balances(wallet_char_ids, wallet_corp_ids)
-
-    type_ids = {type_id for type_id, _qty in assets} | {type_id for type_id, _qty in bpo_rows}
-    prices = _priced(type_ids)
-    bpc_prices = _manual_only_priced({type_id for type_id, _qty in bpc_rows})
-
-    assets_value, assets_priced, assets_unpriced = _value_and_gaps(assets, prices)
-    bpo_value, bpo_priced, bpo_unpriced = _value_and_gaps(bpo_rows, prices)
-    bpc_value, bpc_priced, bpc_unpriced = _value_and_gaps(bpc_rows, bpc_prices)
-    blueprints_value = bpo_value + bpc_value
-
+    The same rows as total_wealth(), so the three full breakdowns sum to
+    that total. Top 20 is a slice. Unpriced rows are listed and excluded
+    from the sums. Names are resolved here; the pure totals do not need them.
+    """
+    collected = _collect_wealth(cfg)
+    if collected is None:
+        return dict(_EMPTY_BREAKDOWN)
+    from .realized.names import owner_names
+    items = collected["items"]
+    wallets = collected["wallets"]
+    escrow = collected["escrow"] or []
+    owner_ids = {int(item["owner_id"]) for item in items}
+    owner_ids.update(int(row["owner_id"]) for row in wallets)
+    owner_ids.update(int(row["owner_id"]) for row in escrow)
+    location_ids = [item["location_id"] for item in items if item.get("location_id") is not None]
+    type_ids = {int(item["type_id"]) for item in items}
+    built = assemble(
+        items, wallets, collected["escrow"],
+        structure_id=collected["structure_id"],
+        owner_names=owner_names(owner_ids),
+        location_names=storage.get_location_names(location_ids),
+        category_names=storage.sde_categories_for_types(type_ids),
+        type_names=storage.sde_type_names(type_ids),
+    )
     return {
-        "total_wealth": assets_value + blueprints_value + wallet_total,
-        "wealth_assets_value": assets_value,
-        "wealth_blueprints_value": blueprints_value,
-        "wealth_wallet_balance": wallet_total,
-        "wealth_priced_items": assets_priced + bpo_priced + bpc_priced,
-        "wealth_unpriced_items": assets_unpriced + bpo_unpriced + bpc_unpriced,
-        "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_character_ids),
+        "total": built["total"],
+        "by_owner": built["by_owner"],
+        "by_location": built["by_location"],
+        "by_category": built["by_category"],
+        "top": built["top"],
+        "unpriced": built["unpriced"],
     }
 
 
@@ -439,12 +602,10 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     same function, never portfolio_overview()/total_wealth() directly, so
     there is one write path, not two implementations that could drift.
 
-    wealth_blueprints_value/wealth_priced_items/wealth_unpriced_items/
-    characters_missing_wallet_scope are not portfolio_snapshots columns
-    (blueprint value = total_wealth - wealth_assets_value -
-    wealth_wallet_balance, per that table's own comment) - they pass
-    through in the returned dict for the live overview read, but only the
-    declared snapshot columns are persisted.
+    wealth_blueprints_value, the priced/unpriced counts, the wallet-scope
+    list and sync times are not snapshot columns. wealth_listed_value,
+    wealth_contract_value and wealth_escrow are. Escrow stays NULL until
+    a sync stores it. Only the declared snapshot columns are persisted.
     """
     overview = portfolio_overview(cfg)
     wealth = total_wealth(cfg)

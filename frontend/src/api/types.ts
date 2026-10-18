@@ -724,6 +724,9 @@ export interface PortfolioSnapshotRow {
   total_wealth: number | null
   wealth_assets_value: number | null
   wealth_wallet_balance: number | null
+  wealth_listed_value: number | null
+  wealth_contract_value: number | null
+  wealth_escrow: number | null
 }
 
 export interface CharacterMissingWalletScope {
@@ -731,14 +734,62 @@ export interface CharacterMissingWalletScope {
   character_name: string
 }
 
+export interface WealthSync {
+  assets: string | null
+  blueprints: string | null
+  listed: string | null
+  contracts: string | null
+  wallet: string | null
+  escrow: string | null
+}
+
 export interface TotalWealth {
   total_wealth: number | null
   wealth_assets_value: number | null
   wealth_blueprints_value: number | null
   wealth_wallet_balance: number | null
+  wealth_listed_value: number | null
+  wealth_contract_value: number | null
+  wealth_escrow: number | null
   wealth_priced_items: number
   wealth_unpriced_items: number
   characters_missing_wallet_scope: CharacterMissingWalletScope[]
+  sync: WealthSync
+}
+
+export interface WealthShareRow {
+  label: string
+  value: number
+  share: number | null
+}
+
+export interface WealthTopRow {
+  type_id: number
+  type_name: string
+  quantity: number
+  value: number
+  share: number | null
+  owner_name: string
+  location_name: string
+  component: string
+}
+
+export interface UnpricedWealthItem {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  owner_name: string
+  location_name: string
+  component: string
+}
+
+export interface WealthBreakdown {
+  total: number | null
+  by_owner: WealthShareRow[]
+  by_location: WealthShareRow[]
+  by_category: WealthShareRow[]
+  top: WealthTopRow[]
+  unpriced: UnpricedWealthItem[]
 }
 
 export interface ManualItemPriceRow {

@@ -118,7 +118,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-markets.read_character_orders.v1",
         corporation_scope="esi-markets.read_corporation_orders.v1",
         corp_roles=("Accountant", "Trader"),
-        consuming_tools=("trading", "production", "station_trading"),
+        # "portfolio" values open sell orders in Total Wealth
+        # (docs/PORTFOLIO_OVERVIEW_PLAN.md P4). Sharing with Trading does
+        # not expose those orders to Portfolio.
+        consuming_tools=("trading", "production", "station_trading", "portfolio"),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(
@@ -134,8 +137,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 1) - Doctrine's
         # own structure-filtered snapshot is unchanged. "trading" prices
         # courier freight (docs/COURIER_FREIGHT_PLAN.md F4); item-exchange
-        # sales stay on production and doctrine.
-        consuming_tools=("doctrine", "production", "trading"),
+        # sales stay on production and doctrine. "portfolio" values
+        # outstanding contract items in Total Wealth (P4), separate from
+        # the realized-profit union.
+        consuming_tools=("doctrine", "production", "trading", "portfolio"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(

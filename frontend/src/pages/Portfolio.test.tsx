@@ -15,6 +15,7 @@ vi.mock('../api/client', () => ({
     overview: vi.fn(),
     history: vi.fn(),
     wealth: vi.fn(),
+    wealthBreakdown: vi.fn(),
     manualPrices: vi.fn(),
     realizedCards: vi.fn(),
     realizedHistory: vi.fn(),
@@ -52,9 +53,25 @@ const wealth: TotalWealth = {
   wealth_assets_value: 80,
   wealth_blueprints_value: 10,
   wealth_wallet_balance: 10,
+  wealth_listed_value: 0,
+  wealth_contract_value: 0,
+  wealth_escrow: null,
   wealth_priced_items: 1,
-  wealth_unpriced_items: 0,
+  wealth_unpriced_items: 1,
   characters_missing_wallet_scope: [],
+  sync: { assets: null, blueprints: null, listed: null, contracts: null, wallet: null, escrow: null },
+}
+
+const breakdown = {
+  total: 100,
+  by_owner: [{ label: 'Alice', value: 100, share: 1 }],
+  by_location: [{ label: 'C-J', value: 100, share: 1 }],
+  by_category: [{ label: 'Material', value: 100, share: 1 }],
+  top: [],
+  unpriced: [{
+    type_id: 34, type_name: 'Tritanium', quantity: 5,
+    owner_name: 'Alice', location_name: 'Jita', component: 'assets',
+  }],
 }
 
 function cards(rows: RealizedToolCards['rows'], total: number | null): RealizedToolCards {
@@ -81,6 +98,7 @@ describe('Portfolio overview', () => {
     vi.mocked(portfolioApi.overview).mockResolvedValue(overview)
     vi.mocked(portfolioApi.history).mockResolvedValue([])
     vi.mocked(portfolioApi.wealth).mockResolvedValue(wealth)
+    vi.mocked(portfolioApi.wealthBreakdown).mockResolvedValue(breakdown)
     vi.mocked(portfolioApi.manualPrices).mockResolvedValue([])
     vi.mocked(portfolioApi.realizedCards).mockResolvedValue(cards([], null))
     vi.mocked(portfolioApi.realizedHistory).mockResolvedValue({
@@ -100,6 +118,11 @@ describe('Portfolio overview', () => {
     expect(screen.queryByText('Combined Value')).toBeNull()
     expect(screen.queryByText('Trading + Production combined')).toBeNull()
     expect(screen.queryByText('Trading: Realized Profit')).toBeNull()
+    expect(await screen.findByText('Listed')).toBeInTheDocument()
+    expect(screen.getByText('Escrow')).toBeInTheDocument()
+    expect(await screen.findByText('Tritanium · Alice · Jita · 5')).toBeInTheDocument()
+    expect(screen.getAllByText('Alice').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('100 ISK · 100%').length).toBeGreaterThan(0)
   })
 
   it('renders one card per tool from realized-cards, including a single-tool total', async () => {
@@ -125,8 +148,10 @@ describe('Portfolio overview', () => {
       },
     ], null))
     renderPortfolio()
-    expect(await screen.findByText('Production')).toBeInTheDocument()
-    expect(screen.queryByText('0 ISK')).toBeNull()
+    const production = await screen.findByText('Production')
+    const card = production.closest('.et-panel')
+    expect(card).not.toBeNull()
+    expect(within(card as HTMLElement).queryByText('0 ISK')).toBeNull()
     expect(screen.queryByText('Realized profit total')).toBeNull()
   })
 

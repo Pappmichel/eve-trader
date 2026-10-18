@@ -56,6 +56,12 @@ def get_portfolio_history(days: Optional[int] = None):
     return _wrap(portfolio.do_get_portfolio_history, days=days)
 
 
+@router.get("/wealth/breakdown", response_model=schemas.WealthBreakdown)
+def get_wealth_breakdown():
+    """Shares of Total Wealth. Separate from /wealth so the headline renders first."""
+    return _wrap(portfolio.do_get_portfolio_breakdown)
+
+
 @router.get("/wealth", response_model=schemas.TotalWealth)
 def get_total_wealth():
     # Live, not snapshot-cached - characters_missing_wallet_scope reflects

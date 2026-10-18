@@ -839,6 +839,9 @@ class PortfolioSnapshotRow(_Base):
     total_wealth: Optional[float] = None
     wealth_assets_value: Optional[float] = None
     wealth_wallet_balance: Optional[float] = None
+    wealth_listed_value: Optional[float] = None
+    wealth_contract_value: Optional[float] = None
+    wealth_escrow: Optional[float] = None
 
 
 class CharacterMissingWalletScope(_Base):
@@ -846,16 +849,66 @@ class CharacterMissingWalletScope(_Base):
     character_name: str
 
 
+class WealthSync(_Base):
+    assets: Optional[str] = None
+    blueprints: Optional[str] = None
+    listed: Optional[str] = None
+    contracts: Optional[str] = None
+    wallet: Optional[str] = None
+    escrow: Optional[str] = None
+
+
 class TotalWealth(_Base):
     # None (not 0.0) until any owner shares anything with "portfolio" -
-    # see portfolio.total_wealth's own docstring.
+    # see portfolio.total_wealth's own docstring. Listed, contract and
+    # escrow are 0 when that kind is not shared, and escrow is None when
+    # open buys exist but the archived escrow column is still empty.
     total_wealth: Optional[float] = None
     wealth_assets_value: Optional[float] = None
     wealth_blueprints_value: Optional[float] = None
     wealth_wallet_balance: Optional[float] = None
+    wealth_listed_value: Optional[float] = None
+    wealth_contract_value: Optional[float] = None
+    wealth_escrow: Optional[float] = None
     wealth_priced_items: int
     wealth_unpriced_items: int
     characters_missing_wallet_scope: list[CharacterMissingWalletScope] = []
+    sync: WealthSync = WealthSync()
+
+
+class WealthShareRow(_Base):
+    label: str
+    value: float
+    share: Optional[float] = None
+
+
+class WealthTopRow(_Base):
+    type_id: int
+    type_name: str
+    quantity: float
+    value: float
+    share: Optional[float] = None
+    owner_name: str
+    location_name: str
+    component: str
+
+
+class UnpricedWealthItem(_Base):
+    type_id: int
+    type_name: Optional[str] = None
+    quantity: float
+    owner_name: str
+    location_name: str
+    component: str
+
+
+class WealthBreakdown(_Base):
+    total: Optional[float] = None
+    by_owner: list[WealthShareRow] = []
+    by_location: list[WealthShareRow] = []
+    by_category: list[WealthShareRow] = []
+    top: list[WealthTopRow] = []
+    unpriced: list[UnpricedWealthItem] = []
 
 
 class ManualItemPriceRow(_Base):

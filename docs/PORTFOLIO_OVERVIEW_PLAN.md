@@ -1,13 +1,28 @@
 # Portfolio overview - plan
 
 Status: **in progress 2026-10-18**. Decisions P1-P7 stand as confirmed.
-Phases 1 and 2 are built. Phases 3-5 are not. Deviations: none yet.
+Phases 1-3 are built. Phases 4-5 are not.
+
+Deviations:
+- A Portfolio-only share of `market_orders` or `contracts` is archived
+  into the ledger (`fetchers._shared_with_portfolio`) so Total Wealth can
+  read outstanding contract items and, once filled, buy-order escrow.
+  Portfolio is not added to `realized.access.KIND_TOOLS`, so costing
+  still ignores a share that no realized-profit tool holds.
+- Until `ledger_market_orders.escrow` is filled, any archived open buy
+  makes `wealth_escrow` None. It is not estimated.
+
 Phase 1 tests: `tests/test_realized_cards.py`
 (periods, since_t0 window, single-tool total, recompute adds nothing),
 `tests/test_portfolio.py` wealth_change gaps and percent, router period
-forwarding, vitest `Portfolio.test.tsx` (4). Full pytest 3316 passed;
-frontend lint, vitest (377) and build passed. Live page check follows
-with the finished page.
+forwarding, vitest `Portfolio.test.tsx` (4). Phase 2 tests:
+`tests/test_portfolio_history.py` (day gaps, Monday weeks, since-T0 week
+buckets, channels the session does not hold, a recompute adds no days).
+Phase 3 tests: `tests/test_portfolio_wealth.py` (assets and listed orders
+of the same type both count, sharing gate, breakdown sums, C-J/Jita
+grouping, unpriced list, unknown escrow left out of the total).
+Full pytest 3333 passed, 1 skipped. Frontend lint, vitest (378) and
+build passed. Live page check follows with the finished page.
 Builds on `docs/PORTFOLIO_REWORK_PLAN.md` (Total Wealth, snapshots, manual
 prices) and `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (one ledger, four
 channels, `GET /api/portfolio/realized-cards`).

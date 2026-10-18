@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, SegmentedControl,
-  NumberInput, ActionIcon, Alert, Divider, Badge, Anchor,
+  NumberInput, ActionIcon, Alert, Divider, Badge, Anchor, Tabs, Progress,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
@@ -19,10 +19,12 @@ import { useItemNameOptions } from '../hooks/useStaticOptions'
 import { isk, qty, pct, dateTime } from '../format'
 import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
-import type { ManualItemPriceRow, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthChange } from '../api/types'
+import type { ManualItemPriceRow, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
 
 const PERIOD_KEY = 'portfolio-realized-period'
+const TAB_KEY = 'portfolio-wealth-tab'
+const WEALTH_TABS = ['owner', 'location', 'category', 'top'] as const
 const PERIOD_OPTIONS = [
   { label: '7d', value: '7' },
   { label: '30d', value: '30' },
@@ -45,6 +47,25 @@ function writePeriod(value: string) {
     localStorage.setItem(PERIOD_KEY, value)
   } catch {
     // Remembering the period is optional.
+  }
+}
+
+function readTab(): string {
+  try {
+    const value = localStorage.getItem(TAB_KEY)
+    if (value === 'owner' || value === 'location' || value === 'category' || value === 'top') return value
+  } catch {
+    // Private mode can throw. The owner tab is the default.
+  }
+  return 'owner'
+}
+
+function writeTab(value: string | null) {
+  if (!value || !WEALTH_TABS.includes(value as typeof WEALTH_TABS[number])) return
+  try {
+    localStorage.setItem(TAB_KEY, value)
+  } catch {
+    // Remembering the tab is optional.
   }
 }
 
@@ -147,7 +168,7 @@ function HistoryChart({ title, hint, rows, lines }: {
 }
 
 const MANUAL_PRICES_KEY = [['portfolio', 'manual-prices']]
-const WEALTH_KEY = [['portfolio', 'wealth']]
+const WEALTH_KEY = [['portfolio', 'wealth'], ['portfolio', 'breakdown']]
 
 // Local draft state, checkmark appears once it differs from the saved
 // value, click to save - same pattern as production/Blueprints.tsx's own
@@ -270,25 +291,102 @@ function ManualPricesSection() {
   )
 }
 
-function TotalWealthSection() {
+function ShareList({ rows }: { rows: WealthShareRow[] }) {
+  if (rows.length === 0) return <Text size="sm" c="dimmed">Nothing priced in this view.</Text>
+  return (
+    <Stack gap="sm">
+      {rows.map((row) => (
+        <Stack key={row.label} gap={2}>
+          <Group justify="space-between">
+            <Text size="sm">{row.label}</Text>
+            <Text size="sm">{isk(row.value)} · {pct(row.share)}</Text>
+          </Group>
+          <Progress value={(row.share ?? 0) * 100} size="sm" color="accent" />
+        </Stack>
+      ))}
+    </Stack>
+  )
+}
+
+function WealthBreakdownSection({ breakdown }: { breakdown: WealthBreakdown | undefined }) {
+  const [tab, setTab] = useState(readTab)
+  const setPrice = useAction('Set manual price', (args: { itemName: string; price: number }) =>
+    portfolioApi.setManualPrice(args.itemName, args.price), [['portfolio', 'wealth'], ['portfolio', 'breakdown']])
+  if (!breakdown) return null
+  const unpriced = breakdown.unpriced ?? []
+  return (
+    <Stack gap="md">
+      <Tabs value={tab} onChange={(value) => { setTab(value ?? 'owner'); writeTab(value) }}>
+        <Tabs.List>
+          <Tabs.Tab value="owner">By owner</Tabs.Tab>
+          <Tabs.Tab value="location">By location</Tabs.Tab>
+          <Tabs.Tab value="category">By category</Tabs.Tab>
+          <Tabs.Tab value="top">Top 20</Tabs.Tab>
+        </Tabs.List>
+        <Tabs.Panel value="owner" pt="sm"><ShareList rows={breakdown.by_owner} /></Tabs.Panel>
+        <Tabs.Panel value="location" pt="sm"><ShareList rows={breakdown.by_location} /></Tabs.Panel>
+        <Tabs.Panel value="category" pt="sm"><ShareList rows={breakdown.by_category} /></Tabs.Panel>
+        <Tabs.Panel value="top" pt="sm">
+          {breakdown.top.length === 0 ? <Text size="sm" c="dimmed">Nothing priced in this view.</Text> : (
+            <Stack gap="xs">
+              {breakdown.top.map((row) => (
+                <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
+                  <Text size="sm">{row.type_name} · {row.owner_name} · {row.location_name}</Text>
+                  <Text size="sm">{qty(row.quantity)} · {isk(row.value)} · {pct(row.share)}</Text>
+                </Group>
+              ))}
+            </Stack>
+          )}
+        </Tabs.Panel>
+      </Tabs>
+
+      {unpriced.length > 0 && (
+        <Stack gap="xs">
+          <Title order={6}>Unpriced</Title>
+          <Text size="xs" c="dimmed">Excluded from the total until a manual price is set.</Text>
+          {unpriced.map((row) => (
+            <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
+              <Text size="sm">{row.type_name ?? `Type ${row.type_id}`} · {row.owner_name} · {row.location_name} · {qty(row.quantity)}</Text>
+              <NumberInput aria-label={`Manual price for ${row.type_name ?? row.type_id}`} min={0} w={160}
+                disabled={!row.type_name || setPrice.isPending}
+                onBlur={(event) => {
+                  const price = Number(event.currentTarget.value)
+                  if (!row.type_name || event.currentTarget.value === '' || Number.isNaN(price)) return
+                  setPrice.mutate({ itemName: row.type_name, price })
+                }} />
+            </Group>
+          ))}
+        </Stack>
+      )}
+    </Stack>
+  )
+}
+
+function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefined }) {
   const { data } = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
   if (!data) return null
+  const lines: { label: string; value: number | null; hint?: string; synced?: string | null }[] = [
+    { label: 'Assets', value: data.wealth_assets_value, synced: data.sync?.assets },
+    { label: 'Blueprints', value: data.wealth_blueprints_value, synced: data.sync?.blueprints,
+      hint: 'One market quote per BPO, regardless of its own ME/TE. A BPC counts only with a manual price.' },
+    { label: 'Listed', value: data.wealth_listed_value, synced: data.sync?.listed,
+      hint: 'Open sell orders. ESI leaves these out of the asset list.' },
+    { label: 'Contracts', value: data.wealth_contract_value, synced: data.sync?.contracts,
+      hint: 'Included items of outstanding contracts this owner issued.' },
+    { label: 'Wallet', value: data.wealth_wallet_balance, synced: data.sync?.wallet },
+    { label: 'Escrow', value: data.wealth_escrow, synced: data.sync?.escrow,
+      hint: 'Buy-order escrow. Shown as – until an order sync stores it.' },
+  ]
 
   return (
     <Stack gap="md">
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
-        <Stat label="Assets" value={isk(data.wealth_assets_value)} />
-        <Stat label="Blueprints" value={isk(data.wealth_blueprints_value)}
-          hint="One market quote per BPO, regardless of its own ME/TE - a BPC has no separate quote of its own, so it counts here only once you set a manual price for it" />
-        <Stat label="Wallet" value={isk(data.wealth_wallet_balance)} />
+        {lines.map((line) => (
+          <Stat key={line.label} label={line.label} value={isk(line.value)}
+            hint={[line.hint, line.synced ? `Synced ${dateTime(line.synced)}` : undefined].filter(Boolean).join(' ')} />
+        ))}
       </SimpleGrid>
-
-      {data.wealth_unpriced_items > 0 && (
-        <Text size="xs" c="dimmed">
-          {qty(data.wealth_unpriced_items)} owned item type(s) have no price and are excluded from the total above -
-          add a manual price below to include them.
-        </Text>
-      )}
+      <WealthBreakdownSection breakdown={breakdown} />
 
       {data.characters_missing_wallet_scope.length > 0 && (
         <Alert color="warn" variant="light" title="Wallet balance not included for some characters">
@@ -340,6 +438,7 @@ function RealizedHistoryChart({ history }: { history: RealizedHistory | undefine
 export default function Portfolio() {
   const overview = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
   const wealth = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
+  const breakdown = useQuery({ queryKey: ['portfolio', 'breakdown'], queryFn: portfolioApi.wealthBreakdown })
   const [period, setPeriod] = useState(readPeriod)
   const cards = useQuery({
     queryKey: ['portfolio', 'realized-cards', period],
@@ -373,7 +472,7 @@ export default function Portfolio() {
             <WealthChanges change={overview.data?.wealth_change} />
           </Card>
         )}
-        <TotalWealthSection />
+        <TotalWealthSection breakdown={breakdown.data} />
 
         <Group justify="space-between" align="center">
           <Title order={4}>Realized profit</Title>
@@ -396,8 +495,13 @@ export default function Portfolio() {
         </Group>
 
         <HistoryChart title="Total Wealth" rows={history ?? []}
-          hint="Assets, blueprints and wallet balances shared with Portfolio"
-          lines={[{ dataKey: 'total_wealth', name: 'Total Wealth', color: COLORS.accent, formatter: isk }]} />
+          hint="Assets, blueprints, listed orders, contracts, wallet and escrow shared with Portfolio. Older rows leave the new lines blank."
+          lines={[
+            { dataKey: 'total_wealth', name: 'Total Wealth', color: COLORS.accent, formatter: isk },
+            { dataKey: 'wealth_listed_value', name: 'Listed', color: COLORS.info, formatter: isk },
+            { dataKey: 'wealth_contract_value', name: 'Contracts', color: COLORS.warn, formatter: isk },
+            { dataKey: 'wealth_escrow', name: 'Escrow', color: COLORS.danger, formatter: isk },
+          ]} />
 
         <Divider />
         <ManualPricesSection />

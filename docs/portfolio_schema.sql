@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     total_wealth DOUBLE PRECISION,
     wealth_assets_value DOUBLE PRECISION,
     wealth_wallet_balance DOUBLE PRECISION,
+    wealth_listed_value DOUBLE PRECISION,
+    wealth_contract_value DOUBLE PRECISION,
+    wealth_escrow DOUBLE PRECISION,
     taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, snapshot_date)
 );
@@ -38,6 +41,12 @@ CREATE POLICY tenant_isolation ON portfolio_snapshots
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON portfolio_snapshots TO eve_trader_app;
+
+-- Portfolio overview (docs/PORTFOLIO_OVERVIEW_PLAN.md 3.6). Nullable so a
+-- row written before these components existed stays NULL ("–"), not zero.
+ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS wealth_listed_value DOUBLE PRECISION;
+ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS wealth_contract_value DOUBLE PRECISION;
+ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS wealth_escrow DOUBLE PRECISION;
 
 -- Manual item prices (plan section 7) - used only to value items
 -- Goonmetrics has no quote for in Total Wealth. One price per type_id,
