@@ -13,6 +13,7 @@ vi.mock('../api/client', () => ({
   gateApi: { status: vi.fn() },
   portfolioApi: {
     overview: vi.fn(),
+    wealthChange: vi.fn(),
     history: vi.fn(),
     wealth: vi.fn(),
     wealthBreakdown: vi.fn(),
@@ -99,6 +100,7 @@ describe('Portfolio overview', () => {
     vi.clearAllMocks()
     localStorage.clear()
     vi.mocked(portfolioApi.overview).mockResolvedValue(overview)
+    vi.mocked(portfolioApi.wealthChange).mockResolvedValue(overview.wealth_change)
     vi.mocked(portfolioApi.history).mockResolvedValue([])
     vi.mocked(portfolioApi.wealth).mockResolvedValue(wealth)
     vi.mocked(portfolioApi.wealthBreakdown).mockResolvedValue(breakdown)
@@ -124,7 +126,7 @@ describe('Portfolio overview', () => {
     renderPortfolio()
     expect(await screen.findByRole('heading', { name: 'Portfolio Overview' })).toBeInTheDocument()
     expect(await screen.findByText('100 ISK')).toBeInTheDocument()
-    expect(screen.getByText(/1 day: 5 ISK \(5%\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/1 day: 5 ISK \(5%\)/)).toBeInTheDocument()
     expect(screen.getByText(/7 days: –/)).toBeInTheDocument()
     expect(screen.getByText(/30 days: -10 ISK \(-10%\)/)).toBeInTheDocument()
     expect(screen.queryByText('Combined Value')).toBeNull()
@@ -138,6 +140,8 @@ describe('Portfolio overview', () => {
     expect(await screen.findByText('From the realized-profit ledger. Cost is the oldest layer of that type.')).toBeInTheDocument()
     expect(screen.getByText('Stock')).toBeInTheDocument()
     expect(screen.getByText('Unrealized 10 ISK')).toBeInTheDocument()
+    // The overview also computes Production's stock value; the page no longer reads it.
+    expect(portfolioApi.overview).not.toHaveBeenCalled()
   })
 
   it('renders one card per tool from realized-cards, including a single-tool total', async () => {

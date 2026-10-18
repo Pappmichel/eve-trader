@@ -37,6 +37,12 @@ def get_portfolio_overview():
     return _wrap(portfolio.do_get_portfolio_overview)
 
 
+@router.get("/wealth-change", response_model=schemas.WealthChange)
+def get_wealth_change():
+    """1/7/30-day change of Total Wealth from snapshots; lazy daily snapshot."""
+    return _wrap(portfolio.do_get_wealth_change)
+
+
 @router.get("/realized-cards")
 def get_realized_cards(request: Request, period: str = "30"):
     """Cards for the tools this session holds. The total is already summed."""

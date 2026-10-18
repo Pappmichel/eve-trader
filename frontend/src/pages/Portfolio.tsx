@@ -480,7 +480,8 @@ function RealizedHistoryChart({ history }: { history: RealizedHistory | undefine
 
 export default function Portfolio() {
   const attention = useQuery({ queryKey: ['portfolio', 'attention'], queryFn: portfolioApi.attention })
-  const overview = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
+  // Not the overview: that also computes Production's stock value (~10 s) the page no longer shows.
+  const change = useQuery({ queryKey: ['portfolio', 'wealth-change'], queryFn: portfolioApi.wealthChange })
   const wealth = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
   const breakdown = useQuery({ queryKey: ['portfolio', 'breakdown'], queryFn: portfolioApi.wealthBreakdown })
   const capital = useQuery({ queryKey: ['portfolio', 'capital'], queryFn: portfolioApi.capital })
@@ -515,7 +516,7 @@ export default function Portfolio() {
           <Card withBorder padding="lg" radius="md" className="et-panel">
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">Total Wealth</Title>
             <Text size="xl" fw={700}>{isk(wealth.data.total_wealth)}</Text>
-            <WealthChanges change={overview.data?.wealth_change} />
+            <WealthChanges change={change.data} />
           </Card>
         )}
         <TotalWealthSection breakdown={breakdown.data} />

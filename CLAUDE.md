@@ -57,7 +57,9 @@ Trading/Production figures, including Combined Value, and
 `take_portfolio_snapshot()` (calling both `portfolio_overview()` and
 `total_wealth()`) is the one write path into `portfolio_snapshots`,
 called by the scheduler's `portfolio_snapshot` job and a lazy fallback on
-the first overview read of the day. The overview page no longer shows
+the first `GET /overview` or `GET /wealth-change` read of the day. The page
+reads only `/wealth-change` (the overview's stock value took ~10 s on
+production) and no longer shows
 Combined Value; the column stays so older history rows remain readable
 (`docs/PORTFOLIO_OVERVIEW_PLAN.md` P1).
 
