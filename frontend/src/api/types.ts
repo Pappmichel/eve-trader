@@ -2673,6 +2673,309 @@ export interface RealizedDay {
   profit: number
 }
 
+export interface TradingRealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  units_sold: number
+  sale_count: number
+  price_missing: boolean
+  tax_missing_sales: number
+  cost_structure: CostStructureLine[]
+  by_day: RealizedDay[]
+  flags: RealizedFlags
+}
+
+export interface TradingRealizedItem {
+  type_id: number
+  type_name: string | null
+  units_sold: number
+  avg_buy_landed: number | null
+  avg_net_sell: number | null
+  profit: number
+  margin: number | null
+  coverage: number | null
+  warnings: string[]
+  flags: RealizedFlags
+}
+
+export interface TradingRealizedSale {
+  sale_ref: string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  revenue: number
+  cost: number
+  profit: number
+  margin: number | null
+  coverage: number
+  sale_date: string | null
+  gross: number
+  sales_tax: number | null
+  broker_fee: number
+  location_id: number | null
+  location_name: string | null
+  net_price: number | null
+  warnings: string[]
+  flags: RealizedFlags
+  source: string | null
+}
+
+export interface TradingRealizedLot {
+  quantity: number
+  origin: string
+  layer_date: string | null
+  location_id: number | null
+  location_name: string | null
+  unit_price: number | null
+  freight: number
+  fees: number
+  unit_cost: number
+}
+
+export interface TradingRealizedItemList {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  rows: TradingRealizedItem[]
+}
+
+export interface TradingRealizedItemDetail {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  item: TradingRealizedItem
+  sales: TradingRealizedSale[]
+}
+
+export interface TradingRealizedSaleDetail {
+  sale: TradingRealizedSale
+  lots: TradingRealizedLot[]
+}
+
+export interface TradingRealizedInventoryRow {
+  type_id: number
+  type_name: string | null
+  pool: string
+  quantity: number
+  cost_per_unit: number | null
+  total: number
+  flags: RealizedFlags
+}
+
+export interface TradingRealizedWarning {
+  type_id: number
+  type_name: string | null
+  message: string
+}
+
+export interface StationRealizedFeeDay {
+  date: string | null
+  broker_fee: number
+  sales_tax: number | null
+  total: number
+  tax_missing_sales: number
+}
+
+export interface StationRealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  units_sold: number
+  sale_count: number
+  avg_buy: number | null
+  avg_sell_net: number | null
+  spread: number | null
+  turnover_days: number | null
+  price_missing: boolean
+  tax_missing_sales: number
+  freight_from_couriers?: number
+  freight_configured?: number
+  fees_by_day: StationRealizedFeeDay[]
+  by_day: RealizedDay[]
+  open_position_cost: number | null
+  open_position_units: number | null
+  flags: RealizedFlags
+}
+
+export interface StationRealizedItem {
+  type_id: number
+  type_name: string | null
+  units_sold: number
+  avg_buy: number | null
+  avg_sell_net: number | null
+  spread: number | null
+  profit: number
+  margin: number | null
+  turnover_days: number | null
+  coverage: number | null
+  warnings: string[]
+  flags: RealizedFlags
+}
+
+export interface StationRealizedSale {
+  sale_ref: string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  revenue: number
+  cost: number
+  profit: number
+  margin: number | null
+  coverage: number
+  sale_date: string | null
+  gross: number
+  sales_tax: number | null
+  broker_fee: number
+  location_id: number | null
+  location_name: string | null
+  net_price: number | null
+  warnings: string[]
+  flags: RealizedFlags
+  source: string | null
+}
+
+export interface StationRealizedLot {
+  quantity: number
+  origin: string
+  layer_date: string | null
+  location_id: number | null
+  location_name: string | null
+  unit_price: number | null
+  freight: number
+  fees: number
+  unit_cost: number
+}
+
+export interface StationRealizedItemList {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  rows: StationRealizedItem[]
+}
+
+export interface StationRealizedItemDetail {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  item: StationRealizedItem
+  sales: StationRealizedSale[]
+}
+
+export interface StationRealizedSaleDetail {
+  sale: StationRealizedSale
+  lots: StationRealizedLot[]
+}
+
+export interface StationRealizedPositionRow {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  cost_per_unit: number | null
+  total: number
+  flags: RealizedFlags
+}
+
+export interface DoctrineOriginCost {
+  kind: string
+  location_id: number | null
+  location_name: string | null
+  cost: number
+  quantity: number
+}
+
+export interface DoctrineRealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  contracts: number
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  price_missing: boolean
+  production_saving: number | null
+  freight_from_couriers?: number
+  freight_configured?: number
+  cost_by_origin: DoctrineOriginCost[]
+  by_day: RealizedDay[]
+  flags: RealizedFlags
+}
+
+export interface DoctrineRealizedFitting {
+  fitting_id: string | null
+  fitting_name: string | null
+  contracts: number
+  revenue: number
+  cost: number
+  profit: number
+  produced_cost: number
+  bought_cost: number
+  avg_price: number | null
+  avg_cost: number | null
+  avg_profit: number | null
+  produced_share: number | null
+  bought_share: number | null
+}
+
+export interface DoctrineRealizedContract {
+  sale_ref: string | null
+  contract_id: number | null
+  sale_date: string | null
+  fitting_id: string | null
+  fitting_name: string | null
+  buyer_id: number | null
+  buyer_name: string | null
+  issuer_id: number | null
+  issuer_name: string | null
+  price: number | null
+  revenue: number | null
+  cost: number | null
+  profit: number | null
+  margin: number | null
+  coverage: number | null
+  warnings: string[]
+  production_saving: number | null
+  before_archive: boolean
+  flags: RealizedFlags
+}
+
+export interface DoctrineRealizedLine {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  origin: string
+  unit_cost: number | null
+  cost: number
+  origins: Record<string, number>
+  chain: RealizedChainNode[]
+}
+
+export interface DoctrineRealizedContractDetail extends DoctrineRealizedContract {
+  lines: DoctrineRealizedLine[]
+  cost_by_origin: DoctrineOriginCost[]
+}
+
+export interface RealizedToolCard {
+  tool: string
+  profit: number | null
+  coverage: number | null
+  estimated: boolean
+  empty: boolean
+}
+
+export interface RealizedToolCards {
+  rows: RealizedToolCard[]
+  total: number | null
+}
+
 export interface RealizedJobFeeLine {
   activity_id: number
   label: string | null
@@ -2717,6 +3020,7 @@ export interface RealizedSummary {
   by_day: RealizedDay[]
   balances_as_of_rebuild: string[]
   flags: RealizedFlags
+  sold_through_doctrine?: { contracts: number; units: number; cost: number }
 }
 
 export interface RealizedProductRow {
@@ -2979,19 +3283,52 @@ export interface FreightReapplyResult {
   rebuild_required?: boolean
 }
 
-export interface RealizedCourierMonth {
-  month: string
-  count: number
+export interface RealizedCourierContract {
+  contract_id: number
+  issued: string | null
   volume_m3: number
   reward: number
-  paid_isk_per_m3: number | null
-  configured_rate_per_m3: number
+  collateral: number
+}
+
+export interface RealizedCourierShipment {
+  shipment_ref: string
+  contract_ids: number[]
+  issued: string | null
+  start_location_id: number
+  end_location_id: number
+  volume_m3: number
+  reward: number
+  isk_per_m3: number | null
+  collateral: number
+  booked_freight: number
+  before_cutover_freight: number
+  gap: number
+  couriers: RealizedCourierContract[]
+}
+
+export interface RealizedRewardWithoutCourier {
+  contract_id: number | null
+  date: string | null
+  amount: number
+  label: string
+}
+
+export interface RealizedFailedCourier {
+  contract_id: number
+  issued: string | null
+  collateral: number
+  volume_m3: number | null
+  reward: number
 }
 
 export interface RealizedCourierComparison {
   home_location_id: number | null
   configured_rate_per_m3: number
-  months: RealizedCourierMonth[]
+  needs_rebuild: boolean
+  shipments: RealizedCourierShipment[]
+  rewards_without_courier: RealizedRewardWithoutCourier[]
+  failed: RealizedFailedCourier[]
 }
 
 export interface HiddenArchiveCount {

@@ -1,13 +1,13 @@
-"""Archive ESI snapshot rows into the Production ledger.
+"""Archive ESI snapshot rows into the realized-profit ledger.
 
 Called from `esi_data.fetchers` immediately after each snapshot write.
 Idempotent upserts, never deletes. Snapshot behaviour is unchanged.
 
-Deliberate layering note: fetchers lazy-import this module (a Production
-tool package). The plan places archive writes inside existing fetchers;
-esi_data otherwise imports no tool package - this is the one exception
-for Production realized profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md,
-CLAUDE.md "Two tools, one backend").
+Deliberate layering note: fetchers lazy-import this module (the shared
+``realized`` package). The plan places archive writes inside existing
+fetchers; esi_data otherwise imports no tool package - this is the one
+exception (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md, CLAUDE.md "Two tools,
+one backend").
 """
 from __future__ import annotations
 
@@ -15,10 +15,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from ... import hubs, storage
-from ...hubs import ALL_HUBS
-from .. import config as production_config
-from ..engine import _haul_volume
+from .. import hubs, storage
+from ..production import config as production_config
+from ..production.engine import _haul_volume
 from . import db, inputs
 
 log = logging.getLogger(__name__)
@@ -59,14 +58,29 @@ def _now(now: Optional[datetime]) -> datetime:
     return now if now is not None else datetime.now(timezone.utc)
 
 
+def _freight_rate_for_region(region_id: int, cfg) -> float:
+    """U4: the shared hub table for this region, else Production's haul rate.
+    The tool's own import rate stays a planning input."""
+    return hubs.hub_freight_per_m3(int(region_id), fallback=float(cfg.haul_cost_per_m3))
+
+
 def _freight_rate_for_forge(cfg) -> float:
-    """Same rate the planner uses for The Forge buys (plan section 5a,
-    `pricing._freight_rate`): the hub table entry only in "All hubs" mode."""
-    if getattr(cfg, "hub_region_id", None) == ALL_HUBS:
-        return hubs.hub_freight_per_m3(
-            db.THE_FORGE_REGION_ID, fallback=cfg.haul_cost_per_m3,
-        )
-    return float(cfg.haul_cost_per_m3)
+    """The Forge rate a re-apply reports. Same number a Forge purchase freezes."""
+    return _freight_rate_for_region(db.THE_FORGE_REGION_ID, cfg)
+
+
+def _regions_with_freight(cfg) -> dict[int, float]:
+    """Region -> ISK/m3 for every trade hub and every explicit table entry."""
+    table = {}
+    from ..config import TRADING_CONFIG
+    raw = TRADING_CONFIG.hub_freight_cost_per_m3 or {}
+    regions = set(hubs.TRADE_HUBS)
+    for key in raw:
+        try:
+            regions.add(int(key))
+        except (TypeError, ValueError):
+            continue
+    return {region: _freight_rate_for_region(region, cfg) for region in regions}
 
 
 def _check_gap(
@@ -132,6 +146,9 @@ class _TxnEnricher:
         self.forge_rate = _freight_rate_for_forge(cfg)
         self._regions: dict[int, Optional[int]] = {}
         self._volumes: dict[int, Optional[float]] = {}
+        self.home_region_id = None
+        if self.home_location_id is not None:
+            self.home_region_id = self.region(int(self.home_location_id))
 
     def region(self, location_id: int) -> Optional[int]:
         loc = int(location_id)
@@ -146,15 +163,29 @@ class _TxnEnricher:
         return self._volumes[tid]
 
     def freight(self, region_id, location_id, type_id, quantity, is_buy):
-        """(freight_rate_per_m3, freight_m3) or (None, None)."""
-        if not is_buy or region_id != db.THE_FORGE_REGION_ID:
+        """(freight_rate_per_m3, freight_m3) or (None, None).
+
+        U4: a buy at the home structure or in the home region carries no
+        freight. A buy in a hub region (or a region with an explicit
+        hub-table entry) freezes that hub's rate, also at the Station Trading
+        station: whether the unit is hauled is only known when it is sold, so
+        costing drops the freight for a station-pool unit sold at the station
+        (ST3).
+        """
+        if not is_buy or region_id is None:
             return None, None
+        region = int(region_id)
         if self.home_location_id is not None and int(location_id) == int(self.home_location_id):
+            return None, None
+        if self.home_region_id is not None and region == int(self.home_region_id):
+            return None, None
+        rates = _regions_with_freight(self.cfg)
+        if region not in rates:
             return None, None
         vol = self.volume(type_id)
         if vol is None:
             return None, None
-        return self.forge_rate, float(vol) * float(quantity)
+        return rates[region], float(vol) * float(quantity)
 
 
 def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],
@@ -354,7 +385,7 @@ def archive_industry_jobs(
     # started recently (planned.MAX_JOB_AGE). A lookup failure must not fail
     # the ESI sync, and it never calls ESI.
     try:
-        from . import planned
+        from ..production.realized import planned
         new_jobs = []
         for j in jobs:
             if j.get("job_id") is None or int(j["job_id"]) in known_jobs:
@@ -429,9 +460,11 @@ def archive_contracts(
     now: Optional[datetime] = None,
 ) -> dict:
     """Item-exchange contracts where this owner is issuer or acceptor, plus
-    finished courier contracts this owner issued. Couriers are archived for
-    the freight comparison and never enter costing. Item lines freeze The
-    Forge freight the first time they are inserted."""
+    finished and failed courier contracts this owner issued. Couriers are
+    archived so costing can price freight (F5); they never enter costing as
+    buys or sales, and this path never fetches their items. Expired and
+    deleted couriers are not archived. Item lines freeze the configured
+    freight the first time they are inserted."""
     now = _now(now)
     rows: list[tuple] = []
     item_rows: list[tuple] = []
@@ -440,7 +473,9 @@ def archive_contracts(
         ctype = c.get("type")
         issued = contract_issuer_matches(c, owner_type=owner_type, owner_id=owner_id)
         if ctype == _COURIER:
-            if (c.get("status") or "") != "finished" or not issued:
+            # F5: finished couriers set a rate; a failed one is a collateral
+            # warning. Expired and deleted are ignored and not stored.
+            if (c.get("status") or "") not in ("finished", "failed") or not issued:
                 continue
         elif ctype != _ITEM_EXCHANGE:
             continue

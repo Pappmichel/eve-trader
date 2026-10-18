@@ -70,6 +70,15 @@ export function OverviewTab({ summary, period }: { summary: RealizedSummary; per
           <CoverageBadge coverage={summary.coverage} />
         </Card>
         <Kpi label="Units sold" value={qty(summary.units_sold)} />
+        <Kpi
+          label="Produced goods sold through Doctrine"
+          value={summary.sold_through_doctrine
+            ? `${qty(summary.sold_through_doctrine.units)} · ${isk(summary.sold_through_doctrine.cost)}`
+            : '–'}
+          hint={summary.sold_through_doctrine
+            ? `${summary.sold_through_doctrine.contracts} contracts. This cost stays on the Doctrine report.`
+            : null}
+        />
       </SimpleGrid>
 
       <div>

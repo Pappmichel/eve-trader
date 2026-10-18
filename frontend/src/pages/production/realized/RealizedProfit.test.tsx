@@ -169,7 +169,8 @@ describe('RealizedProfit', () => {
     vi.mocked(productionApi.realizedEntries).mockResolvedValue({ rows: [] })
     vi.mocked(productionApi.realizedArchiveStatus).mockResolvedValue({ rows: [] })
     vi.mocked(productionApi.realizedCourier).mockResolvedValue({
-      home_location_id: null, configured_rate_per_m3: 0, months: [],
+      home_location_id: null, configured_rate_per_m3: 0, needs_rebuild: false,
+      shipments: [], rewards_without_courier: [], failed: [],
     })
     vi.mocked(productionApi.countHiddenArchive).mockResolvedValue({
       owner_type: 'character', owner_id: 0, kind: 'wallet', count: 0,
@@ -251,7 +252,8 @@ describe('RealizedProfit', () => {
     await screen.findByText('Cost of goods sold')
     await user.click(screen.getByRole('tab', { name: 'Ledger' }))
     await user.click(await screen.findByRole('button', { name: 'Re-apply current freight rate' }))
-    expect(await screen.findByText(/3 purchases would change to 500 ISK\/m³ \(configured rate\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/3 purchases would change to the current per-hub freight rate/)).toBeInTheDocument()
+    expect(screen.getByText(/The Forge rate is 500 ISK\/m³ \(configured rate\)/)).toBeInTheDocument()
     expect(productionApi.reapplyRealizedFreight).toHaveBeenCalledTimes(1)
     expect(productionApi.reapplyRealizedFreight).toHaveBeenCalledWith(true)
     await user.click(screen.getByRole('button', { name: 'Apply' }))
@@ -435,22 +437,42 @@ describe('RealizedProfit', () => {
     await waitFor(() => expect(productionApi.realizedJobs).toHaveBeenCalledWith('days=30&state=running'))
   })
 
-  it('shows Forge-to-home courier months under Freight', async () => {
+  it('shows the shipment list, the reward gap and a reward without courier details', async () => {
     const user = userEvent.setup()
     vi.mocked(productionApi.realizedCourier).mockResolvedValue({
       home_location_id: 42,
       configured_rate_per_m3: 80,
-      months: [{
-        month: '2026-10', count: 1, volume_m3: 10, reward: 500,
-        paid_isk_per_m3: 50, configured_rate_per_m3: 80,
+      needs_rebuild: false,
+      shipments: [{
+        shipment_ref: '11,12', contract_ids: [11, 12], issued: '2026-10-03T06:32:00Z',
+        start_location_id: 60003760, end_location_id: 42,
+        volume_m3: 20, reward: 800, isk_per_m3: 40, collateral: 1200,
+        booked_freight: 160, before_cutover_freight: 0, gap: 640,
+        couriers: [],
+      }],
+      rewards_without_courier: [{
+        contract_id: 999, date: '2026-10-01T12:00:00Z', amount: 12345,
+        label: 'reward without courier details',
+      }],
+      failed: [{
+        contract_id: 14, issued: '2026-10-01T12:00:00Z', collateral: 1500,
+        volume_m3: 1, reward: 0,
       }],
     })
+    vi.mocked(productionApi.realizedSummary).mockResolvedValue(summary({
+      cost_structure: [
+        { key: 'freight_courier', label: 'Freight from couriers', amount: 160 },
+        { key: 'freight_configured', label: 'Freight (configured rate)', amount: 20 },
+      ],
+    }))
     renderPage()
-    await screen.findByText('Cost of goods sold')
+    expect((await screen.findAllByText('Freight from couriers')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Freight (configured rate)').length).toBeGreaterThan(0)
     await user.click(screen.getByRole('tab', { name: 'Ledger' }))
-    expect(await screen.findByText('2026-10')).toBeInTheDocument()
-    expect(screen.getByText('50 ISK')).toBeInTheDocument()
-    expect(screen.getByText(/cost stays the configured rate/)).toBeInTheDocument()
+    expect(await screen.findByText('11,12')).toBeInTheDocument()
+    expect(screen.getByText('640 ISK')).toBeInTheDocument()
+    expect(screen.getByText('reward without courier details')).toBeInTheDocument()
+    expect(screen.getByText('1,500 ISK')).toBeInTheDocument()
   })
 
   it('counts hidden archive rows before deleting them', async () => {

@@ -14,6 +14,7 @@ const TABS = [
   { path: '/station-trading', label: 'Overview' },
   { path: '/station-trading/shortlist', label: 'Shortlist' },
   { path: '/station-trading/undercut', label: 'Undercut Check' },
+  { path: '/station-trading/realized', label: 'Realized' },
   { path: '/station-trading/settings', label: 'Settings' },
 ]
 

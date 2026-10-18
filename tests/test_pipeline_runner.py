@@ -376,6 +376,7 @@ def test_pipeline_worker_marks_degraded_when_one_step_fails(monkeypatch):
     from contextlib import contextmanager
 
     from eve_trader import actions
+    from eve_trader.production import actions as production_actions
 
     monkeypatch.setattr(
         actions, "do_refresh_and_prune_candidates",
@@ -383,8 +384,8 @@ def test_pipeline_worker_marks_degraded_when_one_step_fails(monkeypatch):
             actions.ActionError("ESI timeout")),
     )
     monkeypatch.setattr(
-        actions, "do_reconcile_trades",
-        lambda: {"matched_trades": 2},
+        production_actions, "do_rebuild_realized",
+        lambda reset_opening=False: {"matched_trades": 2},
     )
     finished = []
     monkeypatch.setattr(
@@ -406,7 +407,7 @@ def test_pipeline_worker_marks_degraded_when_one_step_fails(monkeypatch):
     assert status == "degraded"
     assert "ESI timeout" in error
     assert result["refresh_and_prune_candidates"]["error"] == "ESI timeout"
-    assert result["reconcile_trades"] == {"matched_trades": 2}
+    assert result["rebuild_realized"] == {"matched_trades": 2}
     assert result["failed_steps"]["refresh_and_prune_candidates"] == "ESI timeout"
 
 
@@ -414,12 +415,16 @@ def test_pipeline_worker_marks_succeeded_when_every_step_ok(monkeypatch):
     from contextlib import contextmanager
 
     from eve_trader import actions
+    from eve_trader.production import actions as production_actions
 
     monkeypatch.setattr(
         actions, "do_refresh_and_prune_candidates",
         lambda safe=True, progress_callback=None: {"ok": True},
     )
-    monkeypatch.setattr(actions, "do_reconcile_trades", lambda: {"matched_trades": 1})
+    monkeypatch.setattr(
+        production_actions, "do_rebuild_realized",
+        lambda reset_opening=False: {"matched_trades": 1},
+    )
     finished = []
     monkeypatch.setattr(
         storage, "finish_pipeline_run",
@@ -441,4 +446,4 @@ def test_pipeline_worker_marks_succeeded_when_every_step_ok(monkeypatch):
     assert error is None
     assert "failed_steps" not in result
     assert result["refresh_and_prune_candidates"] == {"ok": True}
-    assert result["reconcile_trades"] == {"matched_trades": 1}
+    assert result["rebuild_realized"] == {"matched_trades": 1}

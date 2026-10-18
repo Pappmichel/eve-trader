@@ -12,6 +12,7 @@ const RESULT_KEYS: string[][] = [
   ['trading', 'kpis'],
   ['trading', 'esi-sync-time'],
   ['trading', 'trades', 'realized'],
+  ['trading', 'realized'],
 ]
 
 const JOB_LABELS: Record<string, string> = {

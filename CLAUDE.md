@@ -25,10 +25,10 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
-exception: `esi_data/fetchers.py` lazily imports `production.realized`
-right after a snapshot write to fill the Production realized-profit
-archive (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`), only for kinds the
-owner shares with Production, and never lets an archive error fail the
+exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
+right after a snapshot write to fill the realized-profit
+archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
+with any realized-profit tool, and never lets an archive error fail the
 snapshot sync. Do not add a second tool import here. Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
@@ -116,7 +116,9 @@ they laid out side by side:
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
-| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `production/realized/loader.py` |
+| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `realized/loader.py` |
+| What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
+| What freight did a hub purchase pay? | The courier shipment rate (`sum(reward) / sum(volume)`) when a finished shipment to the home structure was issued at or after the purchase from that station; otherwise the configured hub rate frozen at ingest. Packaged m3 stays the volume frozen at ingest | `realized/costing.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
 is what you'd actually pay/receive right now) - don't assume a number from
@@ -126,20 +128,30 @@ this caused).
 
 ## Production realized profit
 
-Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. Package
-`eve_trader/production/realized/` (`ingest.py`, `inputs.py`, `access.py`,
-`db.py`, `costing.py`, `loader.py`, `report.py`). The wallet / jobs /
+Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. The shared archive and
+costing live in `eve_trader/realized/` (`ingest.py`, `inputs.py`,
+`access.py`, `db.py`, `costing.py`, `loader.py`, `names.py`). Production's
+report and planned-cost freeze stay in `eve_trader/production/realized/`
+(`report.py`, `planned.py`). Trading
+(`eve_trader/trade_realized/`), Doctrine (`eve_trader/doctrine/realized.py`)
+and Station Trading (`eve_trader/station_trading/realized.py`) read the
+same derived rows and keep their own channel. Portfolio shows one card per
+granted tool and a total from `GET /api/portfolio/realized-cards` when at
+least two of those tools have a figure. The wallet / jobs /
 orders / contracts **archive** is the source of truth. Derived tables
 (`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
 `prod_job_records`, `prod_fee_lines`, `prod_job_losses`,
 `prod_capital_bpos`, `prod_inventory_drift`, `prod_ledger_runs`) are
 rebuilt from it and can be dropped and rebuilt. Archive reads go through
-`access.py` and only return owners shared with Production (D11); revoking
-a share hides those rows until it is granted again. Flags
+`access.py` and return the union of owners shared with any realized-profit
+tool (D11 / unified plan U3a); revoking the last such share hides those
+rows until one is granted again. A report filters with
+`shared_owners_for`. Flags
 (`estimated`, `price_missing`, `assumed_me`, `assumed_decryptor`,
 coverage, `no_structure_bonus`) are stored on the derived rows and must
-reach `/api/production/realized/` unchanged. Freight is the configured
-rate and is labeled that way. HTTP recompute is a `pipeline_runner`
+reach `/api/production/realized/` unchanged. Freight is the courier
+rate when a shipment covers the purchase, and the configured rate
+otherwise. Both are labeled that way. HTTP recompute is a `pipeline_runner`
 background job; the CLI rebuild calls the same `do_rebuild_realized`
 in-process. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
@@ -150,7 +162,7 @@ tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 2). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 4). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
 
@@ -163,13 +175,16 @@ the price is split by reference value at that date (D4) and the shares sum
 exactly to the price. The tenant as issuer books Production-type items it
 gives as sales under the same FIFO order as market sales, with no sales tax
 and no broker fee. A contract that both gives and receives items is booked
-on both sides and warned `contract_item_swap`. Freight on a contract buy in
-The Forge is the configured rate times packaged m3, frozen on
+on both sides and warned `contract_item_swap`. Freight on a contract buy
+is the courier rate when a shipment covers that purchase, otherwise the
+configured rate times packaged m3. The packaged m3 stays frozen on
 `ledger_contract_items` at ingest. Draws and sales persist `source`
 (`market` / `contract`). Courier contracts the tenant issued are archived
-(`volume`, `collateral`, `region_id`) and never enter costing;
-`GET /api/production/realized/courier` compares Forge-to-home reward per m3
-with the configured rate.
+(`volume`, `collateral`, `region_id`) and never enter costing as buys or
+sales. `GET /api/production/realized/courier` lists the shipments that
+priced freight (reward, booked freight, gap), rewards whose courier is
+not archived, and failed couriers. A Trading contracts share supplies
+those couriers; item-exchange sales stay on Production and Doctrine shares.
 
 `ledger_job_planned_costs` is an archive table (not in the rebuild's replace
 set). The first time a job is archived, a cached planner cost/unit is frozen
@@ -1000,7 +1015,7 @@ not just a labeling issue:
   chunked` pattern and was never affected by either bug. The `sell_volume`
   field itself is unchanged and still legitimately shown as "Listed Qty"
   (own column) - it's just never used for the Profit/Day multiplication.
-  Corp-wallet reconciliation assumes a single-member corp (see `trade_reconciliation.py`); a shared corp would mix other members' fills into realized profit and `average_daily_sold_by_type` (the figure #51 briefly used for Profit / Day before #100 switched it to market-wide volume).
+  Corp wallet rows still enter the realized-profit archive. A shared corp mixes other members' fills into that archive and therefore into ledger profit. Profit / Day does not read them: since #100 it uses market-wide volume. The old matcher in `trade_reconciliation.py` is no longer called by the app; `realized_trades` stays only so `eve-trader realized compare-trading` can print it beside the Trading channel until the next release.
 
 ## Real SDE data drives classification, not heuristics
 

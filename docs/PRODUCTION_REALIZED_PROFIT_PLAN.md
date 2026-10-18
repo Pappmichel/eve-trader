@@ -27,7 +27,8 @@ Every number comes from ISK that was really paid or received (wallet
 transactions, wallet journal, industry job costs, contracts). Two deliberate
 exceptions, both always labeled in the report:
 
-- **Freight** from The Forge uses the rate configured in Settings (D9).
+- **Freight** is the courier shipment rate when a shipment covers the
+  purchase, otherwise the rate configured in Settings (D9).
 - **Inputs without a known purchase** (stock older than the archive, mined,
   refined, PI, loot) use a reference market price (D5), and the report shows
   how much of each figure rests on such estimates (coverage %).
@@ -209,6 +210,13 @@ rewards paid:
   regions are not freighted (listed as a warning if they occur).
 - Labeled "configured rate" in the report so it is never mistaken for a paid
   courier reward.
+- **Update (2026-10-18, `docs/COURIER_FREIGHT_PLAN.md`):** realized profit
+  uses the courier shipment rate (reward / volume of the finished couriers
+  grouped into that shipment) when a shipment to the home structure was
+  issued at or after the purchase from that station. Otherwise the frozen
+  configured rate still applies and is labeled "Configured rate (no courier
+  yet)". Ingest still freezes the configured rate; costing replaces it at
+  rebuild time. `do_reapply_freight_rate` updates that fallback only.
 
 ## 5b. Broker fees
 
@@ -294,7 +302,7 @@ matrix" (question: "what was an item without a purchase worth on that day?").
 figures (purchases, job costs, real fees) versus estimates (opening, unknown,
 modeled broker fees, assumed ME/decryptor). The report shows a **coverage %**
 per product and in total; below a threshold a figure is labeled "estimated".
-Freight is shown separately as "configured rate" and does not lower coverage.
+Freight is shown separately (courier rate, or the configured rate) and does not lower coverage.
 
 **Inventory drift check.** Compare ledger stock (sum of layers) per type with
 the ESI asset snapshot. A large gap means missing events (losses, gifts,
@@ -431,8 +439,8 @@ Trades page), `isk`/`pct`/`qty` formatters. Sub-tabs inside the page:
      (unsold produced and opening stock).
    - Chart: realized profit per day/week (bars), cumulative line.
    - Cost structure: one stacked bar plus table - materials bought, materials
-     estimated (opening/unknown), freight (labeled "configured rate"), job
-     costs, invention, broker fees, sales tax.
+     estimated (opening/unknown), freight from couriers, freight at the
+     configured rate, job costs, invention, broker fees, sales tax.
 2. **Products** - one row per Production type sold in the period: units sold,
    revenue, cost/unit, net sell/unit, profit, margin, coverage badge, warning
    icon. Phase 5 adds "planned cost/unit" and the difference. Click a row ->
@@ -511,7 +519,9 @@ Trading's).
 - **D9 freight:** every unit bought in The Forge gets freight to the home
   structure at the rate the planner uses (`haul_cost_per_m3`, or the hub table
   entry in "All hubs" mode) x packaged m3, frozen per purchase at ingest.
-  Courier rewards actually paid are not used as the cost (section 5a).
+  Realized profit uses the courier shipment rate when a shipment covers that
+  purchase, and this configured rate otherwise (section 5a, updated
+  2026-10-18).
 - **D10 retention:** archive-relevant kinds keep syncing for inactive tenants
   holding `production` (section 8). Confirmed with the user 2026-10-17.
 - **D11 revoked share:** archive rows are hidden, not deleted; deletion only
@@ -807,7 +817,8 @@ spell out):
     entry's total ISK; `quantity` is stored and not multiplied in.
   - `do_reapply_freight_rate` writes the current configured rate onto
     rows that already have `freight_m3` and does not rebuild in the
-    same call (`rebuild_required`).
+    same call (`rebuild_required`). A purchase a courier shipment covers
+    keeps the courier rate on the next rebuild.
   - Fees without a sale and fees on other trading live in
     `prod_fee_lines`, not as warning strings. A UTC day is included
     when it overlaps the period (D12 is per day).

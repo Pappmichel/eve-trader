@@ -12,9 +12,9 @@ from unittest.mock import patch
 import pytest
 
 from eve_trader import storage
-from eve_trader.production.realized import access as ledger_access
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import loader
+from eve_trader.realized import access as ledger_access
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import loader
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -73,7 +73,7 @@ def _no_planner_valuation(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_esi_names(monkeypatch):
     """Owner names fall back to ESI's public names endpoint; never call it here."""
-    from eve_trader.production.realized import names
+    from eve_trader.realized import names
     monkeypatch.setattr(names, "_esi_names", lambda ids: {})
 
 
@@ -360,3 +360,68 @@ def test_planner_outage_stores_nothing(tenant, monkeypatch):
     monkeypatch.setattr(loader, "_planner_values", boom)
     assert loader._fetch_valuations({(TYPE_A, day)}) == {}
     assert ledger_db.list_cached_valuation_prices([TYPE_A]) == {}
+
+
+def test_courier_rate_follows_the_contracts_share(tenant, monkeypatch):
+    """A finished courier from a shared owner prices the purchase. Revoking
+    that contracts share changes the owner-scope fingerprint and the next
+    rebuild falls back to the frozen configured rate."""
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    home = 1_000_000_000_042
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", home)
+    # The ledger fixture has no structure-name table; freight here is frozen
+    # on the wallet row, so a region lookup is not part of the assertion.
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    _share(ALICE, "wallet")
+    _share(ALICE, "contracts")
+    issued = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 100.0, 10, True, 101,
+         10000002, 900.0, 10.0),
+        ("character", ALICE, 0, 2, T1, TYPE_A, home, 200.0, 10, False, 102,
+         None, None, None),
+    ])
+    ledger_db.upsert_ledger_contracts([(
+        "character", ALICE, 236650353, 92267134, None, 7001,
+        LOC, home, "courier", "finished", None, 0, 80_000.0,
+        issued, issued, None, 100.0, 1_000_000.0, 10000002,
+    )])
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO stock_targets (type_id, type_name, backup_stock) "
+            "VALUES (?, 'Test', 1) ON CONFLICT DO NOTHING",
+            (TYPE_A,),
+        )
+
+    def rebuild():
+        with patch.object(loader, "_opening_stock", return_value={}):
+            with patch.object(loader, "_fetch_reference_prices", side_effect=lambda requests, today: {
+                key: 90.0 for key in requests
+            }):
+                with patch.object(loader, "_tenant_character_ids", return_value=frozenset({ALICE})):
+                    with patch.object(loader, "_relic_type_ids", return_value=frozenset()):
+                        return loader.rebuild_realized()
+
+    before = ledger_access.owner_scope_hash()
+    rebuild()
+    with storage.connect() as conn:
+        freight = conn.execute("SELECT cost_freight FROM prod_realized_results").fetchone()[0]
+    # 800 ISK/m3 (80_000 / 100 m3) x the frozen 10 m3, not the configured 900.
+    assert float(freight) == pytest.approx(8000.0)
+    assert ledger_db.latest_ledger_run()[4] == before
+
+    with storage.connect() as conn:
+        conn.execute(
+            "DELETE FROM esi_sharing WHERE owner_id = ? AND data_kind = 'contracts'",
+            (ALICE,),
+        )
+    after = ledger_access.owner_scope_hash()
+    assert after != before
+    rebuild()
+    with storage.connect() as conn:
+        freight = conn.execute(
+            "SELECT SUM(cost_freight) FROM prod_realized_results",
+        ).fetchone()[0]
+    assert float(freight) == pytest.approx(9000.0)
+    assert ledger_db.latest_ledger_run()[4] == after

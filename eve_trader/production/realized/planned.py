@@ -10,7 +10,7 @@ import logging
 from datetime import timedelta
 from typing import Optional
 
-from . import db
+from ...realized import db
 
 log = logging.getLogger(__name__)
 

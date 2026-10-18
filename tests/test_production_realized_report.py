@@ -13,8 +13,8 @@ import pytest
 
 from eve_trader import storage
 from eve_trader.production import actions as production_actions
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import loader
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import loader
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -81,7 +81,7 @@ def _no_planner_valuation(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_esi_names(monkeypatch):
     """Owner names fall back to ESI's public names endpoint; never call it here."""
-    from eve_trader.production.realized import names
+    from eve_trader.realized import names
     monkeypatch.setattr(names, "_esi_names", lambda ids: {})
 
 
@@ -175,8 +175,11 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert summary["flags"]["tax_missing"] is True
     assert summary["inventory_at_cost"] == pytest.approx(240.0)
     structure = {line["key"]: line for line in summary["cost_structure"]}
-    assert structure["freight"]["label"] == "Freight (configured rate)"
-    assert structure["freight"]["amount"] == pytest.approx(20.0)
+    assert structure["freight_configured"]["label"] == "Freight (configured rate)"
+    assert structure["freight_configured"]["amount"] == pytest.approx(20.0)
+    assert structure["freight_courier"]["label"] == "Freight from couriers"
+    assert structure["freight_courier"]["amount"] == pytest.approx(0.0)
+    assert "freight" not in structure
     assert structure["materials_bought"]["amount"] == pytest.approx(200.0)
     assert structure["job"]["amount"] == pytest.approx(20.0)
     assert structure["sales_tax"]["amount"] == pytest.approx(0.0)
@@ -209,7 +212,7 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert purchase["quantity"] == pytest.approx(2.0)
     assert purchase["unit_price"] == pytest.approx(100.0)
     assert purchase["freight"] == pytest.approx(20.0)
-    assert purchase["freight_label"] == "configured rate"
+    assert purchase["freight_label"] == "Configured rate (no courier yet)"
     assert purchase["location_id"] == LOC
     assert purchase["flags"]["price_missing"] is False
 
@@ -273,7 +276,7 @@ def test_missing_price_stays_flagged_on_the_report(tenant):
 def test_opening_cost_override_and_freight_reapply(tenant):
     _share(ALICE, "wallet")
     ledger_db.upsert_ledger_wallet_transactions([
-        ("character", ALICE, 0, 1, T0, TYPE_B, LOC, 1.0, 1, True, 1,
+        ("character", ALICE, 0, 1, T0, TYPE_B, 60000042, 1.0, 1, True, 1,
          10000002, 10.0, 3.0),
     ])
     stored = production_actions.do_set_opening_cost(TYPE_A, 12.5)
@@ -430,7 +433,7 @@ def test_status_is_stale_after_a_newer_archive_sync(tenant):
 def test_ledger_tab_reads_entries_freight_preview_and_archive_status(tenant):
     _share(ALICE, "wallet")
     ledger_db.upsert_ledger_wallet_transactions([
-        ("character", ALICE, 0, 1, T0, TYPE_B, LOC, 1.0, 1, True, 1,
+        ("character", ALICE, 0, 1, T0, TYPE_B, 60000042, 1.0, 1, True, 1,
          10000002, 10.0, 3.0),
     ])
     ledger_db.mark_archive_synced("character", ALICE, "wallet_transactions", T_SALE)
@@ -550,35 +553,107 @@ def test_planned_cost_survives_rebuild_and_weights_sold_units(tenant):
     assert row["planned_cost_per_unit"] == pytest.approx(12.5)
 
 
-def test_courier_comparison_is_forge_to_home_only(tenant, monkeypatch):
+def test_shipment_list_books_the_gap_and_rewards_without_a_courier(tenant, monkeypatch):
     from eve_trader.production.config import PRODUCTION_CONFIG
 
     _share(ALICE, "contracts")
+    _share(ALICE, "wallet")
     monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", 42)
     monkeypatch.setattr(PRODUCTION_CONFIG, "hub_region_id", 10000002)
     monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", 80.0)
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    issued = T0
+    issued_next = T0 + timedelta(minutes=1)
+    bought = T0 - timedelta(hours=1)
     ledger_db.upsert_ledger_contracts([
         ("character", ALICE, 11, ALICE, None, 5, 60003760, 42,
-         "courier", "finished", "jita", 0, 500.0, T0, T_SALE, None,
+         "courier", "finished", "jita", 0, 500.0, issued, T_SALE, None,
          10.0, 1000.0, 10000002),
-        ("character", ALICE, 12, ALICE, None, 5, 1, 42,
-         "courier", "finished", "elsewhere", 0, 900.0, T0, T_SALE, None,
-         10.0, 1.0, 10000043),
+        # Not The Forge, still one shipment with 11: same issuer, start, end, one minute later.
+        ("character", ALICE, 12, ALICE, None, 5, 60003760, 42,
+         "courier", "finished", "elsewhere", 0, 300.0, issued_next, T_SALE, None,
+         10.0, 200.0, 10000043),
         ("character", ALICE, 13, ALICE, None, 5, 60003760, 42,
-         "courier", "outstanding", "open", 0, 50.0, T0, None, None,
+         "courier", "outstanding", "open", 0, 50.0, issued, None, None,
          1.0, 1.0, 10000002),
+        ("character", ALICE, 14, ALICE, None, 5, 60003760, 42,
+         "courier", "failed", "lost", 0, 0.0, issued, None, None,
+         1.0, 1500.0, 10000002),
+        ("character", ALICE, 15, ALICE, None, 5, 60003760, 42,
+         "courier", "expired", "old", 0, 10.0, issued, None, None,
+         1.0, 1.0, 10000002),
+    ])
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, bought, TYPE_A, 60003760, 100.0, 1, True, 1,
+         10000002, 80.0, 4.0),
+    ])
+    ledger_db.upsert_ledger_wallet_journal([
+        # The journal books a deposit as a debit; the list shows it positive.
+        ("character", ALICE, 0, 9, bought, "contract_reward_deposited", -12345.0,
+         999, "contract_id", None, None, None, None, None),
+        # Refunded (expired, not archived): not an F6 row either.
+        ("character", ALICE, 0, 11, bought, "contract_reward_deposited", -77.0,
+         998, "contract_id", None, None, None, None, None),
+        ("character", ALICE, 0, 12, issued, "contract_reward_refund", 77.0,
+         998, "contract_id", None, None, None, None, None),
+        # This reward's contract is archived, so it is not an F6 row.
+        ("character", ALICE, 0, 10, bought, "contract_reward_deposited", 500.0,
+         11, "contract_id", None, None, None, None, None),
     ])
     report = production_actions.do_get_realized_courier()
     assert report["home_location_id"] == 42
     assert report["configured_rate_per_m3"] == pytest.approx(80.0)
-    assert report["months"] == [{
-        "month": "2026-10",
-        "count": 1,
-        "volume_m3": 10.0,
-        "reward": 500.0,
-        "paid_isk_per_m3": 50.0,
-        "configured_rate_per_m3": 80.0,
-    }]
+    assert report["needs_rebuild"] is True
+    [shipment] = report["shipments"]
+    assert shipment["shipment_ref"] == "11,12"
+    assert shipment["contract_ids"] == [11, 12]
+    assert shipment["volume_m3"] == pytest.approx(20.0)
+    assert shipment["reward"] == pytest.approx(800.0)
+    assert shipment["isk_per_m3"] == pytest.approx(40.0)
+    assert shipment["collateral"] == pytest.approx(1200.0)
+    # 40 ISK/m3 x the buy's frozen 4 m3. The configured 80 ISK/m3 is not booked.
+    assert shipment["booked_freight"] + shipment["before_cutover_freight"] == pytest.approx(160.0)
+    assert shipment["gap"] == pytest.approx(640.0)
+    assert [row["contract_id"] for row in shipment["couriers"]] == [11, 12]
+    [reward] = report["rewards_without_courier"]
+    assert reward["contract_id"] == 999
+    assert reward["amount"] == pytest.approx(12345.0)
+    assert reward["label"] == "reward without courier details"
+    [failed] = report["failed"]
+    assert failed["contract_id"] == 14
+    assert failed["collateral"] == pytest.approx(1500.0)
+    assert 13 not in shipment["contract_ids"]
+    assert 15 not in shipment["contract_ids"]
+    assert all(row["contract_id"] != 15 for row in report["failed"])
+
+
+def test_shipment_list_reports_purchases_before_cutover_apart(tenant, monkeypatch):
+    """A shipment that carried opening stock: costing books freight only on
+    purchases since cutover T0; the older part is listed apart, not as gap."""
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.realized import access as ledger_access
+
+    _share(ALICE, "contracts")
+    _share(ALICE, "wallet")
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", 42)
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    monkeypatch.setattr(ledger_access, "cutover_t0_for_production", lambda: T0)
+    ledger_db.upsert_ledger_contracts([
+        ("character", ALICE, 21, ALICE, None, 5, LOC, 42,
+         "courier", "finished", "jita", 0, 1000.0, T_JOB, T_SALE, None,
+         20.0, 1.0, 10000002),
+    ])
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0 - timedelta(hours=1), TYPE_A, LOC, 100.0, 1, True, 1,
+         10000002, 80.0, 6.0),
+        ("character", ALICE, 0, 2, T0 + timedelta(hours=1), TYPE_A, LOC, 100.0, 1, True, 2,
+         10000002, 80.0, 4.0),
+    ])
+    [shipment] = production_actions.do_get_realized_courier()["shipments"]
+    assert shipment["isk_per_m3"] == pytest.approx(50.0)
+    assert shipment["booked_freight"] == pytest.approx(200.0)
+    assert shipment["before_cutover_freight"] == pytest.approx(300.0)
+    assert shipment["gap"] == pytest.approx(500.0)
 
 
 def test_hidden_archive_delete_refuses_while_shared(tenant):
@@ -632,7 +707,7 @@ def test_opening_is_valued_at_the_planner_price(tenant, monkeypatch):
 def test_owner_names_come_from_stored_data_before_esi(tenant, monkeypatch):
     """Corp names from corp_assets, job installers from synced jobs; ESI is
     asked only for ids found nowhere."""
-    from eve_trader.production.realized import names
+    from eve_trader.realized import names
 
     with storage.connect() as conn:
         conn.execute(

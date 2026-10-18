@@ -1,33 +1,25 @@
 from dataclasses import dataclass
 from datetime import date
 
-import pandas as pd
-
 from eve_trader import portfolio, storage
 from eve_trader.config import TradingConfig
-from eve_trader.models import RealizedTrade
-
-_COLUMNS = [
-    "type_id", "item", "buy_date", "buy_qty", "buy_unit_price", "sell_date",
-    "sell_qty", "sell_unit_price", "matched_qty", "realized_profit", "margin", "run_ts",
-]
 
 
-def _trades_df(rows: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=_COLUMNS)
-
-
-def _row(type_id, run_ts, profit, buy_price=100.0, qty=1, sell_date="2026-01-01T12:00:00Z"):
-    return {
-        "type_id": type_id, "item": f"Item {type_id}", "buy_date": "2026-01-01T00:00:00Z",
-        "buy_qty": qty, "buy_unit_price": buy_price, "sell_date": sell_date, "sell_qty": qty,
-        "sell_unit_price": buy_price + profit, "matched_qty": qty, "realized_profit": profit,
-        "margin": profit / buy_price, "run_ts": run_ts,
+def _ledger_figures(**overrides):
+    figures = {
+        "trading_realized_profit": 0.0,
+        "trading_average_margin": 0.0,
+        "trading_daily_profit_volatility": None,
+        "trading_trade_count": 0,
     }
+    figures.update(overrides)
+    return figures
 
 
 def test_no_data_at_all_returns_zeros(monkeypatch):
-    monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
+    )
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
 
     result = portfolio.portfolio_overview(TradingConfig())
@@ -41,29 +33,31 @@ def test_no_data_at_all_returns_zeros(monkeypatch):
     assert result["combined_value"] == 0.0
 
 
-def test_sums_realized_profit_from_latest_run_only(monkeypatch):
-    df = _trades_df([
-        # Older, stale run - must be ignored entirely.
-        _row(1, "run1", 999.0),
-        # Latest run, split across two sell-days - this is what should be summed.
-        _row(1, "run2", 100.0, sell_date="2026-01-02T12:00:00Z"),
-        _row(2, "run2", 50.0, sell_date="2026-01-03T12:00:00Z"),
-    ])
-    monkeypatch.setattr(storage, "read_table", lambda table: df)
+def test_overview_uses_the_ledger_trading_figures(monkeypatch):
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures",
+        lambda: _ledger_figures(
+            trading_realized_profit=150.0,
+            trading_average_margin=0.25,
+            trading_daily_profit_volatility=10.0,
+            trading_trade_count=2,
+        ),
+    )
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
 
     result = portfolio.portfolio_overview(TradingConfig())
 
     assert result["trading_realized_profit"] == 150.0
     assert result["trading_trade_count"] == 2
-    # Two distinct sell-days with different daily totals - a real, non-zero spread.
-    assert result["trading_daily_profit_volatility"] is not None
-    assert result["trading_daily_profit_volatility"] > 0
+    assert result["trading_daily_profit_volatility"] == 10.0
+    assert result["combined_value"] == 150.0
 
 
 def test_single_day_of_trades_has_no_volatility(monkeypatch):
-    df = _trades_df([_row(1, "run1", 50.0)])
-    monkeypatch.setattr(storage, "read_table", lambda table: df)
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures",
+        lambda: _ledger_figures(trading_realized_profit=50.0, trading_trade_count=1),
+    )
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
 
     result = portfolio.portfolio_overview(TradingConfig())
@@ -73,7 +67,9 @@ def test_single_day_of_trades_has_no_volatility(monkeypatch):
 
 
 def test_production_stock_value_included_when_targets_configured(monkeypatch):
-    monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
+    )
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Widget", 0, None, None)])
 
     from eve_trader.production import engine
@@ -90,7 +86,9 @@ def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatc
     # No owner shares anything with "portfolio" - total_wealth stays None
     # (a real "nobody has opted in yet" gap), not 0.0 ("everything is
     # worthless") - confirmed real bug in review.
-    monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
+    )
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
     _stub_sharing(monkeypatch)
     upserted = {}
@@ -521,7 +519,9 @@ def test_total_wealth_a_character_shared_only_with_production_is_excluded(monkey
 
 
 def test_take_portfolio_snapshot_includes_total_wealth(monkeypatch):
-    monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
+    )
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
     monkeypatch.setattr(portfolio, "total_wealth", lambda cfg: {
         "total_wealth": 42.0, "wealth_assets_value": 42.0, "wealth_blueprints_value": 0.0,

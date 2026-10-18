@@ -67,12 +67,12 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'contracts', section: 'industry', label: 'Contracts', group: 1,
-    consumingTools: ['doctrine'],
+    consumingTools: ['doctrine', 'production', 'trading'],
     corpRoles: [],
   },
   {
     key: 'wallet', section: 'industry', label: 'Wallet', group: 1,
-    consumingTools: ['trading', 'portfolio', 'char_info'],
+    consumingTools: ['trading', 'production', 'station_trading', 'portfolio', 'char_info'],
     corpRoles: ['Accountant', 'Junior_Accountant'],
     toolDataKind: { portfolio: 'wallet_balance', char_info: 'wallet_balance' },
   },

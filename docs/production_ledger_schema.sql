@@ -693,3 +693,33 @@ CREATE POLICY tenant_isolation ON ledger_valuation_prices
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_valuation_prices TO eve_trader_app;
+
+-- ====================================================== unified realized profit, Phase 2
+-- Sale channel (production / trading / doctrine / station_trading), the
+-- archive owner the report filters on, and the doctrine fitting when known.
+-- Existing rows default to production so a report written before the
+-- rebuild still shows them. pool is "global" or the Station Trading station
+-- id; draws record the consumer's channel (NULL on a job draw).
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'production';
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS owner_type TEXT;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS owner_id BIGINT;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS fitting_id TEXT;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS issuer_id BIGINT;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS pool TEXT NOT NULL DEFAULT 'global';
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS channel TEXT;
+CREATE INDEX IF NOT EXISTS idx_prod_realized_results_channel
+    ON prod_realized_results (channel, sale_date);
+
+-- Courier freight (docs/COURIER_FREIGHT_PLAN.md). The split is part of
+-- cost_freight, not an extra cost. freight_source is "courier" or
+-- "configured". A rebuild replaces these derived rows.
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS freight_source TEXT;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS shipment_ref TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS freight_source TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS shipment_ref TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;

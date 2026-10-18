@@ -4,12 +4,15 @@ eve_trader/station_trading/actions.py (do_*) and eve_trader/storage.py
 here."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
 from ...actions import ActionError
 from ...station_trading import actions
+from ...station_trading import realized as station_realized
 from ...station_trading.config import STATION_TRADING_CONFIG
 from ... import storage
 
@@ -87,3 +90,56 @@ def remove_trader_character(role_key: str):
 @router.post("/settings")
 def update_settings(updates: schemas.StationTradingSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
+
+
+# ------------------------------------------------------------- realized profit
+@router.get("/realized/summary")
+def station_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
+                             end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        station_realized.do_get_station_realized_summary,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/items")
+def station_realized_items(days: Optional[int] = None, start: Optional[str] = None,
+                           end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        station_realized.do_get_station_realized_items,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/items/{type_id}")
+def station_realized_item(type_id: int, days: Optional[int] = None, start: Optional[str] = None,
+                          end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        station_realized.do_get_station_realized_item,
+        type_id=type_id, days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/sales")
+def station_realized_sale(sale_ref: str):
+    return _wrap(station_realized.do_get_station_realized_sale, sale_ref=sale_ref)
+
+
+@router.get("/realized/position")
+def station_realized_position():
+    return _wrap(station_realized.do_get_station_realized_position)
+
+
+@router.get("/realized/warnings")
+def station_realized_warnings():
+    return _wrap(station_realized.do_get_station_realized_warnings)
+
+
+@router.post("/realized/rebuild")
+def station_realized_rebuild():
+    return _wrap(station_realized.do_start_station_realized_rebuild)
+
+
+@router.get("/realized/rebuild/status")
+def station_realized_rebuild_status():
+    return _wrap(station_realized.do_station_realized_rebuild_status)

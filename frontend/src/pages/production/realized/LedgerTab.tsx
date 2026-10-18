@@ -9,7 +9,8 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { ApiError, productionApi } from '../../../api/client'
 import type {
   CharInfoField, EsiTokenCharacter, RealizedArchiveOwner,
-  RealizedCourierMonth, RealizedLedgerEntry, RealizedOpeningRow,
+  RealizedCourierShipment, RealizedFailedCourier, RealizedLedgerEntry, RealizedOpeningRow,
+  RealizedRewardWithoutCourier,
 } from '../../../api/types'
 import { DataTable } from '../../../components/DataTable'
 import { EditableNumberCell } from '../../../components/EditableCell'
@@ -58,34 +59,77 @@ function CourierComparison() {
     queryFn: productionApi.realizedCourier,
     retry: false,
   })
-  if (query.isLoading) return <Text size="sm" c="dimmed" mb="xs">Loading courier comparison…</Text>
-  if (query.isError) return <HintCard>Could not load the courier comparison.</HintCard>
+  if (query.isLoading) return <Text size="sm" c="dimmed" mb="xs">Loading shipments…</Text>
+  if (query.isError) return <HintCard>Could not load shipments.</HintCard>
   const data = query.data
   const rate = data?.configured_rate_per_m3
-  const columns: ColumnDef<RealizedCourierMonth, any>[] = [
-    { header: 'Month', accessorKey: 'month', size: 110 },
-    { header: 'Couriers', accessorKey: 'count', size: 100, cell: (info) => qty(info.getValue()) },
+  const columns: ColumnDef<RealizedCourierShipment, any>[] = [
+    { header: 'Couriers', accessorKey: 'shipment_ref', size: 180 },
+    { header: 'Issued', accessorKey: 'issued', size: 160, cell: (info) => when(info.getValue()) },
     { header: 'Volume', accessorKey: 'volume_m3', size: 120, cell: (info) => volume(info.getValue()) },
     { header: 'Reward', accessorKey: 'reward', size: 130, cell: (info) => isk(info.getValue()) },
-    { header: 'Paid ISK/m³', accessorKey: 'paid_isk_per_m3', size: 130, cell: (info) => isk(info.getValue()) },
-    { header: 'Configured rate', accessorKey: 'configured_rate_per_m3', size: 150, cell: (info) => isk(info.getValue()) },
+    { header: 'ISK/m³', accessorKey: 'isk_per_m3', size: 120, cell: (info) => info.getValue() == null ? '–' : isk(info.getValue()) },
+    { header: 'Collateral', accessorKey: 'collateral', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Booked', accessorKey: 'booked_freight', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Before T0', accessorKey: 'before_cutover_freight', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Gap', accessorKey: 'gap', size: 130, cell: (info) => isk(info.getValue()) },
+  ]
+  const rewardColumns: ColumnDef<RealizedRewardWithoutCourier, any>[] = [
+    { header: 'Contract', accessorKey: 'contract_id', size: 120, cell: (info) => info.getValue() == null ? '–' : String(info.getValue()) },
+    { header: 'Date', accessorKey: 'date', size: 160, cell: (info) => when(info.getValue()) },
+    { header: 'Amount', accessorKey: 'amount', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Label', accessorKey: 'label', size: 240 },
+  ]
+  const failedColumns: ColumnDef<RealizedFailedCourier, any>[] = [
+    { header: 'Contract', accessorKey: 'contract_id', size: 120 },
+    { header: 'Issued', accessorKey: 'issued', size: 160, cell: (info) => when(info.getValue()) },
+    { header: 'Collateral', accessorKey: 'collateral', size: 140, cell: (info) => isk(info.getValue()) },
+    { header: 'Volume', accessorKey: 'volume_m3', size: 120, cell: (info) => info.getValue() == null ? '–' : volume(info.getValue()) },
+    { header: 'Reward', accessorKey: 'reward', size: 130, cell: (info) => isk(info.getValue()) },
   ]
   return (
     <Stack gap="xs" mb="sm">
       <Text size="sm" c="dimmed">
-        Finished couriers from The Forge to the home structure. Paid ISK/m³ is information only; cost stays the configured rate
-        {rate == null ? '' : ` (${isk(rate)} / m³)`}.
+        Finished couriers to the home structure, grouped into shipments. A purchase takes the first shipment issued at or after it from the same station. Purchases with no shipment keep the configured rate
+        {rate == null ? '' : ` (${isk(rate)} / m³)`}. Booked is the freight on assigned purchases since cutover T0. Before T0 is the same for older purchases, which are opening stock and carry no freight. Gap is the reward minus both.
       </Text>
-      {data && data.months.length > 0 ? (
+      {data?.needs_rebuild && (
+        <Text size="sm" c="dimmed">Recompute to refresh cost of goods sold. Booked freight below is read from the archive.</Text>
+      )}
+      {data && data.shipments.length > 0 ? (
         <DataTable
           tableId="production-realized-courier"
-          data={data.months}
+          data={data.shipments}
           columns={columns}
-          maxHeight={240}
-          getRowId={(row) => row.month}
+          maxHeight={280}
+          getRowId={(row) => row.shipment_ref}
         />
       ) : (
-        <Text size="sm" c="dimmed">No finished couriers from The Forge to the home structure.</Text>
+        <Text size="sm" c="dimmed">No finished shipments to the home structure.</Text>
+      )}
+      {data && data.rewards_without_courier.length > 0 && (
+        <>
+          <Text size="sm" c="dimmed">Reward deposited for a contract that is not in the archive.</Text>
+          <DataTable
+            tableId="production-realized-courier-rewards"
+            data={data.rewards_without_courier}
+            columns={rewardColumns}
+            maxHeight={200}
+            getRowId={(row) => `${row.contract_id ?? 'none'}-${row.date ?? ''}-${row.amount}`}
+          />
+        </>
+      )}
+      {data && data.failed.length > 0 && (
+        <>
+          <Text size="sm" c="dimmed">Failed couriers. Collateral is not booked as income.</Text>
+          <DataTable
+            tableId="production-realized-courier-failed"
+            data={data.failed}
+            columns={failedColumns}
+            maxHeight={200}
+            getRowId={(row) => String(row.contract_id)}
+          />
+        </>
       )}
     </Stack>
   )
@@ -398,7 +442,7 @@ export function LedgerTab({
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">Freight</Title>
         <CourierComparison />
         <Text size="sm" c="dimmed" mb="xs">
-          Re-apply writes the current configured rate onto purchases that already have a freight volume. It does not recompute profit.
+          Re-apply writes the current configured rate onto purchases that already have a freight volume. Purchases a courier shipment covers keep the courier rate. It does not recompute profit.
         </Text>
         <Button variant="default" loading={freightBusy} onClick={onFreightPreview}>
           Re-apply current freight rate

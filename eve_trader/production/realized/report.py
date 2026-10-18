@@ -10,23 +10,37 @@ period. Capital in BPOs and inventory at cost are balances as of the latest
 rebuild, not flows inside the period. Sales tax is listed in the cost
 structure and is already removed from revenue, so it is not added to COGS.
 
-D11: a run stores the fingerprint of the owners shared with Production.
-When the current sharing no longer matches, every read returns nothing
-from that run (`sharing_changed`) until the next rebuild.
+D11: a run stores the fingerprint of the owners shared with any realized
+tool. When the current sharing no longer matches, every read returns
+nothing from that run (`sharing_changed`) until the next rebuild. This
+page then keeps only channel `production`, and only for owners shared
+with Production (U3a).
 """
 from __future__ import annotations
 
+import dataclasses
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
-from . import access, db, names as display_names
-from .costing import ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+from ...realized import access, db, names as display_names
+from ...realized.costing import (
+    ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, FREIGHT_CONFIGURED,
+    CostComponents, freight_label, freight_split,
+)
+
+def _production_scope() -> dict:
+    """Channel and owner filter for the Production report (U1, U3a)."""
+    return {
+        "channel": "production",
+        "wallet_owners": list(access.shared_owners_for("wallet", "production")),
+        "contract_owners": list(access.shared_owners_for("contracts", "production")),
+    }
+
 
 _EPS = 1e-9
 _CHAIN_DEPTH = 24
-FREIGHT_LABEL = "configured rate"
 
 # Section 9a warning groups. Always present, even when empty, so the page
 # shape does not depend on which warnings happened to fire.
@@ -55,7 +69,8 @@ COST_STRUCTURE_LABELS = (
     # Opening and unknown stock is one planner value per unit (buy or build),
     # so any build cost inside it cannot be split into job/invention here.
     ("materials_estimated", "Opening / unknown stock (planner value)"),
-    ("freight", f"Freight ({FREIGHT_LABEL})"),
+    ("freight_courier", "Freight from couriers"),
+    ("freight_configured", "Freight (configured rate)"),
     ("job", "Job costs"),
     ("invention", "Invention"),
     ("broker_fees", "Broker fees"),
@@ -104,6 +119,15 @@ def _components_from(row, offset: int) -> CostComponents:
     )
 
 
+def _with_split(components: CostComponents, courier, configured) -> CostComponents:
+    """Attach the courier / configured split. Rows from before the columns
+    existed keep the whole freight amount on the configured rate."""
+    courier_f, configured_f = freight_split(courier, configured, components.freight)
+    return dataclasses.replace(
+        components, freight_courier=courier_f, freight_configured=configured_f,
+    )
+
+
 def _coverage(components: CostComponents, price_missing: bool) -> tuple[float, bool]:
     """Same rule as RealizedResult: freight is outside coverage; a missing
     price forces estimated even when the ratio would look complete."""
@@ -118,7 +142,8 @@ def _cost_structure(components: CostComponents, sales_tax: float) -> list[dict]:
     amounts = {
         "materials_bought": components.materials_bought,
         "materials_estimated": components.materials_estimated,
-        "freight": components.freight,
+        "freight_courier": components.freight_courier,
+        "freight_configured": components.freight_configured,
         "job": components.job,
         "invention": components.invention,
         "broker_fees": components.fees,
@@ -190,7 +215,23 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "by_day": [],
         "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": _flags(estimated=False, price_missing=False, coverage=None),
+        "sold_through_doctrine": {"contracts": 0, "units": 0.0, "cost": 0.0},
     }
+
+
+def _sold_through_doctrine(start: datetime, end: datetime) -> dict:
+    """Produced goods that left through a doctrine contract (U1).
+
+    Those sales stay on the doctrine channel. This line is the quantity and
+    cost of the produced draws, so Production can still see that output.
+    """
+    owners = list(access.shared_owners_for("contracts", "doctrine"))
+    if not owners:
+        return {"contracts": 0, "units": 0.0, "cost": 0.0}
+    contracts, units, cost = db.produced_draw_totals(
+        start, end, channel="doctrine", contract_owners=owners,
+    )
+    return {"contracts": int(contracts or 0), "units": _num(units), "cost": _num(cost)}
 
 
 def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float) -> dict:
@@ -199,7 +240,7 @@ def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float
     consumed (datacores, decryptors, copies, fees). Plus two balances as of
     the latest rebuild: produced goods still in stock at cost, and the cost
     sitting in running jobs."""
-    from . import names as display_names
+    from ...realized import names as display_names
 
     fees = []
     invention_total = 0.0
@@ -306,7 +347,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
     with storage.batch_session():
         run, t0, changed = _run_state()
         archive_since, wallet_sync, jobs_sync, any_sync = _sync_times()
-        results_ever = db.count_realized_results() if run is not None else 0
+        scope = _production_scope()
+        results_ever = db.count_realized_results(**scope) if run is not None else 0
         status = _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever,
                          sharing_changed=changed, last_sync=any_sync)
         window = None if run is None or changed else _window(start, end, since_t0, t0)
@@ -314,12 +356,13 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         if window is None:
             return _empty_summary(period, status)
         start_at, end_at = window
-        totals = db.realized_totals(start_at, end_at)
-        components = CostComponents(
+        sold_through = _sold_through_doctrine(start_at, end_at)
+        totals = db.realized_totals(start_at, end_at, **scope)
+        components = _with_split(CostComponents(
             materials_bought=_num(totals[4]), materials_estimated=_num(totals[5]),
             freight=_num(totals[6]), job=_num(totals[7]), invention=_num(totals[8]),
             fees=_num(totals[9]),
-        )
+        ), totals[14], totals[15])
         price_missing = bool(totals[12])
         sales_count = int(totals[13])
         cov, estimated = _coverage(components, price_missing) if sales_count else (None, False)
@@ -341,7 +384,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
                              db.produced_stock_value())
         by_day = [
             {"date": _iso(row[0]), "revenue": _num(row[1]), "cost": _num(row[2]), "profit": _num(row[3])}
-            for row in db.realized_by_day(start_at, end_at)
+            for row in db.realized_by_day(start_at, end_at, **scope)
         ]
     flags = _flags(
         estimated=estimated, price_missing=price_missing, coverage=cov,
@@ -373,6 +416,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "by_day": by_day,
         "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": flags,
+        "sold_through_doctrine": sold_through,
     }
 
 
@@ -427,10 +471,11 @@ def products(*, start: Optional[datetime], end: datetime, since_t0: bool, days: 
         if window is None:
             return {"period": period, "rows": [], "needs_rebuild": run is None or changed}
         start_at, end_at = window
-        rows = db.realized_by_type(start_at, end_at)
-        flags = {int(r[0]): (bool(r[1]), bool(r[2])) for r in db.realized_draw_flags_by_type(start_at, end_at)}
+        scope = _production_scope()
+        rows = db.realized_by_type(start_at, end_at, **scope)
+        flags = {int(r[0]): (bool(r[1]), bool(r[2])) for r in db.realized_draw_flags_by_type(start_at, end_at, **scope)}
         warn: dict[int, list[str]] = defaultdict(list)
-        for type_id, text in db.realized_warnings_by_type(start_at, end_at):
+        for type_id, text in db.realized_warnings_by_type(start_at, end_at, **scope):
             warn[int(type_id)].append(str(text))
         names = _names({int(r[0]) for r in rows})
         planned = db.planned_unit_cost_by_type(start_at, end_at)
@@ -448,7 +493,11 @@ def products(*, start: Optional[datetime], end: datetime, since_t0: bool, days: 
 
 
 def _sale_dict(row, names: dict) -> dict:
-    components = _components_from(row, 15)
+    components = _with_split(
+        _components_from(row, 15),
+        row[22] if len(row) > 23 else 0,
+        row[23] if len(row) > 23 else 0,
+    )
     price_missing = bool(row[12])
     estimated = bool(row[13])
     qty = _num(row[2])
@@ -487,7 +536,9 @@ def product(*, type_id: int, start: Optional[datetime], end: datetime,
     with storage.batch_session():
         run, t0, changed = _run_state()
         window = None if run is None or changed else _window(start, end, since_t0, t0)
-        sales = [] if window is None else db.list_sales_for_type(int(type_id), window[0], window[1])
+        sales = [] if window is None else db.list_sales_for_type(
+            int(type_id), window[0], window[1], **_production_scope(),
+        )
         names = _names({int(type_id)} | {int(row[1]) for row in sales})
     if match is None:
         match = {
@@ -523,6 +574,19 @@ def _draw_flags(row, *, detail_missing: bool = False) -> dict:
     )
 
 
+def _bought_freight_label(row, origin: str) -> Optional[str]:
+    """F7 text for a bought draw. A draw written before the source column
+    existed, and that still carries freight, is the configured rate."""
+    if origin != "bought":
+        return None
+    source = None if len(row) <= 25 or row[25] is None else str(row[25])
+    ref = None if len(row) <= 26 or row[26] is None else str(row[26])
+    if source is None and abs(_num(row[10])) > _EPS:
+        source = FREIGHT_CONFIGURED
+    rate = None if row[23] is None else float(row[23])
+    return freight_label(source, ref, rate)
+
+
 def _leaf(row, scale: float = 1.0) -> dict:
     """One input draw. `scale` is the share of the consuming job that this
     sale accounts for, so quantities and freight add up to the sale."""
@@ -543,7 +607,7 @@ def _leaf(row, scale: float = 1.0) -> dict:
         "date": _iso(row[19]),
         "location_id": None if row[21] is None else int(row[21]),
         "freight": _num(row[10]) * scale,
-        "freight_label": FREIGHT_LABEL if origin == "bought" else None,
+        "freight_label": _bought_freight_label(row, origin),
         "freight_rate_per_m3": None if row[23] is None else float(row[23]),
         "source_ref": row[7],
         "job_id": None if row[20] is None else int(row[20]),
@@ -649,7 +713,7 @@ def sale_chain(sale_ref: str) -> Optional[dict]:
         run, _t0, changed = _run_state()
         if run is None or changed:
             return None
-        row = db.get_realized_sale(sale_ref)
+        row = db.get_realized_sale(sale_ref, **_production_scope())
         if row is None:
             return None
         draws = db.list_draws("sale", [sale_ref])
@@ -716,11 +780,11 @@ def jobs(*, start: Optional[datetime] = None, end: Optional[datetime] = None,
         facilities = display_names.location_names({int(r[29]) for r in rows if r[29] is not None})
     out = []
     for row in rows:
-        components = CostComponents(
+        components = _with_split(CostComponents(
             materials_bought=_num(row[14]), materials_estimated=_num(row[15]),
             freight=_num(row[16]), job=_num(row[17]), invention=_num(row[18]),
             fees=_num(row[19]),
-        )
+        ), row[30] if len(row) > 31 else 0, row[31] if len(row) > 31 else 0)
         output_qty = _num(row[26])
         left = None if row[27] is None else float(row[27])
         sold_share = None
@@ -1000,6 +1064,7 @@ def warnings() -> dict:
         outside = [] if hidden else db.realized_warnings_by_type(
             datetime(1970, 1, 1, tzinfo=timezone.utc),
             datetime(9999, 1, 1, tzinfo=timezone.utc),
+            **_production_scope(),
         )
     seen_outside = set()
     for type_id, text in outside:
@@ -1100,45 +1165,109 @@ def ledger_entries() -> dict:
 
 
 def courier_comparison() -> dict:
-    """Finished courier contracts from The Forge to the home structure,
-    per calendar month. Information only: costing still uses the configured
-    rate (D9). An unset home structure returns no months."""
+    """Shipments that price freight, rewards whose courier is not archived,
+    and failed couriers (F5, F6).
+
+    Booked freight is replayed from the archive (shipment rate x frozen m3)
+    and does not require a rebuild. Purchases a shipment covers that are
+    older than cutover T0 are opening stock, which costing never freights;
+    they are reported as `before_cutover_freight` and left out of `gap`.
+    An unset home structure yields no shipments; failed couriers are still
+    listed. The configured rate is the fallback for purchases no shipment
+    covers. A reward that was refunded (expired or deleted contract) is not
+    an F6 row.
+    """
     from ..config import PRODUCTION_CONFIG
     from ...config import TRADING_CONFIG
-    from .ingest import _freight_rate_for_forge
+    from ...realized.costing import booked_by_shipment, plan_freight
+    from ...realized.ingest import _freight_rate_for_forge
+    from ...realized.loader import load_freight_snapshot
 
     home = PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
-    if not home:
-        return {"home_location_id": None, "configured_rate_per_m3": rate, "months": []}
     with storage.batch_session():
-        rows = db.list_forge_home_couriers(access.shared_owners("contracts"), int(home))
-    buckets: dict[str, dict] = {}
-    for _cid, completed, volume, reward in rows:
-        when = completed
-        if isinstance(when, datetime) and when.tzinfo is not None:
-            when = when.astimezone(timezone.utc)
-        month = when.strftime("%Y-%m")
-        slot = buckets.setdefault(month, {"count": 0, "volume_m3": 0.0, "reward": 0.0})
-        slot["count"] += 1
-        slot["volume_m3"] += float(volume or 0)
-        slot["reward"] += float(reward or 0)
-    months = []
-    for month in sorted(buckets):
-        slot = buckets[month]
-        vol = slot["volume_m3"]
-        months.append({
-            "month": month,
-            "count": slot["count"],
+        run, _t0, changed = _run_state()
+        snapshot, cutover = load_freight_snapshot()
+        shipments, purchases, rates, _warnings = plan_freight(snapshot)
+        booked = booked_by_shipment(
+            [p for p in purchases if cutover is None or p.when >= cutover], rates,
+        )
+        before_cutover = booked_by_shipment(
+            [p for p in purchases if cutover is not None and p.when < cutover], rates,
+        )
+        owners = access.shared_owners("contracts")
+        archived_ids = {
+            int(row[2]) for row in (db.list_contracts_for_owners(owners) if owners else [])
+        }
+        journal = access.list_all_wallet_journal_for_production()
+    by_id = {int(row.contract_id): row for row in snapshot.couriers}
+    shipment_rows = []
+    for shipment in shipments:
+        vol = float(shipment.volume)
+        reward = float(shipment.reward)
+        booked_amt = float(booked.get(shipment.shipment_ref, 0.0))
+        before_amt = float(before_cutover.get(shipment.shipment_ref, 0.0))
+        couriers = []
+        for contract_id in shipment.contract_ids:
+            row = by_id.get(int(contract_id))
+            couriers.append({
+                "contract_id": int(contract_id),
+                "issued": _iso(None if row is None else row.date_issued),
+                "volume_m3": 0.0 if row is None or row.volume is None else float(row.volume),
+                "reward": 0.0 if row is None else float(row.reward),
+                "collateral": 0.0 if row is None else float(row.collateral),
+            })
+        shipment_rows.append({
+            "shipment_ref": shipment.shipment_ref,
+            "contract_ids": [int(i) for i in shipment.contract_ids],
+            "issued": _iso(shipment.date_issued),
+            "start_location_id": int(shipment.start_location_id),
+            "end_location_id": int(shipment.end_location_id),
             "volume_m3": vol,
-            "reward": slot["reward"],
-            "paid_isk_per_m3": (slot["reward"] / vol) if vol > _EPS else None,
-            "configured_rate_per_m3": rate,
+            "reward": reward,
+            "isk_per_m3": (reward / vol) if vol > _EPS else None,
+            "collateral": float(shipment.collateral),
+            "booked_freight": booked_amt,
+            "before_cutover_freight": before_amt,
+            "gap": reward - booked_amt - before_amt,
+            "couriers": couriers,
+        })
+    refunded = {
+        int(row[7]) for row in journal
+        if str(row[5]) == "contract_reward_refund" and row[7] is not None
+    }
+    rewards = []
+    for row in journal:
+        if str(row[5]) != "contract_reward_deposited":
+            continue
+        contract_id = None if row[7] is None else int(row[7])
+        if contract_id is not None and (contract_id in archived_ids or contract_id in refunded):
+            continue
+        rewards.append({
+            "contract_id": contract_id,
+            "date": _iso(row[4]),
+            # The journal books the deposit as a debit; the list shows the reward.
+            "amount": abs(float(row[6] or 0)),
+            "label": "reward without courier details",
+        })
+    failed = []
+    for row in snapshot.couriers:
+        if (row.status or "").lower() != "failed":
+            continue
+        failed.append({
+            "contract_id": int(row.contract_id),
+            "issued": _iso(row.date_issued),
+            "collateral": float(row.collateral or 0),
+            "volume_m3": None if row.volume is None else float(row.volume),
+            "reward": float(row.reward or 0),
         })
     return {
-        "home_location_id": int(home),
+        "home_location_id": None if not home else int(home),
         "configured_rate_per_m3": rate,
-        "months": months,
+        "needs_rebuild": run is None or changed,
+        "shipments": shipment_rows,
+        "rewards_without_courier": rewards,
+        "failed": failed,
     }
 
 

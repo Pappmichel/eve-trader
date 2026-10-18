@@ -472,9 +472,10 @@ than loud:
   (Characters page → **Re-authorize**) to pick up
   `esi-wallet.read_corporation_wallets.v1`. Until they do, corp-wallet
   calls 403 and are skipped non-fatally, so realized profit looks complete
-  while missing every corp-funded fill. Re-run Reconcile Trades afterwards
-  - it wholesale-replaces `realized_trades`, so already-reconciled periods
-  do not pick up corp fills until that fresh run.
+  while missing every corp-funded fill. Recompute realized profit afterwards
+  (the shared rebuild on any realized-profit page, or the trading pipeline).
+  Corp fills enter the ledger archive on the next wallet sync and the next
+  rebuild; `realized_trades` is no longer the live figure.
 - Both scopes this rebuild added
   (`esi-wallet.read_corporation_wallets.v1` and, for the Characters page's
   corp-role warning, `esi-characters.read_corporation_roles.v1`) must be

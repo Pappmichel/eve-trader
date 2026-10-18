@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Iterable, Optional
 
-from ... import storage
+from .. import storage
 
 log = logging.getLogger(__name__)
 
@@ -61,8 +61,8 @@ def owner_names(owner_ids: Iterable[int]) -> dict[int, str]:
         return {}
     out: dict[int, str] = {}
     try:
-        from ...auth import TokenManager
-        from ...config import OAUTH_CONFIG
+        from ..auth import TokenManager
+        from ..config import OAUTH_CONFIG
         for rec in TokenManager(OAUTH_CONFIG).list_records():
             if rec.character_id is not None and int(rec.character_id) in ids and rec.character_name:
                 out[int(rec.character_id)] = str(rec.character_name)
@@ -85,7 +85,7 @@ def owner_names(owner_ids: Iterable[int]) -> dict[int, str]:
 
 
 def _esi_names(ids: list[int]) -> dict[int, str]:
-    from ...esi_client import ESIClient
+    from ..esi_client import ESIClient
     return ESIClient().resolve_names_cached(ids)
 
 

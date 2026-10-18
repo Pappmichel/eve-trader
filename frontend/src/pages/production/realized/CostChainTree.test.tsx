@@ -38,7 +38,7 @@ describe('CostChainTree', () => {
           children: [
             node({
               kind: 'purchase', origin: 'bought', type_name: 'Tritanium', quantity: 10,
-              unit_cost: 6, unit_price: 5, freight: 10, freight_label: 'configured rate',
+              unit_cost: 6, unit_price: 5, freight: 10, freight_label: 'Configured rate (no courier yet)',
               date: '2026-10-01T00:00:00Z', location_id: 60003760, source: 'contract',
             }),
             node({
@@ -67,7 +67,7 @@ describe('CostChainTree', () => {
 
     const bought = screen.getByText('Tritanium')
     expect(bought).toHaveAttribute('data-estimate', 'false')
-    expect(screen.getByText('Freight 10 ISK (configured rate)')).toBeInTheDocument()
+    expect(screen.getByText('Freight 10 ISK (Configured rate (no courier yet))')).toBeInTheDocument()
     expect(screen.getByText('Jita 4-4 (60003760)')).toBeInTheDocument()
     expect(screen.getByText('Price 5 ISK')).toBeInTheDocument()
     expect(screen.getByText('contract')).toBeInTheDocument()
@@ -85,5 +85,23 @@ describe('CostChainTree', () => {
     const direct = document.querySelectorAll('[data-depth="1"]')
     expect(direct).toHaveLength(1)
     expect(direct[0]).toHaveAttribute('data-line-cost', '80')
+  })
+
+  it('shows the courier id and rate on a bought draw', () => {
+    const tree = node({
+      kind: 'product', type_name: 'Widget', quantity: 1,
+      children: [
+        node({
+          kind: 'purchase', origin: 'bought', type_name: 'Tritanium', quantity: 1,
+          freight: 800, freight_label: 'Courier 236650353, 236650362 · 800 ISK/m3',
+        }),
+      ],
+    })
+    render(
+      <MantineProvider>
+        <CostChainTree node={tree} locationNames={{}} />
+      </MantineProvider>,
+    )
+    expect(screen.getByText('Freight 800 ISK (Courier 236650353, 236650362 · 800 ISK/m3)')).toBeInTheDocument()
   })
 })

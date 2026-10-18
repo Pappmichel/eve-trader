@@ -137,7 +137,7 @@ eve-trader build-universe        # (occasionally) rebuild the full ESI candidate
 eve-trader build-focused         # filter down to sensible import candidates
 eve-trader find-new-candidates --safe   # backtest new candidates vs. shortlist
 eve-trader add-to-shortlist      # promote Add=True candidates onto the shortlist
-eve-trader reconcile-trades      # match realized buy/sell wallet transactions
+eve-trader realized compare-trading   # read-only: old realized_trades beside the ledger
 
 # Or all at once:
 eve-trader pipeline --safe

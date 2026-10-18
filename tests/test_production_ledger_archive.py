@@ -12,9 +12,9 @@ import pytest
 
 from eve_trader import storage, tenant_eligibility
 from eve_trader.config import ACCESS_CONFIG
-from eve_trader.production.realized import access as ledger_access
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import ingest as ledger_ingest
+from eve_trader.realized import access as ledger_access
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import ingest as ledger_ingest
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -183,6 +183,41 @@ def test_share_revoke_hides_archive_rows(tenant):
     ) == 1
 
 
+def test_union_scope_trading_only_doctrine_only_and_last_revoke(tenant):
+    """U3a: a wallet shared only with Trading, and contracts shared only
+    with Doctrine, are in the archive scope. Revoking the last realized
+    tool hides the owner. Adding a share changes the fingerprint."""
+    before = ledger_access.owner_scope_hash()
+    from eve_trader.esi_data import fetchers
+
+    _share(ALICE, "wallet", "trading")
+    assert fetchers._archive_for_production("wallet", "character", ALICE) is True
+    assert ("character", ALICE) in ledger_access.shared_owners("wallet")
+    assert ("character", ALICE) in ledger_access.shared_owners_for("wallet", "trading")
+    assert ("character", ALICE) not in ledger_access.shared_owners_for("wallet", "production")
+    ledger_db.upsert_ledger_wallet_transactions([(
+        "character", ALICE, 0, 8, DATE1, TYPE_ID, LOCATION_ID,
+        1.0, 1, True, 8, None, None, None,
+    )])
+    assert ledger_access.list_wallet_transactions_for_production("character", ALICE)
+    after_trading = ledger_access.owner_scope_hash()
+    assert after_trading != before
+
+    _share(BOB, "contracts", "doctrine")
+    assert ("character", BOB) in ledger_access.shared_owners("contracts")
+    assert ("character", BOB) not in ledger_access.shared_owners_for("contracts", "production")
+    assert ledger_access.owner_scope_hash() != after_trading
+
+    _share(ALICE, "wallet", "station_trading")
+    _revoke(ALICE, "wallet", "trading")
+    assert ("character", ALICE) in ledger_access.shared_owners("wallet")
+    _revoke(ALICE, "wallet", "station_trading")
+    assert ("character", ALICE) not in ledger_access.shared_owners("wallet")
+    assert ledger_access.list_wallet_transactions_for_production("character", ALICE) == []
+    assert fetchers._archive_for_production("wallet", "character", ALICE) is False
+    assert ledger_db.count_ledger_rows("ledger_wallet_transactions", "character", ALICE) == 1
+
+
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 
@@ -274,8 +309,10 @@ class _Counter:
         return self.result() if callable(self.result) else self.result
 
 
-def _txn(txn_id, quantity=5, is_buy=True):
-    return (0, txn_id, DATE1, TYPE_ID, LOCATION_ID, 10.0, quantity, is_buy, txn_id)
+def _txn(txn_id, quantity=5, is_buy=True, location=60000042):
+    """A Forge station that is not Jita 4-4. Jita 4-4 is the station-trading
+    station and freezes no freight (ST3)."""
+    return (0, txn_id, DATE1, TYPE_ID, location, 10.0, quantity, is_buy, txn_id)
 
 
 def test_wallet_archive_processes_only_new_rows_with_cached_lookups(tenant, monkeypatch):
@@ -360,11 +397,11 @@ def test_job_without_inputs_is_retried_and_research_is_never_frozen(tenant, monk
     assert calls == [70, 70]
 
 
-def test_production_archive_retention_requires_production_grant(monkeypatch):
+def test_production_archive_retention_requires_a_realized_tool(monkeypatch):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
-    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["trading"])
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["sorting"])
     assert tenant_eligibility.production_archive_retention("t") is False
-    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["production"])
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["trading"])
     assert tenant_eligibility.production_archive_retention("t") is True
     assert "wallet" in tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
     assert "industry_jobs" in tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
@@ -457,3 +494,30 @@ def test_planned_cost_is_frozen_only_for_recently_started_new_jobs(tenant, monke
                                         jobs=[recent, old], now=now + timedelta(hours=1))
     with storage.connect() as conn:
         assert conn.execute("SELECT count(*) FROM ledger_job_planned_costs").fetchone()[0] == 1
+
+
+def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypatch):
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: 10000002)
+    now = datetime(2026, 10, 12, 6, 58, tzinfo=timezone.utc)
+    common = {
+        "issuer_id": ALICE, "acceptor_id": 1, "start_location_id": LOCATION_ID,
+        "end_location_id": 42, "date_issued": DATE1, "volume": 100, "reward": 80_000,
+        "collateral": 1_500_000_000,
+    }
+    ledger_ingest.archive_contracts(
+        owner_type="character", owner_id=ALICE,
+        contracts=[
+            {"contract_id": 1, "type": "courier", "status": "finished", **common},
+            {"contract_id": 2, "type": "courier", "status": "failed", **common},
+            {"contract_id": 3, "type": "courier", "status": "expired", **common},
+            {"contract_id": 4, "type": "courier", "status": "deleted", **common},
+            {"contract_id": 5, "type": "courier", "status": "outstanding", **common},
+        ],
+        items_by_contract={},
+        now=now,
+    )
+    rows = ledger_db.list_couriers_for_owners([("character", ALICE)])
+    assert sorted(int(row[0]) for row in rows) == [1, 2]
+    failed = next(row for row in rows if int(row[0]) == 2)
+    assert failed[7] == pytest.approx(1_500_000_000)
+    assert failed[8] == "failed"
