@@ -136,6 +136,18 @@ export default function RealizedTrades() {
 
       {summary && !waiting && (
         <>
+          <SimpleGrid cols={{ base: 1, xs: 2 }}>
+            <Card withBorder padding="sm">
+              <Text size="xs" c="dimmed" tt="uppercase">Average margin</Text>
+              <Title order={4}>{rate(summary.portfolio_average_margin)}</Title>
+              <Text size="xs" c="dimmed">Last 30 days</Text>
+            </Card>
+            <Card withBorder padding="sm">
+              <Text size="xs" c="dimmed" tt="uppercase">Daily profit volatility</Text>
+              <Title order={4}>{money(summary.portfolio_daily_profit_volatility)}</Title>
+              <Text size="xs" c="dimmed">Standard deviation of realized profit per day, last 30 days</Text>
+            </Card>
+          </SimpleGrid>
           <SimpleGrid cols={{ base: 1, xs: 2, md: 4 }}>
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Revenue</Text>

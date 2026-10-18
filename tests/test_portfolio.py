@@ -108,6 +108,7 @@ def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatc
 
 def test_do_get_portfolio_overview_takes_snapshot_when_not_taken_today(monkeypatch):
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     calls = []
     monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("snapshot") or {"combined_value": 1.0})
     monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg: calls.append("live") or {"combined_value": 2.0})
@@ -115,11 +116,13 @@ def test_do_get_portfolio_overview_takes_snapshot_when_not_taken_today(monkeypat
     result = portfolio.do_get_portfolio_overview(TradingConfig())
 
     assert calls == ["snapshot"]
-    assert result == {"combined_value": 1.0}
+    assert result["combined_value"] == 1.0
+    assert result["wealth_change"] == {"d1": None, "d7": None, "d30": None}
 
 
 def test_do_get_portfolio_overview_reads_live_when_already_taken_today(monkeypatch):
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     calls = []
     monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("snapshot") or {"combined_value": 1.0})
     monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg: calls.append("live") or {"combined_value": 2.0})
@@ -127,7 +130,56 @@ def test_do_get_portfolio_overview_reads_live_when_already_taken_today(monkeypat
     result = portfolio.do_get_portfolio_overview(TradingConfig())
 
     assert calls == ["live"]
-    assert result == {"combined_value": 2.0}
+    assert result["combined_value"] == 2.0
+    assert result["wealth_change"]["d7"] is None
+
+
+def _snapshot_row(day, total):
+    values = {col: 0.0 for col in storage.PORTFOLIO_SNAPSHOT_COLUMNS}
+    values["trading_daily_profit_volatility"] = None
+    values["trading_trade_count"] = 0
+    values["production_stock_targets_configured"] = False
+    values["total_wealth"] = total
+    return (day,) + tuple(values[col] for col in storage.PORTFOLIO_SNAPSHOT_COLUMNS)
+
+
+def test_wealth_change_is_none_without_a_snapshot_that_far_back(monkeypatch):
+    from datetime import timedelta
+    today = date(2026, 10, 18)
+    rows = [
+        _snapshot_row(today, 110.0),
+        _snapshot_row(today - timedelta(days=1), 100.0),
+    ]
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: rows)
+
+    change = portfolio.wealth_change(today)
+
+    assert change["d1"] == {"isk": 10.0, "pct": 0.1}
+    assert change["d7"] is None
+    assert change["d30"] is None
+
+
+def test_wealth_change_percent_is_none_when_the_earlier_wealth_is_zero(monkeypatch):
+    from datetime import timedelta
+    today = date(2026, 10, 18)
+    rows = [
+        _snapshot_row(today, 50.0),
+        _snapshot_row(today - timedelta(days=7), 0.0),
+        _snapshot_row(today - timedelta(days=30), 25.0),
+    ]
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: rows)
+
+    change = portfolio.wealth_change(today)
+
+    assert change["d7"] == {"isk": 50.0, "pct": None}
+    assert change["d30"] == {"isk": 25.0, "pct": 1.0}
+
+
+def test_wealth_change_is_none_when_today_has_no_wealth(monkeypatch):
+    today = date(2026, 10, 18)
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [_snapshot_row(today, None)])
+
+    assert portfolio.wealth_change(today) == {"d1": None, "d7": None, "d30": None}
 
 
 def test_do_get_portfolio_history_unbounded_when_days_is_none(monkeypatch):
@@ -284,6 +336,7 @@ def _stub_sharing(monkeypatch, **owner_ids):
         return owner_ids.get(f"{data_kind}_{owner_type}", [])
 
     monkeypatch.setattr(esi_access, "shared_owner_ids", _fake_shared_owner_ids)
+    monkeypatch.setattr(storage, "list_esi_freshness", lambda: [])
 
 
 def test_priced_prefers_manual_over_home_and_jita(monkeypatch):
@@ -312,9 +365,51 @@ def test_priced_falls_back_to_jita_when_home_has_no_quote(monkeypatch):
         return {tid: _current_price(tid, 20.0) for tid in ids}
 
     monkeypatch.setattr(production_pricing, "_goonmetrics_prices", _fake_prices)
+    monkeypatch.setattr(portfolio, "_haul_volumes", lambda ids: {})
 
     prices = portfolio._priced({34})
     assert prices[34] == 20.0
+
+
+def _two_markets(monkeypatch, home_sell, jita_sell, volumes, rate=1000.0):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production import pricing as production_pricing
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "insmother")
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", rate)
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {})
+
+    def _fake_prices(market, ids):
+        book = home_sell if market == "insmother" else jita_sell
+        return {tid: _current_price(tid, book[tid]) for tid in ids if tid in book}
+
+    monkeypatch.setattr(production_pricing, "_goonmetrics_prices", _fake_prices)
+    asked = []
+
+    def _volumes(ids):
+        asked.append(sorted(ids))
+        return {tid: volumes[tid] for tid in ids if tid in volumes}
+
+    monkeypatch.setattr(portfolio, "_haul_volumes", _volumes)
+    return asked
+
+
+def test_priced_uses_jita_plus_freight_when_home_is_a_troll_order(monkeypatch):
+    # Buy-list rule: one 19M sell order at home must not value a stack Jita
+    # sells for 5k. Jita 5,000 + 1,000 ISK/m3 x 1 m3 = 6,000.
+    _two_markets(monkeypatch, {34: 19_000_000.0}, {34: 5_000.0}, {34: 1.0})
+    assert portfolio._priced({34}) == {34: 6_000.0}
+
+
+def test_priced_keeps_home_when_jita_plus_freight_is_dearer(monkeypatch):
+    # Home 5,500 < Jita 5,000 + 1,000 freight.
+    _two_markets(monkeypatch, {34: 5_500.0}, {34: 5_000.0}, {34: 1.0})
+    assert portfolio._priced({34}) == {34: 5_500.0}
+
+
+def test_priced_adds_freight_to_a_jita_only_quote_and_skips_volume_when_home_is_cheaper(monkeypatch):
+    asked = _two_markets(monkeypatch, {35: 10.0}, {34: 20.0, 35: 30.0}, {34: 0.01})
+    assert portfolio._priced({34, 35}) == {34: 30.0, 35: 10.0}
+    assert asked == [[34]]
 
 
 def test_priced_excludes_type_with_no_quote_anywhere(monkeypatch):
@@ -380,9 +475,9 @@ def test_characters_missing_wallet_scope_uses_id_when_name_unknown(monkeypatch):
 
 def test_total_wealth_scoped_to_portfolio_sharing_only(monkeypatch):
     _stub_sharing(monkeypatch, assets_character=[1], wallet_balance_character=[1])
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [(34, 100)] if char_ids == [1] else [])
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 500.0 if char_ids == [1] else 0.0)
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [("character", 1, 10, 34, 100)] if char_ids == [1] else [])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [("character", 1, 500.0)] if char_ids == [1] else [])
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {34: 5.0})
     import eve_trader.auth as auth_module
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
@@ -408,9 +503,9 @@ def test_total_wealth_flags_asset_sharer_missing_wallet_scope_even_if_never_shar
     # has never ticked wallet_balance at all is (correctly) absent from
     # wallet_char_ids in the first place.
     _stub_sharing(monkeypatch, assets_character=[1])  # only assets shared, never wallet_balance
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [(34, 100)])
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [("character", 1, 10, 34, 100)])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {34: 5.0})
     import eve_trader.auth as auth_module
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
@@ -427,11 +522,11 @@ def test_total_wealth_normalizes_bpo_quantity_sentinel(monkeypatch):
     # a real stack size - confirmed real bug in review: pricing directly
     # against the raw value valued a BPO at *minus* one unit.
     _stub_sharing(monkeypatch, blueprints_character=[1])
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
-        (11567, -1, 10, 20, -1),  # a BPO
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [
+        ("character", 1, 10, 11567, -1, -1),  # a BPO
     ])
-    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
     import eve_trader.auth as auth_module
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
@@ -453,11 +548,11 @@ def test_total_wealth_bpc_without_manual_price_is_unpriced_not_bpo_priced(monkey
     # overstate Total Wealth - an unpriced BPC is excluded from the total,
     # same as any other unpriced item, until a manual price is set.
     _stub_sharing(monkeypatch, blueprints_character=[1])
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
-        (11567, -2, 10, 20, 100),  # a BPC with 100 runs, no manual price set
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [
+        ("character", 1, 10, 11567, -2, 100),  # a BPC with 100 runs, no manual price set
     ])
-    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [])
     # A Goonmetrics/manual quote exists for the type (the BPO would use it) -
     # the BPC must still not use it.
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
@@ -476,11 +571,11 @@ def test_total_wealth_bpc_without_manual_price_is_unpriced_not_bpo_priced(monkey
 
 def test_total_wealth_bpc_with_manual_price_is_priced_against_it(monkeypatch):
     _stub_sharing(monkeypatch, blueprints_character=[1])
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
-        (11567, -2, 10, 20, 100),  # a BPC, manually priced lower than the BPO quote
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [
+        ("character", 1, 10, 11567, -2, 100),  # a BPC, manually priced lower than the BPO quote
     ])
-    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
     monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {11567: 50_000.0})
     import eve_trader.auth as auth_module
@@ -505,9 +600,10 @@ def test_total_wealth_a_character_shared_only_with_production_is_excluded(monkey
     def _fail(*_a, **_kw):
         raise AssertionError("should not be called when nobody shares with portfolio")
 
-    monkeypatch.setattr(storage, "load_all_assets", _fail)
-    monkeypatch.setattr(storage, "load_owned_blueprints", _fail)
-    monkeypatch.setattr(storage, "sum_wallet_balances", _fail)
+    monkeypatch.setattr(storage, "load_assets_grouped", _fail)
+    monkeypatch.setattr(storage, "load_blueprints_grouped", _fail)
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", _fail)
+    monkeypatch.setattr(storage, "load_sell_orders_grouped", _fail)
 
     result = portfolio.total_wealth(TradingConfig())
 

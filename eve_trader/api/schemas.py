@@ -803,6 +803,17 @@ class DoctrineStatus(_Base):
     fittings: list[FittingStatus] = []
 
 
+class WealthDelta(_Base):
+    isk: float
+    pct: Optional[float] = None
+
+
+class WealthChange(_Base):
+    d1: Optional[WealthDelta] = None
+    d7: Optional[WealthDelta] = None
+    d30: Optional[WealthDelta] = None
+
+
 class PortfolioOverview(_Base):
     trading_realized_profit: float
     trading_average_margin: float
@@ -811,6 +822,9 @@ class PortfolioOverview(_Base):
     production_stock_value: float
     production_stock_targets_configured: bool
     combined_value: float
+    # Kept on the snapshot response so old history stays readable. The page
+    # shows total_wealth and wealth_change, not combined_value (P1).
+    wealth_change: WealthChange = WealthChange()
 
 
 class PortfolioSnapshotRow(_Base):
@@ -825,6 +839,9 @@ class PortfolioSnapshotRow(_Base):
     total_wealth: Optional[float] = None
     wealth_assets_value: Optional[float] = None
     wealth_wallet_balance: Optional[float] = None
+    wealth_listed_value: Optional[float] = None
+    wealth_contract_value: Optional[float] = None
+    wealth_escrow: Optional[float] = None
 
 
 class CharacterMissingWalletScope(_Base):
@@ -832,16 +849,99 @@ class CharacterMissingWalletScope(_Base):
     character_name: str
 
 
+class WealthSync(_Base):
+    assets: Optional[str] = None
+    blueprints: Optional[str] = None
+    listed: Optional[str] = None
+    contracts: Optional[str] = None
+    wallet: Optional[str] = None
+    escrow: Optional[str] = None
+
+
 class TotalWealth(_Base):
     # None (not 0.0) until any owner shares anything with "portfolio" -
-    # see portfolio.total_wealth's own docstring.
+    # see portfolio.total_wealth's own docstring. Listed, contract and
+    # escrow are 0 when that kind is not shared, and escrow is None when
+    # open buys exist but the archived escrow column is still empty.
     total_wealth: Optional[float] = None
     wealth_assets_value: Optional[float] = None
     wealth_blueprints_value: Optional[float] = None
     wealth_wallet_balance: Optional[float] = None
+    wealth_listed_value: Optional[float] = None
+    wealth_contract_value: Optional[float] = None
+    wealth_escrow: Optional[float] = None
     wealth_priced_items: int
     wealth_unpriced_items: int
     characters_missing_wallet_scope: list[CharacterMissingWalletScope] = []
+    sync: WealthSync = WealthSync()
+
+
+class WealthShareRow(_Base):
+    label: str
+    value: float
+    share: Optional[float] = None
+
+
+class WealthTopRow(_Base):
+    type_id: int
+    type_name: str
+    quantity: float
+    value: float
+    share: Optional[float] = None
+    owner_name: str
+    location_name: str
+    component: str
+
+
+class UnpricedWealthItem(_Base):
+    type_id: int
+    type_name: Optional[str] = None
+    quantity: float
+    # Positions (owner x location x pile) summed into this type's row.
+    positions: int = 1
+    owner_name: str
+    location_name: str
+    component: str
+
+
+class CapitalBucket(_Base):
+    key: str
+    label: str
+    quantity: Optional[float] = None
+    cost_basis: Optional[float] = None
+    market_value: Optional[float] = None
+    unrealized: Optional[float] = None
+    coverage: Optional[float] = None
+    estimated: bool = False
+    comparison_value: Optional[float] = None
+
+
+class CapitalTotal(_Base):
+    cost_basis: Optional[float] = None
+    market_value: Optional[float] = None
+    unrealized: Optional[float] = None
+    estimated: bool = False
+    coverage: Optional[float] = None
+    # Bucket keys left out of the total because they lack a cost or a
+    # market value (running jobs, escrow not stored yet).
+    excluded: list[str] = []
+
+
+class PortfolioCapital(_Base):
+    source: str
+    buckets: list[CapitalBucket] = []
+    total: CapitalTotal = CapitalTotal()
+
+
+class WealthBreakdown(_Base):
+    total: Optional[float] = None
+    by_owner: list[WealthShareRow] = []
+    by_location: list[WealthShareRow] = []
+    by_category: list[WealthShareRow] = []
+    top: list[WealthTopRow] = []
+    unpriced: list[UnpricedWealthItem] = []
+    # Every unpriced type; `unpriced` is capped at the first 100 of them.
+    unpriced_types: int = 0
 
 
 class ManualItemPriceRow(_Base):

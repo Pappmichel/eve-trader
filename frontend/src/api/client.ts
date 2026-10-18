@@ -502,13 +502,19 @@ export const portfolioApi = {
   history: (days?: number) =>
     get<T.PortfolioSnapshotRow[]>(days == null ? '/api/portfolio/history' : `/api/portfolio/history?days=${days}`),
   wealth: () => get<T.TotalWealth>('/api/portfolio/wealth'),
+  wealthBreakdown: () => get<T.WealthBreakdown>('/api/portfolio/wealth/breakdown'),
+  capital: () => get<T.PortfolioCapital>('/api/portfolio/capital'),
   manualPrices: () => get<T.ManualItemPriceRow[]>('/api/portfolio/manual-prices'),
   setManualPrice: (itemName: string, price: number) =>
     post<{ type_id: number; type_name: string; price: number }>(
       '/api/portfolio/manual-prices', { item_name: itemName, price },
     ),
   removeManualPrice: (typeId: number) => del(`/api/portfolio/manual-prices/${typeId}`),
-  realizedCards: () => get<T.RealizedToolCards>('/api/portfolio/realized-cards'),
+  attention: () => get<T.PortfolioAttention>('/api/portfolio/attention'),
+  realizedCards: (period = '30') =>
+    get<T.RealizedToolCards>(`/api/portfolio/realized-cards?period=${encodeURIComponent(period)}`),
+  realizedHistory: (period = '30') =>
+    get<T.RealizedHistory>(`/api/portfolio/realized-history?period=${encodeURIComponent(period)}`),
 }
 
 // -------------------------------------------------------------- doctrine

@@ -137,7 +137,7 @@ def _required_scope(data_kind: str, owner_type: str) -> Optional[str]:
 
 
 def _list_known_characters(tm: TokenManager) -> list[TokenRecord]:
-    """Unique characters this tenant has any token for, first-seen order.
+    """Unique characters this tenant has any token for, role-key order.
 
     Not a prefix listing: every stored row counts, whatever its key.
     """

@@ -62,12 +62,12 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'market_orders', section: 'industry', label: 'Market Orders', group: 1,
-    consumingTools: ['trading', 'production', 'station_trading'],
+    consumingTools: ['trading', 'production', 'station_trading', 'portfolio'],
     corpRoles: ['Accountant', 'Trader'],
   },
   {
     key: 'contracts', section: 'industry', label: 'Contracts', group: 1,
-    consumingTools: ['doctrine', 'production', 'trading'],
+    consumingTools: ['doctrine', 'production', 'trading', 'portfolio'],
     corpRoles: [],
   },
   {

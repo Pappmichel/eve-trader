@@ -160,10 +160,13 @@ def test_every_consuming_tool_key_is_in_all_tool_keys():
     assert "admin" not in consuming_tool_keys()
     assert "characters" not in consuming_tool_keys()
     assert "refining" not in consuming_tool_keys()
-    # Portfolio rework: "portfolio" is a real consumer now, of exactly
-    # "wallet_balance" (Total Wealth) - not "wallet" (Trading's own
-    # reconciliation keeps owning that one).
+    # Portfolio consumes assets, blueprints, wallet_balance, and (overview
+    # rework P4) market_orders and contracts. Not "wallet".
     assert "portfolio" in consuming_tool_keys()
+    by_key = {k.key: k for k in OWNED_DATA_KINDS}
+    assert "portfolio" in by_key["market_orders"].consuming_tools
+    assert "portfolio" in by_key["contracts"].consuming_tools
+    assert "portfolio" not in by_key["wallet"].consuming_tools
 
 
 def test_every_scope_appears_in_fetcher_facing_mapping():

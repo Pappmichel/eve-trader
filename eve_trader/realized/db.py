@@ -90,10 +90,12 @@ def upsert_ledger_wallet_journal(rows: list[tuple]) -> int:
 
 def upsert_ledger_market_orders(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, order_id, type_id, location_id, region_id,
-    is_buy_order, price, volume_total, volume_remain, issued, state).
+    is_buy_order, price, volume_total, volume_remain, issued, state, escrow).
 
     On conflict updates mutable fields (price/volume/state/issued) so a later
     history page still refreshes the last-known order shape without deleting.
+    A history row that omits escrow does not wipe an escrow already stored;
+    an explicit 0 is kept.
     """
     if not rows:
         return 0
@@ -101,14 +103,15 @@ def upsert_ledger_market_orders(rows: list[tuple]) -> int:
         conn.executemany(
             "INSERT INTO ledger_market_orders ("
             "owner_type, owner_id, order_id, type_id, location_id, region_id, "
-            "is_buy_order, price, volume_total, volume_remain, issued, state) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "is_buy_order, price, volume_total, volume_remain, issued, state, escrow) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, order_id) DO UPDATE SET "
             "type_id=EXCLUDED.type_id, location_id=EXCLUDED.location_id, "
             "region_id=COALESCE(EXCLUDED.region_id, ledger_market_orders.region_id), "
             "is_buy_order=EXCLUDED.is_buy_order, price=EXCLUDED.price, "
             "volume_total=EXCLUDED.volume_total, volume_remain=EXCLUDED.volume_remain, "
-            "issued=EXCLUDED.issued, state=EXCLUDED.state",
+            "issued=EXCLUDED.issued, state=EXCLUDED.state, "
+            "escrow=COALESCE(EXCLUDED.escrow, ledger_market_orders.escrow)",
             rows,
         )
     return len(rows)
@@ -829,6 +832,103 @@ def outstanding_contract_qty_by_type(owners: list[tuple[str, int]]) -> dict[int,
             tuple(params),
         ).fetchall()
     return {int(r[0]): float(r[1]) for r in rows}
+
+
+def outstanding_contract_lines(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(owner_type, owner_id, type_id, quantity) for included items of
+    outstanding item-exchange contracts this owner issued. Same contract
+    once, even when archived for both a character and its corp."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    where = where.replace("owner_type", "c.owner_type").replace("owner_id", "c.owner_id")
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, type_id, SUM(quantity) FROM ("
+            "  SELECT DISTINCT ON (c.contract_id, i.record_id) "
+            "         c.owner_type, c.owner_id, i.type_id, i.quantity "
+            "  FROM ledger_contracts c JOIN ledger_contract_items i "
+            "    ON i.owner_type = c.owner_type AND i.owner_id = c.owner_id "
+            "   AND i.contract_id = c.contract_id "
+            f"  WHERE {where} AND c.status = 'outstanding' AND i.is_included "
+            "   AND ((c.owner_type = 'character' AND c.issuer_id = c.owner_id) "
+            "     OR (c.owner_type = 'corporation' AND c.issuer_corporation_id = c.owner_id)) "
+            ") x GROUP BY owner_type, owner_id, type_id",
+            tuple(params),
+        ).fetchall()
+    return [(r[0], int(r[1]), int(r[2]), float(r[3])) for r in rows]
+
+
+_OPEN_ORDER = "(state = 'open' OR (state IS NULL AND COALESCE(volume_remain, 0) > 0))"
+
+
+def open_buy_escrow_by_owner(owners: list[tuple[str, int]]) -> Optional[list[tuple]]:
+    """(owner_type, owner_id, escrow) summed over open buys.
+
+    None when any open buy still has a NULL escrow: the amount is unknown
+    until a sync stores ESI's escrow field, and it is not estimated. No
+    open buys returns [].
+    """
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, escrow FROM ledger_market_orders "
+            f"WHERE {where} AND is_buy_order AND {_OPEN_ORDER}",
+            tuple(params),
+        ).fetchall()
+    if any(row[2] is None for row in rows):
+        return None
+    totals: dict[tuple, float] = {}
+    for owner_type, owner_id, escrow in rows:
+        key = (owner_type, int(owner_id))
+        totals[key] = totals.get(key, 0.0) + float(escrow)
+    return [(owner_type, owner_id, amount) for (owner_type, owner_id), amount in sorted(totals.items())]
+
+
+def open_sell_order_lines(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(type_id, volume_remain, price) for open sell orders. One row per order."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, volume_remain, price FROM ledger_market_orders "
+            f"WHERE {where} AND NOT is_buy_order AND {_OPEN_ORDER} "
+            "AND COALESCE(volume_remain, 0) > 0",
+            tuple(params),
+        ).fetchall()
+    return [(int(type_id), float(qty), float(price)) for type_id, qty, price in rows]
+
+
+def outstanding_priced_contract_items(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(contract_id, type_id, quantity, contract_price) for included items
+    of outstanding item exchanges this owner issued. One contract once."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    where = where.replace("owner_type", "c.owner_type").replace("owner_id", "c.owner_id")
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, type_id, quantity, price FROM ("
+            "  SELECT DISTINCT ON (c.contract_id, i.record_id) "
+            "         c.contract_id, i.type_id, i.quantity, c.price "
+            "  FROM ledger_contracts c JOIN ledger_contract_items i "
+            "    ON i.owner_type = c.owner_type AND i.owner_id = c.owner_id "
+            "   AND i.contract_id = c.contract_id "
+            f"  WHERE {where} AND c.status = 'outstanding' AND c.type = 'item_exchange' "
+            "   AND i.is_included "
+            "   AND ((c.owner_type = 'character' AND c.issuer_id = c.owner_id) "
+            "     OR (c.owner_type = 'corporation' AND c.issuer_corporation_id = c.owner_id)) "
+            "  ORDER BY c.contract_id, i.record_id"
+            ") x",
+            tuple(params),
+        ).fetchall()
+    return [
+        (int(contract_id), int(type_id), float(quantity), None if price is None else float(price))
+        for contract_id, type_id, quantity, price in rows
+    ]
 
 
 def oldest_wallet_transaction_date(
