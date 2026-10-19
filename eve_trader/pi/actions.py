@@ -1212,8 +1212,8 @@ def do_colonies(cfg: PiConfig = PI_CONFIG) -> dict:
                        "state": blocked or fields.STATE_OK, "colonies": [], "synced_at": None}
         if not blocked:
             fresh = fields.freshness_by_kind(cid).get("planets")
-            entry["synced_at"] = fresh["last_success_at"] if fresh else None
-            if entry["synced_at"] is None:
+            entry["synced_at"] = (fresh.get("data_as_of") or fresh["last_success_at"]) if fresh else None
+            if not fresh or fresh["last_success_at"] is None:
                 entry["state"] = fields.STATE_NOT_SYNCED
                 entry["detail"] = fresh.get("last_error") if fresh else None
             for v in colony_views(static, by_char.get(cid, []), cfg, now):

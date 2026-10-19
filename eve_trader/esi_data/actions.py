@@ -130,8 +130,9 @@ def do_list_freshness() -> list[dict]:
         {
             "owner_type": ot, "owner_id": oid, "data_kind": kind,
             "last_success_at": success, "last_attempt_at": attempt, "last_error": err,
+            "data_as_of": as_of,
         }
-        for ot, oid, kind, success, attempt, err in storage.list_esi_freshness()
+        for ot, oid, kind, success, attempt, err, as_of in storage.list_esi_freshness()
     ]
 
 

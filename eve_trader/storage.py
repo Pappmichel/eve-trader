@@ -3385,24 +3385,23 @@ def delete_esi_sharing(
 
 
 def list_esi_freshness() -> list[tuple]:
-    """`(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error)`."""
+    """`(owner_type, owner_id, data_kind, last_success_at, last_attempt_at,
+    last_error, data_as_of)`. `data_as_of` falls back to `last_success_at`
+    for rows written before the column existed."""
     with connect() as conn:
         rows = conn.execute(
             "SELECT owner_type, owner_id, data_kind, last_success_at, "
-            "last_attempt_at, last_error FROM esi_freshness "
-            "ORDER BY owner_type, owner_id, data_kind"
+            "last_attempt_at, last_error, COALESCE(data_as_of, last_success_at) "
+            "FROM esi_freshness ORDER BY owner_type, owner_id, data_kind"
         ).fetchall()
-    out = []
-    for r in rows:
-        success = r[3]
-        attempt = r[4]
-        out.append((
-            r[0], int(r[1]), r[2],
-            success.isoformat() if hasattr(success, "isoformat") else success,
-            attempt.isoformat() if hasattr(attempt, "isoformat") else attempt,
-            r[5],
-        ))
-    return out
+
+    def _iso(value):
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    return [
+        (r[0], int(r[1]), r[2], _iso(r[3]), _iso(r[4]), r[5], _iso(r[6]))
+        for r in rows
+    ]
 
 
 def list_esi_character_capabilities() -> list[tuple[int, str]]:
@@ -3440,25 +3439,34 @@ def upsert_esi_freshness(
     success: bool,
     error: Optional[str] = None,
     now: Optional[str] = None,
+    data_as_of: Optional[datetime] = None,
 ) -> None:
     """Per-(owner, kind) freshness (decision 5). Success advances
     `last_success_at` and clears `last_error`. Failure records `last_error`
     and leaves `last_success_at` unchanged so the age-limit clear still
-    measures time since the last good fetch (decision 6)."""
-    from datetime import datetime, timezone
+    measures time since the last good fetch (decision 6).
+
+    `data_as_of` is when ESI generated the fetched data (its `Last-Modified`).
+    A success without one stores the fetch time; it is never later than the
+    fetch time. A failure leaves it unchanged."""
     ts = now or datetime.now(timezone.utc).isoformat()
     last_success = ts if success else None
     last_error = None if success else (error or "fetch failed")
+    as_of = None
+    if success:
+        fetched = datetime.fromisoformat(ts)
+        as_of = min(data_as_of, fetched) if data_as_of is not None else fetched
     with connect() as conn:
         conn.execute(
             "INSERT INTO esi_freshness "
-            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error) "
-            "VALUES (?,?,?,?,?,?) "
+            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, data_as_of) "
+            "VALUES (?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
             "last_attempt_at = excluded.last_attempt_at, "
             "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
-            "last_error = excluded.last_error",
-            (owner_type, owner_id, data_kind, last_success, ts, last_error),
+            "last_error = excluded.last_error, "
+            "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of)",
+            (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of),
         )
 
 
@@ -3517,18 +3525,21 @@ def newest_esi_freshness_success_at() -> Optional[str]:
 def newest_esi_freshness_success_for_tool(
     tool_key: str, data_kinds: Optional[Iterable[str]] = None,
 ) -> Optional[str]:
-    """Newest `last_success_at` over the (owner, kind) pairs shared with
-    `tool_key`, optionally narrowed to `data_kinds`.
+    """Newest data state (`data_as_of`, else `last_success_at`) over the
+    (owner, kind) pairs shared with `tool_key`, optionally narrowed to
+    `data_kinds`.
 
     A tool's "last ESI sync" readout: it moves no matter who fetched the
     data - the tool's own button, Sync all, the scheduler, or another tool
-    sharing the same kind - since every fetch stamps esi_freshness.
-    None when nothing shared with the tool has ever succeeded."""
+    sharing the same kind - since every fetch stamps esi_freshness. It
+    shows when ESI generated the data, so a re-fetch inside ESI's cache
+    window does not move it. None when nothing shared with the tool has
+    ever succeeded."""
     kinds = list(data_kinds) if data_kinds is not None else None
     kind_clause = " AND f.data_kind = ANY(?)" if kinds is not None else ""
     with connect() as conn:
         row = conn.execute(
-            "SELECT MAX(f.last_success_at) FROM esi_freshness f "
+            "SELECT MAX(COALESCE(f.data_as_of, f.last_success_at)) FROM esi_freshness f "
             "JOIN esi_sharing s ON s.tenant_id = f.tenant_id AND s.owner_type = f.owner_type "
             "AND s.owner_id = f.owner_id AND s.data_kind = f.data_kind "
             f"WHERE s.tool_key = ?{kind_clause}",

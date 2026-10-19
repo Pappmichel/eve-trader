@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from .. import storage
 from ..config import WALLET_DIVISION_IDS
-from ..esi_client import ESIClient, ESIError
+from ..esi_client import ESIClient, ESIError, ignore_last_modified
 
 log = logging.getLogger(__name__)
 
@@ -217,14 +217,16 @@ def _archive_industry_jobs(client: ESIClient, owner_type: str, owner_id: int,
         return
     from ..realized import ingest as ledger_ingest
     try:
-        if owner_type == "character":
-            jobs = client.character_industry_jobs(
-                owner_id, auth_role=auth_role, include_completed=True,
-            )
-        else:
-            jobs = client.corporation_industry_jobs(
-                owner_id, auth_role=auth_role, include_completed=True,
-            )
+        # A ledger-only read: its cache window is not the snapshot's age.
+        with ignore_last_modified():
+            if owner_type == "character":
+                jobs = client.character_industry_jobs(
+                    owner_id, auth_role=auth_role, include_completed=True,
+                )
+            else:
+                jobs = client.corporation_industry_jobs(
+                    owner_id, auth_role=auth_role, include_completed=True,
+                )
         ledger_ingest.archive_industry_jobs(
             owner_type=owner_type, owner_id=owner_id, jobs=jobs,
         )
@@ -251,10 +253,13 @@ def _archive_market_orders(client: ESIClient, owner_type: str, owner_id: int,
         return
     from ..realized import ingest as ledger_ingest
     try:
-        if owner_type == "character":
-            history = client.character_orders_history(owner_id, auth_role=auth_role)
-        else:
-            history = client.corporation_orders_history(owner_id, auth_role=auth_role)
+        # Order history is cached 60 min and only feeds the ledger; the
+        # open orders above are what the snapshot holds.
+        with ignore_last_modified():
+            if owner_type == "character":
+                history = client.character_orders_history(owner_id, auth_role=auth_role)
+            else:
+                history = client.corporation_orders_history(owner_id, auth_role=auth_role)
         # History rows carry state; open orders often do not - tag them open.
         tagged_open = [{**o, "state": o.get("state") or "open"} for o in open_orders]
         ledger_ingest.archive_market_orders(

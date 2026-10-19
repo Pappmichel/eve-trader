@@ -983,6 +983,8 @@ export interface EsiFreshnessRow {
   last_success_at: string | null
   last_attempt_at: string | null
   last_error: string | null
+  /** When ESI generated the last synced data (its Last-Modified); null before the first sync. */
+  data_as_of: string | null
 }
 
 export interface EsiCapabilityRow {
@@ -1698,7 +1700,7 @@ export interface CharInfoCharacter {
   ship: CharInfoField<CharInfoShip>
   online: CharInfoField<CharInfoOnline>
   fatigue?: CharInfoField<CharInfoFatigue>
-  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
+  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null; data_as_of?: string | null }>
   // Detail only:
   standings?: CharInfoField<CharInfoStandings>
   loyalty_points?: CharInfoField<CharInfoLoyaltyRow[]>
@@ -1801,7 +1803,7 @@ export interface SkillsOverviewRow {
   character_name: string
   summary: CharInfoField<SkillsSummary>
   queue: CharInfoField<SkillQueue>
-  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
+  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null; data_as_of?: string | null }>
 }
 
 export interface SkillsOverview { characters: SkillsOverviewRow[] }
