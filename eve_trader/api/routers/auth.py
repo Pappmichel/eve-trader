@@ -259,6 +259,17 @@ def _complete_gate_login(character_id: int, character_name: str):
     return _gate_redirect("gate=pending")
 
 
+# Characters SSO rounds (re-authorize and add) return to the Characters
+# page, so re-authorizing several characters does not mean navigating back
+# from the landing page each time. Gate logins keep returning to "/".
+_CHARACTERS_PAGE_PATH = "/character-management/characters"
+
+
+def _return_url(role_prefix: str | None, query: str) -> str:
+    path = _CHARACTERS_PAGE_PATH if role_prefix == "reauth" else "/"
+    return f"{OAUTH_CONFIG.frontend_origin}{path}?{query}"
+
+
 @router.get("/callback")
 def callback(code: str | None = None, state: str | None = None, error_description: str | None = None,
              oauth_nonce: str | None = Cookie(default=None, alias=_OAUTH_NONCE_COOKIE)):
@@ -283,7 +294,7 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
     # request is arriving in the same browser that initiated the login,
     # not one an attacker handed a completed code+state pair to.
     if not oauth_nonce or not secrets.compare_digest(oauth_nonce, pending.get("browser_nonce") or ""):
-        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=nonce_mismatch")
+        resp = RedirectResponse(_return_url(pending.get("role_prefix"), "auth=error&message=nonce_mismatch"))
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 
@@ -301,7 +312,7 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         # defeating the whole point of this route (always redirect back to
         # the frontend, even on failure) with a raw FastAPI 500 in the
         # middle of the SSO redirect instead.
-        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(str(e))}")
+        resp = RedirectResponse(_return_url(pending.get("role_prefix"), f"auth=error&message={urllib.parse.quote(str(e))}"))
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 
@@ -326,9 +337,7 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         expected_reauth = pending.get("reauth_character_id")
         is_add = expected_reauth is None
         if not is_add and int(character_id) != int(expected_reauth):
-            resp = RedirectResponse(
-                f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=character_mismatch"
-            )
+            resp = RedirectResponse(_return_url(role_prefix, "auth=error&message=character_mismatch"))
             resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
             return resp
         tenant_id = pending.get("tenant_id") or storage.DEFAULT_TENANT_ID
@@ -342,10 +351,10 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
             if is_add and any(
                 r.character_id == int(character_id) for r in tm.list_records()
             ):
-                resp = RedirectResponse(
-                    f"{OAUTH_CONFIG.frontend_origin}/?auth=success&added=existing"
-                    f"&character={urllib.parse.quote(character_name)}"
-                )
+                resp = RedirectResponse(_return_url(
+                    role_prefix,
+                    f"auth=success&added=existing&character={urllib.parse.quote(character_name)}",
+                ))
                 resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
                 return resp
             final_role = reauth_write_role(character_id)
@@ -356,10 +365,11 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
             tm._tokens[final_role] = record
             tm._save_record(final_role)
             delete_strict_subset_tokens(character_id, tokens=tm)
-        resp = RedirectResponse(
-            f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
-            f"&character={urllib.parse.quote(character_name)}"
-        )
+        resp = RedirectResponse(_return_url(
+            role_prefix,
+            f"auth=success&role={urllib.parse.quote(final_role)}"
+            f"&character={urllib.parse.quote(character_name)}",
+        ))
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 

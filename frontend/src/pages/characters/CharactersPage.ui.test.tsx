@@ -116,6 +116,15 @@ describe('Characters page', () => {
     expect(screen.getByRole('button', { name: 'Re-authorize' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
 
+    // The badge itself starts the re-authorize round, so nobody has to
+    // scroll to the row's Re-authorize button at the far right.
+    vi.mocked(charactersApi.reauthStart).mockReturnValue(new Promise(() => {}))
+    await user.click(screen.getByRole('button', { name: 're-auth needed' }))
+    await user.click(await screen.findByRole('button', { name: 'Continue to EVE Online Login' }))
+    await vi.waitFor(() => {
+      expect(vi.mocked(charactersApi.reauthStart)).toHaveBeenCalledWith(1, expect.arrayContaining(['wallet']))
+    })
+
     await user.click(screen.getByRole('button', { name: 'assets 2/5' }))
     expect(await screen.findByText('Toggling writes or deletes one sharing row. It does not call ESI.')).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Production' })).toBeChecked()

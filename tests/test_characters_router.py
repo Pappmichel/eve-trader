@@ -183,6 +183,7 @@ def test_reauth_callback_writes_via_reauth_write_role_and_rejects_mismatch(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
     assert "character_mismatch" in mismatch.headers["location"]
+    assert "/character-management/characters?" in mismatch.headers["location"]
 
     start = client.get(
         f"/api/characters/reauth/start?character_id={ALICE}&extra_kinds=wallet",
@@ -194,6 +195,7 @@ def test_reauth_callback_writes_via_reauth_write_role_and_rejects_mismatch(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
     assert "auth=success" in ok.headers["location"]
+    assert "/character-management/characters?" in ok.headers["location"]
     with storage.tenant_context(_TENANT):
         kept = TokenManager().get_record(f"doctrine-assets:{ALICE}")
         assert kept is not None
@@ -270,6 +272,7 @@ def test_add_round_does_not_strip_the_scopes_of_an_already_registered_character(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
     assert "added=existing" in ok.headers["location"]
+    assert "/character-management/characters?" in ok.headers["location"]
 
     with storage.tenant_context(_TENANT):
         record = TokenManager().get_record(f"esi:{ALICE}")

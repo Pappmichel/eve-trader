@@ -234,20 +234,40 @@ function CharactersSection({
                         <Tooltip
                           multiline
                           w={280}
-                          label="This character still has more than one token from the old per-tool logins. Re-authorize once to merge them."
+                          label="This character still has more than one token from the old per-tool logins. Click to re-authorize once and merge them."
                         >
-                          <Badge size="xs" color="warn" variant="light">token pool</Badge>
+                          <Badge
+                            component="button"
+                            size="xs"
+                            color="warn"
+                            variant="light"
+                            style={{ cursor: 'pointer', border: 0 }}
+                            disabled={reauthPendingId !== null}
+                            onClick={() => onReauth(owner)}
+                          >
+                            token pool
+                          </Badge>
                         </Tooltip>
                       )}
                       {pending.size > 0 && (
                         <Tooltip
                           multiline
                           w={280}
-                          label={`Ticked but not yet on any token, needs Re-authorize: ${
+                          label={`Ticked but not yet on any token. Click to re-authorize: ${
                             [...pending].map((key) => kindByKey(key)?.label ?? key).join(', ')
                           }`}
                         >
-                          <Badge size="xs" color="warn" variant="filled">re-auth needed</Badge>
+                          <Badge
+                            component="button"
+                            size="xs"
+                            color="warn"
+                            variant="filled"
+                            style={{ cursor: 'pointer', border: 0 }}
+                            disabled={reauthPendingId !== null}
+                            onClick={() => onReauth(owner)}
+                          >
+                            re-auth needed
+                          </Badge>
                         </Tooltip>
                       )}
                     </Group>
