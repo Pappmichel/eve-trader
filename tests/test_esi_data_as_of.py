@@ -132,7 +132,7 @@ def test_portfolio_sync_times_show_data_age_not_fetch_time(monkeypatch):
 
     times = portfolio._sync_times(shares, escrow_known=False)
 
-    assert times["assets"] == "2026-10-19T15:10:00+00:00"
+    assert times["assets"] == "2026-10-19T15:05:37+00:00"  # oldest owner, not newest
     assert times["wallet"] is None
 
 
