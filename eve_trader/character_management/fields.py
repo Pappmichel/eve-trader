@@ -49,10 +49,15 @@ def gate(kind: str, tool_key: str, character_id: int, tokens: TokenManager) -> O
 
 
 def freshness_by_kind(character_id: int) -> dict[str, dict]:
+    """`last_success_at` is the fetch time (scheduling, "ever synced");
+    `data_as_of` is when ESI generated that data - what a page shows."""
     out: dict[str, dict] = {}
-    for ot, oid, kind, success, attempt, err in storage.list_esi_freshness():
+    for ot, oid, kind, success, attempt, err, as_of in storage.list_esi_freshness():
         if ot == "character" and oid == character_id:
-            out[kind] = {"last_success_at": success, "last_attempt_at": attempt, "last_error": err}
+            out[kind] = {
+                "last_success_at": success, "last_attempt_at": attempt, "last_error": err,
+                "data_as_of": as_of,
+            }
     return out
 
 
@@ -90,7 +95,7 @@ def snapshot(
         return field(STATE_NOT_SYNCED, detail=detail)
     rows = read_esi(kind, tool_key, owner_type="character", owner_id=character_id, **read_filters)
     out = field(STATE_OK, shape(rows), detail)
-    out["synced_at"] = last_success
+    out["synced_at"] = fresh.get("data_as_of") or last_success
     return out
 
 

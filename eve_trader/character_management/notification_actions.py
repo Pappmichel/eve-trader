@@ -126,6 +126,13 @@ def _iso(value: Any) -> Optional[str]:
     return str(value) if value else None
 
 
+def _data_as_of(fresh: Optional[dict]) -> Any:
+    """When ESI generated the synced data; the fetch time for older rows."""
+    if not fresh:
+        return None
+    return fresh.get("data_as_of") or fresh.get("last_success_at")
+
+
 def _shared_characters() -> tuple[list[dict], list[dict]]:
     registered = fields.token_characters()
     shared = set(shared_owner_ids("notifications", TOOL_KEY, "character"))
@@ -204,7 +211,7 @@ def do_list_notifications(
         ],
         "characters": [
             {"character_id": c["character_id"], "character_name": c["character_name"],
-             "synced_at": _iso((freshness.get(c["character_id"]) or {}).get("last_success_at")),
+             "synced_at": _iso(_data_as_of(freshness.get(c["character_id"]))),
              "last_error": (freshness.get(c["character_id"]) or {}).get("last_error")}
             for c in chars
         ],

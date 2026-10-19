@@ -21,7 +21,7 @@ const sharing: EsiSharingRow[] = [
 const freshness: EsiFreshnessRow[] = [
   {
     owner_type: 'character', owner_id: 1, data_kind: 'assets',
-    last_success_at: null, last_attempt_at: 't', last_error: 'ESI 500',
+    last_success_at: null, last_attempt_at: 't', last_error: 'ESI 500', data_as_of: null,
   },
 ]
 
@@ -123,7 +123,7 @@ describe('merged Wallet row (2026-09-27: Wallet Balance folded into Wallet)', ()
     const freshnessWithBalanceError: EsiFreshnessRow[] = [
       {
         owner_type: 'character', owner_id: 5, data_kind: 'wallet_balance',
-        last_success_at: null, last_attempt_at: 't', last_error: 'Market access denied',
+        last_success_at: null, last_attempt_at: 't', last_error: 'Market access denied', data_as_of: null,
       },
     ]
     const cell = deriveCellState({

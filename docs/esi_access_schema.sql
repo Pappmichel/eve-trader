@@ -57,6 +57,15 @@ CREATE POLICY tenant_isolation ON esi_freshness
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON esi_freshness TO eve_trader_app;
 
+-- When ESI generated the data the last successful fetch received: the
+-- oldest `Last-Modified` of that fetch's authenticated responses. ESI
+-- caches each endpoint (assets 60 min, orders 20 min, ...), so a fetch
+-- inside that window gets the same data again; `last_success_at` (fetch
+-- time, drives scheduling) would then claim a newer state than the data
+-- has. Displays read this column. NULL until the next successful fetch;
+-- readers fall back to `last_success_at`.
+ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS data_as_of TIMESTAMPTZ;
+
 -- ====================================================== per-tenant: group-3 capabilities
 -- On/off per character, no tool_key. Presence of a row means the
 -- capability is ticked. Not a sharing row.

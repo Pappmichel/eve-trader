@@ -237,7 +237,7 @@ function ImplantList({ implants, empty }: { implants: CharInfoImplant[]; empty: 
 
 function lastSynced(c: CharInfoCharacter): string | null {
   const stamps = ['wallet_balance', 'standings', 'loyalty', 'clones', 'implants']
-    .map((k) => c.freshness[k]?.last_success_at)
+    .map((k) => c.freshness[k]?.data_as_of ?? c.freshness[k]?.last_success_at)
     .filter((v): v is string => !!v)
     .sort()
   return stamps.length ? stamps[stamps.length - 1] : null

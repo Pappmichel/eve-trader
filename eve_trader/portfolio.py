@@ -669,6 +669,9 @@ def _owner_pairs(chars: list[int], corps: list[int]) -> list[tuple[str, int]]:
 
 
 def _sync_times(shares: dict, escrow_known: bool) -> dict:
+    """Per line, the newest data state (ESI `Last-Modified`, see
+    `esi_freshness.data_as_of`) among the owners sharing it - not the fetch
+    time, which a re-fetch inside ESI's cache window would move."""
     rows = storage.list_esi_freshness()
     kind_for = {
         "assets": "assets", "blueprints": "blueprints", "listed": "market_orders",
@@ -682,8 +685,8 @@ def _sync_times(shares: dict, escrow_known: bool) -> dict:
         chars, corps = shares[kind]
         owners = set(_owner_pairs(chars, corps))
         times = [
-            row[3] for row in rows
-            if row[2] == kind and (row[0], int(row[1])) in owners and row[3]
+            row[6] for row in rows
+            if row[2] == kind and (row[0], int(row[1])) in owners and row[3] and row[6]
         ]
         out[label] = max(times) if times else None
     return out

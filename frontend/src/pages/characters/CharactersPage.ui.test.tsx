@@ -74,7 +74,7 @@ describe('Characters page', () => {
     vi.mocked(charactersApi.freshness).mockResolvedValue([
       {
         owner_type: 'character', owner_id: 1, data_kind: 'industry_jobs',
-        last_success_at: null, last_attempt_at: 't', last_error: null,
+        last_success_at: null, last_attempt_at: 't', last_error: null, data_as_of: null,
       },
     ])
     vi.mocked(charactersApi.capabilities).mockResolvedValue([])

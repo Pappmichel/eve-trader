@@ -16,7 +16,7 @@ from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
-from ..esi_client import ESIClient, ESIError
+from ..esi_client import ESIClient, ESIError, collect_last_modified
 from .fetchers import fetcher_for
 from .registry import OWNED_DATA_KINDS, ON_DEMAND, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
 from .selector import REAUTH_NEEDED, select_auth_role
@@ -106,7 +106,7 @@ def _freshness_map() -> dict[tuple[str, int, str], tuple[Optional[str], Optional
     one query - due-ness used to cost one query per sharing row per tick."""
     return {
         (ot, oid, kind): (success, attempt)
-        for ot, oid, kind, success, attempt, _err in storage.list_esi_freshness()
+        for ot, oid, kind, success, attempt, _err, _as_of in storage.list_esi_freshness()
     }
 
 
@@ -174,22 +174,37 @@ def _run_kind(
     owner_name: str,
     extra: dict,
     candidate_auth_roles: Optional[list[str]] = None,
+    data_ages: Optional[list[datetime]] = None,
 ) -> dict:
     """Generic (kind, owner_type) dispatch. `candidate_auth_roles` is
     wallet-only: corp wallets need every member who holds the scope so
     unread divisions can be filled in, but every other fetcher still
     takes exactly one `auth_role`. Forwarded as a kwarg the generic
     fetchers already swallow via `**_kwargs`.
+
+    `data_ages` receives the ESI `Last-Modified` of every authenticated
+    read of a fetch that succeeded; a failed member attempt adds nothing.
     """
     fn = fetcher_for(data_kind, owner_type)
     kwargs = dict(extra)
     if candidate_auth_roles:
         kwargs["candidate_auth_roles"] = candidate_auth_roles
-    return fn(client, owner_id, auth_role, owner_name, **kwargs)
+    with collect_last_modified() as seen:
+        wrote = fn(client, owner_id, auth_role, owner_name, **kwargs)
+    if data_ages is not None:
+        data_ages.extend(seen)
+    return wrote
 
 
-def _record_success(owner_type: str, owner_id: int, data_kind: str) -> None:
-    storage.upsert_esi_freshness(owner_type, owner_id, data_kind, success=True)
+def _record_success(
+    owner_type: str, owner_id: int, data_kind: str, data_ages: Optional[list[datetime]] = None,
+) -> None:
+    """The oldest `Last-Modified` is the data's age: the snapshot is only
+    as new as its oldest cached part. None when ESI sent no header."""
+    storage.upsert_esi_freshness(
+        owner_type, owner_id, data_kind, success=True,
+        data_as_of=min(data_ages) if data_ages else None,
+    )
 
 
 def _record_reauth_attempts(owner_type: str, owner_id: int, kinds: list[str]) -> None:
@@ -290,17 +305,18 @@ def _run_character_owner(
                     kind_report[data_kind] = REAUTH_NEEDED
                     reauth_kinds.append(data_kind)
                     continue
+                data_ages: list[datetime] = []
                 try:
                     wrote = _run_kind(
                         client=client, data_kind=data_kind, owner_type=owner_type,
                         owner_id=owner_id, auth_role=role, owner_name=owner_name,
-                        extra=extra,
+                        extra=extra, data_ages=data_ages,
                     )
                 except ESIError as e:
                     kind_report[data_kind] = f"skipped ({e})"
                     failed = (data_kind, e)
                     raise
-                _record_success(owner_type, owner_id, data_kind)
+                _record_success(owner_type, owner_id, data_kind, data_ages)
                 kind_report[data_kind] = wrote
             current_kind = None
     except Exception as e:  # noqa: BLE001 - owner task must not abort the pass
@@ -367,6 +383,7 @@ def _run_corporation_kinds_for_members(
                 last_error: Optional[BaseException] = None
                 wrote = None
                 any_candidate = False
+                data_ages: list[datetime] = []
                 if data_kind == "wallet":
                     candidate_roles: list[str] = []
                     seen_roles: set[str] = set()
@@ -389,7 +406,7 @@ def _run_corporation_kinds_for_members(
                             client=client, data_kind=data_kind, owner_type=owner_type,
                             owner_id=corp_id, auth_role=candidate_roles[0],
                             owner_name=owner_name, extra=extra,
-                            candidate_auth_roles=candidate_roles,
+                            candidate_auth_roles=candidate_roles, data_ages=data_ages,
                         )
                         last_error = None
                     except ESIError as e:
@@ -404,7 +421,7 @@ def _run_corporation_kinds_for_members(
                             wrote = _run_kind(
                                 client=client, data_kind=data_kind, owner_type=owner_type,
                                 owner_id=corp_id, auth_role=role, owner_name=owner_name,
-                                extra=extra,
+                                extra=extra, data_ages=data_ages,
                             )
                             last_error = None
                             break
@@ -421,7 +438,7 @@ def _run_corporation_kinds_for_members(
                     # Abort the batch so a later kind cannot commit a
                     # half-written earlier kind from this same owner-run.
                     raise RuntimeError(failed_kinds[data_kind])
-                _record_success(owner_type, corp_id, data_kind)
+                _record_success(owner_type, corp_id, data_kind, data_ages)
                 kind_report[data_kind] = wrote
             current_kind = None
     except Exception as e:  # noqa: BLE001

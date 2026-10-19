@@ -10,8 +10,12 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Optional
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Iterator, Optional
 
 import requests
 
@@ -26,6 +30,41 @@ USER_AGENT = (
 )
 
 METALEVEL_ATTRIBUTE_ID = 633  # EVE SDE dogma attribute "metaLevel" (0=Tech I, 5=Tech II, ...)
+
+# `Last-Modified` of authenticated reads while `collect_last_modified()` is
+# active. ESI serves an owner endpoint from its cache (assets 60 min,
+# orders 20 min, wallet 2 min, ...), so a fetch inside that window returns
+# the same data again; the header says when ESI generated it. The
+# orchestrator stores the oldest one per (owner, kind) as the data's age.
+_last_modified_seen: ContextVar[Optional[list[datetime]]] = ContextVar(
+    "esi_last_modified_seen", default=None,
+)
+
+
+@contextmanager
+def collect_last_modified() -> Iterator[list[datetime]]:
+    """Collects the `Last-Modified` of every authenticated ESI read made
+    in this context (and of every page `_get_all_pages` fetched for it)."""
+    seen: list[datetime] = []
+    token = _last_modified_seen.set(seen)
+    try:
+        yield seen
+    finally:
+        _last_modified_seen.reset(token)
+
+
+def _note_last_modified(resp: requests.Response) -> None:
+    seen = _last_modified_seen.get()
+    if seen is None:
+        return
+    raw = resp.headers.get("Last-Modified")
+    if not raw:
+        return
+    try:
+        stamp = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return
+    seen.append(stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc))
 
 
 class ESIError(RuntimeError):
@@ -459,6 +498,8 @@ class ESIClient:
                 raise ESIError(f"Request failed for {url}: {e}") from e
             self._record_error_budget(resp)
             if resp.status_code == 200:
+                if auth_role:
+                    _note_last_modified(resp)
                 return resp
             if resp.status_code in (420, 429):  # ESI error-limited (420) or plain HTTP rate-limited (429)
                 time.sleep(self._retry_after_seconds(resp, attempt))
@@ -555,9 +596,9 @@ class ESIClient:
         if total_pages <= 1:
             return first_chunk
 
-        def _fetch_page(page: int) -> list:
+        def _fetch_page(page: int) -> requests.Response:
             page_params = dict(base_params, page=page)
-            return self._get_response(path, page_params, auth_role).json()
+            return self._get_response(path, page_params, auth_role)
 
         pages: dict[int, list] = {1: first_chunk}
         # storage.with_current_tenant: ThreadPoolExecutor workers don't
@@ -569,7 +610,12 @@ class ESIClient:
             futures = {pool.submit(storage.with_current_tenant(_fetch_page), page): page
                        for page in range(2, total_pages + 1)}
             for future in as_completed(futures):
-                pages[futures[future]] = future.result()
+                page_resp = future.result()
+                # Worker threads do not see this thread's contextvars, so
+                # their pages' Last-Modified is noted here.
+                if auth_role:
+                    _note_last_modified(page_resp)
+                pages[futures[future]] = page_resp.json()
 
         out: list = []
         for page in range(1, total_pages + 1):
