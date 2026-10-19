@@ -53,6 +53,18 @@ def collect_last_modified() -> Iterator[list[datetime]]:
         _last_modified_seen.reset(token)
 
 
+@contextmanager
+def ignore_last_modified() -> Iterator[None]:
+    """Reads in this block do not count toward the collector's data age:
+    for side reads such as the realized-profit archive's order history,
+    whose own cache window says nothing about the snapshot being synced."""
+    token = _last_modified_seen.set(None)
+    try:
+        yield
+    finally:
+        _last_modified_seen.reset(token)
+
+
 def _note_last_modified(resp: requests.Response) -> None:
     seen = _last_modified_seen.get()
     if seen is None:

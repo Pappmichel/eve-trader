@@ -134,3 +134,13 @@ def test_portfolio_sync_times_show_data_age_not_fetch_time(monkeypatch):
 
     assert times["assets"] == "2026-10-19T15:10:00+00:00"
     assert times["wallet"] is None
+
+
+def test_ignored_side_reads_do_not_count(monkeypatch):
+    from eve_trader.esi_client import ignore_last_modified
+    client = _client_returning(monkeypatch, {1: _Resp([], "Mon, 19 Oct 2026 15:12:48 GMT")})
+    with collect_last_modified() as seen:
+        with ignore_last_modified():
+            client._get("/characters/1/orders/history/", auth_role="esi:1")
+        client._get("/characters/1/orders/", auth_role="esi:1")
+    assert seen == [datetime(2026, 10, 19, 15, 12, 48, tzinfo=timezone.utc)]  # only the open-orders read
