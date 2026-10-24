@@ -1,17 +1,44 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton, NumberInput } from '@mantine/core'
+import {
+  Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton, NumberInput, SegmentedControl,
+} from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { DistributionRow, LogisticsRow, MarketRestockRow } from '../../api/types'
+import type { DistributionRow, LogisticsRow, LogisticsScope, MarketRestockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StructureIdField } from '../../components/StructureIdField'
 import { useAction } from '../../hooks/useAction'
 import { qty, volume } from '../../format'
+import { StalePlanAlert } from './StalePlanAlert'
+
+const SCOPE_KEY = 'production-logistics-scope'
+
+const SCOPE_OPTIONS = [
+  { label: 'Full build list', value: 'build_list' },
+  { label: 'Ready now (Asset-Optimized)', value: 'asset_ready' },
+]
+
+function readScope(): LogisticsScope {
+  try {
+    if (localStorage.getItem(SCOPE_KEY) === 'asset_ready') return 'asset_ready'
+  } catch {
+    // Private mode can throw. The page still opens on the full build list.
+  }
+  return 'build_list'
+}
+
+function writeScope(value: LogisticsScope) {
+  try {
+    localStorage.setItem(SCOPE_KEY, value)
+  } catch {
+    // Remembering the scope is optional.
+  }
+}
 
 export default function Logistics() {
   const { data: categories, isLoading: categoriesLoading } = useQuery({ queryKey: ['production', 'job-categories'], queryFn: productionApi.jobCategories })
@@ -20,11 +47,21 @@ export default function Logistics() {
   const { data: costIndexOverrides } = useQuery({ queryKey: ['production', 'category-cost-index-overrides'], queryFn: productionApi.categoryCostIndexOverrides })
   const { data: structureNames } = useQuery({ queryKey: ['production', 'structure-names'], queryFn: productionApi.structureNames })
   const { data: structureSystemIds } = useQuery({ queryKey: ['production', 'structure-system-ids'], queryFn: productionApi.structureSystemIds })
+  const [scope, setScope] = useState<LogisticsScope>(readScope)
+  const changeScope = (value: string) => {
+    const next = value === 'asset_ready' ? 'asset_ready' : 'build_list'
+    setScope(next)
+    writeScope(next)
+  }
   const { data: rows, isError } = useQuery({
-    queryKey: ['production', 'logistics'], queryFn: productionApi.logisticsStatus, retry: false,
+    queryKey: ['production', 'logistics', 'status', scope], queryFn: () => productionApi.logisticsStatus(scope), retry: false,
   })
   const { data: distributionRows } = useQuery({
-    queryKey: ['production', 'logistics', 'distribution'], queryFn: productionApi.distributionRecommendations, retry: false,
+    queryKey: ['production', 'logistics', 'distribution', scope],
+    queryFn: () => productionApi.distributionRecommendations(scope), retry: false,
+  })
+  const { data: assetPlan } = useQuery({
+    queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan, enabled: scope === 'asset_ready',
   })
   const { data: restockRows, isError: restockError } = useQuery({
     queryKey: ['production', 'logistics', 'market-restock'], queryFn: productionApi.marketRestock, retry: false,
@@ -385,14 +422,45 @@ export default function Logistics() {
         </SimpleGrid>
       </Card>
 
+      <Card withBorder>
+        <Group justify="space-between" align="flex-start" gap="sm">
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <Title order={4} mb="xs">Material scope</Title>
+            <Text size="xs" c="dimmed">
+              Which jobs the material tables and Distribution below cover: every job on the Build List, or only the
+              runs of the Asset-Optimized list whose materials are on hand right now (free job slots not considered).
+              Market Restock and Invention do not depend on this.
+            </Text>
+          </div>
+          <SegmentedControl size="xs" value={scope} onChange={changeScope} data={SCOPE_OPTIONS}
+            aria-label="Logistics material scope" />
+        </Group>
+        {scope === 'asset_ready' && (
+          <div style={{ marginTop: 'var(--mantine-spacing-sm)' }}>
+            <StalePlanAlert stale={assetPlan?.stale} />
+          </div>
+        )}
+      </Card>
+
       {categoriesLoading || locationsLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={320} />
       ) : isError ? (
-        <HintCard>No build list computed yet - run <b>Compute Buy/Build List</b> in the Build List tab first.</HintCard>
+        scope === 'asset_ready' ? (
+          <HintCard>
+            No asset-optimized build list computed yet - run <b>Refresh Asset Build List</b> in the Build List
+            (Asset-Optimized) tab first.
+          </HintCard>
+        ) : (
+          <HintCard>No build list computed yet - run <b>Compute Buy/Build List</b> in the Build List tab first.</HintCard>
+        )
       ) : !locations || Object.keys(locations).length === 0 ? (
         <HintCard>No category has a structure assigned yet - enter at least one structure ID above.</HintCard>
       ) : grouped.size === 0 ? (
-        <HintCard>There are no jobs in the build list for the assigned categories right now.</HintCard>
+        <HintCard>
+          {scope === 'asset_ready'
+            ? 'No job in the assigned categories is ready to start right now.'
+            : 'There are no jobs in the build list for the assigned categories right now.'}
+        </HintCard>
       ) : (
         Array.from(grouped.entries()).map(([category, categoryRows]) => {
           const locationId = locations[category]

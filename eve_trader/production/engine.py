@@ -4440,12 +4440,25 @@ def _direct_material_mult(type_id: int, activity: str, decryptor_name: Optional[
     return material_mult
 
 
-def _category_material_demand(build_list: list[BuildJobEntry], category_locations: dict[str, int],
+def asset_plan_ready_jobs(jobs: list[AssetPlanJob]) -> list[AssetPlanJob]:
+    """The Logistics tab's "Ready now (Asset-Optimized)" scope
+    (docs/LOGISTICS_SCOPE_TOGGLE_PLAN.md): each asset-plan job with job_runs
+    replaced by runs_ready_now, jobs with nothing ready dropped. Deliberately
+    not capped to the free-slot recommendation (recommended_slots x
+    runs_per_slot) - confirmed with the user 2026-10-24: every run whose
+    materials are on hand counts, whether or not a slot is free for it."""
+    return [replace(job, job_runs=job.runs_ready_now) for job in jobs if job.runs_ready_now > 0]
+
+
+def _category_material_demand(build_list: list[BuildJobEntry] | list[AssetPlanJob],
+                               category_locations: dict[str, int],
                                cfg: ProductionConfig) -> dict[tuple[str, int], float]:
     """Shared by logistics_status and distribution_recommendations: how much
     of each *direct* material (one level only, not the full recursive chain
     _expand_all walks) is needed for every currently-planned job in each
-    category that has an assigned location. Categories with no assigned
+    category that has an assigned location. Accepts Build List entries or
+    asset-plan jobs (asset_plan_ready_jobs) - only type_id, job_category,
+    decryptor and job_runs are read. Categories with no assigned
     location are skipped entirely (nothing to net against either way)."""
     demand: dict[tuple[str, int], float] = {}
     for entry in build_list:
@@ -4465,7 +4478,7 @@ def _category_material_demand(build_list: list[BuildJobEntry], category_location
     return demand
 
 
-def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
+def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
     """Per job_category, how much of each direct material is needed for every
     currently-planned job in that category, netted against what's actually
     sitting at the structure the user assigned that category to (Logistik
@@ -4565,7 +4578,7 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
     return rows
 
 
-def distribution_recommendations(build_list: list[BuildJobEntry],
+def distribution_recommendations(build_list: list[BuildJobEntry] | list[AssetPlanJob],
                                   cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[DistributionRow]:
     """What to move from the configured distribution source (cfg.
     distribution_source_location_id, falling back to home_location_id - "the

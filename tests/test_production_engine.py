@@ -4107,6 +4107,37 @@ def test_logistics_status_nets_needed_against_available_at_assigned_location(mon
     assert row.location_id == 1001
 
 
+def _asset_job(type_id=1, category="Advanced Components", job_runs=5, runs_ready_now=2, recommended_slots=None,
+               runs_per_slot=None):
+    from eve_trader.production.models import AssetPlanJob
+    return AssetPlanJob(type_id=type_id, type_name=f"Item{type_id}", blueprint_type_id=type_id + 100,
+                        activity="Manufacturing", quantity=job_runs, job_runs=job_runs,
+                        runs_ready_now=runs_ready_now, job_time_seconds=100.0, unit_build_cost=None,
+                        job_category=category, recommended_slots=recommended_slots, runs_per_slot=runs_per_slot)
+
+
+def test_asset_plan_ready_jobs_uses_runs_ready_now_and_drops_blocked_jobs():
+    # LOGISTICS_SCOPE_TOGGLE_PLAN.md D2: every ready run counts, not capped
+    # to the free-slot recommendation.
+    jobs = [_asset_job(type_id=1, job_runs=10, runs_ready_now=8, recommended_slots=1, runs_per_slot=3),
+            _asset_job(type_id=2, job_runs=4, runs_ready_now=0)]
+
+    ready = engine.asset_plan_ready_jobs(jobs)
+
+    assert [(j.type_id, j.job_runs) for j in ready] == [(1, 8)]
+    assert jobs[0].job_runs == 10  # input left untouched
+
+
+def test_logistics_status_with_asset_jobs_counts_only_ready_runs(monkeypatch):
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 3.0)
+
+    rows = engine.logistics_status(engine.asset_plan_ready_jobs([_asset_job(job_runs=5, runs_ready_now=2)]))
+
+    assert [(r.needed, r.available, r.missing) for r in rows] == [(20.0, 3.0, 17.0)]
+
+
 def test_logistics_status_skips_categories_with_no_assigned_location(monkeypatch):
     monkeypatch.setattr(storage, "load_category_locations", lambda: {})
     _stub_material_demand(monkeypatch)
@@ -6202,3 +6233,11 @@ def test_planner_unit_values_takes_the_cheaper_of_buy_and_build(monkeypatch):
     values = eng.planner_unit_values.__wrapped__([34, 35, 36, 37])
     assert values == {34: (4.0, "buy_home"), 35: (9.0, "buy_hub"), 36: (50.0, "build")}
 
+
+
+def test_logistics_actions_take_exactly_one_job_source():
+    from eve_trader.production import actions as production_actions
+    with pytest.raises(production_actions.ActionError):
+        production_actions.do_get_logistics_status()
+    with pytest.raises(production_actions.ActionError):
+        production_actions.do_get_distribution_recommendations(build_list=[], asset_jobs=[])
