@@ -1,6 +1,6 @@
 # Logistics scope toggle plan
 
-Status: planned, not started (2026-10-24).
+Status: done (2026-10-24).
 
 ## Goal
 
@@ -34,14 +34,9 @@ count is set to the ready-now value.
 - **D1 - Two scopes, default unchanged.** `scope = "build_list"` (default,
   today's behavior) and `scope = "asset_ready"`.
 - **D2 - Which runs count as "ready now".** Per `AssetPlanJob`:
-  - `recommended_slots` is set (Reactions / Advanced Components / Capital
-    Components): `recommended_slots x runs_per_slot`. That is what the asset
-    plan actually tells you to queue on the free slots now. Ready runs that
-    do not fit on free slots wait for the next round, like on the Asset plan
-    page.
-  - otherwise: `runs_ready_now`.
-  - Jobs with 0 resulting runs are dropped.
-  - Open question for the user, see below.
+  `runs_ready_now` (every run whose direct materials are on hand), not capped
+  to the free-slot recommendation (`recommended_slots x runs_per_slot`) -
+  confirmed with the user 2026-10-24. Jobs with 0 ready runs are dropped.
 - **D3 - Only the two material tables follow the toggle.** Material per
   category and Distribution switch. Market Restock is plan-independent and
   stays as is. Invention stays on the Build List's `invention_list`: the
@@ -64,7 +59,8 @@ count is set to the ready-now value.
 
 1. `eve_trader/production/engine.py`
    - New `asset_plan_ready_jobs(jobs: list[AssetPlanJob]) -> list[AssetPlanJob]`:
-     returns `dataclasses.replace(job, job_runs=ready)` per D2, drops zero.
+     returns `dataclasses.replace(job, job_runs=job.runs_ready_now)`, drops
+     zero (D2).
    - Widen the type hints of `_category_material_demand`,
      `logistics_status` and `distribution_recommendations` to
      `Sequence[BuildJobEntry | AssetPlanJob]`. No behavior change.
@@ -107,8 +103,8 @@ count is set to the ready-now value.
 ## Tests
 
 - `tests/test_production_engine.py`
-  - `asset_plan_ready_jobs`: slot-capped job, job without slot
-    recommendation, job with 0 ready runs dropped, `recommended_slots = 0`.
+  - `asset_plan_ready_jobs`: uses `runs_ready_now` even when a slot
+    recommendation is smaller, drops jobs with 0 ready runs.
   - `logistics_status` with asset-plan jobs: needed scales with the ready
     runs, not `job_runs`.
 - `tests/test_api_routers.py`
@@ -126,10 +122,3 @@ refreshing both plans, and compare a handful of rows against the Asset plan
 page's ready runs. Load the tab in Playwright, switch the toggle both ways,
 check console/network errors, then delete the throwaway script and
 screenshot.
-
-## Open question for the user
-
-D2: should "ready now" for Reactions / Advanced Components / Capital
-Components be capped to the free-slot recommendation
-(`recommended_slots x runs_per_slot`, recommended), or use all
-`runs_ready_now` regardless of free slots?

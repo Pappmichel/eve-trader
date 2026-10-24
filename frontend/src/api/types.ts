@@ -357,6 +357,10 @@ export interface BuildJobEntry {
   special_order_quantity?: number
 }
 
+// Which plan the Logistics material tables read: the whole Build List, or
+// only the ready-now runs of the Asset-Optimized plan.
+export type LogisticsScope = 'build_list' | 'asset_ready'
+
 export interface LogisticsRow {
   category: string
   location_id: number

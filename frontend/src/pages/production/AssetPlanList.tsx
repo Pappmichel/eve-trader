@@ -60,7 +60,7 @@ export default function AssetPlanList() {
   const jobs = plan?.jobs ?? []
 
   const refreshAssetPlan = useAction('Refresh Asset Build List', productionApi.refreshAssetPlan, [
-    ['production', 'asset-plan'],
+    ['production', 'asset-plan'], ['production', 'logistics'],
   ], { tier: 'live', effect: 'Recomputes the asset-optimized Buy/Build list with current Home/Jita prices - can take a while.' })
   const saveDaysTarget = useAction(
     'Slot target saved',
