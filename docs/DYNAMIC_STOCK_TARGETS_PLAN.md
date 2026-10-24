@@ -1081,7 +1081,7 @@ Server 1 is the test server. It ran the branch against its real database
 after a backup; every change was reverted afterwards (all rows fixed, switch
 off).
 
-- Preview (`eve-trader production targets preview`, 37 s): 254 rows with a
+- Preview (`eve-trader production targets preview`, 37 s; superseded by 18.6, stale data and a different stock target list): 254 rows with a
   home target; its own ledger covers only 7.9 days, so every row ran on the
   market estimate. Converged: 50 up, 115 down, 78 to 0, 11 unchanged;
   5 held, 75 below the minimum margin, 4 at the max. Capital of rows the gate
@@ -1153,7 +1153,7 @@ of the test server (server 1). Throwaway scripts, not committed.
   allow smoothing 0.5 with a 20 % band, which changes the target less often
   (median 11 vs 13 changes) and tracks the unsmoothed value better (error 14.5 %
   vs 24.0 %). That is a recommendation for the user, not a decision.
-- **R-21 / R-22 capacity and haul (test server, all 254 rows dynamic vs today).**
+- **R-21 / R-22 capacity and haul (test server, all 254 rows dynamic vs today) - superseded by 18.6, the baseline here was stale.**
   Build jobs 203 -> 182, runs 590,078 -> 193,122, job-days 582 -> 540, longest job
   26.9 d unchanged; asset plan: slowest job at the recommended slots 0.7 -> 0.3 d;
   free slots 167 manufacturing / 77 reaction, so slots are not the limit. Buy
@@ -1204,3 +1204,50 @@ forward.
   all 19 schema files with `ON_ERROR_STOP`, `pip install`, the gate migration,
   restart and the active check all passed. Only the frontend build was
   replaced by a stub (1 GB box); the build itself was verified locally.
+
+### 18.6 Why the two servers' plans differed, and the corrected numbers (2026-10-25)
+
+The Buy/Build lists of the test server (S1) and the live server (S2) differed
+a lot (S1: 590,078 build runs, S2: 39,797; buy list 12.6 B vs 15.6 B ISK).
+Every input was compared; the causes, in order of size:
+
+1. **Stale ESI data on S1 (the big one).** Five Fernite Carbide jobs of 76,600
+   runs each (383,000 runs, plus about 1 M runs of other components) were
+   started in game on 2026-10-24 between 21:16 and 21:22 UTC. S2's scheduler
+   synced at 21:55 and counts running jobs as stock, so it did not plan them
+   again; S1 (scheduler off) had last synced at 21:07 and planned all of it.
+   Assets were identical on both; only the jobs differed. After a fresh sync of
+   S1 its runs fell from 590,078 to 22,704.
+2. **Different settings.** S2 had both build systems, a haul rate of 800 (S1
+   900), another invention location and an asset-plan day target that S1 lacked.
+   Effect on unit build costs: about 0.1 %.
+3. **Seven stock targets** (six T2 ships at 20/20 on S1, 0 on S2).
+4. **An open, integrated special order on S2** (one Super Capital Ship, created
+   2026-10-11): it adds the supercapital job, 13 component jobs and 4.28 B ISK
+   of Nano Regulation Gates to the buy list. S1 only had an old, not integrated
+   order for another item.
+
+S1 was then aligned to S2 (a fresh ESI sync on both, S2's production settings,
+stock targets, manual stock and the special order copied to S1; S2 itself was
+not changed) and the plans now match exactly: 209 jobs, 158,801 runs, 46 buy
+lines, 17.54 B ISK, unit costs and prices identical. Not aligned on purpose:
+the trading scheduler stays off on S1, and S1 has no tokens for the three
+characters `esi:2123928988/…043/…065` that only S2 knows.
+
+**Corrected capacity, haul and preview figures** (S1 on the aligned state, which
+equals S2's plan; all 247 home-target rows dynamic against today):
+
+| | today | all dynamic |
+|---|---|---|
+| build jobs / runs | 209 / 158,801 | 171 / 25,973 (-84 %) |
+| job-days / longest job | 661.9 / 47.2 d | 566.1 / 26.9 d |
+| buy list | 46 lines, 17.54 B ISK | 37 lines, 12.08 B ISK (-31 %) |
+| haul volume | 1,483,916 m3 | 249,216 m3 (-83 %) |
+| asset plan, slowest job at recommended slots | 0.5 d | 0.2 d |
+
+Free slots: 119 manufacturing, 77 reaction - still not the limit. Preview:
+converged 47 up, 109 down, 79 to 0, 12 unchanged, 5 held, 76 below the minimum
+margin, 4 at the max; capital of rows the gate passes 79.25 B now, 61.19 B after
+day 1, 45.83 B converged (-42 %). 126 of 247 rows have nothing listed at C-J
+right now. The earlier figures in 18.2, 18.4 and 18.5 came from the stale,
+differently configured state; their direction holds, the sizes do not.
