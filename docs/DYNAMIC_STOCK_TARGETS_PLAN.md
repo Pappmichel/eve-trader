@@ -234,7 +234,7 @@ machinery, never with a raw query of its own:
 - Window: `end = min(now, ledger run ran_at)` (the derived rows only cover
   up to the last rebuild; measuring up to *now* would undercount when the
   rebuild is a few days old), `start = end - dynamic_target_window_days`
-  (30), never before the ledger's T0 / archive start.
+  (28), never before the ledger's T0 / archive start. Each day's units are capped (V-04, 17.4).
 - `covered_days = end - start` after that clamp. If `covered_days <
   dynamic_target_min_history_days` (14) -> unavailable. Otherwise
   `velocity_own = sum(quantity) / covered_days`.
@@ -248,7 +248,7 @@ machinery, never with a raw query of its own:
   `_scan_build_candidates` already uses for `daily_movement`. Regions
   Goonmetrics does not track fall back to ESI daily history inside
   `price_history` itself.
-- `velocity_market = mean(movement) x dynamic_target_market_share` (0.10).
+- `velocity_market = sum(movement) / calendar days x dynamic_target_market_share` (0.10) over the calendar days of `min(window, 28)` ending yesterday, days without a point count as 0 (V-02, 17.4).
 - Only real traded volume - never order-book depth (`sell_volume`, issue
   #51).
 - No history -> unavailable. A network failure is logged and treated as
@@ -343,7 +343,7 @@ runs, so rounding the target to run multiples would only double-round.
   again) on: a Production settings save (`min_margin`, fees, structure,
   any `dynamic_target_*` field all move the result - invalidate on every
   save, it is cheap), a mode/min/max change of that row, the "Recalculate"
-  button, an SDE apply.
+  button, an SDE apply. The list is closed: nothing else invalidates (V-01, 17.4).
 - **Stale plans:** each of those triggers also calls
   `_mark_cached_production_plans_stale()` (special-orders D9 mechanism).
   The plan result carries `dynamic_targets_day`; a cached plan from an
@@ -378,7 +378,7 @@ runs, so rounding the target to run multiples would only double-round.
 | Field | Default | Range |
 |---|---|---|
 | `dynamic_targets_enabled` | false | bool (D9, global switch) |
-| `dynamic_target_window_days` | 30 | 7..90 |
+| `dynamic_target_window_days` | 28 | 7..28 (V-02) |
 | `dynamic_target_min_history_days` | 14 | 1..90 |
 | `dynamic_target_market_share` | 0.10 | 0..1 |
 | `dynamic_target_coverage_days` | 14 | 1..120 |
@@ -387,6 +387,7 @@ runs, so rounding the target to run multiples would only double-round.
 | `dynamic_target_factor_max` | 2.0 | 0..None |
 | `dynamic_target_smoothing` | 0.3 | 0.01..1 |
 | `dynamic_target_deadband` | 0.10 | 0..1 |
+| `dynamic_target_day_cap_multiple` | 3.0 | 0..None (0 = off, V-04) |
 
 Cross-field checks (`factor_min <= factor_max`, `min_history_days <=
 window_days`, `reference_margin > min_margin`) need the *merged* config,
@@ -535,7 +536,7 @@ The design above was checked against the code only. These points depend on
 the real stock list, ledger and config and can change defaults or even the
 design. All queries are read-only. Run them on the server as the owner role
 with the tenant filter, e.g.
-`docker exec -it eve-trader-pg psql -U postgres -d eve_trader -v t="'<tenant uuid>'"`,
+`sudo -u postgres psql -d eve_trader -v t="'<tenant uuid>'"` (native PostgreSQL, no Docker; V-07),
 and check the real `config.yaml` (not `config.example.yaml`) for
 `home_location_id`, `min_margin`, `market_fees` and `reference_region_id`.
 
@@ -597,8 +598,8 @@ GROUP BY 1, 2, 3 ORDER BY units DESC;
 
 -- R-06 / R-10 own side: units per day vs. current home target
 SELECT s.type_id, s.type_name, s.home_market_stock,
-       COALESCE(sum(r.quantity), 0) / 30.0 AS own_per_day,
-       COALESCE(sum(r.quantity), 0) / 30.0 * 14 AS own_x14,
+       COALESCE(sum(r.quantity), 0) / :days AS own_per_day,   -- :days = covered days of the last ledger run (V-08)
+       COALESCE(sum(r.quantity), 0) / :days * 14 AS own_x14,
        COALESCE(sum(r.profit), 0) / NULLIF(sum(r.cost), 0) AS realized_margin
 FROM stock_targets s
 LEFT JOIN prod_realized_results r
@@ -836,11 +837,7 @@ it is called done.
   `invalidate_discover_cache()` is called from about 15 places in
   `production/actions.py` (settings, systems, decryptors, manual build/buy,
   stock targets, cost-index overrides, ...) and from `refining/actions.py`
-  - every place where build cost or margin can change. Hook the
-  invalidation of today's frozen rows into one helper called from the same
-  places (or from `invalidate_discover_cache` itself) instead of adding it
-  by hand to a subset. Add a test that greps or asserts the call next to
-  every `invalidate_discover_cache()` call.
+  - every place where build cost or margin can change. **Superseded by V-01 (17.4): the deletion of today's frozen rows is NOT hooked into `invalidate_discover_cache`; an explicit allowlist is used.**
 - **P-21 All-tenant invalidation.** `invalidate_discover_cache
   (all_tenants=True)` (SDE apply) has no ambient tenant, so it cannot
   delete RLS rows. Keep a process-wide "invalidated at" timestamp; a
@@ -1000,3 +997,36 @@ unless it says "confirmed".
   capacity model and stay open.
 - The size of the effect of V-04 on the final targets can only be judged on
   preview output over several days (section 14.1).
+
+### 17.4 Decisions on the review findings (confirmed 2026-10-24: "follow the recommendation on every point")
+
+- **V-01:** the deletion of today's frozen rows is triggered only by a closed
+  allowlist: Production settings save, mode/min/max change of a row, stock
+  target add/remove, the Recalculate button, the global switch, bulk actions,
+  SDE apply. `invalidate_discover_cache` is not hooked. A test pins the list.
+  ESI sync and cost-affecting edits wait for the next day or the button.
+- **V-02:** `dynamic_target_window_days` default 28, range 7..28. Market
+  velocity = sum of movement over the calendar days of the window ending
+  yesterday (days without a point = 0). The own-sales window uses the same N.
+- **V-03:** v1 reads `prod_realized_results` (D11 ownership rules stay one
+  code path). The ~10 % undercount against the wallet is accepted and
+  documented; the max(own, market) rule limits the damage. The wallet is used
+  for the preview comparison and the backtest (R-15), not for the target.
+- **V-04:** each day's units are capped at `dynamic_target_day_cap_multiple`
+  (default 3.0) times the row's mean daily units over the covered days
+  (0 = off). The preview shows the share of the biggest day per row. The
+  default is revisited with real preview output (phase 3b).
+- **V-05:** the market floor (D2) stays. R-16 (listed days per row) is a
+  precondition for the first real switch-on, not for the build.
+- **V-06:** dynamic-field cross checks (`reference_margin > min_margin`,
+  factor and history ordering) run only when `dynamic_targets_enabled` is true
+  or one of the `dynamic_target_*` fields is part of the update. The runtime
+  guard of E-16 stays.
+- **V-07 / V-08:** documentation fixes, applied above.
+- **V-09 / V-12:** informational; the figures of 17.2 are the day-one
+  expectation.
+- **V-10:** each dynamic row carries `gate_margin` and `gate_blocked` (the
+  margin the planner gate would use and whether it blocks the row); the page
+  shows it next to the effective target. The target itself is not changed by it.
+- **V-11:** the freeze duration is measured when the planner integration
+  lands (phase 4) and recorded here.
