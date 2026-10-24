@@ -2,7 +2,8 @@
 
 Status: **all decisions confirmed (sections 2 and 15), design reviewed
 against the code (sections 3-11), nothing implemented.** Before phase 1: the real-data
-checks in section 14 (R-01..R-05 by SQL); the rest via the preview in phase 3b.
+checks in section 14 (R-01..R-05 by SQL) and the impact simulation on the
+current stock list (TODO list below); the rest via the preview in phase 3b.
 
 ## TODO - real-data checks (later session with server/DB access)
 
@@ -24,6 +25,26 @@ sections 5, 6 and 9 if a result calls for it.
       whether own velocity counts character wallets only.
 - [ ] R-12 Number of manual Build/Buy overrides on target items (D8).
 - [ ] R-14 Do Trading / Station Trading sell the same types at C-J?
+- [ ] **Impact on the current stock list (before any implementation).**
+      Simulate the formula of section 6 for every current stock target
+      with a home target, using real data, and write nothing. Method: a
+      throwaway, read-only script in the session's scratch directory (not
+      committed) that reuses the existing code paths - own velocity per
+      R-06/R-10 SQL, region movement via `GoonmetricsClient.
+      price_history_chunked(reference_region_id, ...)`, live margin via
+      `margin_home` with the planner's cost (`_PlanContext` + `_unit_cost`)
+      - with the default settings and D6 min/max (min 0, max 3x current).
+      Result: one table per item with
+      - current home target vs. simulated target (units and %),
+      - velocity source (own / market / none) and margin source,
+      - factor, reason (`below_min_margin`, `clamped_max`, `held_no_data`, ...),
+      - ISK tied up at build cost, current vs. simulated,
+      and a summary: how many items go up / down / to 0 / hit the max /
+      stay held, the total change in tied-up capital, and the items whose
+      build list entry would change most. Store the summary (not raw
+      data) in this file. If the result looks wrong (e.g. most items at 0
+      or at the max, capital doubles), adjust the defaults or the design
+      here before phase 1.
 - [ ] After phase 3b (preview): R-06 own sales vs. 10% market share,
       R-07 history coverage in `reference_region_id`, R-08 how often no C-J
       quote / quote is our own order, R-09 margin distribution vs. 15% / 30%,
