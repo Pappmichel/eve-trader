@@ -1,7 +1,7 @@
 # Dynamic stock targets - plan
 
-Status: **draft, nothing implemented.** Open decisions are in section 8 and
-must be answered by the user before phase 1 starts.
+Status: **decisions confirmed (section 8), nothing implemented.** Next step:
+phase 1.
 
 ## 1. Goal
 
@@ -170,8 +170,8 @@ special-orders integration (D9 there).
 - **`_base_runs`** (overbuild buffer) and the invention rows automatically
   follow, because they already read `ctx.stock_targets`.
 - **`min_margin` gate** in both planners stays as is. With `f = 0` below
-  `min_margin` the dynamic target is already 0 (or the row minimum - see
-  D5), so the gate and the factor agree.
+  `min_margin` the dynamic target is already 0 (D5: the row minimum does
+  not apply there), so the gate and the factor agree.
 - **Special orders**: unchanged. Integrated orders are netted first (SF-1,
   D3 of `SPECIAL_ORDERS_INTEGRATION_PLAN.md`); the dynamic target only sizes
   the stock-target pass.
@@ -220,35 +220,33 @@ special-orders integration (D9 there).
 
 | Phase | Content | Done when |
 |---|---|---|
-| 0 | Answer section 8 with the user | decisions recorded here |
+| 0 | Answer section 8 with the user | done 2026-10-24 |
 | 1 | Signals: own velocity from `prod_realized_results` (via access scope), market velocity from Goonmetrics (reuse `price_history_chunked`), one function returning both per type | unit tests with fixture rows, shared/revoked owner cases |
 | 2 | `dynamic_targets.py` pure resolver (formula 3.2, reasons, rounding, clamps, smoothing) | table-driven tests: below min margin, cold start, clamp min/max, dead band, no price |
 | 3 | Schema + storage (`load_effective_stock_targets`, freeze/read daily values), `_PlanContext` integration, stale flag on cached plans, market pages read frozen values | full `pytest` green; a fixed-only tenant produces byte-identical plans to before (regression test) |
 | 4 | Actions, router, CLI, Stock Targets UI, Settings section | router tests (module monkeypatch), live check against `localhost:8000`, Playwright screenshot of the page |
 | 5 (optional) | Capital-budget allocation mode (3.2 alternative), optionally job-slot capacity as a second limit | tests: budget respected, ordering by ISK/day per ISK |
 
-## 8. Open decisions (for the user)
+## 8. Decisions (confirmed with the user 2026-10-24)
 
-- **D1 - which pool scales?** Proposal: only the home-market target
-  (`home_market_stock`, what is listed and sold at C-J). `backup_stock` is a
-  reserve and stays fixed; `jita_market_stock` stays fixed. Alternative:
-  scale the sum of all three proportionally.
-- **D2 - demand source.** Own sales from the ledger, market turnover from
-  Goonmetrics, or both (proposal: max of both, market-only for cold start).
-  What market share of region turnover is realistic for C-J (proposal 10%)?
-- **D3 - per-row factor or capital budget?** Proposal: factor first,
-  budget as optional phase 5.
-- **D4 - how fast may targets react?** Proposal: daily freeze, smoothing
-  0.3, 10% dead band.
-- **D5 - below `min_margin`:** target 0 (today's behaviour) or keep the row
-  minimum as a floor anyway? Proposal: 0 - the existing rule "not worth
-  building -> not worth buying" stays.
-- **D6 - default min/max when switching a row to dynamic.** Proposal: min =
-  0, max = 3x the current fixed value (or the current value if it was 0:
-  user must enter one).
-- **D7 - T2 invention.** Higher targets mean more BPCs (`bpc_inventory`
-  multiplier). Should the invention stockpile follow the dynamic target
-  (proposal: yes, automatically, it already reads the target) or the max?
+- **D1 - which pool scales:** only the home-market target
+  (`home_market_stock`, listed and sold at C-J). `backup_stock` and
+  `jita_market_stock` stay fixed on dynamic rows.
+- **D2 - demand source:** `v = max(own sales velocity, market estimate)`;
+  market estimate only while there is no own history (cold start). Market
+  share default `dyn_market_share = 0.10` (tenant-wide setting, no per-row
+  value).
+- **D3 - method:** per-row profitability factor (section 3.2 steps 3-4).
+  Capital-budget mode stays optional phase 5.
+- **D4 - reaction speed:** slow - frozen once per day, smoothing alpha 0.3,
+  dead band 10%.
+- **D5 - below `min_margin`:** effective target 0, also ignoring the row
+  minimum (today's rule "not worth building -> not worth buying" stays).
+- **D6 - defaults when switching to dynamic:** min = 0, max = 3x the current
+  fixed home-market value; if that value is 0, the user must enter a max
+  (`ActionError` otherwise).
+- **D7 - T2 invention:** the BPC stockpile follows the effective dynamic
+  target (x `bpc_inventory`), automatically via `ctx.stock_targets`.
 
 ## 9. Risks
 
