@@ -15,7 +15,8 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, qty } from '../../format'
-import { DYNAMIC_KEYS, DYNAMIC_SETTINGS_KEY, DynamicTargetsPanel } from './DynamicTargetsPanel'
+import { DynamicTargetsPanel } from './DynamicTargetsPanel'
+import { DYNAMIC_KEYS, DYNAMIC_SETTINGS_KEY } from './dynamicTargetKeys'
 
 const STOCK_KEYS = [
   ['production', 'stock-targets'],

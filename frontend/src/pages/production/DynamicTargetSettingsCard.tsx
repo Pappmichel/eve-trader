@@ -5,7 +5,7 @@ import { Button, Card, NumberInput, SimpleGrid, Switch, Text, Title } from '@man
 import { productionApi } from '../../api/client'
 import type { DynamicTargetSettings } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
-import { DYNAMIC_KEYS, DYNAMIC_SETTINGS_KEY } from './DynamicTargetsPanel'
+import { DYNAMIC_KEYS, DYNAMIC_SETTINGS_KEY } from './dynamicTargetKeys'
 
 /**
  * Settings of the dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 9). Saved through its own
