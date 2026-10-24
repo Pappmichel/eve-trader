@@ -606,6 +606,11 @@ def targets_preview(limit: int, tenant_id: str | None):
         f"unchanged {summary['unchanged']}, held {summary['held']}, below min margin {summary['below_min_margin']}, "
         f"at max {summary['clamped_max']}"
     )
+    if summary["listing_known"]:
+        click.echo(
+            f"listing: {summary['unlisted']} of {summary['listing_known']} rows have no open sell order at the home "
+            "location right now - their own sales understate demand (R-16); fix that before the first switch-on."
+        )
     click.echo(
         f"tied-up capital at build cost (rows the planner gate passes): now {summary['tied_current'] / 1e9:.2f} B, "
         f"day 1 {summary['tied_day1'] / 1e9:.2f} B, converged {summary['tied_converged'] / 1e9:.2f} B"

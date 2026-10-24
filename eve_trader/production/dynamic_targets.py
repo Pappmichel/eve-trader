@@ -612,6 +612,7 @@ def preview_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG, *, ctx=No
                               today=day, client=client)
     day1 = resolve_specs(cfg, specs, signals, {})
     converged = {r["type_id"]: r for r in resolve_specs(cfg, specs, signals, {}, converged=True)}
+    listed = _listed_home_quantities(cfg, [s.type_id for s in specs])
     out = []
     for r in day1:
         c = converged[r["type_id"]]
@@ -622,8 +623,22 @@ def preview_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG, *, ctx=No
             "day1_qty": r["effective_qty"], "converged_qty": c["effective_qty"],
             "tied_current": cost * r["configured_home"], "tied_day1": cost * r["effective_qty"],
             "tied_converged": cost * c["effective_qty"],
+            "listed_home_qty": listed.get(r["type_id"]),
         })
     return {"rows": out, "summary": _summary(out, signals), "own": _own_info(signals.own)}
+
+
+def _listed_home_quantities(cfg: ProductionConfig, type_ids: list[int]) -> dict[int, float]:
+    """Own open sell order quantity at the home location per type (today's
+    snapshot). Review finding V-05 / R-16: a row with nothing listed has sold
+    nothing for that time, so its own velocity underestimates demand. Orders do
+    not store their duration, so "days listed" cannot be rebuilt from the
+    archive - this is the available precondition check. {} without a home
+    location."""
+    if cfg.home_location_id is None:
+        return {}
+    from . import engine
+    return {t: float(engine._sell_order_qty_at_location(t, cfg.home_location_id)) for t in type_ids}
 
 
 def _own_info(own: OwnSales) -> dict:
@@ -648,6 +663,9 @@ def _summary(rows: list[dict], signals: Optional[Signals]) -> dict:
         "tied_day1": sum(r["tied_day1"] for r in gate_ok),
         "tied_converged": sum(r["tied_converged"] for r in gate_ok),
         "velocity_source": {s: count(lambda r, s=s: r["velocity_source"] == s) for s in ("own", "market")},
+        # R-16 precondition: rows with a home target but nothing listed at the home location right now.
+        "unlisted": count(lambda r: r.get("listed_home_qty") is not None and r["listed_home_qty"] <= 0),
+        "listing_known": count(lambda r: r.get("listed_home_qty") is not None),
     }
 
 

@@ -502,7 +502,18 @@ def test_preview_covers_fixed_rows_too_and_writes_nothing(tenant, monkeypatch):
     assert row["mode"] == "fixed" and row["day1_qty"] == 20.0 and row["converged_qty"] == 21.0
     assert row["tied_current"] == 0.0 or row["cost"] is not None
     assert out["summary"]["rows"] == 1 and out["summary"]["up"] == 1
+    assert row["listed_home_qty"] == 0.0                                    # R-16 precondition: nothing listed at 999
+    assert out["summary"]["unlisted"] == 1 and out["summary"]["listing_known"] == 1
     assert storage.load_dynamic_values_for_day(TODAY()) == {}
+
+
+def test_preview_without_a_home_location_reports_no_listing_data(tenant, monkeypatch):
+    _seed(10, "Widget", home=20.0)
+    ctx = _make_fake_plan_context([(10, "Widget", 2.0, 20.0, 0.0)])(_cfg())
+    monkeypatch.setattr(dt, "_gather_signals", _Gather(_signals(velocity=1.5)))
+    out = dt.preview_dynamic_targets(_cfg(home_location_id=None, dynamic_targets_enabled=False), ctx=ctx)
+    assert out["rows"][0]["listed_home_qty"] is None
+    assert out["summary"]["listing_known"] == 0 and out["summary"]["unlisted"] == 0
 
 
 # =================================================== consumers and allowlist

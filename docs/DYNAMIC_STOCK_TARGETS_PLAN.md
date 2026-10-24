@@ -34,14 +34,14 @@ sections 5, 6 and 9 if a result calls for it.
 - [x] R-24 Open integrated special orders on target items.
 - [x] R-25 Other tenants with Production stock targets (rollout scope).
 - [ ] R-27 Backup taken; schema change applied twice on a copy without error.
-- [ ] R-15 Backtest of the formula over the last 60-90 days vs. actual
+- [x] R-15 Backtest of the formula over the last 60-90 days vs. actual
       sales (stockouts / unsold stock) - same throwaway script as the
       impact simulation, extended with history.
-- [ ] R-21 / R-22 Capacity: simulated build list vs. free job slots,
+- [x] R-21 / R-22 Capacity: simulated build list vs. free job slots,
       invention slots/datacores, haul m3 (from the impact simulation).
 - [x] R-23 Plan runtime today, plus the Goonmetrics call for N rows from the
       server.
-- [ ] R-26 Volatility of the C-J quote and region movement (smoothing /
+- [x] R-26 Volatility of the C-J quote and region movement (smoothing /
       dead band defaults).
 - [x] **Impact on the current stock list (before any implementation).**
       Simulate the formula of section 6 for every current stock target
@@ -387,7 +387,8 @@ runs, so rounding the target to run multiples would only double-round.
 | `dynamic_target_factor_max` | 2.0 | 0..None |
 | `dynamic_target_smoothing` | 0.3 | 0.01..1 |
 | `dynamic_target_deadband` | 0.10 | 0..1 |
-| `dynamic_target_day_cap_multiple` | 3.0 | 0..None (0 = off, V-04) |
+| `dynamic_target_day_cap_multiple` | 0 (off; 3.0 before the R-15 backtest, see 18.4) | 0..None (0 = off, V-04) |
+| `dynamic_target_margin_hysteresis` | 0.02 | 0..None (R-26, see 18.4) |
 
 Cross-field checks (`factor_min <= factor_max`, `min_history_days <=
 window_days`, `reference_margin > min_margin`) need the *merged* config,
@@ -1012,9 +1013,9 @@ unless it says "confirmed".
   code path). The ~10 % undercount against the wallet is accepted and
   documented; the max(own, market) rule limits the damage. The wallet is used
   for the preview comparison and the backtest (R-15), not for the target.
-- **V-04:** each day's units are capped at `dynamic_target_day_cap_multiple`
-  (default 3.0) times the row's mean daily units over the covered days
-  (0 = off). The preview shows the share of the biggest day per row. The
+- **V-04 (default revised 2026-10-25, see 18.4):** each day's units are capped at `dynamic_target_day_cap_multiple`
+  times the row's mean daily units over the covered days (0 = off). The default was 3.0 when this was decided;
+  the backtest on real sales showed every cap predicts worse, so it is now 0 (off). The preview shows the share of the biggest day per row. The
   default is revisited with real preview output (phase 3b).
 - **V-05:** the market floor (D2) stays. R-16 (listed days per row) is a
   precondition for the first real switch-on, not for the build.
@@ -1114,3 +1115,66 @@ off).
 - Open design points with a recommendation but no data yet: V-04 (single-day
   cap default 3.0 - judge on several days of preview output) and V-10 (the page
   shows the gate state; the target itself is not changed by it).
+
+### 18.4 Open points worked on (2026-10-25)
+
+Data used: 37 days of wallet sales at the home location (server 2, read-only),
+14 months of ESI daily history for all target items, the preview rows and plans
+of the test server (server 1). Throwaway scripts, not committed.
+
+- **R-15 backtest -> cap default changed to off.** For 6 start dates
+  (2026-10-01..10-10), window 14/21/28 days and cap off/2x/3x/5x, the forecast
+  `velocity x 14` was compared with the units actually sold in the next 14 days
+  (about 700 item/start-date pairs with sales before the start):
+
+  | window | cap | error (WAPE) | bias | under-forecast share |
+  |---|---|---|---|---|
+  | 14-28 | off | 0.69 | -0.36 .. -0.42 | 0.53-0.57 |
+  | 14-28 | 5x | 0.73-0.74 | -0.47 .. -0.54 | 0.63-0.64 |
+  | 14-28 | 3x | 0.75-0.77 | -0.56 .. -0.62 | 0.66-0.69 |
+  | 14-28 | 2x | 0.77-0.79 | -0.65 .. -0.69 | 0.70-0.74 |
+
+  Every cap is worse in every window; the window length itself makes no
+  difference (0.69 for 14, 21 and 28). Bulk days are real demand on this data,
+  so `dynamic_target_day_cap_multiple` now defaults to 0 (off); the setting
+  stays for anyone who wants it. Even without a cap the forecast under-shoots
+  the following two weeks by about 40 % (bias), i.e. demand was rising; coverage
+  days stay at 14 and the profit factor is untouched.
+- **R-26 calmness and a new hysteresis.** The resolver ran day by day over the
+  last 60 days with the real ESI price/volume history (market-only inputs, build
+  cost fixed at today's value). Default (smoothing 0.3, dead band 10 %): a median
+  row changes its target 13 times in 60 days (p90 26) and flips between 0 and a
+  value a median 3 times (p90 13): a margin hovering at `min_margin` flipped the
+  target every other day and neither smoothing nor the dead band helps there.
+  New setting `dynamic_target_margin_hysteresis` (default 0.02): a row at 0 for a
+  low margin only resumes once the margin exceeds `min_margin` by that much.
+  Result on the same series: p90 zero-flips 13 -> 11 (0.02), 9 (0.05).
+  **Smoothing/dead band were not changed (D4 is confirmed):** the data would
+  allow smoothing 0.5 with a 20 % band, which changes the target less often
+  (median 11 vs 13 changes) and tracks the unsmoothed value better (error 14.5 %
+  vs 24.0 %). That is a recommendation for the user, not a decision.
+- **R-21 / R-22 capacity and haul (test server, all 254 rows dynamic vs today).**
+  Build jobs 203 -> 182, runs 590,078 -> 193,122, job-days 582 -> 540, longest job
+  26.9 d unchanged; asset plan: slowest job at the recommended slots 0.7 -> 0.3 d;
+  free slots 167 manufacturing / 77 reaction, so slots are not the limit. Buy
+  list 12.58 B -> 9.07 B ISK (-28 %), haul 501,881 -> 376,051 m3 (-25 %). Only a
+  few rows need more (Laser Focusing Crystals +2,326 runs, Warrior II +492).
+- **R-11 lead time.** For the 122 home-target rows in the plan one run takes a
+  median 0.03 d, p90 0.66 d, at most 4.5 d; no row has a single run of 14 days
+  or more, so 14 coverage days exceed the build time everywhere. (T2 invention
+  time is not part of this figure.)
+- **R-18 competition (price side only).** 105 rows have an open order of ours at
+  C-J: for 10 the best quote is our own order, 95 are undercut. Our price is
+  above the best quote by a median 1.1 % (p75 2.7 %, p90 5.6 %), 8 rows by more
+  than 10 %. The order book of other sellers is not stored, so depth and
+  absorption stay unanswered.
+- **R-16 listing precondition.** The stored orders carry no duration, so "days
+  listed per row" cannot be rebuilt. The preview now reports the available
+  proxy instead: rows with a home target but nothing listed at the home location
+  right now (`listed_home_qty`, summary `unlisted`/`listing_known`, CLI line).
+  Test server: 149 of 254 rows (59 %); on server 2 it was 142 of 247. These rows
+  rely on the market floor and should be listed before the first switch-on.
+
+Still open: deploying to server 2 (production) and the first real preview there;
+R-18 depth; a "days listed" measure would need the orders' duration stored going
+forward.
