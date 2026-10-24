@@ -110,12 +110,29 @@ Non-goals:
   band 10%.
 - **D5 - below `min_margin`:** effective target 0, the row minimum does not
   apply there.
-- **D6 - defaults on switch to dynamic:** min = 0, max = 3x the current
+- **D6 - defaults on switch to dynamic (max amended by D13):** min = 0, max = 3x the current
   fixed home-market value; if that value is 0 the user must enter a max.
 - **D7 - T2 invention:** the BPC stockpile follows the effective target.
 - **D9 - global switch (confirmed 2026-10-24):** one tenant-wide switch
   turns the feature on and off for all items at once, plus bulk actions
   that set every row to dynamic or to fixed (section 10.1).
+- **D12 - minimum of 1 for rows that sell (confirmed 2026-10-24, follows
+  the real-data finding 1 in 14.2):** above `min_margin`, a row with at
+  least one own sale in the window never rounds below 1 unit (the row min
+  still applies if it is higher). Below `min_margin` D5 still gives 0. Rows
+  without any own sale in the window may round to 0.
+- **D13 - max floor (confirmed 2026-10-24):** the default max on a switch
+  to dynamic is `max(3 x current fixed home value, 10)`; the D6 rule that a
+  current value of 0 needs a manual max stays. Replaces the plain 3x of D6.
+- **D14 - first real run after the next ledger rebuild (confirmed
+  2026-10-24):** the ledger covered 13.79 of the required 14 days on
+  2026-10-24, so own velocity is unavailable until the next rebuild. The
+  preview (phase 3b) and the first switch-on are done after that, so own
+  velocity is part of the first real numbers. The design does not change.
+- **D15 - overstock hint (confirmed 2026-10-24):** the Stock Targets page
+  shows, per dynamic row, when stock plus listed units already exceed the
+  effective target (backup included) and by how much (E-15, R-17: 116 rows,
+  about 65 B ISK on 2026-10-24). Display only; nothing is sold or delisted.
 
 ## 3. Current state - every consumer of the quantities
 
@@ -281,7 +298,7 @@ Input per dynamic row: velocity, margin, row min/max, previous frozen row
    - `smoothed = prev_smoothed + alpha x (raw - prev_smoothed)` (alpha 0.3;
      first day: `prev_smoothed = configured home value`, so switching a row
      on does not jump).
-   - `candidate = clamp(round(smoothed), row_min, row_max)` (reason
+   - `candidate = clamp(round(smoothed), row_min, row_max)`, with D12: when the row has an own sale in the window, `round(smoothed)` is at least 1 before the clamp (reason
      `clamped_min` / `clamped_max` when that applies).
    - **Dead band:** `effective = candidate` only if `|candidate -
      prev_effective| >= max(1, deadband x prev_effective)`; otherwise
