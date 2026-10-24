@@ -4,6 +4,34 @@ Status: **all decisions confirmed (sections 2 and 15), design reviewed
 against the code (sections 3-11), nothing implemented.** Before phase 1: the real-data
 checks in section 14 (R-01..R-05 by SQL); the rest via the preview in phase 3b.
 
+## TODO - real-data checks (later session with server/DB access)
+
+Not done yet: this container had no `config.yaml` and no production
+database. Do these first, before phase 1. Details, reasons and SQL are in
+section 14. Record each result next to its item and adjust the defaults in
+sections 5, 6 and 9 if a result calls for it.
+
+- [ ] Read the real `config.yaml` / tenant overrides: `home_location_id`,
+      `min_margin`, `market_fees`, `reference_region_id`.
+- [ ] R-01 Count stock targets with home / Jita / backup-only targets; list
+      rows with home = 0 (need a manual max, D6).
+- [ ] R-02 Last ledger runs (`ran_at`, T0, fingerprint) and covered sales
+      period; is there >= 14 days of history?
+- [ ] R-03 Share of `prod_realized_results` rows with NULL `source` /
+      `location_id`.
+- [ ] R-04 Target-item sales split: C-J vs. elsewhere, market vs. contract.
+- [ ] R-05 Are corporation wallets shared with Production? If yes, decide
+      whether own velocity counts character wallets only.
+- [ ] R-12 Number of manual Build/Buy overrides on target items (D8).
+- [ ] R-14 Do Trading / Station Trading sell the same types at C-J?
+- [ ] After phase 3b (preview): R-06 own sales vs. 10% market share,
+      R-07 history coverage in `reference_region_id`, R-08 how often no C-J
+      quote / quote is our own order, R-09 margin distribution vs. 15% / 30%,
+      R-10 current target vs. proposed, R-11 lead time vs. 14 coverage days,
+      R-13 tied-up capital today vs. proposed.
+- [ ] Update defaults / design in this file from the results, then start
+      phase 4.
+
 ## 1. Goal
 
 Today every row on the Stock Targets page carries three fixed numbers
