@@ -57,9 +57,12 @@ export function DynamicTargetSettingsCard() {
         <NumberInput label="Dead band" suffix="%" decimalScale={1} description="Moves smaller than this stay put."
           value={form.dynamic_target_deadband * 100} min={0} max={100} step={1}
           onChange={(v) => set('dynamic_target_deadband', Number(v) / 100)} />
-        <NumberInput label="Single-day cap (x mean day)" decimalScale={1} description="One bulk day counts at most this many mean days of sales; 0 = off."
+        <NumberInput label="Single-day cap (x mean day)" decimalScale={1} description="One bulk day counts at most this many mean days of sales; 0 = off (default - a backtest on real sales showed caps predict worse)."
           value={form.dynamic_target_day_cap_multiple} min={0} step={0.5}
           onChange={(v) => set('dynamic_target_day_cap_multiple', Number(v))} />
+        <NumberInput label="Margin hysteresis" suffix="%" decimalScale={1} description="A row at 0 for a low margin resumes only once its margin is this far above the minimum."
+          value={form.dynamic_target_margin_hysteresis * 100} min={0} max={100} step={0.5}
+          onChange={(v) => set('dynamic_target_margin_hysteresis', Number(v) / 100)} />
       </SimpleGrid>
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Dynamic Target Settings

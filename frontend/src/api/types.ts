@@ -346,6 +346,7 @@ export interface DynamicTargetSettings {
   dynamic_target_smoothing: number
   dynamic_target_deadband: number
   dynamic_target_day_cap_multiple: number
+  dynamic_target_margin_hysteresis: number
 }
 
 export interface StockTargetModeResult {

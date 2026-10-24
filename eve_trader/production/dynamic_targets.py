@@ -147,8 +147,14 @@ def resolve_row(inp: RowInput, cfg: ProductionConfig, *, converged: bool = False
     if velocity is None or inp.margin is None:
         return RowResult(prev_effective, prev_smoothed, None, velocity, source, None, REASON_HELD)
 
-    # 2. Below min_margin: effective 0 (D5), smoothed level kept (E-06).
-    if inp.margin < cfg.min_margin:
+    # 2. Below min_margin: effective 0 (D5), smoothed level kept (E-06). A row that is already at 0 for
+    #    this reason only resumes once the margin clears min_margin by the hysteresis, so a margin
+    #    hovering around the threshold does not flip the target between 0 and its old level every day
+    #    (R-26: up to 13 flips in 60 days on real price history).
+    threshold = cfg.min_margin
+    if inp.prev_reason == REASON_BELOW_MIN_MARGIN:
+        threshold += cfg.dynamic_target_margin_hysteresis
+    if inp.margin < threshold:
         return RowResult(0.0, prev_smoothed, None, velocity, source, None, REASON_BELOW_MIN_MARGIN)
 
     # 3. Normal path.

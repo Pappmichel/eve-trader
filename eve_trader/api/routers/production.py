@@ -484,6 +484,7 @@ class DynamicTargetSettings(BaseModel):
     dynamic_target_smoothing: float
     dynamic_target_deadband: float
     dynamic_target_day_cap_multiple: float
+    dynamic_target_margin_hysteresis: float
 
 
 @router.get("/settings/dynamic-targets", response_model=DynamicTargetSettings)

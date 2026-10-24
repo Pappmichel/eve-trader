@@ -258,7 +258,7 @@ def test_own_sales_caps_one_bulk_day_and_reports_its_share(monkeypatch):
     day = date(2026, 10, 20)
     rows = [(5, day, 100.0, 50.0, 100.0)] + [(5, day - timedelta(days=i), 1.0, 0.5, 1.0) for i in range(1, 10)]
     calls = _patch_ledger(monkeypatch, t0=t0, rows=rows)
-    own = dt.compute_own_sales(_cfg(home_location_id=123), now=NOW)
+    own = dt.compute_own_sales(_cfg(home_location_id=123, dynamic_target_day_cap_multiple=3.0), now=NOW)
 
     assert own.available and own.covered_days == pytest.approx(20.0)
     row = own.per_type[5]
@@ -394,7 +394,8 @@ def test_effective_stock_targets_without_any_dynamic_row_skips_the_frozen_read(m
 def test_new_fields_have_ranges_and_defaults():
     cfg = ProductionConfig()
     assert cfg.dynamic_targets_enabled is False
-    assert cfg.dynamic_target_window_days == 28 and cfg.dynamic_target_day_cap_multiple == 3.0
+    assert cfg.dynamic_target_window_days == 28 and cfg.dynamic_target_day_cap_multiple == 0.0   # R-15: no cap by default
+    assert cfg.dynamic_target_margin_hysteresis == 0.02
     base_config.validate_config_overrides(cfg, {"dynamic_target_window_days": 28})
     with pytest.raises(base_config.ConfigError):
         base_config.validate_config_overrides(cfg, {"dynamic_target_window_days": 29})      # V-02
@@ -424,3 +425,46 @@ def test_merged_validation_checks_the_dynamic_fields_when_touched_or_enabled():
     enabled = ProductionConfig(dynamic_targets_enabled=True)
     with pytest.raises(base_config.ConfigError, match="reference_margin"):
         validate_production_merged(enabled, {"min_margin": 0.35})   # enabled: a plain min_margin save is checked too
+
+
+# --------------------------------------------------------------- hysteresis
+def test_a_row_at_zero_resumes_only_above_min_margin_plus_hysteresis():
+    cfg = _cfg()                                         # min 0.10, hysteresis 0.02
+    stuck = dt.resolve_row(_row(margin=0.11, prev_effective=0.0, prev_smoothed=30.0,
+                                prev_reason=dt.REASON_BELOW_MIN_MARGIN), cfg)
+    assert (stuck.effective_qty, stuck.reason) == (0.0, dt.REASON_BELOW_MIN_MARGIN)
+    assert stuck.smoothed_qty == 30.0                    # E-06: the level is kept either way
+    back = dt.resolve_row(_row(margin=0.13, prev_effective=0.0, prev_smoothed=30.0,
+                               prev_reason=dt.REASON_BELOW_MIN_MARGIN), cfg)
+    assert back.reason != dt.REASON_BELOW_MIN_MARGIN and back.effective_qty > 0
+
+
+def test_the_hysteresis_only_applies_to_a_row_that_is_already_below():
+    fresh = dt.resolve_row(_row(margin=0.11, prev_effective=20.0, prev_smoothed=20.0, prev_reason=dt.REASON_OK), _cfg())
+    assert fresh.reason != dt.REASON_BELOW_MIN_MARGIN and fresh.effective_qty > 0
+    first_day = dt.resolve_row(_row(margin=0.11), _cfg())
+    assert first_day.reason != dt.REASON_BELOW_MIN_MARGIN
+
+
+def test_hysteresis_zero_restores_the_plain_threshold():
+    cfg = _cfg(dynamic_target_margin_hysteresis=0.0)
+    r = dt.resolve_row(_row(margin=0.11, prev_effective=0.0, prev_smoothed=30.0, prev_reason=dt.REASON_BELOW_MIN_MARGIN), cfg)
+    assert r.reason != dt.REASON_BELOW_MIN_MARGIN
+
+
+def test_a_margin_hovering_at_the_threshold_flips_far_less_with_the_hysteresis():
+    margins = [0.09, 0.11, 0.09, 0.115, 0.095, 0.11, 0.09, 0.118, 0.1, 0.11]
+
+    def flips(cfg):
+        prev, count = None, 0
+        for m in margins:
+            r = dt.resolve_row(_row(margin=m, velocity_own=2.0,
+                                    prev_effective=None if prev is None else prev.effective_qty,
+                                    prev_smoothed=None if prev is None else prev.smoothed_qty,
+                                    prev_reason=None if prev is None else prev.reason), cfg)
+            if prev is not None and (prev.effective_qty == 0) != (r.effective_qty == 0):
+                count += 1
+            prev = r
+        return count
+    assert flips(_cfg(dynamic_target_margin_hysteresis=0.0)) > flips(_cfg())
+    assert flips(_cfg()) <= 1

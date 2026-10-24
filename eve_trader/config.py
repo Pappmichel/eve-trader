@@ -288,6 +288,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "dynamic_target_smoothing": (0.01, 1),
     "dynamic_target_deadband": (0, 1),
     "dynamic_target_day_cap_multiple": (0, None),
+    "dynamic_target_margin_hysteresis": (0, None),
 }
 
 

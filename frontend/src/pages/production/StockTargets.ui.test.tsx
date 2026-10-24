@@ -57,7 +57,8 @@ const SETTINGS_OFF: DynamicTargetSettings = {
   dynamic_target_factor_max: 2,
   dynamic_target_smoothing: 0.3,
   dynamic_target_deadband: 0.1,
-  dynamic_target_day_cap_multiple: 3,
+  dynamic_target_day_cap_multiple: 0,
+  dynamic_target_margin_hysteresis: 0.02,
 }
 
 function target(overrides: Partial<StockTarget> = {}): StockTarget {

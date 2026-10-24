@@ -221,7 +221,13 @@ class ProductionConfig:
     dynamic_target_factor_max: float = 2.0
     dynamic_target_smoothing: float = 0.3       # alpha of the exponential smoothing (D4)
     dynamic_target_deadband: float = 0.10       # relative move below which the value stays put (D4)
-    dynamic_target_day_cap_multiple: float = 3.0  # one day's units are capped at this x the row's mean day (V-04); 0 = off
+    # One day's units are capped at this x the row's mean day; 0 = off. Default off: the backtest on 37
+    # days of real wallet history (R-15) showed every cap (2x/3x/5x) predicts the next 14 days worse than
+    # no cap (error 0.73-0.79 vs 0.69, strongly under-predicting) - bulk days are real demand here.
+    dynamic_target_day_cap_multiple: float = 0.0
+    # A row at 0 because of a margin below min_margin only resumes once the margin exceeds
+    # min_margin by this much (R-26: stops 0/N flapping around the threshold).
+    dynamic_target_margin_hysteresis: float = 0.02
 
     # -- Fuzzwork SDE --
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
