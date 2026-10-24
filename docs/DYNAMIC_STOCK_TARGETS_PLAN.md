@@ -933,3 +933,70 @@ it is called done.
   below `min_margin` the effective target is 0. The override only decides
   build vs. buy, not the quantity. The margin uses the cost of the
   overridden source (buy price for a Buy override, build cost for Build).
+
+## 17. Review of 2026-10-24 (code, server data, external sources)
+
+Second full pass over the plan: every claim about the code was checked
+against the repository, every claim about data against the production
+database (read-only), and the external dependencies against the live APIs.
+Server-side work was read-only; the only write was a scratch database for
+the DDL test, dropped afterwards. Nothing in this section is decided yet
+unless it says "confirmed".
+
+### 17.1 Confirmed as written
+
+- Consumer list C1-C9 is complete: `market_status`, `market_restock`,
+  `market_listing_shortfall_by_type` (Sorting), the unlisted-stock check,
+  `_total_missing` callers and both planners are the only readers of the
+  quantities; `stock_value`, `jita_price_cache`, `realized/loader` and
+  `trade_realized/report` read ids only; the alert job does not read stock
+  targets. `plan_production` / `plan_asset_optimized` have exactly two
+  callers (`production/actions.py` 662 and 679).
+- P-01: 48 `load_stock_targets` references in 10 test files.
+- One `uvicorn` worker per server (`ExecStart` without `--workers`), so the
+  per-tenant in-process lock of section 7 is sufficient.
+- Router: no path clash (`PATCH`/`DELETE` on `/stock-targets/{type_id}`; the
+  new `PUT .../mode` and `PUT .../{type_id}/mode` are different methods).
+- RLS, grants and primary key on `stock_targets` match the plan (policy
+  `tenant_isolation`, `eve_trader_app` has the four DML privileges).
+- DDL test on PostgreSQL 16 with a copy of the real table (375 rows, all
+  tenants): the draft of 4.1 + 4.2 (including `RLS`, policy, `GRANT`) runs
+  twice without error, every existing row gets `target_mode = 'fixed'`, the
+  `CHECK` rejects other values, and the second run adds no second constraint.
+  This closes the schema part of R-27 (the backup part is the daily backup).
+- Own listings are rarely the live quote: of 247 rows with a home target
+  only 8 have a quote equal to our own lowest open order, 97 are undercut by
+  someone else, 142 have no open order at all. The feedback loop through our
+  own price (R-08, second half) is small.
+- ESI (live check): `/latest/markets/{region}/history/` works, answers with
+  `X-Compatibility-Date: 2020-01-01` and no `Warning` header, expires daily
+  at 11:05 UTC, covers about 14 months and **omits days without trades**
+  (Avalanche: 6 of the last 28 days present). CCP announced date-based
+  versioning (transition about one year from July 2025) and rate limiting in
+  monitor-only mode, no enforcement date. The plan's ESI use is at most one
+  cached call per row and day, so the risk is low.
+
+### 17.2 Findings that need a change in the plan
+
+| Id | Finding (evidence) | Proposed change | Severity |
+|---|---|---|---|
+| V-01 | **P-20 contradicts D4.** `invalidate_discover_cache()` is called from 17 places in `production/actions.py` plus `admin` and `refining`, among them `do_sync_esi` (every manual ESI sync), blueprint and decryptor changes. Hooking the deletion of today's frozen rows into it would recompute the targets after every sync, which breaks "frozen once per day" and "both planners use the same number". | Do not hook into `invalidate_discover_cache`. Use an explicit allowlist: Production settings save, mode/min/max change, stock target add/remove, recalculate button, switch toggle, bulk action, SDE apply. A test pins that list. ESI sync and cost-affecting edits wait for the next day (or the recalculate button). | High |
+| V-02 | **Market window is 28 days, not 30.** `HISTORY_WINDOW_DAYS = 28` in `goonmetrics_client.py` limits both the Goonmetrics answer and the ESI fallback; the settings range of `dynamic_target_window_days` is 7..90 and the default 30. Observed: points per type min 1, p25 23, median 28; 80 of 243 rows have fewer than 25 points in 30 days, and averaging the returned points overstates demand by a median 1.07x, p90 1.95x, max 30x (P-13 is real). The newest point is yesterday. | Market velocity = sum of movement over the calendar days of `min(window, 28)` ending yesterday, missing days count as 0. Either cap `dynamic_target_window_days` at 28 or give the market side its own window and say so. | High |
+| V-03 | **Own velocity from `prod_realized_results` undercounts.** Wallet sells at C-J since 2026-10-10: 16,950 units; realized rows: 15,189 (-10.4 %). 30 of 152 sold types are below 90 % (EM Shield Amplifier II 149 of 307, Mining Laser Upgrade II 19 of 127), one type is missing entirely. The max(own, market) rule softens it but the plan does not mention the bias. | Record the bias in 5.1. Decide: keep realized (consistent with D11 ownership rules) or read `ledger_wallet_transactions` (history since 2026-09-17, 37 days) for the quantity. In the simulation the choice moves the total only a little (converged capital 52.0 B realized, 49.9 B wallet 30 days, 46.3 B market only). | Medium |
+| V-04 | **Sales are very bursty.** Of 149 selling rows, 69 sold more than half of their units on one day and 75 sold on at most 3 days; week over week 61 rows fell below half and 57 rose above double. One day (2026-10-17) holds 28 % of all units in the 15-day window. The 14-day velocity is a median 1.4x the 30-day wallet velocity. E-21 covers price spikes only. | Prefer the longest available window (30 days from the wallet, or the ledger once it has it), and consider capping any single day's contribution (for example at 3x the row's median day). Show the day-share in the preview. Decide in phase 3b with real preview output. | High |
+| V-05 | **Stockouts are the normal case, not the edge case (E-13).** 142 of 247 rows (57 %) have no open sell order at C-J right now, so their own velocity was measured while unlisted. | Keep the market floor (D2), and move R-16 (listed days per row) ahead of the first switch-on. Optionally divide the own velocity by listed days when that number exists. | Medium |
+| V-06 | **Save-time validation `reference_margin > min_margin` (section 9) also fires with the feature off.** `min_margin` has no upper bound by design, so a tenant that raises it to 0.30 or more would get a settings error for a feature it never uses. | Validate the dynamic fields only when `dynamic_targets_enabled` is true (or when one of them is in the update); the runtime guard of E-16 stays. | Medium |
+| V-07 | **Section 14 command is wrong for the real deployment.** Both servers run native PostgreSQL, there is no Docker (`which docker` fails), the unit file starts `uvicorn` directly. | Use `sudo -u postgres psql -d eve_trader`; the `postgres` role bypasses RLS, so every query keeps its explicit `tenant_id` filter (already in the examples). | Low |
+| V-08 | **R-06 / R-10 SQL divides by a constant 30.** The ledger covers 13.79 days, so the own side is understated 2.2x. | Divide by the covered days (same rule as 5.1). | Low |
+| V-09 | **Numbers in 14.2 predate D12/D13 and assumed own velocity.** Re-run with D12 + D13: max-capped rows 28 -> 27, sold-but-0-above-min rows 1 -> 0, the other counts move by at most 1. With own velocity unavailable (market only, what the first run would be without D14) : up 48, down 116, to 0 73, capital of gate-passing rows 78.0 B -> 46.3 B. | Use these figures as the day-one expectation. The conclusion (about -33 % to -41 % capital, 73 rows to 0 that the gate blocks anyway) holds in every variant. | Low |
+| V-10 | **Jita gate vs home margin (E-12)** disagree on 35 of 247 rows. If the Jita margin is below `min_margin` the planner drops the whole row, but the home margin can still give a non-zero effective target that is never built. | Show the gate reason on the page next to the effective target, or take the planner's margin for such rows. Needs a decision. | Medium |
+| V-11 | **Freeze cost.** `plan_production` computes `_unit_cost` only for rows with a shortfall; the resolver needs it for every dynamic row (up to 247). Plan run time today is 9.7 s and 3.6 s; the extra cost is not measured. | Measure in phase 3b before the planner integration; the shared `cost_memo` (P-07) keeps it from being priced twice. | Low |
+| V-12 | **D14 is nearly resolved.** The ledger anchor is `2026-10-10 13:17 UTC`, so the 14-day mark is 2026-10-24 13:17 UTC. The last run (08:21) is before it; any rebuild after that point passes the gate. | No design change; the preview can run as soon as one rebuild has happened. | Info |
+
+### 17.3 Not verifiable now
+
+- R-15 (backtest) is possible with 37 days of wallet history but needs the
+  resolver code; R-16, R-18, R-21, R-22 and R-26 need history over time or a
+  capacity model and stay open.
+- The size of the effect of V-04 on the final targets can only be judged on
+  preview output over several days (section 14.1).
