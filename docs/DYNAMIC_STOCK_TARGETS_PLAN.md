@@ -1,6 +1,6 @@
 # Dynamic stock targets - plan
 
-Status: **all decisions confirmed (sections 2 and 15), design reviewed
+Status: **all decisions confirmed (sections 2 and 15), real-data checks run on 2026-10-24 (section 14.2), design reviewed
 against the code (sections 3-11), implementation pitfalls in section 16,
 nothing implemented.** Before phase 1: the real-data
 checks in section 14 (R-01..R-05 by SQL) and the impact simulation on the
@@ -13,37 +13,37 @@ database. Do these first, before phase 1. Details, reasons and SQL are in
 section 14. Record each result next to its item and adjust the defaults in
 sections 5, 6 and 9 if a result calls for it.
 
-- [ ] Read the real `config.yaml` / tenant overrides: `home_location_id`,
+- [x] Read the real `config.yaml` / tenant overrides: `home_location_id`,
       `min_margin`, `market_fees`, `reference_region_id`.
-- [ ] R-01 Count stock targets with home / Jita / backup-only targets; list
+- [x] R-01 Count stock targets with home / Jita / backup-only targets; list
       rows with home = 0 (need a manual max, D6).
-- [ ] R-02 Last ledger runs (`ran_at`, T0, fingerprint) and covered sales
+- [x] R-02 Last ledger runs (`ran_at`, T0, fingerprint) and covered sales
       period; is there >= 14 days of history?
-- [ ] R-03 Share of `prod_realized_results` rows with NULL `source` /
+- [x] R-03 Share of `prod_realized_results` rows with NULL `source` /
       `location_id`.
-- [ ] R-04 Target-item sales split: C-J vs. elsewhere, market vs. contract.
-- [ ] R-05 Are corporation wallets shared with Production? If yes, decide
+- [x] R-04 Target-item sales split: C-J vs. elsewhere, market vs. contract.
+- [x] R-05 Are corporation wallets shared with Production? If yes, decide
       whether own velocity counts character wallets only.
-- [ ] R-12 Number of manual Build/Buy overrides on target items (D8).
-- [ ] R-14 Do Trading / Station Trading sell the same types at C-J?
+- [x] R-12 Number of manual Build/Buy overrides on target items (D8).
+- [x] R-14 Do Trading / Station Trading sell the same types at C-J?
 - [ ] R-16 Stockout days per item at C-J in the window (feedback-loop bias).
-- [ ] R-17 Items whose stock + listings already exceed the simulated target.
+- [x] R-17 Items whose stock + listings already exceed the simulated target.
 - [ ] R-18 C-J order book per item: our listings vs. other sellers.
-- [ ] R-19 Live vs. realized margin per item (is the live margin reliable?).
-- [ ] R-20 Dual-role items: targets that are also materials of other targets.
-- [ ] R-24 Open integrated special orders on target items.
-- [ ] R-25 Other tenants with Production stock targets (rollout scope).
+- [x] R-19 Live vs. realized margin per item (is the live margin reliable?).
+- [x] R-20 Dual-role items: targets that are also materials of other targets.
+- [x] R-24 Open integrated special orders on target items.
+- [x] R-25 Other tenants with Production stock targets (rollout scope).
 - [ ] R-27 Backup taken; schema change applied twice on a copy without error.
 - [ ] R-15 Backtest of the formula over the last 60-90 days vs. actual
       sales (stockouts / unsold stock) - same throwaway script as the
       impact simulation, extended with history.
 - [ ] R-21 / R-22 Capacity: simulated build list vs. free job slots,
       invention slots/datacores, haul m3 (from the impact simulation).
-- [ ] R-23 Plan runtime today, plus the Goonmetrics call for N rows from the
+- [x] R-23 Plan runtime today, plus the Goonmetrics call for N rows from the
       server.
 - [ ] R-26 Volatility of the C-J quote and region movement (smoothing /
       dead band defaults).
-- [ ] **Impact on the current stock list (before any implementation).**
+- [x] **Impact on the current stock list (before any implementation).**
       Simulate the formula of section 6 for every current stock target
       with a home target, using real data, and write nothing. Method: a
       throwaway, read-only script in the session's scratch directory (not
@@ -618,6 +618,96 @@ changes any plan:
   proposed values with what actually sold, before switching the first rows
   to dynamic.
 
+### 14.2 Results from the real data (2026-10-24, default tenant, server 2)
+
+Read-only: SQL on the production database plus one throwaway script (not
+committed) that reused `_PlanContext`, `_unit_cost`, `margin_home` and
+`GoonmetricsClient.price_history_chunked`. Items ticked in the TODO list
+above are answered here. Still open: R-11, R-15, R-16, R-18, R-21, R-22,
+R-26 (need history over time or a capacity model) and R-27 (needs the new
+schema; the daily backup exists, the last one 2026-10-24 20:06).
+
+**Config (default tenant, tenant override beats `config.yaml`):**
+`home_location_id` 1049588174021, `min_margin` 0.10 (override; the yaml says
+0.15), `market_fees` 0.05, `reference_region_id` 10000009 (Insmother).
+`reference_margin` 0.30 is above `min_margin`, so the cross-field check holds.
+
+| Id | Result | Consequence |
+|---|---|---|
+| R-01 | 371 targets: 247 with a home target (216,676 units), 84 of those also with a Jita target, 124 backup-only (42 with backup > 0, 82 all zero). No Jita-only rows. | Only the 247 can go dynamic. "All to dynamic" skips the 124 backup-only rows (E-26). |
+| R-02 | Ledger rebuilt 2026-10-24 08:21; `cutover_t0` is 2026-10-10, so sales exist for 15 days and the run covers **13.79 days**. | With `min_history_days` 14 own velocity is **unavailable until the next rebuild** after 2026-10-24 08:xx; today every item would run on the market estimate alone (E-02). The simulation below ignored this gate to show what own velocity would add. |
+| R-03 | 4,295 market rows in 30 days, 0 with NULL `source` or `location_id`, all at the home location. | The `source = 'market'` / home filter drops nothing. |
+| R-04 | Target items: all sales are market sales at C-J, character wallets. | C-J market sales are the whole demand signal. |
+| R-05 | Every Production sale is `owner_type = character`; no corporation wallet involved. | No "characters only" rule needed now. |
+| R-12 | 4 manual overrides on target items, all `Buy`. | D8 applies to 4 rows. |
+| R-14 | Trading sells 11.7 M units in 30 days but none of the Production target items; Doctrine 40 rows. | No overlap, own velocity is not undercounted by other channels. |
+| R-24 | 1 open special order, integrated and netted against stock. | Covered by SF-1; check it in the phase 4 tests. |
+| R-25 | 3 other tenants have 1-2 targets each; one has 54.4 M home units. | The migration runs for them, default off. |
+| R-20 | 98 of 371 targets are materials of other targets (fuel blocks, decryptors, other components); none of the most-shared ones has a home target. | Lowering a home target does not starve a shared material today; keep the `target_reserved` path in the tests. |
+
+**Impact simulation** (247 rows with a home target, defaults of sections 5-6,
+min 0, max 3x current, first-day smoothing 0.3 and the fully converged value;
+live C-J quote available for all 247):
+
+- Velocity source: own 84, market 159, none 4 (Providence, Charon, Ion Siege
+  Blaster I, Satyr II -> `held_no_data`). History exists for 243 of 247.
+- Reasons: ok 144, `clamped_max` 26 (7 of them have a current target <= 10,
+  so 3x is only a few units), `below_min_margin` 73, `held_no_data` 4.
+- Today's planner gate already blocks the 73 `below_min_margin` rows (they
+  carry 62.9 B ISK of target at build cost that is not built today either).
+  35 rows have a Jita gate and a home margin on different sides of
+  `min_margin` (E-12).
+- Converged vs current home target: 54 up, 106 down, 76 to 0, 11 unchanged.
+  First day: 46 up, 97 down, 73 to 0, 31 unchanged.
+- Tied-up capital at build cost, rows that pass today's gate: **78.2 B now,
+  63.3 B after day 1, 51.0 B converged (-35 %)**. Over all 247 rows the
+  figures are 141.3 / 74.0 / 54.9 B.
+- Target / current ratio on the gate-passing rows: p25 0.20, median 0.60,
+  p75 1.48, p90 3.00. Current targets are mostly above 14 days of demand.
+- Largest increases: Sacrilege 8 -> 24, Dominix 5 -> 15, Ferox Navy Issue
+  10 -> 29, Industrial Jump Portal Generator I 1 -> 3, Retribution 20 -> 60.
+  Largest decreases: Ishtar 36 -> 0 (margin 0.06), Vargur 5 -> 1, Avalanche
+  2 -> 0, Nighthawk 10 -> 1, Widow 4 -> 2.
+- Nova Rage Torpedo (home target 200,000, build cost 1,111 ISK, margin 0.43)
+  is not a typo: the market estimate alone is about 14,000 units/day, the
+  target would settle near 319,000 (about 0.35 B ISK).
+- R-06: own vs market velocity (149 items with sales): own is higher for 84,
+  lower for 65, median own/market 1.17. The 10 % share is about right.
+- R-07: Goonmetrics/ESI history for 243 of 247 items.
+- R-08: all 247 rows had a live C-J quote today; the realized fallback was
+  never needed (it can still matter right after a sell-out).
+- R-09: live margin p10 0.00, median 0.18, p90 0.78; 74 below 0.10, 35 in
+  0.10-0.15, 60 in 0.15-0.30, 78 at or above 0.30. Margins differ enough for
+  the factor to matter; with `min_margin` 0.10 the factor is 1.0 at 0.30 and
+  reaches 2.0 at 0.50.
+- R-19: live vs realized margin (149 items): median gap 0.04, 16 items differ
+  by more than 0.20. The live margin is a usable factor input.
+- R-17: for 116 rows stock plus listed units already exceed backup plus the
+  converged target; about 65 B ISK of that excess cannot be freed by a lower
+  target (E-15). The page needs the "overstock" hint.
+- R-23: `plan_production` 9.7 s, `plan_asset_optimized` 3.6 s, the history
+  fetch for 247 types fits in that range; the daily freeze is safe inside a
+  plan request.
+
+**Findings that change the design or the defaults (not yet decided):**
+
+1. Rounding drives slow, expensive items to 0 or 1 although they sell
+   (Avalanche 2 -> 0, Vargur 5 -> 1, Widow 4 -> 2, Devoter 8 -> 2). 14
+   coverage days is shorter than the lead time of capital hulls (R-11).
+   Options: keep a minimum of 1 for rows with any sale in the window, or a
+   per-row/per-category coverage. Needs the user's decision before phase 3.
+2. The own signal is on the edge of `min_history_days` (13.79 of 14 days).
+   It becomes available with the next ledger rebuild; until then every row
+   runs on the market estimate. Plan the first real run after that.
+3. The `clamped_max` cap of 3x is tight for rows with a current target <= 10
+   (7 rows). Either accept it or add a floor of the max (for example
+   `max(3 x current, 10)`).
+4. Dropping the 73 low-margin rows to 0 does not change what is built today
+   (the gate does that already); it changes the listing targets on
+   `market_status` and the Buy List only for rows with a Jita gate (E-12).
+5. Nothing in the data argues against D1-D9. No default needs to change for
+   the factor, share (10 %), smoothing or dead band; coverage days and the
+   max/min rule are the open points above.
 ## 16. Implementation pitfalls
 
 Found by reading the code paths the implementation will touch
