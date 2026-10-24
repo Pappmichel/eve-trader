@@ -1178,3 +1178,29 @@ of the test server (server 1). Throwaway scripts, not committed.
 Still open: deploying to server 2 (production) and the first real preview there;
 R-18 depth; a "days listed" measure would need the orders' duration stored going
 forward.
+
+### 18.5 Further checks on the test server (2026-10-25)
+
+- **Own-velocity path with the real ledger.** The test server's ledger covers
+  7.9 days, so `dynamic_target_min_history_days` was lowered to 7 for one
+  preview run and restored to 14. Own sales then drive 64 rows, the market
+  estimate 190. Converged: 60 up, 106 down, 82 to 0, 6 unchanged, 76 below the
+  minimum margin, 7 at the max; capital of rows the gate passes 74.87 B now,
+  64.60 B after day 1, 50.31 B converged. Of 117 rows with both signals own is
+  the larger for 59, median own/market 1.0 - the 10 % market share is
+  calibrated. Rows driven by one bulk day show up as expected (Small Hydraulic
+  Bay Thrusters I: 95 % of its sales on one day, 500 -> 177).
+- **C-J order book (R-18 depth).** One read of the structure book (52,904
+  orders, token with docking access): every target item has sell orders; the
+  total listed volume of all sellers equals a median 125 days of the market
+  turnover assumed sellable (p25 70 d, p75 226 d), a median of 1 other seller
+  per item. The market is deeply supplied. For rows whose target would rise
+  the extra units are large against what the market turns over, e.g. Warrior II
+  1,000 -> 2,643 against 5,522 listed and about 135 units/day at the 10 % share
+  (20 days of that share). The 3x cap of D13 and the factor maximum are what
+  keeps this in check; do not raise them before watching real sales.
+- **deploy.sh rehearsal.** The real `deploy/deploy.sh` ran on the test server
+  against a local bare repository standing in for GitHub: `git pull`, `chmod`,
+  all 19 schema files with `ON_ERROR_STOP`, `pip install`, the gate migration,
+  restart and the active check all passed. Only the frontend build was
+  replaced by a stub (1 GB box); the build itself was verified locally.
