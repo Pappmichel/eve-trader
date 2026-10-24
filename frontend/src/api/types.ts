@@ -313,6 +313,52 @@ export interface StockTarget {
   backup_stock: number
   home_market_stock: number | null
   jita_market_stock: number | null
+  // Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 10). home_market_stock stays
+  // the configured value (the last fixed one for a dynamic row); the effective value is what the
+  // planners use while the global switch is on.
+  target_mode: 'fixed' | 'dynamic'
+  dynamic_min: number | null
+  dynamic_max: number | null
+  effective_home_market_stock: number | null
+  dynamic_day: string | null
+  reason: string | null
+  velocity_source: 'own' | 'market' | null
+  velocity_used: number | null
+  velocity_own: number | null
+  velocity_market: number | null
+  margin: number | null
+  margin_source: 'live' | 'realized' | null
+  factor: number | null
+  gate_margin: number | null
+  gate_blocked: boolean | null
+  max_day_share: number | null
+}
+
+export interface DynamicTargetSettings {
+  dynamic_targets_enabled: boolean
+  dynamic_target_window_days: number
+  dynamic_target_min_history_days: number
+  dynamic_target_market_share: number
+  dynamic_target_coverage_days: number
+  dynamic_target_reference_margin: number
+  dynamic_target_factor_min: number
+  dynamic_target_factor_max: number
+  dynamic_target_smoothing: number
+  dynamic_target_deadband: number
+  dynamic_target_day_cap_multiple: number
+}
+
+export interface StockTargetModeResult {
+  type_id: number
+  target_mode: 'fixed' | 'dynamic'
+  dynamic_min: number | null
+  dynamic_max: number | null
+}
+
+export interface AllStockTargetModesResult {
+  mode: 'fixed' | 'dynamic'
+  updated: number
+  skipped: { type_id: number; type_name: string; reason: string }[]
 }
 
 export interface InventoryRow {

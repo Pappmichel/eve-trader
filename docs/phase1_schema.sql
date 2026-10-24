@@ -189,6 +189,15 @@ CREATE POLICY tenant_isolation ON stock_targets
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 4.1: per-row dynamic home-market
+-- target. home_market_stock is never overwritten for a dynamic row, so
+-- switching back to 'fixed' restores exactly what the user had. ADD COLUMN IF
+-- NOT EXISTS skips the inline CHECK together with the column on a re-run.
+ALTER TABLE stock_targets ADD COLUMN IF NOT EXISTS target_mode TEXT NOT NULL DEFAULT 'fixed'
+    CHECK (target_mode IN ('fixed', 'dynamic'));
+ALTER TABLE stock_targets ADD COLUMN IF NOT EXISTS dynamic_min REAL;
+ALTER TABLE stock_targets ADD COLUMN IF NOT EXISTS dynamic_max REAL;
+
 CREATE TABLE IF NOT EXISTS manual_stock (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     type_id INTEGER NOT NULL,

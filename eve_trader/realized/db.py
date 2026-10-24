@@ -1291,6 +1291,35 @@ def count_realized_results(
     return int(row[0]) if row else 0
 
 
+def market_units_sold_daily(
+    start: datetime,
+    end: datetime,
+    location_id: int,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """(type_id, UTC day, units, profit, cost) per type and day for market
+    sales (`source = 'market'`, contract deliveries are not market demand)
+    at `location_id` between `start` (inclusive) and `end` (exclusive), in
+    the same channel/owner scope the realized report uses. One grouped query
+    for every type (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 5.1); profit
+    and cost are NULL-safe sums so a missing basis does not read as zero."""
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT type_id, (sale_date AT TIME ZONE 'UTC')::date AS day, "
+            "COALESCE(SUM(quantity), 0), SUM(profit), SUM(cost) "
+            "FROM prod_realized_results "
+            "WHERE source = 'market' AND location_id = ? AND sale_date >= ? AND sale_date < ?" + scope +
+            " GROUP BY type_id, day",
+            [int(location_id), start, end] + extra,
+        ).fetchall()
+
+
 def realized_totals(
     start: datetime,
     end: datetime,

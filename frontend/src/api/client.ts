@@ -364,6 +364,18 @@ export const productionApi = {
     home_market_stock?: number | null
     jita_market_stock?: number | null
   }) => patch<T.StockTarget>(`/api/production/stock-targets/${typeId}`, updates),
+  // Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 10).
+  setStockTargetMode: (typeId: number, req: {
+    mode: 'fixed' | 'dynamic'
+    dynamic_min?: number | null
+    dynamic_max?: number | null
+  }) => put<T.StockTargetModeResult>(`/api/production/stock-targets/${typeId}/mode`, req),
+  setAllStockTargetModes: (mode: 'fixed' | 'dynamic') =>
+    put<T.AllStockTargetModesResult>('/api/production/stock-targets/mode', { mode }),
+  recalculateDynamicTargets: () => post<{ written: number }>('/api/production/stock-targets/recalculate'),
+  dynamicTargetSettings: () => get<T.DynamicTargetSettings>('/api/production/settings/dynamic-targets'),
+  updateDynamicTargetSettings: (s: T.DynamicTargetSettings) =>
+    post<T.DynamicTargetSettings>('/api/production/settings/dynamic-targets', s),
   setManualStock: (typeId: number, count: number, locationId = 0) =>
     post('/api/production/manual-stock', { type_id: typeId, count, location_id: locationId }),
   // Manual stock table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9) -

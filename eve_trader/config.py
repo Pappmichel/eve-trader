@@ -276,6 +276,18 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "freight_cost_per_m3": (0, None),
     "purchase_region_id": (1, None),
     "purchase_structure_id": (1, None),
+    # -- Production: dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md
+    # section 9; window capped at 28 = goonmetrics_client.HISTORY_WINDOW_DAYS) --
+    "dynamic_target_window_days": (7, 28),
+    "dynamic_target_min_history_days": (1, 28),
+    "dynamic_target_market_share": (0, 1),
+    "dynamic_target_coverage_days": (1, 120),
+    "dynamic_target_reference_margin": (0, None),
+    "dynamic_target_factor_min": (0, None),
+    "dynamic_target_factor_max": (0, None),
+    "dynamic_target_smoothing": (0.01, 1),
+    "dynamic_target_deadband": (0, 1),
+    "dynamic_target_day_cap_multiple": (0, None),
 }
 
 

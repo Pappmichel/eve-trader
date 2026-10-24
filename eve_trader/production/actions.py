@@ -18,8 +18,8 @@ from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from ..paste_parser import merge_duplicate_stacks, parse_paste
-from . import esi_sync, invention, jobs, order_integrity, pricing, sde
-from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
+from . import dynamic_targets, esi_sync, invention, jobs, order_integrity, pricing, sde
+from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
     _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
@@ -40,10 +40,17 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
     PRODUCTION_CONFIG immediately (see Settings tab)."""
     try:
         validate_production_overrides(updates)  # structure_type/rig_tier enum check - see its docstring
+        validate_production_merged(cfg, updates)  # dynamic stock target cross-field checks (V-06)
         save_tenant_config_overrides("production", updates, cfg, cfg_type=ProductionConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
     invalidate_discover_cache()  # a settings change (margin gate, structure/rig, ...) can change the result set
+    # Allowlisted trigger (review finding V-01): any Production settings save can move a dynamic
+    # target (min_margin, fees, structure, dynamic_target_*), so today's frozen rows are dropped.
+    # Only touches storage when the feature is on or was just toggled (P-02).
+    if cfg.dynamic_targets_enabled or "dynamic_targets_enabled" in updates:
+        dynamic_targets.invalidate_today()
+        _mark_cached_production_plans_stale()
     invalidate_ship_margin_cache()  # structure/rig/fee settings feed build_cost/margins here too
     if "home_location_id" in updates:
         invalidate_production_locations_cache()  # _current_stock's location set includes this
@@ -206,7 +213,8 @@ def do_add_stock_target(type_name: str, backup_stock: float = 0,
 
 
 def do_update_stock_target(type_id: int, backup_stock: float | None = None,
-                            home_market_stock: float | None = None, jita_market_stock: float | None = None) -> dict:
+                            home_market_stock: float | None = None, jita_market_stock: float | None = None,
+                            cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Edits an *existing* stock target's numeric fields in place (GitHub
     issue #16 - "should be able to change the targets directly in the table,
     like the targets on the doctrine table"). Unlike do_add_stock_target,
@@ -223,6 +231,13 @@ def do_update_stock_target(type_id: int, backup_stock: float | None = None,
     if (backup_stock is not None and backup_stock < 0) or (home_market_stock is not None and home_market_stock < 0) \
             or (jita_market_stock is not None and jita_market_stock < 0):
         raise ActionError("Stock targets cannot be negative.")
+    # A dynamic row's home target is computed; with the global switch on an edit
+    # would silently change a hidden value (P-37/section 9). With the switch off
+    # every row acts as fixed, so editing the stored fixed value stays allowed.
+    if home_market_stock is not None and getattr(cfg, "dynamic_targets_enabled", False):
+        mode = storage.load_stock_target_modes().get(type_id, ("fixed",))[0]
+        if mode == "dynamic":
+            raise ActionError("This row's home market target is dynamic - switch it to fixed or edit min/max.")
     sde_type = storage.get_sde_type(type_id)
     if sde_type is None:
         raise ActionError(f"Unknown type_id {type_id} - refresh SDE first?")
@@ -233,9 +248,115 @@ def do_update_stock_target(type_id: int, backup_stock: float | None = None,
 
 
 def do_remove_stock_target(type_id: int) -> dict:
-    storage.delete_stock_target(type_id)
+    storage.delete_stock_target(type_id)  # also drops the item's frozen dynamic values (P-24)
     invalidate_discover_cache()  # this item is eligible for discovery again
     return {"removed": type_id}
+
+
+# ---------------------------------------------------------------- dynamic targets
+# docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 10. Every trigger below is on the
+# closed invalidation allowlist of review finding V-01.
+def do_list_stock_targets(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[dict]:
+    """GET /stock-targets: the configured values plus, for dynamic rows, the
+    effective value and the inputs behind it (a read that merges decisions
+    belongs in an action, P-35)."""
+    return dynamic_targets.list_stock_targets_view(cfg)
+
+
+def _validate_mode_bounds(dynamic_min: float | None, dynamic_max: float | None) -> None:
+    if dynamic_min is not None and dynamic_min < 0:
+        raise ActionError("Minimum cannot be negative.")
+    if dynamic_max is not None and dynamic_max < 0:
+        raise ActionError("Maximum cannot be negative.")
+    if dynamic_min is not None and dynamic_max is not None and dynamic_min > dynamic_max:
+        raise ActionError("Minimum cannot be larger than the maximum.")
+
+
+def do_set_stock_target_mode(type_id: int, mode: str, dynamic_min: float | None = None,
+                              dynamic_max: float | None = None) -> dict:
+    """Switches one row between 'fixed' and 'dynamic'. Switching on with no
+    min/max applies the defaults (min 0, max = max(3 x the current fixed home
+    value, 10) - D6/D13); a row without a home value must be given a max."""
+    if mode not in ("fixed", "dynamic"):
+        raise ActionError("Mode must be 'fixed' or 'dynamic'.")
+    _validate_mode_bounds(dynamic_min, dynamic_max)
+    rows = {r[0]: r for r in storage.load_stock_targets()}
+    if type_id not in rows:
+        raise ActionError(f"Type {type_id} is not a stock target.")
+    _old_mode, old_min, old_max = storage.load_stock_target_modes().get(type_id, ("fixed", None, None))
+    new_min = dynamic_min if dynamic_min is not None else old_min
+    new_max = dynamic_max if dynamic_max is not None else old_max
+    configured_home = float(rows[type_id][3] or 0.0)
+    if mode == "dynamic":
+        if new_min is None:
+            new_min = 0.0
+        if new_max is None:
+            if configured_home <= 0:
+                raise ActionError("This row has no home market target to derive a maximum from - enter a maximum.")
+            new_max = dynamic_targets.default_max(configured_home)
+        if new_max <= 0:
+            raise ActionError("A dynamic row needs a maximum above 0.")
+        _validate_mode_bounds(new_min, new_max)
+    storage.set_stock_target_mode(type_id, mode, new_min, new_max)
+    dynamic_targets.invalidate_today([type_id])
+    _mark_cached_production_plans_stale()
+    return {"type_id": type_id, "target_mode": mode, "dynamic_min": new_min, "dynamic_max": new_max}
+
+
+def do_set_all_stock_target_modes(mode: str) -> dict:
+    """Bulk "All to dynamic" / "All to fixed" in one transaction (D9). All to
+    dynamic applies the D6/D13 defaults to rows without min/max, keeps
+    existing ones, and skips rows with no home target (nothing to scale, D1,
+    E-26) - they come back in `skipped` with the reason, never half-applied.
+    All to fixed keeps min/max stored so a later All to dynamic restores them."""
+    if mode not in ("fixed", "dynamic"):
+        raise ActionError("Mode must be 'fixed' or 'dynamic'.")
+    modes = storage.load_stock_target_modes()
+    updates: list[tuple[int, str, float | None, float | None]] = []
+    skipped: list[dict] = []
+    for type_id, type_name, _backup, home, _jita in storage.load_stock_targets():
+        _m, old_min, old_max = modes.get(type_id, ("fixed", None, None))
+        if mode == "fixed":
+            updates.append((type_id, "fixed", old_min, old_max))
+            continue
+        if not home or home <= 0:
+            skipped.append({"type_id": type_id, "type_name": type_name,
+                            "reason": "no home market target (backup-only or Jita-only row)"})
+            continue
+        updates.append((type_id, "dynamic", 0.0 if old_min is None else old_min,
+                        dynamic_targets.default_max(home) if old_max is None else old_max))
+    updated = storage.set_stock_target_modes_bulk(updates)
+    dynamic_targets.invalidate_today()
+    _mark_cached_production_plans_stale()
+    return {"mode": mode, "updated": updated, "skipped": skipped}
+
+
+def do_recalculate_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """The "Recalculate" button: drops today's frozen rows and runs the same
+    freeze a plan run would (allowlisted trigger)."""
+    if not cfg.dynamic_targets_enabled:
+        raise ActionError("Dynamic targets are switched off (Settings -> Dynamic targets).")
+    try:
+        result = dynamic_targets.recalculate_dynamic_targets(cfg)
+    except ValueError as e:
+        raise ActionError(str(e)) from e
+    _mark_cached_production_plans_stale()
+    return result
+
+
+def do_dynamic_target_history(type_id: int, days: int = 30) -> dict:
+    days = max(1, min(int(days), 90))
+    rows = storage.dynamic_value_history(type_id, days)
+    for row in rows:
+        row["day"] = row["day"].isoformat()
+        row["computed_at"] = row["computed_at"].isoformat() if row["computed_at"] else None
+    return {"type_id": type_id, "rows": rows}
+
+
+def do_preview_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Read-only dry run for every row with a home target, switch ignored
+    (section 14.1): current vs. proposed with all inputs. Writes nothing."""
+    return dynamic_targets.preview_dynamic_targets(cfg)
 
 
 def do_set_manual_stock(type_id: int, count: float, location_id: int = 0) -> dict:
@@ -1262,7 +1383,7 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     0 producer characters). Not migrated to pipeline_runner."""
     if cfg.home_location_id is None:
         raise ActionError("No structure/location ID configured (Settings -> Market & Location).")
-    stock_targets = storage.load_stock_targets()
+    stock_targets = dynamic_targets.effective_stock_targets(cfg)
     if not stock_targets:
         raise ActionError("No stock targets configured.")
     # docs/ESI_ACCESS_PLAN.md Known gap 4 (closed): sharing-based, not the
@@ -1332,7 +1453,11 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # the user never intends to sell, so it must not be flagged as "unlisted"
     # (confirmed real bug: e.g. every Decryptor here is backup-only, yet all
     # of them showed up as "unlisted" yielding a useless, noisy list).
+    # A dynamic row is always meant for sale, even while its effective target
+    # is 0 (E-10) - otherwise its stock would drop out of this check exactly
+    # when the target fell.
     listed_target_ids = {t[0] for t in stock_targets if (t[3] or 0) > 0 or (t[4] or 0) > 0}
+    listed_target_ids |= dynamic_targets.dynamic_type_ids(cfg)
     unlisted: list[tuple[int, str, float]] = []
     for type_id, qty in stock_qty.items():
         if type_id not in listed_target_ids or qty <= 0:

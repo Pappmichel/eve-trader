@@ -204,6 +204,25 @@ class ProductionConfig:
     # back out).
     global_structure_resolution_fallback: bool = False
 
+    # -- Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md) --
+    # Global switch (D9): off = every row behaves as 'fixed', nothing is
+    # computed, no Goonmetrics call, no ledger read - plans are exactly the
+    # pre-feature ones. Prefix dynamic_target_ because _FIELD_RANGES is flat
+    # across all tool dataclasses. Window is capped at 28 days because the
+    # market history source (Goonmetrics / the ESI fallback) returns at most
+    # goonmetrics_client.HISTORY_WINDOW_DAYS = 28 days (review finding V-02).
+    dynamic_targets_enabled: bool = False
+    dynamic_target_window_days: int = 28        # own-sales and market-history window
+    dynamic_target_min_history_days: int = 14   # own velocity needs at least this many covered days
+    dynamic_target_market_share: float = 0.10   # share of region turnover assumed sellable (D2)
+    dynamic_target_coverage_days: float = 14    # target = velocity x this many days
+    dynamic_target_reference_margin: float = 0.30  # margin at which the profitability factor is 1.0
+    dynamic_target_factor_min: float = 0.25
+    dynamic_target_factor_max: float = 2.0
+    dynamic_target_smoothing: float = 0.3       # alpha of the exponential smoothing (D4)
+    dynamic_target_deadband: float = 0.10       # relative move below which the value stays put (D4)
+    dynamic_target_day_cap_multiple: float = 3.0  # one day's units are capped at this x the row's mean day (V-04); 0 = off
+
     # -- Fuzzwork SDE --
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
 
@@ -235,6 +254,33 @@ def validate_production_overrides(overrides: dict) -> None:
         if bad:
             raise ConfigError(f"stock_hangar_flags: {bad!r} are not known hangar divisions. "
                                f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
+
+
+def validate_production_merged(cfg, overrides: dict) -> None:
+    """Cross-field checks for the dynamic stock target settings
+    (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 9). They need the *merged*
+    config (current values + this update), which validate_production_overrides
+    never sees. Review finding V-06: only runs when the feature is on or the
+    update touches one of its fields - a tenant that never uses dynamic targets
+    must still be free to raise min_margin (it has no upper bound by design);
+    the runtime guard for reference_margin <= min_margin lives in the resolver."""
+    touches = any(key.startswith("dynamic_target") for key in overrides)
+    enabled = overrides.get("dynamic_targets_enabled", getattr(cfg, "dynamic_targets_enabled", False))
+    if not (touches or enabled):
+        return
+
+    def merged(key: str):
+        return overrides[key] if key in overrides else getattr(cfg, key)
+
+    if merged("dynamic_target_factor_min") > merged("dynamic_target_factor_max"):
+        raise ConfigError("dynamic_target_factor_min must not be larger than dynamic_target_factor_max")
+    if merged("dynamic_target_min_history_days") > merged("dynamic_target_window_days"):
+        raise ConfigError("dynamic_target_min_history_days must not be larger than dynamic_target_window_days")
+    if merged("dynamic_target_reference_margin") <= merged("min_margin"):
+        raise ConfigError(
+            "dynamic_target_reference_margin must be larger than min_margin "
+            f"({merged('dynamic_target_reference_margin')} <= {merged('min_margin')})"
+        )
 
 
 _production_config_yaml_cache: dict = {}
