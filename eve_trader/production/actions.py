@@ -23,7 +23,7 @@ from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_ove
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
     _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
-    build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
+    asset_plan_ready_jobs, build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
@@ -999,12 +999,23 @@ def do_list_cost_index_overrides() -> dict:
 # equivalent to keep in sync, unlike everything else in this module) and its
 # own "was a plan computed yet" precondition check, since that's about the
 # router's own state, not something a do_* action can meaningfully own.
-def do_get_logistics_status(build_list: list) -> list:
-    return logistics_status(build_list)
+#
+# Each of the two material reads takes either the Build List (default scope)
+# or the asset plan's jobs ("ready now" scope, docs/LOGISTICS_SCOPE_TOGGLE_
+# PLAN.md) - exactly one of the two.
+def _logistics_jobs(build_list: Optional[list], asset_jobs: Optional[list]) -> list:
+    if (build_list is None) == (asset_jobs is None):
+        raise ActionError("Pass either a build list or asset plan jobs.")
+    return build_list if build_list is not None else asset_plan_ready_jobs(asset_jobs)
 
 
-def do_get_distribution_recommendations(build_list: list) -> list:
-    return distribution_recommendations(build_list)
+def do_get_logistics_status(build_list: Optional[list] = None, asset_jobs: Optional[list] = None) -> list:
+    return logistics_status(_logistics_jobs(build_list, asset_jobs))
+
+
+def do_get_distribution_recommendations(build_list: Optional[list] = None,
+                                        asset_jobs: Optional[list] = None) -> list:
+    return distribution_recommendations(_logistics_jobs(build_list, asset_jobs))
 
 
 def do_get_market_restock() -> list:

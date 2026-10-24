@@ -319,8 +319,10 @@ export const productionApi = {
     post('/api/production/logistics/location-options', { category, location_id: locationId }),
   removeCategoryLocationOption: (category: string, locationId: number) =>
     del(`/api/production/logistics/location-options/${encodeURIComponent(category)}/${locationId}`),
-  logisticsStatus: () => get<T.LogisticsRow[]>('/api/production/logistics'),
-  distributionRecommendations: () => get<T.DistributionRow[]>('/api/production/logistics/distribution'),
+  logisticsStatus: (scope: T.LogisticsScope = 'build_list') =>
+    get<T.LogisticsRow[]>(`/api/production/logistics?scope=${scope}`),
+  distributionRecommendations: (scope: T.LogisticsScope = 'build_list') =>
+    get<T.DistributionRow[]>(`/api/production/logistics/distribution?scope=${scope}`),
   marketRestock: () => get<T.MarketRestockRow[]>('/api/production/logistics/market-restock'),
   inventionLogistics: () => get<T.LogisticsRow[]>('/api/production/logistics/invention'),
   t1BpcInventionNeeds: () => get<T.T1BpcInventionNeedRow[]>('/api/production/invention/t1-bpc-needs'),

@@ -950,6 +950,56 @@ def test_plan_is_isolated_per_tenant(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_logistics_scope_asset_ready_reads_asset_plan(monkeypatch):
+    # LOGISTICS_SCOPE_TOGGLE_PLAN.md: the default scope still needs the
+    # Build List, "asset_ready" reads the cached asset plan instead.
+    from eve_trader.production.models import AssetPlanJob
+    job = AssetPlanJob(type_id=10, type_name="Ship", blueprint_type_id=110, activity="Manufacturing",
+                       quantity=3, job_runs=3, runs_ready_now=1, job_time_seconds=1.0, unit_build_cost=None)
+    seen = {}
+
+    def fake_status(build_list=None, asset_jobs=None):
+        seen["status"] = (build_list, asset_jobs)
+        return []
+
+    def fake_distribution(build_list=None, asset_jobs=None):
+        seen["distribution"] = (build_list, asset_jobs)
+        return []
+
+    monkeypatch.setattr(production_actions, "do_get_logistics_status", fake_status)
+    monkeypatch.setattr(production_actions, "do_get_distribution_recommendations", fake_distribution)
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-logistics-scope")
+
+    resp = client.get("/api/production/logistics?scope=asset_ready")
+    assert resp.status_code == 400
+    assert "asset-optimized" in resp.json()["detail"]
+
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 1, "plan": {"jobs": [job], "order_progress": []}})
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+
+    assert client.get("/api/production/logistics?scope=asset_ready").json() == []
+    assert client.get("/api/production/logistics/distribution?scope=asset_ready").json() == []
+    assert seen["status"][0] is None and [j.type_id for j in seen["status"][1]] == [10]
+    assert seen["distribution"][0] is None and [j.type_id for j in seen["distribution"][1]] == [10]
+
+    # Default scope is unchanged: no Build List computed for this tenant.
+    assert client.get("/api/production/logistics").status_code == 400
+    assert client.get("/api/production/logistics?scope=bogus").status_code == 422
+
+
+def test_logistics_scope_asset_ready_empty_plan_is_not_an_error(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 0, "plan": {"jobs": [], "order_progress": []}})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-logistics-empty")
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+
+    monkeypatch.setattr(production_actions, "do_get_logistics_status",
+                        lambda build_list=None, asset_jobs=None: [] if asset_jobs == [] else None)
+    resp = client.get("/api/production/logistics?scope=asset_ready")
+    assert resp.status_code == 200 and resp.json() == []
+
+
 def test_plan_serializes_special_order_fields(monkeypatch):
     # SPECIAL_ORDERS_INTEGRATION_PLAN.md D8/D12/D16: the cached plan keeps
     # the order attribution, the reservation and order_progress.

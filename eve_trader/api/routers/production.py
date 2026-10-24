@@ -16,7 +16,7 @@ already isolates every other piece of tenant state in this app.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -533,20 +533,36 @@ def get_category_cost_index_overrides():
     return storage.load_category_cost_index_overrides()
 
 
-@router.get("/logistics", response_model=list[schemas.LogisticsRow])
-def get_logistics_status():
+LogisticsScope = Literal["build_list", "asset_ready"]
+
+
+def _logistics_jobs_kwargs(scope: LogisticsScope) -> dict:
+    """Which cached plan the Logistics material tables read
+    (docs/LOGISTICS_SCOPE_TOGGLE_PLAN.md). "build_list" needs a non-empty
+    Build List, as before. "asset_ready" needs a computed asset plan, but an
+    empty jobs list is a valid state (nothing to build) - the action then
+    returns no rows."""
+    if scope == "asset_ready":
+        asset = _last_asset_plan.get(_tenant_key())
+        if asset is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No asset-optimized build list computed yet. Run 'Refresh Asset Build List' first.")
+        return {"asset_jobs": asset.get("jobs") or []}
     plan = _last_plan.get(_tenant_key())
     if not plan or not plan.get("build_list"):
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_logistics_status, build_list=plan["build_list"])
+    return {"build_list": plan["build_list"]}
+
+
+@router.get("/logistics", response_model=list[schemas.LogisticsRow])
+def get_logistics_status(scope: LogisticsScope = "build_list"):
+    return _wrap(actions.do_get_logistics_status, **_logistics_jobs_kwargs(scope))
 
 
 @router.get("/logistics/distribution", response_model=list[schemas.DistributionRow])
-def get_distribution_recommendations():
-    plan = _last_plan.get(_tenant_key())
-    if not plan or not plan.get("build_list"):
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_distribution_recommendations, build_list=plan["build_list"])
+def get_distribution_recommendations(scope: LogisticsScope = "build_list"):
+    return _wrap(actions.do_get_distribution_recommendations, **_logistics_jobs_kwargs(scope))
 
 
 @router.get("/logistics/market-restock", response_model=list[schemas.MarketRestockRow])
