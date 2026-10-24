@@ -1233,6 +1233,13 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
   pushed is English. Some existing files still contain German; don't spread
   that, and translate a file only when you are already editing it or the user
   asks.
+- **Branch names must be meaningful (confirmed 2026-10-24).** When creating
+  a branch, name it after the work it carries, in kebab-case with a type
+  prefix (`feature/`, `fix/`, `docs/`, `refactor/`, `chore/`) - e.g.
+  `feature/dynamic-stock-targets`. Never keep auto-generated names such as
+  `ccr-<hash>-<suffix>`, `cursor/<topic>-<hash>`, `worktree-<name>`, or
+  `pr-<number>`; rename the branch (or create a properly named one) before
+  pushing. Delete branches once merged.
 - **User preference (confirmed 2026-08-22): delegate to an Opus subagent
   without asking first** whenever a task/sub-task is algorithmically heavy
   (e.g. a real optimization/LP formulation, a tricky correctness-critical
