@@ -1,7 +1,8 @@
 # Dynamic stock targets - plan
 
-Status: **all decisions confirmed (sections 2 and 14), design reviewed
-against the code (sections 3-11), nothing implemented.** Next step: phase 1.
+Status: **all decisions confirmed (sections 2 and 15), design reviewed
+against the code (sections 3-11), nothing implemented.** Before phase 1: the real-data
+checks in section 14 (R-01..R-05 by SQL); the rest via the preview in phase 3b.
 
 ## 1. Goal
 
@@ -178,7 +179,7 @@ both available            -> max(own, market)          (D2)
   (Jita margin when the row has a Jita target) - see E-12.
 - `cost` = what the planner would actually pay: the build cost from
   `cost_memo`, or the buy price if `_buy_or_build_decision` says Buy, including a
-  manual override (D8, section 14).
+  manual override (D8, section 15).
 - No home sell quote (common right after we sold out, since we may be the
   only seller at C-J) -> fall back to the **realized** margin over the same
   window (`sum(profit) / sum(cost)` from 5.1), `margin_source =
@@ -380,11 +381,105 @@ silently changing a hidden value.
 | 1 | Schema (4.1, 4.2), storage functions (4.3), settings fields + validation (9) | storage tests green, schema applied twice without error |
 | 2 | Signals (5): ledger query, Goonmetrics wrapper, margin with fallback | signal tests green |
 | 3 | Pure resolver (6) | resolver tests green |
+| 3b | Preview action + CLI (14.1), run on real data, answer R-01..R-14, adjust defaults here | defaults confirmed from real data |
 | 4 | Freeze lifecycle (7) + planner integration (8) + C5-C8 | full `pytest` green incl. regression test E-19 |
 | 5 | Actions, router, CLI, UI, Settings section (10) | router tests, live HTTP check, browser check |
 | 6 (optional) | Capital budget / job-slot limit | separate decision |
 
-## 14. Decision D8 (confirmed with the user 2026-10-24)
+## 14. Checks against real data before phase 1
+
+The design above was checked against the code only. These points depend on
+the real stock list, ledger and config and can change defaults or even the
+design. All queries are read-only. Run them on the server as the owner role
+with the tenant filter, e.g.
+`docker exec -it eve-trader-pg psql -U postgres -d eve_trader -v t="'<tenant uuid>'"`,
+and check the real `config.yaml` (not `config.example.yaml`) for
+`home_location_id`, `min_margin`, `market_fees` and `reference_region_id`.
+
+| Id | Question | Why it matters | Affects |
+|---|---|---|---|
+| R-01 | How many stock targets, how many with a home target, Jita target, backup only? | which rows can go dynamic at all; rows with home = 0 need a manual max (D6) | D1, D6 |
+| R-02 | Does the ledger have recent rows? `ran_at` of the last run, T0, days covered | own velocity needs >= 14 covered days; if the ledger is rarely rebuilt, own velocity is always old | 5.1, min history |
+| R-03 | Are `source` and `location_id` filled on `prod_realized_results`? Share of NULL | the filter `source = 'market' AND location_id = home` drops NULL rows; if many are NULL, own velocity reads 0 | 5.1 |
+| R-04 | Share of sales at C-J vs. elsewhere, market vs. contract, per target item | confirms that C-J market sales are the real demand signal (E-07, E-17) | 5.1 |
+| R-05 | Are sales booked from a **corporation** wallet shared with Production? | CLAUDE.md: a shared corp wallet mixes other members' fills into the ledger, which would inflate own velocity | 5.1 (may need: characters only) |
+| R-06 | Own units sold per day vs. region traded volume (Goonmetrics, `reference_region_id`) per item | calibrates the 10% market share; if own sales are often far above 10% the market floor is useless, far below it inflates targets | D2 default |
+| R-07 | How many target items have Goonmetrics / ESI history in `reference_region_id` at all? | items without history depend only on own sales | E-01, E-04 |
+| R-08 | How often is there no C-J sell quote for a target item, and is the quote usually our own order? | frequency of the realized-margin fallback; our own listing sets the margin | 5.4, E-11 |
+| R-09 | Distribution of live home margins of target items vs. 15% / 30% | if most items are above 30%, every factor sits at 2.0 and nothing is differentiated; reference margin must be set from real data | 6, reference margin |
+| R-10 | Current home target vs. "velocity x 14 days" per item (dry run) | shows how far targets would move on day one; big jumps mean coverage days or share are off | coverage days, D6 max |
+| R-11 | Build lead time per target item (T2 invention + build, capitals) vs. 14 coverage days | coverage must cover at least the lead time, or the target is always short | coverage days (maybe per category) |
+| R-12 | Manual Build/Buy overrides on target items | how often D8 applies | D8 |
+| R-13 | Capital tied up in home targets today vs. after the dry run | a factor of 2.0 on many items can double tied-up capital; decides whether the budget phase is needed | phase 6 |
+| R-14 | Does Trading or Station Trading also sell the same type at C-J? | the ledger books those sales on another channel; Production velocity then undercounts real demand | 5.1 |
+
+Queries (owner role, `:t` = tenant id):
+
+```sql
+-- R-01
+SELECT count(*) AS targets,
+       count(*) FILTER (WHERE COALESCE(home_market_stock,0) > 0) AS with_home,
+       count(*) FILTER (WHERE COALESCE(jita_market_stock,0) > 0) AS with_jita,
+       count(*) FILTER (WHERE COALESCE(home_market_stock,0) = 0
+                          AND COALESCE(jita_market_stock,0) = 0) AS backup_only
+FROM stock_targets WHERE tenant_id = :t;
+
+-- R-02
+SELECT run_id, ran_at, cutover_t0, owner_scope_hash IS NOT NULL AS has_fp
+FROM prod_ledger_runs WHERE tenant_id = :t ORDER BY run_id DESC LIMIT 3;
+SELECT min(sale_date), max(sale_date), count(*)
+FROM prod_realized_results WHERE tenant_id = :t AND channel = 'production';
+
+-- R-03 / R-04 / R-05 (replace <home> with home_location_id)
+SELECT source, owner_type, (location_id = <home>) AS at_home,
+       count(*) AS sales, sum(quantity) AS units
+FROM prod_realized_results r
+WHERE tenant_id = :t AND channel = 'production'
+  AND sale_date >= now() - interval '30 days'
+  AND type_id IN (SELECT type_id FROM stock_targets WHERE tenant_id = :t)
+GROUP BY 1, 2, 3 ORDER BY units DESC;
+
+-- R-06 / R-10 own side: units per day vs. current home target
+SELECT s.type_id, s.type_name, s.home_market_stock,
+       COALESCE(sum(r.quantity), 0) / 30.0 AS own_per_day,
+       COALESCE(sum(r.quantity), 0) / 30.0 * 14 AS own_x14,
+       COALESCE(sum(r.profit), 0) / NULLIF(sum(r.cost), 0) AS realized_margin
+FROM stock_targets s
+LEFT JOIN prod_realized_results r
+  ON r.tenant_id = s.tenant_id AND r.type_id = s.type_id
+ AND r.channel = 'production' AND r.source = 'market' AND r.location_id = <home>
+ AND r.sale_date >= now() - interval '30 days'
+WHERE s.tenant_id = :t AND COALESCE(s.home_market_stock, 0) > 0
+GROUP BY 1, 2, 3 ORDER BY own_per_day DESC;
+
+-- R-12
+SELECT count(*) FROM manual_build_buy m
+JOIN stock_targets s ON s.tenant_id = m.tenant_id AND s.type_id = m.type_id
+WHERE m.tenant_id = :t;
+```
+
+R-06 (market side), R-07, R-08, R-09, R-11 and R-13 need live prices and
+the planner, which SQL cannot give. They are covered by a **dry run**
+(below) instead of hand queries.
+
+### 14.1 Recommendation: dry run before the planner uses anything
+
+Reorder the phases so that the resolver runs **in preview mode** before it
+changes any plan:
+
+- Phases 1-3 as planned, plus a `do_preview_dynamic_targets()` action and a
+  CLI `eve-trader production targets preview` that compute the proposed
+  value for **every** row with a home target (fixed rows included), print
+  current vs. proposed with all inputs (own and market velocity, margin and
+  its source, factor, reason), and write nothing.
+- Run it on the real tenant, answer R-06 to R-13 from its output, adjust
+  the defaults (market share, reference margin, coverage days) in this
+  file, and only then do phase 4 (planner integration).
+- Optional: run the preview daily for one to two weeks and compare
+  proposed values with what actually sold, before switching the first rows
+  to dynamic.
+
+## 15. Decision D8 (confirmed with the user 2026-10-24)
 
 - **D8 - manual Build/Buy override on a dynamic row:** D5 applies anyway -
   below `min_margin` the effective target is 0. The override only decides
