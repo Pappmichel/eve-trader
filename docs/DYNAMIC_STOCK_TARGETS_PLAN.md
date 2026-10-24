@@ -25,6 +25,23 @@ sections 5, 6 and 9 if a result calls for it.
       whether own velocity counts character wallets only.
 - [ ] R-12 Number of manual Build/Buy overrides on target items (D8).
 - [ ] R-14 Do Trading / Station Trading sell the same types at C-J?
+- [ ] R-16 Stockout days per item at C-J in the window (feedback-loop bias).
+- [ ] R-17 Items whose stock + listings already exceed the simulated target.
+- [ ] R-18 C-J order book per item: our listings vs. other sellers.
+- [ ] R-19 Live vs. realized margin per item (is the live margin reliable?).
+- [ ] R-20 Dual-role items: targets that are also materials of other targets.
+- [ ] R-24 Open integrated special orders on target items.
+- [ ] R-25 Other tenants with Production stock targets (rollout scope).
+- [ ] R-27 Backup taken; schema change applied twice on a copy without error.
+- [ ] R-15 Backtest of the formula over the last 60-90 days vs. actual
+      sales (stockouts / unsold stock) - same throwaway script as the
+      impact simulation, extended with history.
+- [ ] R-21 / R-22 Capacity: simulated build list vs. free job slots,
+      invention slots/datacores, haul m3 (from the impact simulation).
+- [ ] R-23 Plan runtime today, plus the Goonmetrics call for N rows from the
+      server.
+- [ ] R-26 Volatility of the C-J quote and region movement (smoothing /
+      dead band defaults).
 - [ ] **Impact on the current stock list (before any implementation).**
       Simulate the formula of section 6 for every current stock target
       with a home target, using real data, and write nothing. Method: a
@@ -517,6 +534,19 @@ and check the real `config.yaml` (not `config.example.yaml`) for
 | R-12 | Manual Build/Buy overrides on target items | how often D8 applies | D8 |
 | R-13 | Capital tied up in home targets today vs. after the dry run | a factor of 2.0 on many items can double tied-up capital; decides whether the budget phase is needed | phase 6 |
 | R-14 | Does Trading or Station Trading also sell the same type at C-J? | the ledger books those sales on another channel; Production velocity then undercounts real demand | 5.1 |
+| R-15 | Backtest: what would the formula have set over the last 60-90 days (ledger sales + ESI daily history, which covers a year), and would that have run out of stock or left stock unsold compared with what actually sold? | the only check of the formula against real past demand before it changes a plan | all defaults |
+| R-16 | Stockout days per item: days without an own sell order at C-J (`ledger_market_orders`, `issued` + duration / `state`) in the window | own velocity is too low for items that were often sold out (feedback loop E-13); decides whether velocity must be divided by listed days instead of window days | 5.1 |
+| R-17 | Dead stock: items whose current stock + listed quantity is already above the simulated target | capital that a lower target cannot free (E-15); may need a separate "overstock" hint on the page | UI, expectations |
+| R-18 | C-J order book per item: our listed quantity vs. other sellers, price gap | a higher target only pays if the market absorbs it; with strong competition a raised target lowers the price instead | market share, factor max |
+| R-19 | Live margin (`margin_home`) vs. realized margin per item over the window | a large gap means the live margin is unreliable as the factor input (fees, freight, our own price setting the quote) | 5.4 |
+| R-20 | Dual-role items: stock targets that are also materials of other stock targets | their demand also comes from the other targets' build trees; a lower home target must not starve those (`target_reserved` path) | 8, tests |
+| R-21 | Capacity: would the simulated build list fit the free job slots and the asset plan's slot-days target, incl. invention slots and datacores for T2? | more targets than the slots can build only grows the backlog | coverage days, factor max |
+| R-22 | Haul volume: buy-list m3 today vs. simulated (freight to C-J) | higher targets mean more freight; freight capacity may be the real limit | factor max, phase 6 |
+| R-23 | Runtime: current `plan_production` / `plan_asset_optimized` time and the extra Goonmetrics call for N dynamic rows from the server | the daily freeze runs inside the first plan of the day; must not push the request past its timeout | 7 |
+| R-24 | Integrated special orders currently open on target items | they are netted first; check that the simulated target plus open orders still makes sense | 8 |
+| R-25 | Other tenants with Production stock targets | rollout scope; default off for all, but the migration runs for every tenant | rollout |
+| R-26 | Day-to-day volatility of the C-J sell quote and of region movement for target items | checks whether smoothing 0.3 and the 10% dead band are enough to keep targets calm | D4 defaults |
+| R-27 | Backup before the schema change; apply the schema change twice on a copy | the migration touches `stock_targets`, a table every Production page reads | phase 1 |
 
 Queries (owner role, `:t` = tenant id):
 
