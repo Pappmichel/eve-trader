@@ -74,6 +74,9 @@ Non-goals:
 - **D6 - defaults on switch to dynamic:** min = 0, max = 3x the current
   fixed home-market value; if that value is 0 the user must enter a max.
 - **D7 - T2 invention:** the BPC stockpile follows the effective target.
+- **D9 - global switch (confirmed 2026-10-24):** one tenant-wide switch
+  turns the feature on and off for all items at once, plus bulk actions
+  that set every row to dynamic or to fixed (section 10.1).
 
 ## 3. Current state - every consumer of the quantities
 
@@ -141,7 +144,8 @@ cannot happen). Retention: rows older than 90 days are deleted on write.
 ### 4.3 Storage functions
 
 - `load_stock_target_modes() -> dict[type_id, (mode, min, max)]`.
-- `load_effective_stock_targets() -> list[5-tuple]`: configured rows, but
+- `load_effective_stock_targets() -> list[5-tuple]`: with the global switch
+  off (D9) exactly `load_stock_targets()`; otherwise configured rows, but
   for a dynamic row the home value is the **newest frozen `effective_qty`
   on or before today**; with no frozen row at all, the configured
   `home_market_stock` (the pre-switch value). Read-only, no pricing - this is
@@ -269,6 +273,13 @@ runs, so rounding the target to run multiples would only double-round.
 - **Smoothing base is the newest row strictly before today** (E-05), so
   recomputing today (button, settings change) is idempotent and never
   smooths twice.
+- **Global switch off (D9):** `ensure_dynamic_targets_frozen` returns
+  without computing or writing anything; planners and pages use the
+  configured values. Frozen rows stay as history.
+- **Global switch turned on again:** a row whose newest frozen value is
+  older than `dynamic_target_window_days` restarts from its configured
+  home value (as on the first day), so a long pause does not resume from
+  stale numbers; a shorter pause resumes from the last frozen row.
 - **Recompute today** (delete today's rows; the next plan run computes them
   again) on: a Production settings save (`min_margin`, fees, structure,
   any `dynamic_target_*` field all move the result - invalidate on every
@@ -291,6 +302,8 @@ runs, so rounding the target to run multiples would only double-round.
   The rest of both planners is unchanged.
 - The type universe priced by `_PlanContext` already covers every stock
   target's closure, so the resolver needs no extra prices.
+- Every integration point checks the global switch first (D9): off means
+  the code path is exactly today's.
 - C5-C8 switch from `load_stock_targets()` to
   `load_effective_stock_targets()`; C5 and C8 also consult the mode
   (E-09, E-10).
@@ -305,6 +318,7 @@ runs, so rounding the target to run multiples would only double-round.
 
 | Field | Default | Range |
 |---|---|---|
+| `dynamic_targets_enabled` | false | bool (D9, global switch) |
 | `dynamic_target_window_days` | 30 | 7..90 |
 | `dynamic_target_min_history_days` | 14 | 1..90 |
 | `dynamic_target_market_share` | 0.10 | 0..1 |
@@ -339,6 +353,7 @@ silently changing a hidden value.
 - `GET /api/production/stock-targets` gains `target_mode`, `dynamic_min`,
   `dynamic_max`, `effective_home_market_stock`, `dynamic_day`, `reason`,
   `velocity_*`, `margin`, `margin_source`, `factor` (bare reads, no logic).
+- Global switch and bulk actions: see 10.1.
 - `do_recalculate_dynamic_targets()` + `POST /stock-targets/recalculate`
   (runs the freeze now, same function as the planner; `ActionError` when no
   `home_location_id`).
@@ -350,6 +365,39 @@ silently changing a hidden value.
   effective value. Settings page: a "Dynamic targets" section.
 - CLI: `eve-trader production targets mode|recalculate|show` calling the
   same `do_*`, with `--tenant-id` inside `tenant_scope.enter_tenant`.
+
+### 10.1 Global switch and bulk actions (D9)
+
+Two separate controls, so turning the feature off never loses the per-row
+setup:
+
+- **Global switch** `ProductionConfig.dynamic_targets_enabled` (default
+  `false`), saved via the normal `do_update_settings` path (type-checked,
+  per tenant). Shown at the top of the Stock Targets page and in the
+  "Dynamic targets" Settings section.
+  - **Off:** every row behaves as `fixed`, nothing is computed, no
+    Goonmetrics call, no ledger read, plans are exactly today's. Per-row
+    mode, min and max are kept. The page shows the mode column greyed out
+    with "Dynamic targets are off".
+  - **On:** rows marked `dynamic` use the computed value; `fixed` rows stay
+    fixed.
+  - Toggling deletes today's frozen rows (the next plan computes them
+    again) and marks cached plans stale.
+- **Bulk actions** "All to dynamic" / "All to fixed":
+  `do_set_all_stock_target_modes(mode)`, router `PUT
+  /api/production/stock-targets/mode`, CLI `eve-trader production targets
+  mode --all dynamic|fixed`.
+  - "All to dynamic" applies the D6 defaults to every row that has no
+    min/max yet and keeps existing min/max. Rows without a home target
+    (home = 0, no max) are skipped and returned in a `skipped` list with
+    the reason, never half-applied. Backup-only rows are skipped too (D1:
+    nothing to scale).
+  - "All to fixed" sets every row to `fixed`; min/max stay stored, so "All
+    to dynamic" later restores them.
+  - Both run in one transaction and confirm with the affected row count
+    in the UI before applying.
+- "Switch everything on" for a user = global switch on + "All to dynamic";
+  "switch everything off" = global switch off (one click, reversible).
 
 ## 11. Edge cases and pitfalls (register)
 
@@ -378,6 +426,9 @@ silently changing a hidden value.
 | E-21 | One-day price spike | smoothing + dead band + row max |
 | E-22 | Several tenants, same item | everything per tenant (RLS table, per-tenant config) |
 | E-23 | T2 target rises faster than BPCs exist | invention row follows (D7); the build waits for BPCs as today |
+| E-24 | Global switch off with dynamic rows configured | everything fixed, no computation, per-row setup kept (D9) |
+| E-25 | Global switch on again after a long pause | rows with a frozen value older than the window restart from the configured value |
+| E-26 | "All to dynamic" with rows that have no home target | skipped and listed, never half-applied |
 
 ## 12. Tests
 
@@ -396,6 +447,11 @@ silently changing a hidden value.
   write a frozen row.
 - C5/C8: a dynamic row with effective 0 stays in `market_status` and in the
   unlisted check.
+- Global switch: off -> planners, pages and Sorting produce exactly
+  today's output with dynamic rows configured; no frozen row is written;
+  on -> dynamic rows used. Re-enable after a long pause restarts from the
+  configured value. Bulk actions: skipped rows, min/max kept, one
+  transaction.
 - Settings: cross-field validation, invalidation of today's rows and stale
   flag on save.
 - Router tests by module monkeypatch (CLAUDE.md), then live checks against
