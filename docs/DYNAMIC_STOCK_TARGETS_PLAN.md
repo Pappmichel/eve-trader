@@ -1,7 +1,8 @@
 # Dynamic stock targets - plan
 
 Status: **all decisions confirmed (sections 2 and 15), design reviewed
-against the code (sections 3-11), nothing implemented.** Before phase 1: the real-data
+against the code (sections 3-11), implementation pitfalls in section 16,
+nothing implemented.** Before phase 1: the real-data
 checks in section 14 (R-01..R-05 by SQL) and the impact simulation on the
 current stock list (TODO list below); the rest via the preview in phase 3b.
 
@@ -182,8 +183,11 @@ cannot happen). Retention: rows older than 90 days are deleted on write.
 ### 4.3 Storage functions
 
 - `load_stock_target_modes() -> dict[type_id, (mode, min, max)]`.
-- `load_effective_stock_targets() -> list[5-tuple]`: with the global switch
-  off (D9) exactly `load_stock_targets()`; otherwise configured rows, but
+- `effective_stock_targets(cfg) -> list[5-tuple]` - **not** in `storage.py`
+  but in `production/dynamic_targets.py`, built on top of
+  `storage.load_stock_targets()` (P-01): with the global switch off (D9) it
+  returns `storage.load_stock_targets()` unchanged and reads nothing else;
+  otherwise configured rows, but
   for a dynamic row the home value is the **newest frozen `effective_qty`
   on or before today**; with no frozen row at all, the configured
   `home_market_stock` (the pre-switch value). Read-only, no pricing - this is
@@ -500,12 +504,12 @@ setup:
 | Phase | Content | Done when |
 |---|---|---|
 | 0 | Decisions | done 2026-10-24 |
-| 1 | Schema (4.1, 4.2), storage functions (4.3), settings fields + validation (9) | storage tests green, schema applied twice without error |
-| 2 | Signals (5): ledger query, Goonmetrics wrapper, margin with fallback | signal tests green |
+| 1 | Golden baseline of today's plans (P-05); schema (4.1, 4.2), storage functions (4.3), settings fields + validation (9) | storage tests green, schema applied twice without error; P-24, P-26..P-33 checked |
+| 2 | Signals (5): ledger query, Goonmetrics wrapper, margin with fallback | signal tests green; P-12..P-17 checked |
 | 3 | Pure resolver (6) | resolver tests green |
-| 3b | Preview action + CLI (14.1), run on real data, answer R-01..R-14, adjust defaults here | defaults confirmed from real data |
-| 4 | Freeze lifecycle (7) + planner integration (8) + C5-C8 | full `pytest` green incl. regression test E-19 |
-| 5 | Actions, router, CLI, UI, Settings section (10) | router tests, live HTTP check, browser check |
+| 3b | Preview action + CLI (14.1), run on real data, answer R-01..R-27, adjust defaults here | defaults confirmed from real data |
+| 4 | Freeze lifecycle (7) + planner integration (8) + C5-C8 (P-01..P-11, P-18..P-25) | full `pytest` green incl. regression test E-19 |
+| 5 | Actions, router, CLI, UI, Settings section (10) | router tests, live HTTP check, browser check; P-34..P-40 checked |
 | 6 (optional) | Capital budget / job-slot limit | separate decision |
 
 ## 14. Checks against real data before phase 1
@@ -613,6 +617,208 @@ changes any plan:
 - Optional: run the preview daily for one to two weeks and compare
   proposed values with what actually sold, before switching the first rows
   to dynamic.
+
+## 16. Implementation pitfalls
+
+Found by reading the code paths the implementation will touch
+(2026-10-24). Each one is a concrete way the change could break something
+that works today. Every phase in section 13 must check its pitfalls before
+it is called done.
+
+### 16.1 Tests and existing call sites
+
+- **P-01 Monkeypatched `storage.load_stock_targets`.** 48 call sites in 10
+  test files (`test_production_engine.py`, `test_special_orders_
+  integration.py`, `test_sorting_engine.py`, `test_production_unlisted_
+  stock.py`, `test_stock_value.py`, `test_portfolio*.py`, ...) inject stock
+  targets by monkeypatching that function. A new SQL read in `storage.py`
+  used by the planners would bypass those patches and silently test
+  nothing (or hit the real DB). Therefore `effective_stock_targets()` sits
+  in `dynamic_targets.py`, calls `storage.load_stock_targets()` itself, and
+  with the switch off returns its result unchanged.
+- **P-02 Fakes without the new functions.** Some tests replace storage
+  functions with fakes. With the switch off no new storage function may be
+  called at all (check `cfg.dynamic_targets_enabled` first, before
+  `load_stock_target_modes()`), so these tests keep passing untouched.
+- **P-03 Tuple shape.** `load_stock_targets()` keeps its 5-tuple. Do not add
+  the mode as a sixth element: every `for a, b, c, d, e in ...` unpack in
+  engine, actions, router and tests would raise.
+- **P-04 Router tests monkeypatch module objects** (CLAUDE.md). New routes
+  call `actions.do_*` through the module import, never `from ... import
+  do_x`.
+- **P-05 Regression baseline first.** Before touching the planners, record
+  the current `plan_production` / `plan_asset_optimized` output for a
+  fixture set as a golden test; the "fixed-only tenant is byte-identical"
+  claim (E-19) is only provable against a baseline taken before the change.
+
+### 16.2 Planner integration
+
+- **P-06 Order inside the planners.** `plan_production` unpacks
+  `stock_targets = ctx.stock_targets` right after building the context and
+  then calls `_base_runs(...)` with it; `plan_asset_optimized` calls
+  `_base_runs(..., ctx.stock_targets, ...)` early too. The effective rows
+  must be assigned **before** both, or the overbuild buffer is sized from
+  the configured values while the shortfall uses the dynamic ones.
+- **P-07 Shared memos.** The resolver needs `cost_memo`, `t2_memo`,
+  `alchemy_memo`, `selected_decryptors`, `cost_indices`, `adjusted_prices`
+  - the planner creates the memos after the context. Create them first,
+  pass the same objects to the resolver and the planner. A fresh memo in
+  the resolver doubles pricing time and can give a different margin than
+  the gate.
+- **P-08 Same margin arguments as the gate.** `_unit_cost` must be called
+  with the same arguments the planner uses (`depth 0`, same decryptors,
+  same `alchemy_memo`), and the source via `_buy_or_build_decision` with
+  `classify_activity`'s `bp`. Otherwise the factor and the gate can
+  disagree about the same item.
+- **P-09 Not in `_PlanContext.__init__`** (E-14). Nine callers construct it
+  (Doctrine, special orders, discovery, ship margins, item margin, unlisted
+  stock, `planner_unit_values` for realized valuation, both planners). Only
+  the two planners and the explicit recalculate / preview actions call the
+  resolver.
+- **P-10 Market-intent rules.** `market_status` skips rows with home and
+  Jita both falsy (#33), `market_restock` keeps only home > 0, the unlisted
+  check uses home > 0 or Jita > 0. All three need the dynamic type ids
+  (`dynamic_targets.dynamic_type_ids(cfg)`, empty with the switch off) in
+  addition to the effective tuple (E-09, E-10). `0` and `NULL` mean the
+  same there; the effective value of a dynamic row is always a number,
+  never `NULL`.
+- **P-11 Sorting.** `sorting/engine.py` reads
+  `market_listing_shortfall_by_type` - covered by switching that function,
+  but the Sorting tests monkeypatch `load_stock_targets` too (P-01).
+
+### 16.3 Signals
+
+- **P-12 Ledger internals.** `report._run_state()` /
+  `report._production_scope()` are private helpers of the realized report.
+  Do not copy their logic (the D11 fingerprint check would drift). Move
+  them to a small shared function (e.g. `production/realized/scope.py`)
+  used by both the report and the resolver, or call them through one
+  public wrapper.
+- **P-13 Goonmetrics days without trades.** `_scan_build_candidates`
+  averages `movement` over the *returned* points. If a day without trades
+  is missing from the answer, that mean overstates turnover for slow items
+  (capitals). Divide by the calendar days of the window and count missing
+  days as 0. The ESI fallback returns up to a year - cut it to the same
+  window.
+- **P-14 No DB connection held across network calls.** The Goonmetrics /
+  ESI history fetch takes seconds. Do not run it inside
+  `storage.batch_session()` or an open `connect()` (pool max 10, CLAUDE.md);
+  read ledger rows, close, fetch history, then write.
+- **P-15 Threads and tenant context.** `price_history_chunked` uses a
+  thread pool; the Goonmetrics path does not touch storage, the ESI
+  fallback already wraps with `storage.with_current_tenant`. Any new
+  parallel code in the resolver must wrap the same way (CLAUDE.md).
+- **P-16 `reference_region_id` belongs to Trading's config**
+  (`TRADING_CONFIG`). It is per tenant like everything else, but a tenant
+  who never opened Trading Settings has the base value - read it, do not
+  assume Insmother. Log the region used in the frozen row's inputs.
+- **P-17 Location filter.** Contract sales store `location_id = 0` when the
+  location is unknown (`costing.py`); market sales store the transaction
+  location. Filter on `source = 'market'` first, then on location.
+
+### 16.4 Freeze, caching, concurrency
+
+- **P-18 UTC day from Python.** Use `datetime.now(timezone.utc).date()` and
+  pass it as a parameter. Postgres `CURRENT_DATE` follows the session time
+  zone and can be a different day than EVE time.
+- **P-19 Per-tenant lock.** A single module-level lock would serialize
+  every tenant's first plan of the day. Use a dict of locks keyed by tenant
+  id (the per-key shape of `goonmetrics_client._prices_locks`), created
+  under a small guard lock.
+- **P-20 Invalidation must not miss a cost change.** Today
+  `invalidate_discover_cache()` is called from about 15 places in
+  `production/actions.py` (settings, systems, decryptors, manual build/buy,
+  stock targets, cost-index overrides, ...) and from `refining/actions.py`
+  - every place where build cost or margin can change. Hook the
+  invalidation of today's frozen rows into one helper called from the same
+  places (or from `invalidate_discover_cache` itself) instead of adding it
+  by hand to a subset. Add a test that greps or asserts the call next to
+  every `invalidate_discover_cache()` call.
+- **P-21 All-tenant invalidation.** `invalidate_discover_cache
+  (all_tenants=True)` (SDE apply) has no ambient tenant, so it cannot
+  delete RLS rows. Keep a process-wide "invalidated at" timestamp; a
+  frozen row with `computed_at` before it counts as missing for today.
+  After a restart this is lost - acceptable, the next day recomputes, and
+  the Recalculate button exists.
+- **P-22 Invalidation racing a running freeze.** A settings save while the
+  first plan of the day is computing could be overwritten by the in-flight
+  result built from the old settings. Invalidation takes the same
+  per-tenant lock (waits seconds at most) before deleting today's rows.
+- **P-23 Write once per freeze.** Write all rows of one freeze in one
+  transaction (`batch_session`), after all network calls; a partial write
+  would leave some items on yesterday's value and some on today's.
+- **P-24 `delete_stock_target`** must also delete the item's frozen rows,
+  in the same transaction (E-20). `upsert_stock_target` must not touch the
+  new columns (its `ON CONFLICT ... SET` list stays as is), so re-adding an
+  existing item keeps its mode.
+- **P-25 Plan caches.** `_last_plan` / `_last_asset_plan` are per tenant in
+  the router. Toggling the switch, a mode change, bulk actions and a
+  recalculation all call `_mark_cached_production_plans_stale()`; the
+  frontend's `StalePlanAlert.tsx` already shows the hint.
+
+### 16.5 Schema and deploy
+
+- **P-26 GRANT.** The new table needs `GRANT SELECT, INSERT, UPDATE, DELETE
+  ... TO eve_trader_app` like `production_buy_list` - without it the app
+  role gets "permission denied" at runtime, not at deploy.
+- **P-27 Idempotent DDL.** `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT
+  EXISTS` (the inline `CHECK` is skipped together with the column on a
+  re-run), `DROP POLICY IF EXISTS` before `CREATE POLICY` - the deploy
+  re-runs every file each time (`deploy/deploy.sh`, `ON_ERROR_STOP`).
+- **P-28 Deploy order.** `deploy.sh` applies the schema before restarting
+  the app; keep it that way. If code ever reaches a database without the
+  new columns, `load_stock_target_modes()` raises `UndefinedColumn` - with
+  the switch off it is never called (P-02), so a missed migration only
+  breaks tenants who turned the feature on.
+- **P-29 Both schema files exist in every apply list already**
+  (`phase1_schema.sql`, `production_buy_list_schema.sql`); verify with a
+  grep that no new file was created by accident.
+- **P-30 Precision.** `stock_targets` uses `REAL` (float4); keep
+  `effective_qty` `REAL` for consistency, but store `smoothed_qty` and the
+  inputs as `DOUBLE PRECISION` so the dead band arithmetic (E-08) is not
+  disturbed by float4 rounding.
+
+### 16.6 Config and Settings
+
+- **P-31 Settings page is hand-written.** `ProductionSettings.tsx` lists
+  every field explicitly (e.g. `min_margin` shown as % with `x 100`). The
+  new fields must be added there, fractions shown as %, or they are
+  invisible. `config.example.yaml` documents them; the real `config.yaml`
+  is not under version control and is never overwritten.
+- **P-32 Ranges.** Every numeric field gets a `_FIELD_RANGES` entry
+  (flat across all tools - the `dynamic_target_` prefix avoids
+  collisions). The bool switch is type-checked automatically.
+- **P-33 Merged validation.** Cross-field checks need the merged config
+  (current + overrides) - `validate_production_overrides` only sees the
+  overrides (section 9).
+
+### 16.7 API and frontend
+
+- **P-34 Pydantic drops unknown fields.** `GET /stock-targets` uses
+  `response_model=list[schemas.StockTarget]`; new fields not added to that
+  model never reach the frontend. Same for the plan's `InventoryRow` if it
+  carries the effective value.
+- **P-35 The read becomes logic.** `GET /stock-targets` is a bare storage
+  read today. Merging configured, effective and frozen inputs is a
+  decision, so it moves into a `do_list_stock_targets()` action
+  (CLAUDE.md: a read that needs logic goes through `do_*`).
+- **P-36 Query invalidation.** After a mode change, bulk action, switch
+  toggle or recalculation, the frontend invalidates the stock targets,
+  market status and plan queries (react-query keys), or the page shows old
+  values until reload.
+- **P-37 Edit cell on dynamic rows.** The Home Market Target cell becomes
+  read-only for dynamic rows; the backend still rejects the edit (section
+  9) in case of a stale page.
+- **P-38 UI test.** `StockTargets.ui.test.tsx` exists and must cover the
+  toggle, the read-only cell and the switch-off state.
+
+### 16.8 Repo rules
+
+- **P-39** All code, comments, docs and commit messages in English; no
+  Claude attribution lines (CLAUDE.md).
+- **P-40** Live verification before "done": real `localhost:8000` calls
+  and a Playwright check of the Stock Targets page, scripts deleted after
+  (CLAUDE.md). The full `pytest` suite stays green after every phase.
 
 ## 15. Decision D8 (confirmed with the user 2026-10-24)
 
