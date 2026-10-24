@@ -1,6 +1,6 @@
 # Dynamic stock targets - plan
 
-Status: **all decisions confirmed (sections 2 and 15), real-data checks run on 2026-10-24 (section 14.2), design reviewed
+Status: **implemented (phases 1-5, see section 18), all decisions confirmed (sections 2, 15 and 17.4), real-data checks run on 2026-10-24 (section 14.2), design reviewed
 against the code (sections 3-11), implementation pitfalls in section 16,
 nothing implemented.** Before phase 1: the real-data
 checks in section 14 (R-01..R-05 by SQL) and the impact simulation on the
@@ -1030,3 +1030,87 @@ unless it says "confirmed".
   shows it next to the effective target. The target itself is not changed by it.
 - **V-11:** the freeze duration is measured when the planner integration
   lands (phase 4) and recorded here.
+
+## 18. Implementation status (2026-10-25)
+
+Phases 0-5 are implemented on branch `feature/dynamic-stock-targets`; the
+switch `dynamic_targets_enabled` defaults to off, so merging changes nothing
+until someone turns it on. Phase 6 (capital budget) stays a separate decision.
+
+| Phase | State | Where |
+|---|---|---|
+| 1 Schema, storage, settings | done | `phase1_schema.sql`, `production_buy_list_schema.sql`, `storage.py`, `production/config.py`; DDL runs twice without error, 3 fixture tenants |
+| 2 Signals | done | `production/dynamic_targets.py` (`compute_own_sales`, `compute_market_velocity`, `compute_margins`), `realized/db.market_units_sold_daily`, public `report.run_state()`/`production_scope()` |
+| 3 Resolver | done | `resolve_row` (pure), table-driven tests in `tests/test_dynamic_targets.py` |
+| 3b Preview + CLI, real data | done | `eve-trader production targets preview`, `POST /stock-targets/dynamic-preview`; run on the test server (below) |
+| 4 Freeze + planner integration | done | `ensure_dynamic_targets_frozen`, `apply_dynamic_targets` in both planners before `_base_runs`; market status, restock, Sorting shortfall and unlisted check read `effective_stock_targets` |
+| 5 Actions, API, CLI, UI, settings | done | `production/actions.py`, `api/routers/production.py`, `cli.py` (`production targets show|mode|recalculate|preview`), Stock Targets page panel + columns, settings card |
+
+Tests: 47 pure + 37 Postgres-backed tests for the feature, 8 UI tests for the
+page; the complete Python suite passes (3444 passed, 6 skipped) and the
+page-level Vitest suite passes except `RealizedProfit.test.tsx`, which fails
+on this machine because Node 26's `localStorage` global shadows jsdom's (not
+related to this work). The invalidation allowlist of V-01 is pinned by an AST
+test, and a fixed-only tenant is proven byte-identical to the switch-off plan
+(E-19).
+
+### 18.1 Deviations from the text above
+
+- **Settings endpoint.** The dynamic fields have their own
+  `GET/POST /settings/dynamic-targets` and settings card. `POST /settings`
+  saves every field of its model, so putting them into `ProductionSettings`
+  would have made each plain save look like a dynamic-target change (V-01,
+  V-06) and dropped today's frozen values.
+- **Switching a row on** deletes that row's value of today instead of
+  seeding one (section 10 says "seeds"). The effect is the same - until the
+  next plan run the effective value is the configured one, then the first
+  computation starts from it, so nothing jumps.
+- **Editing the home value of a dynamic row** is rejected only while the
+  global switch is on; with it off every row acts as fixed and the stored
+  fixed value stays editable.
+- **P-14.** Inside the two planners the freeze runs on the connection of the
+  planner's own `batch_session` (it already holds one across the ESI pricing);
+  preview and recalculate run outside a batch and write once at the end.
+- **Failure handling.** A failing refresh inside a plan logs and falls back to
+  the last frozen (or configured) values; it never fails the plan.
+
+### 18.2 Check on real data (test server, default tenant, 2026-10-25)
+
+Server 1 is the test server. It ran the branch against its real database
+after a backup; every change was reverted afterwards (all rows fixed, switch
+off).
+
+- Preview (`eve-trader production targets preview`, 37 s): 254 rows with a
+  home target; its own ledger covers only 7.9 days, so every row ran on the
+  market estimate. Converged: 50 up, 115 down, 78 to 0, 11 unchanged;
+  5 held, 75 below the minimum margin, 4 at the max. Capital of rows the gate
+  passes: 74.65 B now, 62.73 B after day 1, 48.08 B converged.
+- Through the HTTP layer (real routers, schemas, database): fields present on
+  `GET /stock-targets`, the switch and the settings validation (window 99 is
+  rejected), a mode change, the rejected home edit, Recalculate (19 s for one
+  row including pricing), the plan refresh, the asset plan refresh, market
+  status and the history endpoint. Example: Sacrilege (configured 8, Jita 8) is
+  frozen at 18 (market velocity 2.06/day, live margin 0.36); `total_missing`
+  moved from 8 to 18, exactly the effective minus the configured value.
+- All 254 rows dynamic at once: 113 ok, 110 below the minimum margin, 22
+  within the dead band, 4 at the max, 5 held.
+- **V-11 (freeze cost).** Plan refresh on this small instance (1 vCPU, 1 GB):
+  13.8 s with the switch off, 24.0 s for the first plan of the day (freezes
+  254 rows: history fetch plus margins), 14.2 s for every later plan that day.
+  The extra ~10 s happens once per day and stays well below the 60 s proxy
+  limit; a cold cache on the same box took 31.7 s without the feature.
+
+### 18.3 Before the first real switch-on (not done here)
+
+- Production (server 2) is untouched: nothing is deployed there, the switch
+  is off everywhere. Deploying runs the two schema files (idempotent, tested
+  twice) and needs the usual `deploy.sh` run.
+- D14: wait for a ledger rebuild that covers the 14 days (server 2 passed the
+  mark on 2026-10-24 13:17 UTC), then run the preview there and read the
+  numbers once more.
+- R-16 (listed days per row) is a precondition for the first switch-on (V-05);
+  R-11, R-15, R-18, R-21, R-22 and R-26 stay open and need history over time
+  or a capacity model.
+- Open design points with a recommendation but no data yet: V-04 (single-day
+  cap default 3.0 - judge on several days of preview output) and V-10 (the page
+  shows the gate state; the target itself is not changed by it).
