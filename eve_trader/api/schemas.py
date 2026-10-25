@@ -101,20 +101,6 @@ class NewCandidateResult(_Base):
     meta_level: Optional[int] = None
 
 
-class RealizedTrade(_Base):
-    type_id: int
-    item: str
-    buy_date: str
-    buy_qty: int
-    buy_unit_price: float
-    sell_date: str
-    sell_qty: int
-    sell_unit_price: float
-    matched_qty: int
-    realized_profit: float
-    margin: float
-
-
 class WalletTransaction(_Base):
     transaction_id: int
     date: str

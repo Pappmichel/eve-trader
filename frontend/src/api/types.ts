@@ -68,20 +68,6 @@ export interface NewCandidateResult {
   meta_level: number | null
 }
 
-export interface RealizedTrade {
-  type_id: number
-  item: string
-  buy_date: string
-  buy_qty: number
-  buy_unit_price: number
-  sell_date: string
-  sell_qty: number
-  sell_unit_price: number
-  matched_qty: number
-  realized_profit: number
-  margin: number
-}
-
 export interface WalletTransaction {
   transaction_id: number
   date: string

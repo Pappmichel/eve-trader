@@ -103,6 +103,10 @@ def test_manual_jobs_are_appended_with_source_and_status(monkeypatch):
     ])
     monkeypatch.setattr(GoonmetricsClient, "current_prices", lambda self, market: [])
 
+    def _fail(self, region_id, type_ids):
+        raise ESIError("no ESI in this test")
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fail)
+
     rows = jobs.list_current_jobs(cfg)
     by_id = {r.job_id: r for r in rows}
 

@@ -90,6 +90,7 @@ def test_set_sharing_toggles_and_rejects_non_consuming_tool(tenant):
 def test_list_token_characters_flags_a_pool(tenant, monkeypatch):
     from eve_trader.esi_client import ESIClient
     monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 9001})
+    monkeypatch.setattr(ESIClient, "corporation_public_info", lambda self, corporation_id: {"name": "Test Corp"})
     _save_token(ALICE, f"producer:{ALICE}", ASSETS_SCOPE)
     _save_token(ALICE, f"doctrine-assets:{ALICE}", ASSETS_SCOPE)
     rows = esi_actions.do_list_token_characters()
@@ -105,6 +106,7 @@ def test_list_token_characters_flags_a_pool(tenant, monkeypatch):
 def test_list_token_characters_includes_corporation_id(tenant, monkeypatch):
     from eve_trader.esi_client import ESIClient
     monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 9001})
+    monkeypatch.setattr(ESIClient, "corporation_public_info", lambda self, corporation_id: {"name": "Test Corp"})
     _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
 
     rows = esi_actions.do_list_token_characters()

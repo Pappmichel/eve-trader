@@ -4603,6 +4603,7 @@ def test_invention_need_row_special_order_path(monkeypatch):
 def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
@@ -4636,6 +4637,7 @@ def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_gener
     # input.
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
@@ -4668,6 +4670,7 @@ def test_invention_logistics_relic_availability_uses_generic_stock_not_copy_coun
     relic type_id never has a row there at all."""
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)
     need = InventionNeedRow(type_id=10, type_name="T3 Widget", t1_blueprint_type_id=302,
                              t1_blueprint_name="Intact Power Cores", decryptor="Parity", probability=0.26,
                              output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
@@ -4694,6 +4697,7 @@ def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatc
     # decryptor selected must never add a demand row for type_id 0.
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="None", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
@@ -4736,6 +4740,7 @@ def test_invention_logistics_t1_needed_uses_t1_bpc_target_runs_not_recommended(m
     inventions you actually queue now (recommended_invention_runs)."""
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)
     need = InventionNeedRow(
         type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
         t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
