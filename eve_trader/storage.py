@@ -7,7 +7,7 @@ behind both the Trading and Production tools.
     focused_candidates    <- candidate universe after path-prefix filtering
     new_candidates        <- backtested/scored new-candidate recommendations
     goonmetrics_history   <- daily price history from Goonmetrics
-    realized_trades       <- matched buy/sell pairs from wallet reconciliation
+    realized_trades       <- retired matcher's last pairs (read by `realized compare-trading`)
 
 Tenant isolation is enforced by Postgres Row-Level Security (RLS), not by
 filtering queries here - every per-tenant table's RLS policy compares its
@@ -46,7 +46,7 @@ from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from psycopg.types.json import Jsonb
 
-from .models import Candidate, NewCandidateResult, RealizedTrade, ShortlistItem, ShortlistRow
+from .models import Candidate, NewCandidateResult, ShortlistItem, ShortlistRow
 
 # PG_DSN below reads EVE_TRADER_PG_DSN via os.getenv() at module-import
 # time - .env needs to already be loaded into os.environ by then, or this
@@ -1421,25 +1421,6 @@ def save_goonmetrics_history(points) -> None:
         )
 
 
-def save_realized_trades(trades: list[RealizedTrade], run_ts: str) -> None:
-    # Wholesale replace. The retired matcher re-matched the whole lookback
-    # window on every run; a naked INSERT bloated the table to ~19.8k rows
-    # across 13 runs, with some (type_id, buy_date, sell_date, matched_qty)
-    # groups repeated up to 24 times. Nothing in the app calls this writer
-    # anymore. `eve-trader realized compare-trading` is the remaining read.
-    # Drop the writer with the table on the release after this one.
-    with connect() as conn:
-        conn.execute("DELETE FROM realized_trades")
-        conn.executemany(
-            "INSERT INTO realized_trades (run_ts, type_id, item, buy_date, buy_qty, buy_unit_price, "
-            "sell_date, sell_qty, sell_unit_price, matched_qty, realized_profit, margin) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, t.type_id, t.item, t.buy_date, t.buy_qty, t.buy_unit_price,
-              t.sell_date, t.sell_qty, t.sell_unit_price, t.matched_qty,
-              t.realized_profit, t.margin) for t in trades],
-        )
-
-
 # --------------------------------------------------------- Production: SDE cache
 def replace_sde_data(
     types: list[tuple], groups: list[tuple], market_groups: list[tuple],
@@ -1667,7 +1648,7 @@ def get_station_ids_in_system(system_id: int) -> frozenset:
 def get_station_ids_in_region(region_id: int) -> frozenset:
     """Static SDE lookup - every NPC station_id in `region_id` (e.g. every
     station in The Forge, not just Jita itself). Confirmed with the user:
-    trade_reconciliation.py's buyer-side location filter should accept a buy
+    own_orders.py's buyer-side location filter should accept a buy
     anywhere in the region, not just Jita's own solar system - a trader can
     legitimately buy from other Forge stations too."""
     with connect() as conn:

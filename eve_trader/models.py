@@ -93,22 +93,6 @@ class NewCandidateResult:
 
 
 @dataclass
-class RealizedTrade:
-    """A matched buy (Jita) / sell (structure) pair for the same type_id."""
-    type_id: int
-    item: str
-    buy_date: str
-    buy_qty: int
-    buy_unit_price: float
-    sell_date: str
-    sell_qty: int
-    sell_unit_price: float
-    matched_qty: int
-    realized_profit: float
-    margin: float
-
-
-@dataclass
 class UnlistedStockRow:
     """Stock physically sitting at the structure that isn't (fully) covered
     by an open sell order - see own_orders.fetch_seller_stock_without_order.

@@ -8,7 +8,7 @@ is data here, the same strings as the registry.
 
 Corp sharing needs a corporation_id. Tokens do not store one; the
 default path resolves it via `ESIClient.character_public_info` (public,
-no auth — same shape as `trade_reconciliation._corps_for_characters`).
+no auth).
 `corporation_ids` is an override: a supplied character is not looked
 up. A failed lookup falls back to character-only sharing for that
 character (logged), it is not the normal path.

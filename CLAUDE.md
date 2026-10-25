@@ -1036,7 +1036,7 @@ not just a labeling issue:
   chunked` pattern and was never affected by either bug. The `sell_volume`
   field itself is unchanged and still legitimately shown as "Listed Qty"
   (own column) - it's just never used for the Profit/Day multiplication.
-  Corp wallet rows still enter the realized-profit archive. A shared corp mixes other members' fills into that archive and therefore into ledger profit. Profit / Day does not read them: since #100 it uses market-wide volume. The old matcher in `trade_reconciliation.py` is no longer called by the app; `realized_trades` stays only so `eve-trader realized compare-trading` can print it beside the Trading channel until the next release.
+  Corp wallet rows still enter the realized-profit archive. A shared corp mixes other members' fills into that archive and therefore into ledger profit. Profit / Day does not read them: since #100 it uses market-wide volume. The old FIFO matcher was removed (2026-10-25; `trade_reconciliation.py` keeps only the live wallet-transaction paging). The `realized_trades` table and its last rows stay only so `eve-trader realized compare-trading` can print them beside the Trading channel; nothing writes it anymore.
 
 ## Real SDE data drives classification, not heuristics
 

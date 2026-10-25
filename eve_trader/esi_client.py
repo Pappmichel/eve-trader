@@ -1129,8 +1129,7 @@ class ESIClient:
 
         Cached class-wide for _CHARACTER_PUBLIC_INFO_CACHE_TTL seconds,
         keyed by character_id - see that constant's own comment. Every
-        existing caller (trade_reconciliation._corps_for_characters,
-        esi_data/backfill.py) benefits from this too, not just the new
+        existing caller (esi_data/backfill.py, the orchestrator) benefits from this too, not just the new
         column - both can call this once per character multiple times in
         the same run."""
         key = character_id
@@ -1278,8 +1277,8 @@ class ESIClient:
         endpoint), most recent first. This endpoint uses cursor pagination via
         `from_id` (pass the oldest transaction_id from a previous call to page
         further back in time) rather than the page/X-Pages scheme
-        _get_all_pages handles, so it can't use that helper - trade_reconciliation.
-        fetch_recent_transactions loops this until it's covered the requested
+        _get_all_pages handles, so it can't use that helper -
+        trade_reconciliation.fetch_recent_transactions loops this until it's covered the requested
         lookback window."""
         params = {"datasource": "tranquility"}
         if from_id is not None:
@@ -1313,15 +1312,11 @@ class ESIClient:
         market trades - contract payments, bounties, taxes, ...). Standard
         page/X-Pages pagination (_get_all_pages), unlike character_wallet_
         transactions' from_id cursor scheme above - confirmed against ESI's
-        own OpenAPI spec (2026-08-29), not assumed. trade_reconciliation.py
-        uses this for one specific purpose: a wallet/transactions entry's own
-        `journal_ref_id` links 1:1 to the journal entry recording that same
-        sale (`ref_type: "market_transaction"`), whose `amount` field is the
-        real GROSS ISK value of that specific fill (confirmed with the user,
-        2026-09-25 - NOT net of sales tax; a structure sale's tax is a
-        separate journal entry, never netted into this one) - see T1-01's
-        comment in trade_reconciliation.py above _MARKET_TRANSACTION_REF_TYPE
-        for how that's used. Requires esi-wallet.read_character_wallet.v1 -
+        own OpenAPI spec (2026-08-29), not assumed. A `market_transaction`
+        entry's `amount` is the GROSS ISK value of that fill (confirmed with
+        the user, 2026-09-25); a structure sale's tax is a separate
+        `transaction_tax` entry. Read by esi_data/fetchers.py for the
+        wallet-journal snapshot. Requires esi-wallet.read_character_wallet.v1 -
         the same scope character_wallet_transactions already needs, no new
         grant required."""
         return self._get_all_pages(f"/characters/{character_id}/wallet/journal/",
@@ -1336,9 +1331,8 @@ class ESIClient:
         list; confirmed against esi-swagger-specs latest, 2026-09-20).
         Returns up to 2500 transactions (same maxItems as the character
         endpoint), most recent first. Cursor pagination via `from_id` — NOT
-        page/X-Pages — so this cannot use _get_all_pages; trade_reconciliation.
-        fetch_recent_corporation_transactions loops it the same way
-        fetch_recent_transactions loops character_wallet_transactions.
+        page/X-Pages — so this cannot use _get_all_pages; esi_data/fetchers.py
+        pages it the same way it pages character_wallet_transactions.
 
         Requires esi-wallet.read_corporation_wallets.v1 plus the in-game
         Accountant or Junior_Accountant role (NOT Director, which
@@ -1346,8 +1340,7 @@ class ESIClient:
         which corporation_structures uses). That scope is on
         OAuthConfig.scopes (buyer/seller login); a character added before
         it existed needs to be re-added before corp-wallet fetches succeed
-        for it — until then ESI 403s and trade_reconciliation skips the
-        corp non-fatally. Not on PRODUCTION_SCOPES (Production has no
+        for it — until then ESI 403s for that corp. Not on PRODUCTION_SCOPES (Production has no
         wallet consumer).
         """
         params = {"datasource": "tranquility"}
@@ -1371,13 +1364,8 @@ class ESIClient:
         corporation_wallet_transactions (scope is on OAuthConfig.scopes;
         see that method for the re-auth note).
 
-        trade_reconciliation uses this the same way it uses
-        character_wallet_journal: a wallet-transaction's `journal_ref_id`
-        links 1:1 to the `market_transaction` journal entry whose `amount`
-        is the real GROSS ISK value of that fill, not net of sales tax
-        (see T1-01's comment in trade_reconciliation.py above
-        _MARKET_TRANSACTION_REF_TYPE). Lookup is wallet-local
-        (this division's journal, never a character journal).
+        Its `market_transaction` entries carry the GROSS ISK value of a fill,
+        not net of sales tax, same as character_wallet_journal.
         """
         return self._get_all_pages(
             f"/corporations/{corporation_id}/wallets/{division}/journal/",
