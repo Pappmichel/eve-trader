@@ -84,6 +84,20 @@ def _paths(assets: list[dict]) -> None:
         row["container_chain"] = [c for c in reversed(visible[1:])]
 
 
+def history_rows(scope: dict[str, tuple[list[int], list[int]]]) -> list[tuple]:
+    """What one day of history stores (plan phase 6): the owners' ESI asset
+    quantities summed per owner, outermost location (0 = unknown) and type.
+    No enrichment and no pricing."""
+    chars, corps = scope.get("assets", ([], []))
+    sums: dict[tuple, float] = {}
+    for a in storage.load_asset_manager_assets(chars, corps):
+        if a["type_id"] is None or a["type_id"] == storage.OFFICE_TYPE_ID:
+            continue
+        key = (a["owner_type"], a["owner_id"], a["resolved_location_id"] or a["location_id"] or 0, a["type_id"])
+        sums[key] = sums.get(key, 0.0) + a["quantity"]
+    return [(*key, qty) for key, qty in sorted(sums.items())]
+
+
 def load_base_rows(scope: dict[str, tuple[list[int], list[int]]], *, include_manual: bool,
                    division_names: Optional[dict[tuple[int, int], str]] = None) -> list[dict]:
     """Every row of every source for the owners in `scope`, enriched with

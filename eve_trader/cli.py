@@ -786,6 +786,60 @@ def admin_grant_defaults(dry_run: bool):
                + (" (dry run)" if dry_run else ""))
 
 
+@main.group("assets")
+def assets_group():
+    """Asset Manager (eve_trader/asset_manager/actions.py) - same do_*
+    actions the web UI calls. Every command takes --tenant-id and runs
+    inside tenant_scope.enter_tenant."""
+
+
+def _run_assets(tenant_id: str | None, fn, **kwargs):
+    from .asset_manager import actions as asset_actions
+    try:
+        with tenant_scope.enter_tenant(tenant_id or storage.DEFAULT_TENANT_ID):
+            return getattr(asset_actions, fn)(**kwargs)
+    except actions.ActionError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+
+
+@assets_group.command("list")
+@click.option("--q", default="", help="Text filter (item, container, location, owner).")
+@click.option("--group-by", type=click.Choice(["none", "type", "type_location"]), default="type", show_default=True)
+@click.option("--stock-only", is_flag=True, help="Only what the planners count as stock.")
+@click.option("--limit", type=int, default=25, show_default=True)
+@_tenant_id_option
+def assets_list(q: str, group_by: str, stock_only: bool, limit: int, tenant_id: str | None):
+    """Prints the most valuable rows and the totals of the filter."""
+    result = _run_assets(tenant_id, "do_list_items", q=q, group_by=group_by, stock_only=stock_only,
+                         page_size=max(1, min(limit, 500)))
+    t = result["totals"]
+    click.echo(f"value={t['value']:,.0f} ISK  volume={t['volume']:,.1f} m3  stacks={t['stacks']}  "
+               f"unpriced={t['unpriced']}")
+    for r in result["rows"]:
+        value = f"{r['value']:>18,.0f}" if r["value"] is not None else f"{'-':>18}"
+        place = r.get("location_name") or (f"{r.get('location_count')} places" if group_by == "type" else "-")
+        click.echo(f"{r['type_name'][:36]:<36} {r['quantity']:>16,.0f} {value}  {place}")
+
+
+@assets_group.command("export-csv")
+@click.option("--q", default="", help="Text filter (item, container, location, owner).")
+@click.option("--group-by", type=click.Choice(["none", "type", "type_location"]), default="none", show_default=True)
+@click.option("--stock-only", is_flag=True)
+@_tenant_id_option
+def assets_export_csv(q: str, group_by: str, stock_only: bool, tenant_id: str | None):
+    """Writes the filtered rows as CSV to stdout."""
+    click.echo(_run_assets(tenant_id, "do_export_csv", q=q, group_by=group_by, stock_only=stock_only), nl=False)
+
+
+@assets_group.command("snapshot")
+@_tenant_id_option
+def assets_snapshot(tenant_id: str | None):
+    """Writes today's asset history snapshot (what the asset_history job does)."""
+    result = _run_assets(tenant_id, "take_history_snapshot")
+    click.echo(f"{result['snapshot_date']}: {result['rows']} rows written, {result['pruned']} pruned")
+
+
 @main.group("pi")
 def pi_group():
     """Planetary Industry (eve_trader/pi/actions.py) - same do_* actions the

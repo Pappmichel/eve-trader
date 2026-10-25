@@ -658,6 +658,40 @@ plan text above, and why:
   names. Goonmetrics is unreachable from the dev container, so the live run
   used manual prices; the price chart showed its "no history" state.
 
+Second review (2026-10-25), fixed:
+
+- The sync button called the contracts fetcher without Doctrine's
+  `structure_id`, so it would have written every item exchange anywhere into
+  Doctrine's contract snapshot and fetched all their items. It now passes
+  the same `extra` as the scheduler (`do_sync_kinds(..., extra=...)`).
+- The daily history snapshot priced every row (Goonmetrics and the BPC
+  invention path) only to count items; `collect.history_rows` now reads
+  quantities only.
+- The history due check ran `SELECT DISTINCT snapshot_date` per tenant on
+  every 5-minute tick; it is a `MAX()` now.
+- The row cache never evicted superseded or expired keys (a new share or
+  grant made a new key); it keeps one entry per tenant. "Wanted by" (one
+  read per doctrine fitting) shares the same TTL instead of running per
+  page request.
+- The CLI promised in section 5 was missing: `eve-trader assets list`,
+  `export-csv`, `snapshot`.
+- Tests used SDE ids other tests also seed (Jita, Tritanium) - possible
+  xdist-order flakes; they use their own ids now. The new CLI test stubs
+  `cli.main()`'s process-wide tenant/config setup so it cannot leak.
+- UI: the search box follows the URL on back/forward and saved views; the
+  Value total says that listed, contracted and in-production items count
+  while their source is selected.
+
+Known limits, not changed:
+
+- The value total includes in-production and listed/contracted items while
+  those sources are ticked (default on). Portfolio counts listed and
+  contracted items but not in-production ones.
+- History compares owner sets as they are each day: a newly shared
+  character shows everything it holds as "arrived" on its first day.
+- With a text filter the location tree only shows matching rows; a matching
+  item whose container does not match hangs directly under its hangar.
+
 Still open, in order:
 
 1. Server checks S-01..S-13 (section 12), then tune caching/paging.

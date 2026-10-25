@@ -6,17 +6,6 @@ from collections import defaultdict
 from typing import Optional
 
 
-def history_rows(rows: list[dict]) -> list[tuple]:
-    """What one day's history stores: ESI assets summed per owner, location
-    (0 = unknown) and type."""
-    sums: dict[tuple, float] = defaultdict(float)
-    for r in rows:
-        if r["source"] != "esi":
-            continue
-        sums[(r["owner_type"], r["owner_id"], r.get("location_id") or 0, r["type_id"])] += r["quantity"]
-    return [(*key, qty) for key, qty in sorted(sums.items())]
-
-
 def diff(before: list[tuple], after: list[tuple], *, by_owner: bool = False) -> list[dict]:
     """Quantity change per type and location (and owner when `by_owner`)
     between two history days. Only changed keys are returned."""

@@ -6024,6 +6024,13 @@ def prune_asset_history(before: date) -> int:
         return cur.rowcount or 0
 
 
+def latest_asset_history_date() -> Optional[date]:
+    """Newest history day, None if none - the scheduler's cheap due check."""
+    with connect() as conn:
+        row = conn.execute("SELECT MAX(snapshot_date) FROM asset_manager_history").fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
 def asset_history_dates() -> list[date]:
     with connect() as conn:
         rows = conn.execute(

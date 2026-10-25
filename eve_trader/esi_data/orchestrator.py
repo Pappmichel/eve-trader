@@ -643,9 +643,11 @@ def do_sync_kinds(
     *,
     tool_keys: Optional[Iterable[str]] = None,
     client: Optional[ESIClient] = None,
+    extra: Optional[dict] = None,
 ) -> dict:
     """Refresh `kinds` for every owner that shares them with any of
-    `tool_keys` (None = any tool).
+    `tool_keys` (None = any tool). `extra` is forwarded to the fetchers, as
+    in `do_sync_for_tool`.
 
     The Asset Manager reads the union of shares (docs/ASSET_MANAGER_PLAN.md
     D10/D11), so its sync button must refresh exactly that union, not only
@@ -657,7 +659,7 @@ def do_sync_kinds(
         row for row in storage.list_esi_sharing()
         if row[2] in wanted and (allowed is None or row[3] in allowed)
     ]
-    return _sync(sharing, client=client, tool_key=None)
+    return _sync(sharing, client=client, tool_key=None, extra=extra)
 
 
 def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = None) -> dict:

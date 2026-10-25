@@ -64,3 +64,32 @@ def test_csv_export_is_an_attachment(monkeypatch):
 def test_routes_require_the_asset_manager_grant():
     assert _required_tool_for_path("/api/asset-manager/items", "GET") == "asset_manager"
     assert _required_tool_for_path("/api/asset-manager/sync", "POST") == "asset_manager"
+
+
+def test_cli_assets_list_calls_the_same_action(monkeypatch):
+    from click.testing import CliRunner
+
+    import contextlib
+
+    from eve_trader import cli, config, storage, tenant_scope
+    from eve_trader.production import config as production_config
+    captured = {}
+    # cli.main() sets the ambient tenant and resolves both configs for the
+    # whole process; stub them so nothing leaks into later tests on this
+    # worker (same stubs as test_cli_production_manual.py).
+    monkeypatch.setattr(storage, "set_current_tenant", lambda tenant_id: None)
+    monkeypatch.setattr(config, "resolve_and_set_trading_config", lambda tenant_id: None)
+    monkeypatch.setattr(production_config, "resolve_and_set_production_config", lambda tenant_id: None)
+
+    def _list(**params):
+        captured.update(params)
+        return {"totals": {"value": 10.0, "volume": 1.0, "stacks": 1, "unpriced": 0},
+                "rows": [{"type_name": "Tritanium", "quantity": 5.0, "value": 10.0, "location_count": 1}]}
+    monkeypatch.setattr(actions, "do_list_items", _list)
+    monkeypatch.setattr(tenant_scope, "enter_tenant", lambda tid: contextlib.nullcontext())
+
+    result = CliRunner().invoke(cli.main, ["assets", "list", "--stock-only", "--limit", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"q": "", "group_by": "type", "stock_only": True, "page_size": 5}
+    assert "Tritanium" in result.output

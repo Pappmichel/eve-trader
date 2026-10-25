@@ -54,17 +54,21 @@ function SortHeader({ col, query, onSort }: { col: Column; query: AssetQuery; on
 }
 
 function Totals({ totals, unpricedHint }: { totals: { value: number; volume: number; stacks: number; types: number; locations: number; unpriced: number }; unpricedHint: string }) {
-  const items: [string, string][] = [
-    ['Value', isk(totals.value)], ['Volume', volume(totals.volume)], ['Stacks', qty(totals.stacks)],
-    ['Types', qty(totals.types)], ['Locations', qty(totals.locations)],
+  const items: [string, string, string | null][] = [
+    ['Value', isk(totals.value),
+      'Every source selected above, including listed, contracted and in-production items. Untick those for what physically sits in hangars.'],
+    ['Volume', volume(totals.volume), null], ['Stacks', qty(totals.stacks), null],
+    ['Types', qty(totals.types), null], ['Locations', qty(totals.locations), null],
   ]
   return (
     <SimpleGrid cols={{ base: 2, sm: 3, md: 6 }} spacing="xs">
-      {items.map(([label, value]) => (
-        <Paper key={label} p="xs" withBorder>
-          <Text size="xs" c="dimmed">{label}</Text>
-          <Text fw={600}>{value}</Text>
-        </Paper>
+      {items.map(([label, value, hint]) => (
+        <Tooltip key={label} label={hint} disabled={!hint} multiline w={260} withArrow>
+          <Paper p="xs" withBorder>
+            <Text size="xs" c="dimmed">{label}</Text>
+            <Text fw={600}>{value}</Text>
+          </Paper>
+        </Tooltip>
       ))}
       <Tooltip label={unpricedHint} multiline w={260} withArrow>
         <Paper p="xs" withBorder>
@@ -97,6 +101,13 @@ export default function AssetInventory() {
     if ((query.q ?? '') !== debounced) update({ q: debounced || undefined })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debounced])
+
+  // The URL changed from outside the search box (back button, saved view):
+  // show its text instead of the stale input.
+  useEffect(() => {
+    if ((query.q ?? '') !== debounced) setText(query.q ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.q])
 
   const items = useQuery({
     queryKey: ['asset-manager', 'items', query],

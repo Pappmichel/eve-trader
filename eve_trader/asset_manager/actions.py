@@ -22,13 +22,17 @@ _CACHE_TTL = 120  # seconds
 _cache: dict[tuple, tuple[float, list[dict]]] = {}
 _cache_locks: dict[tuple, threading.Lock] = {}
 _cache_guard = threading.Lock()
+# wanted_by per (tenant, grants): one read per doctrine fitting, so it rides
+# the same TTL instead of running on every page request.
+_wanted_cache: dict[tuple, tuple[float, dict[int, list[dict]]]] = {}
 
 
 def invalidate_cache(tenant_id: Optional[str] = None) -> None:
     """Drop cached rows for one tenant (None = every tenant)."""
     with _cache_guard:
-        for key in [k for k in _cache if tenant_id is None or k[0] == tenant_id]:
-            _cache.pop(key, None)
+        for store in (_cache, _wanted_cache):
+            for key in [k for k in store if tenant_id is None or k[0] == tenant_id]:
+                store.pop(key, None)
 
 
 def _context() -> tuple[Optional[set[str]], Optional[set[str]], dict]:
@@ -49,8 +53,15 @@ def _rows(grants: Optional[set[str]], allowed: Optional[set[str]], scope: dict) 
         if hit is not None and time.time() - hit[0] < _CACHE_TTL:
             return hit[1]
         rows = collect.load_base_rows(dict(scope), include_manual=include_manual)
+        now = time.time()
         with _cache_guard:
-            _cache[key] = (time.time(), rows)
+            # One live entry per tenant: a changed share or grant makes a new
+            # key, and expired or superseded rows must not pile up in memory.
+            for old in [k for k, (at, _r) in _cache.items() if k[0] == key[0] or now - at >= _CACHE_TTL]:
+                _cache.pop(old, None)
+                if old != key:
+                    _cache_locks.pop(old, None)
+            _cache[key] = (now, rows)
         return rows
 
 
@@ -203,9 +214,16 @@ def do_sync(progress_callback=None) -> dict:
 
     tenant_id = storage.get_current_tenant()
     allowed = allowed_tools(granted_tools())
+    from ..doctrine.config import DOCTRINE_CONFIG
+
     if progress_callback:
         progress_callback({"message": "Syncing assets"})
-    result = do_sync_kinds(ASSET_KINDS, tool_keys=allowed)
+    # Same fetcher extra as the scheduler's esi_data_sync: without it the
+    # contracts fetcher would write every item exchange anywhere into
+    # Doctrine's contract snapshot and fetch all their items.
+    structure_id = DOCTRINE_CONFIG.effective_structure_id
+    extra = {"structure_id": structure_id} if structure_id is not None else None
+    result = do_sync_kinds(ASSET_KINDS, tool_keys=allowed, extra=extra)
     invalidate_cache(tenant_id)
     return result
 
@@ -365,7 +383,22 @@ def wanted_by(grants: Optional[set[str]]) -> dict[int, list[dict]]:
     """type_id -> which tool wants it (F-4), only for tools the session
     holds. Plain storage reads of configured demand (stock targets, the last
     buy list, active doctrine stockpiles, the Trading shortlist, mineral
-    targets) - no planner run, so it stays cheap."""
+    targets) - no planner run; cached for the row-cache TTL."""
+    key = (storage.get_current_tenant(), None if grants is None else frozenset(grants))
+    now = time.time()
+    with _cache_guard:
+        hit = _wanted_cache.get(key)
+        if hit is not None and now - hit[0] < _CACHE_TTL:
+            return hit[1]
+    out = _load_wanted_by(grants)
+    with _cache_guard:
+        for old in [k for k, (at, _v) in _wanted_cache.items() if now - at >= _CACHE_TTL]:
+            _wanted_cache.pop(old, None)
+        _wanted_cache[key] = (now, out)
+    return out
+
+
+def _load_wanted_by(grants: Optional[set[str]]) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = {}
 
     def add(type_id, tool, label, qty):
@@ -448,8 +481,8 @@ def _price_history(type_id: int) -> dict:
 # ------------------------------------------------------------ phase 6
 def history_snapshot_due() -> bool:
     from datetime import date
-    dates = storage.asset_history_dates()
-    return not dates or dates[-1] < date.today()
+    latest = storage.latest_asset_history_date()
+    return latest is None or latest < date.today()
 
 
 def take_history_snapshot() -> dict:
@@ -459,12 +492,12 @@ def take_history_snapshot() -> dict:
     from datetime import date, timedelta
 
     from ..config import TRADING_CONFIG
-    from . import insights
 
     _grants, _allowed, scope = _context()
-    rows = collect.load_base_rows(dict(scope), include_manual=False)
     today = date.today()
-    written = storage.write_asset_history(today, insights.history_rows(rows))
+    # Quantities only: no pricing, no other sources (a daily job must not
+    # hit Goonmetrics or the invention-cost path just to count items).
+    written = storage.write_asset_history(today, collect.history_rows(scope))
     keep_days = max(1, int(TRADING_CONFIG.asset_history_retention_days or 90))
     pruned = storage.prune_asset_history(today - timedelta(days=keep_days))
     return {"snapshot_date": today.isoformat(), "rows": written, "pruned": pruned}

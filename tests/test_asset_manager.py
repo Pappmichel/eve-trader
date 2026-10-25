@@ -17,10 +17,11 @@ psycopg = pytest.importorskip("psycopg")
 pytestmark = pg_helpers.postgres_required()
 
 ALICE, BOB, CAROL, CORP = 91001, 91002, 91003, 94001
-STATION = 60003760
-SYSTEM, REGION = 30000142, 10000002
+# Ids no other test seeds: SDE tables are shared by every test on a worker.
+STATION = 60099990
+SYSTEM, REGION = 30099990, 10099990
 STRUCTURE = 1035466617946
-TRIT, SHIP, CONTAINER, WRAP, BPC, PRODUCT, BP = 34, 990601, 990602, 60, 990603, 990604, 990605
+TRIT, SHIP, CONTAINER, WRAP, BPC, PRODUCT, BP = 990600, 990601, 990602, 60, 990603, 990604, 990605
 OFFICE = storage.OFFICE_TYPE_ID
 
 _TABLES = (
@@ -40,13 +41,13 @@ def _seed_sde(_apply_esi_access_schema):
             ("INSERT INTO sde_categories VALUES (%s,%s) ON CONFLICT DO NOTHING",
              [(4, "Material"), (6, "Ship"), (9, "Blueprint"), (2, "Celestial")]),
             ("INSERT INTO sde_groups VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-             [(18, 4, "Mineral"), (990025, 6, "Frigate"), (990448, 2, "Cargo Container"),
+             [(990018, 4, "Mineral"), (990025, 6, "Frigate"), (990448, 2, "Cargo Container"),
               (990105, 9, "Frigate Blueprint")]),
             ("INSERT INTO sde_types (type_id, group_id, type_name, volume, published) VALUES (%s,%s,%s,%s,1) "
              "ON CONFLICT (type_id) DO NOTHING",
-             [(TRIT, 18, "Tritanium", 0.01), (SHIP, 990025, "Test Rifter", 27289.0),
+             [(TRIT, 990018, "Tritanium", 0.01), (SHIP, 990025, "Test Rifter", 27289.0),
               (CONTAINER, 990448, "Test Container", 65.0), (BPC, 990105, "Test Rifter Blueprint", 0.01),
-              (PRODUCT, 18, "Test Product", 1.0), (BP, 990105, "Test Product Blueprint", 0.01)]),
+              (PRODUCT, 990018, "Test Product", 1.0), (BP, 990105, "Test Product Blueprint", 0.01)]),
             ("INSERT INTO type_packaged_volume VALUES (%s,%s) ON CONFLICT DO NOTHING", [(SHIP, 2500.0)]),
             ("INSERT INTO sde_regions VALUES (%s,%s) ON CONFLICT DO NOTHING", [(REGION, "The Forge")]),
             ("INSERT INTO sde_solar_systems VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
@@ -566,7 +567,7 @@ def test_history_snapshot_and_diff(tenant, gate_on):
 
 def test_insights_consolidation_forgotten_and_safety(tenant, gate_on, monkeypatch):
     from eve_trader.production.config import PRODUCTION_CONFIG
-    other_station = 60003761
+    other_station = 60099991
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("INSERT INTO sde_stations VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                      (other_station, SYSTEM, "Jita V - Moon 1"))
@@ -609,3 +610,40 @@ def test_scheduler_runs_history_job_only_with_the_grant(tenant, monkeypatch):
         monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid, g=grants: set(g))
         scheduler._check_and_run_due_jobs_for_tenant(tenant, cfg)
         assert ran == expected
+
+
+# ---------------------------------------------------------------- review fixes
+def test_sync_passes_the_doctrine_structure_like_the_scheduler(tenant, gate_on, monkeypatch):
+    from eve_trader.doctrine.config import DOCTRINE_CONFIG
+    from eve_trader.esi_data import orchestrator
+    captured = {}
+    monkeypatch.setattr(orchestrator, "do_sync_kinds", lambda kinds, **kw: captured.update(kw) or {"ok": True})
+    monkeypatch.setattr(DOCTRINE_CONFIG, "doctrine_structure_id", 1035466617946)
+
+    am_actions.do_sync()
+
+    assert captured["extra"] == {"structure_id": 1035466617946}
+    assert captured["tool_keys"] == gate_on
+
+
+def test_history_snapshot_does_not_price(tenant, gate_on, monkeypatch):
+    def _boom(_ids):
+        raise AssertionError("history must not price")
+    monkeypatch.setattr(portfolio, "_priced", _boom)
+    _seed_alice()
+    _share("character", ALICE, "asset_manager")
+
+    result = am_actions.take_history_snapshot()
+
+    import datetime as dt
+    rows = storage.load_asset_history(dt.date.fromisoformat(result["snapshot_date"]))
+    assert ("character", ALICE, STATION, TRIT, 1057.0) in rows  # every stack, Asset Safety included
+
+
+def test_row_cache_keeps_one_entry_per_tenant(tenant, gate_on):
+    _share("character", ALICE, "asset_manager")
+    am_actions.do_list_items()
+    _share("character", BOB, "asset_manager")  # a new share makes a new cache key
+    am_actions.do_list_items()
+
+    assert len([k for k in am_actions._cache if k[0] == tenant]) == 1
