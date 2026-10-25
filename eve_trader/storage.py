@@ -5976,6 +5976,73 @@ def asset_manager_location_details(location_ids: Iterable[int]) -> dict[int, dic
     return out
 
 
+def list_asset_manager_views() -> list[tuple]:
+    """(id, name, query dict, updated_at iso) per saved view, by name."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, query, updated_at FROM asset_manager_views ORDER BY lower(name)"
+        ).fetchall()
+    return [(int(r[0]), r[1], r[2], r[3].isoformat() if hasattr(r[3], "isoformat") else r[3]) for r in rows]
+
+
+def save_asset_manager_view(name: str, query_json: str) -> int:
+    """Insert or replace the view called `name`; returns its id."""
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO asset_manager_views (name, query) VALUES (?, ?::jsonb) "
+            "ON CONFLICT (tenant_id, name) DO UPDATE SET query = excluded.query, updated_at = now() "
+            "RETURNING id",
+            (name, query_json),
+        ).fetchone()
+    return int(row[0])
+
+
+def delete_asset_manager_view(view_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM asset_manager_views WHERE id = ?", (int(view_id),))
+        return (cur.rowcount or 0) > 0
+
+
+def write_asset_history(snapshot_date: date, rows: list[tuple]) -> int:
+    """Replaces the day's history with `rows` = (owner_type, owner_id,
+    location_id, type_id, quantity). One transaction, so a reader never sees
+    half a day."""
+    with connect() as conn:
+        conn.execute("DELETE FROM asset_manager_history WHERE snapshot_date = ?", (snapshot_date,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO asset_manager_history (snapshot_date, owner_type, owner_id, location_id, "
+                "type_id, quantity) VALUES (?,?,?,?,?,?)",
+                [(snapshot_date, *row) for row in rows],
+            )
+    return len(rows)
+
+
+def prune_asset_history(before: date) -> int:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM asset_manager_history WHERE snapshot_date < ?", (before,))
+        return cur.rowcount or 0
+
+
+def asset_history_dates() -> list[date]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT snapshot_date FROM asset_manager_history ORDER BY snapshot_date"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def load_asset_history(snapshot_date: date) -> list[tuple]:
+    """(owner_type, owner_id, location_id, type_id, quantity) of one day."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, location_id, type_id, quantity FROM asset_manager_history "
+            "WHERE snapshot_date = ?",
+            (snapshot_date,),
+        ).fetchall()
+    return [(r[0], int(r[1]), int(r[2]), int(r[3]), float(r[4])) for r in rows]
+
+
 def sde_volumes_for_types(type_ids: Iterable[int]) -> list[tuple]:
     """(type_id, sde_volume, category_id, cached_packaged_volume) per type
     in one read. cached_packaged_volume is None when type_packaged_volume

@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
+from pydantic import BaseModel
 
 from ...actions import ActionError, ConflictError
 from ...asset_manager import actions
@@ -69,6 +70,57 @@ def export_csv(params: dict = Depends(_params)):
 @router.get("/export-eve-list", response_class=PlainTextResponse)
 def export_eve_list(params: dict = Depends(_params)):
     return _wrap(actions.do_export_eve_list, **params)
+
+
+@router.get("/locations")
+def locations(params: dict = Depends(_params)):
+    return _wrap(actions.do_locations, **params)
+
+
+@router.get("/locations/{location_id}/tree")
+def location_tree(location_id: int, params: dict = Depends(_params)):
+    rest = {k: v for k, v in params.items() if k != "location_id"}
+    return _wrap(actions.do_location_tree, location_id=location_id, **rest)
+
+
+@router.get("/ships/{owner_type}/{owner_id}/{item_id}")
+def ship(owner_type: str, owner_id: int, item_id: int):
+    return _wrap(actions.do_ship, owner_type=owner_type, owner_id=owner_id, item_id=item_id)
+
+
+class SaveViewRequest(BaseModel):
+    name: str
+    query: dict
+
+
+@router.get("/views")
+def list_views():
+    return _wrap(actions.do_list_views)
+
+
+@router.post("/views")
+def save_view(req: SaveViewRequest):
+    return _wrap(actions.do_save_view, name=req.name, query_params=req.query)
+
+
+@router.delete("/views/{view_id}")
+def delete_view(view_id: int):
+    return _wrap(actions.do_delete_view, view_id=view_id)
+
+
+@router.get("/types/{type_id}")
+def type_detail(type_id: int):
+    return _wrap(actions.do_type_detail, type_id=type_id)
+
+
+@router.get("/history")
+def history(from_date: Optional[str] = None, to_date: Optional[str] = None, by_owner: bool = False):
+    return _wrap(actions.do_history, from_date=from_date, to_date=to_date, by_owner=by_owner)
+
+
+@router.get("/insights")
+def insights(min_value: float = 10_000_000.0):
+    return _wrap(actions.do_insights, min_value=min_value)
 
 
 @router.get("/freshness")

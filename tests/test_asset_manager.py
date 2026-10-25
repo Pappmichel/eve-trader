@@ -27,6 +27,7 @@ _TABLES = (
     "character_assets", "corp_assets", "character_blueprints", "corp_blueprints",
     "character_industry_jobs", "corp_industry_jobs", "character_sell_orders", "esi_sharing",
     "manual_stock", "structure_names", "global_structure_names", "manual_location_names",
+    "asset_manager_views", "asset_manager_history",
 )
 
 
@@ -371,3 +372,240 @@ def test_ledger_archive_runs_for_an_asset_manager_only_share(tenant):
 
     assert fetchers._shared_with_portfolio("contracts", "character", ALICE) is True
     assert fetchers._shared_with_portfolio("contracts", "character", BOB) is False
+
+
+# ---------------------------------------------------------------- phase 3 / 3b
+MODULE, CHARGE = 990606, 990607
+
+
+@pytest.fixture
+def _ship_sde():
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.cursor().executemany(
+            "INSERT INTO sde_categories VALUES (%s,%s) ON CONFLICT DO NOTHING", [(7, "Module"), (8, "Charge")])
+        conn.cursor().executemany(
+            "INSERT INTO sde_groups VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+            [(990055, 7, "Projectile Weapon"), (990083, 8, "Projectile Ammo")])
+        conn.cursor().executemany(
+            "INSERT INTO sde_types (type_id, group_id, type_name, volume, published) VALUES (%s,%s,%s,%s,1) "
+            "ON CONFLICT (type_id) DO NOTHING",
+            [(MODULE, 990055, "Test Autocannon", 5.0), (CHARGE, 990083, "Test Ammo", 0.01)])
+
+
+def _seed_fitted_ship():
+    storage.replace_assets("character_assets", [
+        (2, SHIP, STATION, "Hangar", 1, 0, "Alice", True, "Alice's Rifter"),
+        (40, MODULE, 2, "HiSlot0", 1, 0, "Alice", True),
+        (41, CHARGE, 2, "HiSlot0", 100, 0, "Alice"),
+        (42, MODULE, 2, "HiSlot1", 1, 0, "Alice", True),
+        (43, TRIT, 2, "Cargo", 20, 0, "Alice"),
+        (44, TRIT, STATION, "Hangar", 5, 0, "Alice"),
+    ], owner_character_id=ALICE, owner_name="Alice")
+    _share("character", ALICE, "asset_manager")
+
+
+def test_location_summary_rolls_up_region_system_location(tenant, gate_on):
+    _seed_alice()
+    _share("character", ALICE, "asset_manager", "assets", "blueprints")
+
+    (region,) = am_actions.do_locations()["regions"]
+
+    assert region["label"] == "The Forge"
+    (system,) = region["children"]
+    (loc,) = system["children"]
+    assert (system["label"], loc["label"], loc["stacks"]) == ("Jita", "Jita IV - Moon 4", 7)
+    assert region["value"] == loc["value"]
+
+
+def test_location_tree_nests_ship_container_and_items(tenant, gate_on):
+    _seed_alice()
+    _share("character", ALICE, "asset_manager", "assets", "blueprints")
+
+    nodes = am_actions.do_location_tree(STATION)["nodes"]
+
+    (owner,) = nodes
+    hangars = {h["label"]: h for h in owner["children"]}
+    assert set(hangars) == {"Item hangar", "Asset safety"}
+    ship = next(c for c in hangars["Item hangar"]["children"] if c["kind"] == "ship")
+    (container,) = ship["children"]
+    assert container["label"] == "Spare parts (Test Container)"
+    assert container["children"][0]["quantity"] == 50
+    assert ship["value"] == 1_000_000.0 + 250.0  # ship plus what is inside
+
+
+def test_location_tree_shows_corp_items_under_their_division(tenant, gate_on):
+    storage.replace_assets("corp_assets", [
+        (900, OFFICE, STATION, "OfficeFolder", 1, 0, "Corp (corp)", True),
+        (901, TRIT, 900, "CorpSAG2", 400, 0, "Corp (corp)"),
+    ], owner_corporation_id=CORP, owner_name="Corp (corp)")
+    _share("corporation", CORP, "asset_manager")
+
+    (owner,) = am_actions.do_location_tree(STATION)["nodes"]
+
+    assert [h["label"] for h in owner["children"]] == ["Division 2"]
+
+
+def test_ship_view_sections_eft_and_doctrine_match(tenant, gate_on, _ship_sde):
+    _seed_fitted_ship()
+    doctrine_id = storage.create_doctrine("Test doctrine", None)
+    fitting_id = storage.create_fitting(doctrine_id, "Brawler", SHIP, "[Test Rifter, Brawler]", None, 0, 0, None)
+    storage.replace_fitting_items(fitting_id, [(1, "high", MODULE, 3, False)])
+
+    ship = am_actions.do_ship("character", ALICE, 2)
+
+    assert [s["label"] for s in ship["sections"]] == ["High slots", "Cargo"]
+    assert ship["eft"] == (
+        "[Test Rifter, Alice's Rifter]\n\n"
+        "Test Autocannon, Test Ammo\nTest Autocannon\n\n"
+        "Tritanium x20\n"
+    )
+    (match,) = ship["doctrine_matches"]
+    assert match["doctrine_name"] == "Test doctrine"
+    assert match["missing"] == [{"type_id": MODULE, "type_name": "Test Autocannon", "quantity": 1.0}]
+
+
+def test_ship_view_hides_doctrine_without_the_grant(tenant, monkeypatch, _ship_sde):
+    monkeypatch.setattr(scope.tenant_eligibility, "granted_tools", lambda tid: {"asset_manager"})
+    _seed_fitted_ship()
+
+    ship = am_actions.do_ship("character", ALICE, 2)
+
+    assert ship["doctrine_visible"] is False and ship["doctrine_matches"] == []
+
+
+def test_ship_view_rejects_items_outside_scope(tenant, gate_on, _ship_sde):
+    _seed_fitted_ship()
+    with pytest.raises(ActionError):
+        am_actions.do_ship("character", BOB, 2)
+    with pytest.raises(ActionError, match="not a ship"):
+        am_actions.do_ship("character", ALICE, 44)
+
+
+# ---------------------------------------------------------------- phase 5 / 6 / 7
+def test_saved_views_round_trip_and_validate(tenant, gate_on):
+    saved = am_actions.do_save_view("Fuel", {"q": "fuel", "stock_only": True, "junk": 1, "owners": []})
+    assert saved["query"] == {"q": "fuel", "stock_only": True}
+    am_actions.do_save_view("Fuel", {"q": "isotopes"})  # same name replaces
+
+    (view,) = am_actions.do_list_views()["views"]
+    assert (view["name"], view["query"], view["error"]) == ("Fuel", {"q": "isotopes"}, None)
+
+    with pytest.raises(ActionError):
+        am_actions.do_save_view("Bad", {"group_by": "nope"})
+    with pytest.raises(ActionError):
+        am_actions.do_save_view("", {})
+    am_actions.do_delete_view(view["id"])
+    assert am_actions.do_list_views()["views"] == []
+    with pytest.raises(ActionError):
+        am_actions.do_delete_view(view["id"])
+
+
+def test_stale_saved_view_is_reported_not_raised(tenant, gate_on):
+    storage.save_asset_manager_view("Old", '{"sort": "removed_column"}')
+
+    (view,) = am_actions.do_list_views()["views"]
+
+    assert view["query"] == {} and "sort" in view["error"]
+
+
+def test_wanted_by_respects_grants(tenant, gate_on):
+    _seed_alice()
+    _share("character", ALICE, "asset_manager", "assets", "blueprints")
+    with storage.connect() as conn:
+        conn.execute("INSERT INTO stock_targets (type_id, type_name, backup_stock) VALUES (?, 'Tritanium', 500)", (TRIT,))
+
+    rows = am_actions.do_list_items(group_by="type", type_ids=[TRIT])["rows"]
+    assert rows[0]["wanted_by"] == []  # no production grant
+
+    gate_on.add("production")
+    am_actions.invalidate_cache()
+    rows = am_actions.do_list_items(group_by="type", type_ids=[TRIT])["rows"]
+    assert rows[0]["wanted_by"] == [{"tool": "production", "label": "Stock target", "quantity": 500}]
+
+
+def test_type_detail_with_price_history(tenant, gate_on, monkeypatch):
+    from eve_trader import goonmetrics_client
+    from eve_trader.goonmetrics_client import HistoryPoint
+    _seed_alice()
+    _share("character", ALICE, "asset_manager", "assets", "blueprints")
+    today = __import__("datetime").date.today().isoformat()
+    monkeypatch.setattr(goonmetrics_client.GoonmetricsClient, "price_history", lambda self, region, ids, esi_for_missing=None: [
+        HistoryPoint(region, TRIT, today, 4.0, 6.0, 5.0, 1000.0, 3),
+        HistoryPoint(region, TRIT, "2000-01-01", 4.0, 6.0, 5.0, 1000.0, 3),
+    ])
+
+    detail = am_actions.do_type_detail(TRIT)
+
+    assert detail["totals"]["quantity"] == 1057
+    assert detail["places"][0]["location_name"] == "Jita IV - Moon 4"
+    assert detail["price_history"]["points"] == [{"date": today, "avg_price": 5.0, "volume": 1000.0}]
+    with pytest.raises(ActionError):
+        am_actions.do_type_detail(SHIP + 999)
+
+
+def test_history_snapshot_and_diff(tenant, gate_on):
+    import datetime as dt
+    _share("character", ALICE, "asset_manager")
+    storage.replace_assets("character_assets", [(1, TRIT, STATION, "Hangar", 100, 0, "Alice")],
+                           owner_character_id=ALICE, owner_name="Alice")
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    storage.write_asset_history(yesterday, [("character", ALICE, STATION, TRIT, 40.0), ("character", ALICE, STATION, SHIP, 1.0)])
+    storage.write_asset_history(dt.date.today() - dt.timedelta(days=400), [("character", ALICE, STATION, TRIT, 1.0)])
+
+    assert am_actions.history_snapshot_due() is True
+    result = am_actions.do_history()
+
+    assert result["from_date"] == yesterday.isoformat()
+    assert result["to_date"] == dt.date.today().isoformat()
+    by_type = {r["type_id"]: r for r in result["rows"]}
+    assert (by_type[TRIT]["delta"], by_type[TRIT]["value_delta"]) == (60.0, 300.0)
+    assert by_type[SHIP]["delta"] == -1.0
+    assert am_actions.history_snapshot_due() is False
+    assert len(result["dates"]) == 2  # the 400-day-old row was pruned (retention 90)
+
+
+def test_insights_consolidation_forgotten_and_safety(tenant, gate_on, monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    other_station = 60003761
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("INSERT INTO sde_stations VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                     (other_station, SYSTEM, "Jita V - Moon 1"))
+    _seed_alice()
+    storage.replace_assets("character_assets", [
+        (1, TRIT, STATION, "Hangar", 1000, 0, "Alice"),
+        (8, TRIT, other_station, "Hangar", 3_000_000, 0, "Alice"),
+        (5, WRAP, STATION, "AssetSafety", 1, 0, "Alice", True),
+        (6, TRIT, 5, "Hangar", 7, 0, "Alice"),
+    ], owner_character_id=ALICE, owner_name="Alice")
+    _share("character", ALICE, "asset_manager")
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", STATION)
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", 100.0)
+
+    result = am_actions.do_insights(min_value=1_000_000)
+
+    (cons,) = result["consolidation"]
+    assert (cons["type_name"], cons["location_count"], cons["outside_quantity"]) == ("Tritanium", 2, 3_000_000)
+    assert cons["freight_cost"] == pytest.approx(3_000_000 * 0.01 * 100.0)
+    (lost,) = result["forgotten"]
+    assert (lost["location_name"], lost["value"]) == ("Jita V - Moon 1", 15_000_000.0)
+    (safety,) = result["asset_safety"]
+    assert safety["stacks"] == 2 and safety["value"] == 35.0
+
+
+def test_scheduler_runs_history_job_only_with_the_grant(tenant, monkeypatch):
+    from eve_trader import scheduler
+    from eve_trader.asset_manager import actions as am
+    ran = []
+    monkeypatch.setattr(scheduler, "_run_job", lambda tid, name, fn: ran.append(name))
+    monkeypatch.setattr(scheduler, "_portfolio_snapshot_due", lambda cfg: False)
+    monkeypatch.setattr(scheduler, "_job_due", lambda *a, **kw: False)
+    from eve_trader.esi_data import orchestrator
+    monkeypatch.setattr(orchestrator, "pending_due", lambda **kw: [])
+    monkeypatch.setattr(am, "history_snapshot_due", lambda: True)
+    cfg = scheduler.TradingConfig(scheduler_enabled=True)
+
+    for grants, expected in (({"asset_manager"}, ["asset_history"]), ({"trading"}, [])):
+        ran.clear()
+        monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid, g=grants: set(g))
+        scheduler._check_and_run_due_jobs_for_tenant(tenant, cfg)
+        assert ran == expected

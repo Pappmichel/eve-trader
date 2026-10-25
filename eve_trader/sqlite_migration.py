@@ -173,6 +173,8 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "module_reprocessing_shortlist_snapshot": "Postgres-native (Module Reprocessing - never existed in the pre-migration SQLite schema)",
     "module_reprocessing_mineral_requirements": "Postgres-native (Module Reprocessing shopping list - never existed in the pre-migration SQLite schema)",
     "station_trading_shortlist": "Postgres-native (Station Trading - never existed in the pre-migration SQLite schema)",
+    "asset_manager_views": "Postgres-native (Asset Manager, docs/ASSET_MANAGER_PLAN.md - never existed in the pre-migration SQLite schema)",
+    "asset_manager_history": "Postgres-native (Asset Manager, docs/ASSET_MANAGER_PLAN.md - never existed in the pre-migration SQLite schema)",
     "pi_plans": "Postgres-native (PI tool, docs/PI_PLAN.md - never existed in the pre-migration SQLite schema)",
     "pi_templates": "Postgres-native (PI tool, docs/PI_PLAN.md - never existed in the pre-migration SQLite schema)",
     "pi_yield_samples": "Postgres-native (PI tool, docs/PI_PLAN.md - never existed in the pre-migration SQLite schema)",
