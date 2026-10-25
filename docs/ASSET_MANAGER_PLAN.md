@@ -1,8 +1,8 @@
 # Asset Manager - plan
 
-Status: **draft, nothing implemented, decisions D1-D12 proposed and not yet
-confirmed with the user.** Real-data checks (section 9) are open: this
-container has no `config.yaml` and no production database.
+Status: **draft, nothing implemented, decisions D1-D13 confirmed with the
+user on 2026-10-25 (section 10).** Real-data checks (section 9) are open:
+this container has no `config.yaml` and no production database.
 
 Goal: turn Production's "Asset Search" tab (one exact item name -> where is
 it, how much, who owns it) into a full asset manager: browse every asset by
@@ -65,8 +65,10 @@ Goals (v1 = phases 0-5):
   Total Wealth; unpriced items stay unpriced and are listed, never guessed.
 - G5 Freshness per owner and a sync button.
 - G6 Export: CSV and an EVE multibuy / appraisal paste list.
-- G7 The old Production Asset Search keeps working (redirect into the new
-  page, prefilled).
+- G7 Items in open sell orders and outstanding contracts appear as their
+  own sources, so the page shows everything the tenant owns (D13).
+- G8 The old Production Asset Search is removed once the new page covers
+  it (D12).
 
 Non-goals:
 
@@ -79,18 +81,15 @@ Non-goals:
   manager only *shows* those rows, marked.
 - A live ESI asset read per page open. The page reads the synced snapshot.
 
-## 3. Decisions (proposed - confirm before phase 1)
+## 3. Decisions (confirmed 2026-10-25)
 
 - **D1 Own tool, tool key `asset_manager`.** A new tenant-facing tool with
   its own grant, router `/api/asset-manager/`, page `/assets` and its own
-  sharing row (added to `consuming_tools` of the `assets` kind in
-  `esi_data/registry.py`). Reason: assets are not Production-specific (gap
-  2), and a separate opt-in share matches how Portfolio was added. The key
-  must **not** be `assets`: that is the data-kind key, and tool keys must
-  never collide with data-kind keys (Character Management plan, decision
-  8). Alternative: keep it as a Production tab and union all asset shares -
-  rejected because it would let a Production grant read assets shared only
-  with other tools, which breaks the per-tool sharing model.
+  sharing row (added to `consuming_tools` of `assets`, `corp_divisions`,
+  `market_orders` and `contracts` in `esi_data/registry.py`). Reason: assets
+  are not Production-specific (gap 2). The key must **not** be `assets`:
+  that is the data-kind key, and tool keys must never collide with
+  data-kind keys (Character Management plan, decision 8).
 - **D2 Default grant.** `asset_manager` joins `DEFAULT_TOOL_KEYS`, and
   Admin's checkbox auto-tick for `characters` treats it as ESI-consuming.
 - **D3 Price rule = Portfolio's.** Values come from the same function that
@@ -126,18 +125,35 @@ Non-goals:
   is the immediate parent and `(item_id, owner_name)` the key, exactly what
   `_resolve_locations` already walks. The tree for one station is built
   from that station's rows on request.
-- **D10 Reads fail closed through the sharing layer.** Owner filtering uses
-  the shared owners of `assets` for `asset_manager` (same mechanism as
-  `shared_production_owner_ids`, via `esi_data/access`); revoking the share
-  hides the rows immediately.
+- **D10 Union of all shares, still fail closed.** For each kind it reads
+  (`assets`, `corp_divisions`, `market_orders`, `contracts`) the tool sees
+  every owner that shares that kind with **any** consuming tool, its own
+  row included - the same union rule the realized-profit archive uses
+  (`realized/access.py`, unified plan U3a). A character can also share a
+  kind with the Asset Manager alone. Revoking the last share of a kind
+  hides that owner's rows immediately; an owner with no share is never
+  read. This is acceptable because a tenant is one character (DB-enforced),
+  so the union never crosses people. Implement it as one helper in
+  `esi_data/access.py` (`owners_shared_with_any(kind)`), not as a loop over
+  tool names in the asset package.
 - **D11 Sync button = `do_sync_for_tool("asset_manager")`** (kinds
-  `assets`, `corp_divisions`), with the usual per-owner freshness from
+  `assets`, `corp_divisions`, `market_orders`, `contracts`), with the usual per-owner freshness from
   `esi_freshness`.
-- **D12 Production's Asset Search tab** becomes a link/redirect to
-  `/assets?type=<id>` once phase 5 ships (only shown if the user holds
-  `asset_manager`; otherwise the old tab stays). The old
-  `POST /asset-locations` route is removed in the same phase, after a grep
-  for other callers.
+- **D12 Production's Asset Search tab is removed without a replacement
+  link** in phase 5: the tab, its route in `App.tsx`, the
+  `ProductionLayout`/QuickNav entries, `POST /api/production/asset-locations`,
+  `do_search_item_locations`, `search_item_stock_locations` (after a grep
+  for other callers) and their tests. Phase 0 still fixes it, because it
+  stays live until then.
+- **D13 Listed and contracted items as virtual rows.** Items in the
+  owners' open sell orders (`market_orders` snapshot) and outstanding
+  item-exchange contracts the owner issued (`contracts` snapshot, items
+  with `is_included`) appear with `source: "listed"` / `"contract"`, a
+  badge and a toggle (default on). Same definitions as Portfolio Total
+  Wealth's `listed` / `contracts` components, so the two pages agree;
+  reuse Portfolio's loaders, do not re-derive them. Location = the order's
+  station/structure, or the contract's start location. Buy orders and
+  escrow are not items and are not shown.
 
 ## 4. Data model
 
@@ -180,18 +196,19 @@ assembled_or_fitted, location_flag, hangar_label, parent_item_id,
 parent_name, path (["Jita IV-4", "Corp Hangar 3 'Fuel'", "Fuel Box"]),
 location_id, location_name, solar_system_name, region_name, security,
 unit_volume_m3, total_volume_m3, unit_price, total_value, price_source,
-badges (["asset_safety","assembled","fitted","delivery","manual"]),
-source ("esi" | "manual")
+badges (["asset_safety","assembled","fitted","delivery","manual",
+         "listed","contract"]),
+source ("esi" | "manual" | "listed" | "contract")
 ```
 
 ## 5. API (`/api/asset-manager/`, gated by `asset_manager`)
 
 | Method + path | Purpose |
 |---|---|
-| `GET /items` | Filtered, sorted, paged list. Params: `q` (type name / item name / location substring), `type_ids`, `group_ids`, `category_ids`, `owner` (type:id, repeatable), `region_id`, `system_id`, `location_id`, `container_item_id`, `flags`, `include_manual`, `stock_only`, `group_by` (`none` / `type` / `type_location`), `sort`, `page`, `page_size` (max 500). Returns rows + totals (count, quantity, m3, value, unpriced count) for the whole filter, not the page. |
+| `GET /items` | Filtered, sorted, paged list. Params: `q` (type name / item name / location substring), `type_ids`, `group_ids`, `category_ids`, `owner` (type:id, repeatable), `region_id`, `system_id`, `location_id`, `container_item_id`, `flags`, `sources` (esi/manual/listed/contract), `stock_only`, `group_by` (`none` / `type` / `type_location`), `sort`, `page`, `page_size` (max 500). Returns rows + totals (count, quantity, m3, value, unpriced count) for the whole filter, not the page. |
 | `GET /locations` | Tree summary: region -> system -> location with item count, m3, value, owners. |
 | `GET /locations/{location_id}/tree` | Hangars/divisions -> containers/ships -> items for one location, with per-node totals. |
-| `GET /freshness` | Per owner: last success/attempt/error for `assets` and `corp_divisions`, plus not-shared / reauth-needed owners. |
+| `GET /freshness` | Per owner: last success/attempt/error for `assets`, `corp_divisions`, `market_orders` and `contracts`, plus not-shared / reauth-needed owners. |
 | `POST /sync` | `do_sync_for_tool("asset_manager")` as a `pipeline_runner` job. |
 | `GET /export.csv` | Same params as `/items`, unpaged, streamed. |
 
@@ -210,14 +227,18 @@ calling the same actions.
 
 ### Phase 1 - tool scaffolding
 - `asset_manager` in `ALL_TOOL_KEYS`, `DEFAULT_TOOL_KEYS`,
-  `_TOOL_PATH_PREFIXES`, registry `consuming_tools` of `assets`, Admin
+  `_TOOL_PATH_PREFIXES`, registry `consuming_tools` of `assets`,
+  `market_orders` and `contracts` (`corp_divisions` comes in phase 4), Admin
   auto-tick list, Landing card, sidebar/QuickNav, `App.tsx` route.
 - Package `eve_trader/asset_manager/` (`actions.py`, `queries.py`,
   `tree.py`), router `api/routers/asset_manager.py`, empty page.
 - `eve-trader admin grant-defaults` note in the release notes (existing
   tenants need the grant; characters need the new share).
 - CLAUDE.md: new section + `ALL_TOOL_KEYS` count.
-- Tests: gate (401/403), share filter (D10), router monkeypatch target.
+- `esi_data/access.owners_shared_with_any(kind)` (D10).
+- Tests: gate (401/403); union filter - an owner sharing assets only with
+  Doctrine is visible, an owner with no share is not, revoking the last
+  share hides it; router monkeypatch target.
 
 ### Phase 2 - inventory list (G1, G4, G5)
 - `queries.py`: one SQL over both asset tables (UNION ALL) joined to
@@ -232,7 +253,10 @@ calling the same actions.
   category/group, badge toggles, "stock only"), `DataTable` with server
   paging, totals footer, unpriced counter, freshness strip + sync button,
   filters in the URL query (shareable, back button works).
+- Virtual rows for listed / contracted items (D13) through Portfolio's
+  loaders, in the same UNION and the same totals.
 - Tests: filters, paging totals = sum over filter, badges, manual rows,
+  listed / contract rows match Portfolio's components for the same data,
   unpriced handling, RLS (second tenant sees nothing).
 
 ### Phase 3 - location browser and container tree (G2)
@@ -256,23 +280,24 @@ calling the same actions.
 - Tests: name fetch failure keeps the sync green; "None"/empty names stored
   as NULL; division fallback labels.
 
-### Phase 5 - search 2.0, exports, Production hand-over (G6, G7)
+### Phase 5 - search 2.0, exports, old tab removed (G6, G8)
 - Type picker with multi-select and group/category chips; substring match
   on type names server-side.
 - CSV export endpoint; "Copy as EVE list" (`Type Name<TAB>Qty` per line,
   grouped by type, current filter) for multibuy / appraisal paste.
 - Row actions: "Add stock target" (opens Production's form, only with the
   `production` grant), "Show in Portfolio".
-- Production tab -> redirect (D12); remove `POST /asset-locations`,
-  `do_search_item_locations`, `search_item_stock_locations` if no caller
-  is left; update tests.
+- Remove Production's Asset Search tab completely (D12): page,
+  `App.tsx` route, `ProductionLayout` and QuickNav entries,
+  `POST /asset-locations`, `do_search_item_locations`,
+  `search_item_stock_locations` (if no caller is left) and their tests.
 
-### Phase 6 (optional, decide later) - change history
+### Phase 6 - change history (confirmed)
 - Daily snapshot of `(owner, location, type) -> quantity` (new table,
   written after each asset sync, retention e.g. 90 days), diff view "what
-  arrived / left since date X". Open question Q3: storage volume.
+  arrived / left since date X". Size the retention after R-07.
 
-### Phase 7 (optional, decide later) - insights
+### Phase 7 - insights (confirmed)
 - Consolidation helper: a type spread over many locations, with m3 to haul
   to the home structure and the freight cost at `haul_cost_per_m3`.
 - Forgotten assets: value above a threshold at locations no tool uses,
@@ -308,6 +333,11 @@ calling the same actions.
   the newest asset sync predates the deploy.
 - **P-11** Removing the old route: router tests monkeypatch module objects;
   delete the tests together with the route.
+- **P-12** No double counting with D13: ESI's asset list already omits
+  listed and contracted items (CLAUDE.md, Total Wealth), so virtual rows are
+  added, never subtracted. Courier contracts are not item rows.
+- **P-13** D10 union: the union helper must exclude `live_only` kinds and
+  must not read a kind whose last share was revoked from a stale cache.
 
 ## 8. Testing and verification
 
@@ -330,12 +360,24 @@ calling the same actions.
 - [ ] R-05 Rows with a NULL `resolved_location_id` or a parent missing from
       the same owner's list (orphans for the tree).
 - [ ] R-06 Time of the Portfolio price lookup for all owned types today.
+- [ ] R-07 Distinct (owner, location, type) rows per tenant - storage per
+      day for phase 6's snapshot table.
 
-## 10. Open questions for the user
+## 10. Decision log (asked one by one, 2026-10-25)
 
-- **Q1** Own tool (D1) or stay a Production tab?
-- **Q2** Default grant for every tenant (D2)?
-- **Q3** Phase 6 (history) and phase 7 (insights) wanted at all, and which
-  first?
-- **Q4** Should listed items (sell orders) and items in outstanding
-  contracts appear as virtual rows, as Portfolio counts them? (Not in v1.)
+| # | Question | Answer |
+|---|---|---|
+| D1 | Own tool or Production tab? | Own tool `asset_manager` |
+| D2 | Default grant? | Yes, in `DEFAULT_TOOL_KEYS` |
+| D3 | Price rule? | Portfolio's (Total Wealth) |
+| D4 | Asset Safety, deliveries, assembled ships? | Show all, badged, filterable |
+| D5 | Manual stock? | Yes, own source |
+| D6 | Container/ship names? | `/assets/names` during the asset sync |
+| D7 | Corp division names? | New data kind `corp_divisions` |
+| D8 | Filtering/paging? | Server-side |
+| D9 | Container tree source? | Existing columns, built per location |
+| D10 | Which owners? | Union of all shares per kind; own sharing row too; also for orders/contracts |
+| D11 | Sync button? | Yes, `do_sync_for_tool` |
+| D12 | Old Production tab? | Removed in phase 5, no redirect |
+| D13 (Q4) | Listed / contracted items? | Yes, own sources |
+| Q3 | Phases 6 and 7? | Both in the plan |
