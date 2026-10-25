@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, MultiSelect, Switch } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, Switch } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
@@ -13,10 +13,6 @@ import { hubLabel } from '../../tradingHubs'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
-  const { data: divisionOptions } = useQuery({
-    queryKey: ['trading', 'wallet-division-options'],
-    queryFn: tradingApi.walletDivisionOptions,
-  })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
@@ -27,7 +23,7 @@ export default function TradingSettings() {
   // page during the initial fetch, unlike every other page in the app which
   // shows a DataTable skeleton or this same Loader/Center while its primary
   // query is in flight - on a slow connection this looked broken, not loading.
-  if (!form || !divisionOptions) return <Center h={200}><Loader color="accent" /></Center>
+  if (!form) return <Center h={200}><Loader color="accent" /></Center>
 
   const set = <K extends keyof TradingSettingsT>(key: K, value: TradingSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
@@ -118,19 +114,14 @@ export default function TradingSettings() {
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Corp wallets</Title>
       <Text size="xs" c="dimmed">
         Corp-funded market orders are recorded on the corporation wallet, not the placing character&apos;s
-        personal wallet, so the realized-profit archive would miss them without this. Select which of the seven ESI
-        wallet divisions to page. Leave empty to read every division (the default). The fetching character
+        personal wallet. The realized-profit archive reads all seven corp wallet divisions so those fills are not
+        missed. The fetching character
         needs the Accountant or Junior Accountant role in that corp — not Director, and not Station Manager.
         A buyer or seller added before this scope existed needs a one-time re-login before corp fills appear.
         Corp fills are counted regardless of which member placed them; that is correct for a single-member
         corp. In a shared corp this pulls other members&apos; trades into the wallet archive and therefore
         into realized profit. Profit / Day on the shortlist uses market-wide volume, not these fills.
       </Text>
-      <MultiSelect label="Corp wallet divisions included in the wallet archive"
-        data={divisionOptions.wallet_division_ids.map((id) => ({ value: String(id), label: `Division ${id}` }))}
-        value={(form.wallet_division_ids ?? []).map(String)}
-        onChange={(v) => set('wallet_division_ids', v.map(Number))}
-        placeholder="All divisions" clearable />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Background scheduler</Title>
       <Text size="xs" c="dimmed">

@@ -192,7 +192,6 @@ export interface TradingSettings {
   structure_market_slug: string | null
   buyer_character_name: string | null
   seller_character_name: string | null
-  wallet_division_ids: number[]
   esi_frequent_interval_hours: number
   esi_normal_interval_hours: number
   esi_rare_interval_hours: number

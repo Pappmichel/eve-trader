@@ -152,7 +152,6 @@ class TradingSettings(BaseModel):
     structure_market_slug: Optional[str] = None
     buyer_character_name: Optional[str] = None
     seller_character_name: Optional[str] = None
-    wallet_division_ids: tuple[int, ...] = ()
     esi_frequent_interval_hours: float = 1.0
     esi_normal_interval_hours: float = 6.0
     esi_rare_interval_hours: float = 24.0
@@ -172,12 +171,6 @@ def get_settings():
 @router.post("/settings")
 def update_settings(updates: TradingSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
-
-
-@router.get("/settings/wallet-division-options")
-def get_wallet_division_options():
-    from ...config import WALLET_DIVISION_IDS
-    return {"wallet_division_ids": list(WALLET_DIVISION_IDS)}
 
 
 @router.get("/esi/sync-time")

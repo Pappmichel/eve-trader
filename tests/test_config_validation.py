@@ -238,25 +238,16 @@ def test_validate_doctrine_overrides_rejects_unknown_hangar_flag():
         validate_doctrine_overrides({"stockpile_hangar_flags": ["NotARealFlag"]})
 
 
-def test_validate_trading_overrides_accepts_known_wallet_divisions():
-    validate_trading_overrides({"wallet_division_ids": [1, 7]})
-
-
-def test_validate_trading_overrides_accepts_empty_wallet_divisions():
-    validate_trading_overrides({"wallet_division_ids": []})
-
-
-def test_validate_trading_overrides_rejects_unknown_wallet_division():
-    with pytest.raises(ConfigError, match="wallet_division_ids"):
-        validate_trading_overrides({"wallet_division_ids": [1, 8]})
-
-
-def test_do_update_settings_rejects_bad_wallet_division_as_action_error():
-    from eve_trader import actions
-
+def test_saved_overrides_for_removed_trading_fields_are_ignored():
+    # wallet_division_ids / structure_broker_fee were removed from
+    # TradingConfig; rows saved before that must still load and validate.
     cfg = TradingConfig()
-    with pytest.raises(ActionError, match="wallet_division_ids"):
-        actions.do_update_settings({"wallet_division_ids": [0]}, cfg=cfg)
+    stale = {"wallet_division_ids": [1, 2], "structure_broker_fee": 0.02}
+    validate_config_overrides(cfg, stale)
+    validate_trading_overrides(stale)
+    apply_config_overrides(cfg, stale)
+    assert not hasattr(cfg, "wallet_division_ids")
+    assert not hasattr(cfg, "structure_broker_fee")
 
 
 def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_production():
