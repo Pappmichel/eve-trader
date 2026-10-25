@@ -28,6 +28,14 @@ def _no_integrated_orders(monkeypatch):
     monkeypatch.setattr(storage, "list_integrated_special_order_items", lambda: [])
 
 
+@pytest.fixture(autouse=True)
+def _every_tenant_active(monkeypatch):
+    # The refresh reads tenant activity first; unmocked, that query hit the
+    # real database (its rows decided the result, and without Postgres each
+    # test waited 30 s for the pool). The activity tests override this.
+    monkeypatch.setattr(storage, "list_tenant_last_active", lambda: {})
+
+
 def _fake_enter_tenant(jita_region_id: int = 10000002):
     # Same stand-in tenant_scope.enter_tenant already used by
     # tests/test_scheduler.py - resolves TRADING_CONFIG via a direct

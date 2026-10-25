@@ -720,9 +720,15 @@ widens the alert type CHECK constraints).
 - Any function with a module-level cache (see `discover_build_candidates`
   below) needs an autouse fixture resetting it between tests, or later tests
   will silently reuse an earlier test's monkeypatched result.
-- Full suite: `pytest` from the repo root. Keep it green before calling
-  anything done - it currently runs in a few seconds, there's no excuse to
-  skip it.
+- Full suite: `pytest -n auto` from the repo root (pytest-xdist; plain
+  `pytest` runs serially). Keep it green before calling anything done.
+- Tests run against their own database (`eve_trader_test`, one per xdist
+  worker), created by `tests/pg_helpers.py`, which applies every schema file
+  in `deploy/deploy.sh`'s order - never the `eve_trader` dev database. A test
+  must not depend on rows another test left behind (SDE tables, `lru_cache`d
+  SDE lookups): xdist runs modules in any order on any worker.
+- `tests/conftest.py` fails any test that sends a real HTTP request through
+  `requests`; mock the ESI/Goonmetrics call instead.
 
 ## "Live-verify before declaring done" discipline
 

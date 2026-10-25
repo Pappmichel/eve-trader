@@ -27,14 +27,21 @@ def _fake_prices(sd):
     return econ.Prices(sell=sell, buy={t: v * 0.9 for t, v in sell.items()})
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _design_cache_per_module():
+    # Designs are cached without prices, keyed by every input (including
+    # id(sd)), so tests in this module can share them; clearing before each
+    # test made every test redo the full design search (seconds each).
+    engine.clear_cache()
+    yield
+    engine.clear_cache()
+
+
 @pytest.fixture(autouse=True)
 def _patched(monkeypatch, sd):
-    engine.clear_cache()
     monkeypatch.setattr(pa, "_static", lambda: sd)
     monkeypatch.setattr(pa, "_medians_cache", {pt: 5000.0 for pt in C.PLANET_TYPE_IDS})
     monkeypatch.setattr(pa, "_prices", lambda s, cfg, with_history=True: _fake_prices(s))
-    yield
-    engine.clear_cache()
 
 
 def _id(sd, name):

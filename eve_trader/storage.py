@@ -28,6 +28,7 @@ be silently bypassed, and that role has no CREATE TABLE privilege).
 """
 from __future__ import annotations
 
+import atexit
 import contextvars
 import functools
 import os
@@ -84,6 +85,20 @@ def _get_pool() -> ConnectionPool:
     if _pool is None:
         _pool = ConnectionPool(PG_DSN, min_size=1, max_size=10, open=True)
     return _pool
+
+
+def close_pool() -> None:
+    """Closes the process-wide pool (registered with atexit below). An open
+    pool left to interpreter shutdown waits 5 s for each of its worker
+    threads (about 20 s), so every CLI command and pytest run that touched
+    Postgres used to hang that long before exiting."""
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
+
+
+atexit.register(close_pool)
 
 
 def set_current_tenant(tenant_id: Optional[str]) -> contextvars.Token:

@@ -407,6 +407,9 @@ def test_opening_is_frozen_so_a_later_loss_shows_as_drift(tenant):
     assert inventory[TYPE_A]["quantity"] == pytest.approx(15.0)
     assert inventory[TYPE_A]["drift"] == pytest.approx(-3.0)
     drift = _group(production_actions.do_get_realized_warnings(), "inventory_drift")["items"]
+    # type_name is only set when the shared SDE tables (seeded by other
+    # tests) know the type, so it is left out of the comparison.
+    drift = [{k: v for k, v in item.items() if k != "type_name"} for item in drift]
     assert drift == [{"type_id": TYPE_A, "ledger_qty": 15.0, "esi_qty": 12.0, "drift": -3.0}]
 
     # An explicit reset derives the opening again from today's stock.

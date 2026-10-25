@@ -171,6 +171,8 @@ def test_status_with_garbage_cookie_reports_logged_out_not_500(monkeypatch):
 # --------------------------------------------------------------- /gate/logout
 def test_logout_clears_the_session_cookie(monkeypatch):
     _enable_gate(monkeypatch)
+    revoked = []
+    monkeypatch.setattr(storage, "revoke_sessions_for_character", revoked.append)
 
     resp = client.post("/api/gate/logout", cookies=_session_cookie())
 
@@ -179,6 +181,7 @@ def test_logout_clears_the_session_cookie(monkeypatch):
     set_cookie = resp.headers.get("set-cookie", "")
     assert access_gate.SESSION_COOKIE_NAME in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+    assert revoked == [1]
 
 
 # --------------------------------------------------------------------- middleware

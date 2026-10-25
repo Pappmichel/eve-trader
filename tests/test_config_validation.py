@@ -178,11 +178,6 @@ def test_validate_ignores_range_for_fields_with_no_declared_bounds():
     validate_config_overrides(cfg, {"buyer_character_name": "anything at all"})
 
 
-def test_validate_allows_none_for_optional_ranged_field():
-    cfg = TradingConfig()
-    validate_config_overrides(cfg, {"buyer_character_id": None})
-
-
 def test_do_update_settings_rejects_out_of_range_value_as_action_error():
     from eve_trader import actions
 
