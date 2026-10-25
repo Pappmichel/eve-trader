@@ -242,8 +242,8 @@ calling the same actions.
 ### Phase 1 - tool scaffolding
 - `asset_manager` in `ALL_TOOL_KEYS`, `DEFAULT_TOOL_KEYS`,
   `_TOOL_PATH_PREFIXES`, registry `consuming_tools` of `assets`,
-  `blueprints`, `market_orders` and `contracts` (`corp_divisions` comes in
-  phase 4), Admin
+  `blueprints`, `market_orders`, `contracts` and `industry_jobs`
+  (`corp_divisions` comes in phase 4), Admin
   auto-tick list, Landing card, sidebar/QuickNav, `App.tsx` route.
 - Package `eve_trader/asset_manager/` (`actions.py`, `queries.py`,
   `tree.py`), router `api/routers/asset_manager.py`, empty page.
