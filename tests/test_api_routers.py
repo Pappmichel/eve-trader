@@ -220,18 +220,16 @@ def test_get_trading_settings():
     assert "structure_sell_haircut" in body
     assert "skip_grace_period_days" in body
     assert "max_shortlist_growth_per_run" in body
-    assert "wallet_division_ids" in body
-    assert body["wallet_division_ids"] == []
+    assert "wallet_division_ids" not in body
+    assert "structure_broker_fee" not in body
     assert body["esi_frequent_interval_hours"] == 1.0
     assert body["esi_normal_interval_hours"] == 6.0
     assert body["esi_rare_interval_hours"] == 24.0
     assert body["esi_stale_clear_multiples"] == 3.0
 
 
-def test_get_wallet_division_options():
-    resp = client.get("/api/trading/settings/wallet-division-options")
-    assert resp.status_code == 200
-    assert resp.json() == {"wallet_division_ids": [1, 2, 3, 4, 5, 6, 7]}
+def test_wallet_division_options_route_removed():
+    assert client.get("/api/trading/settings/wallet-division-options").status_code == 404
 
 
 # ---------------------------------------------------------------- production
