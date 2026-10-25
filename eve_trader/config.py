@@ -206,7 +206,6 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "import_cost_per_m3": (0, None),
     "structure_sell_haircut": (0, 1),
     "jita_buy_broker_fee": (0, 1),
-    "structure_broker_fee": (0, 1),
     "min_profit_threshold": (0, None),
     "min_margin_threshold": (0, None),
     "skip_grace_period_days": (0, None),
@@ -346,22 +345,9 @@ def _validate_hub_freight(rates: Any) -> None:
 def validate_trading_overrides(overrides: dict[str, Any]) -> None:
     """Enum-checks TradingConfig fields whose valid values are a closed set
     the generic type/range checks cannot see — same extra layer as
-    validate_production_overrides for stock_hangar_flags. Empty
-    wallet_division_ids is valid (all seven divisions)."""
+    validate_production_overrides for stock_hangar_flags."""
     if "hub_freight_cost_per_m3" in overrides:
         _validate_hub_freight(overrides["hub_freight_cost_per_m3"])
-    if "wallet_division_ids" not in overrides:
-        return
-    values = overrides["wallet_division_ids"]
-    if not isinstance(values, (list, tuple)):
-        return  # validate_config_overrides raises the type error
-    # Type already checked by validate_config_overrides; this is membership.
-    bad = [d for d in values if d not in WALLET_DIVISION_IDS]
-    if bad:
-        raise ConfigError(
-            f"wallet_division_ids: {bad!r} are not known corp wallet divisions. "
-            f"Options: {', '.join(str(i) for i in WALLET_DIVISION_IDS)}"
-        )
 
 
 def apply_config_overrides(cfg: Any, overrides: dict[str, Any]) -> None:
@@ -380,10 +366,8 @@ DATA_DIR.mkdir(exist_ok=True)
 
 # ESI corporation wallet divisions are numbered 1-7 (confirmed against
 # esi-swagger-specs latest, 2026-09-20: path param `division` minimum=1
-# maximum=7; GET /corporations/{id}/wallets/ maxItems=7). TradingConfig.
-# wallet_division_ids is validated against this list — an empty tuple (the
-# field's default) means "no filter", i.e. all seven, matching
-# ProductionConfig.stock_hangar_flags' empty-means-all behaviour.
+# maximum=7; GET /corporations/{id}/wallets/ maxItems=7). The corp wallet
+# snapshot sync (esi_data/fetchers.py) always reads all seven.
 WALLET_DIVISION_IDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
 
 
@@ -448,7 +432,7 @@ class TradingConfig:
     # skill's max), which is what actually lowers the sales-tax percentage
     # a character pays on a sell order; it is not affected by standings or
     # by Broker Relations (those only affect the broker's-fee side, i.e.
-    # jita_buy_broker_fee/structure_broker_fee below, not this figure). A
+    # jita_buy_broker_fee below, not this figure). A
     # tenant whose selling character has a lower Accounting level would see
     # a real tax rate closer to 8% and should override structure_sell_
     # haircut (and, if configured, station_trading's own sales_tax_rate,
@@ -466,16 +450,6 @@ class TradingConfig:
     # one field - read TRADING_CONFIG.jita_buy_broker_fee directly from
     # Production/Doctrine code, don't reintroduce a second copy.
     jita_buy_broker_fee: float = 0.0147
-    # Broker's fee estimate for the STRUCTURE SELL side specifically (T1-01,
-    # 2026-09-25). Its only reader was the retired Reconcile Trades matcher;
-    # nothing reads it now. Kept so saved tenant settings stay valid. The
-    # matcher took the real per-sale tax from ESI and modeled only this: broker's fee is charged once per ORDER,
-    # not per fill, so it can never be attributed to one specific
-    # FIFO-matched sale the way tax now can be. Confirmed live (2026-09-25)
-    # that EVE's "SCC surcharge" is an industry-job-only fee, never charged
-    # on a market sell - deliberately NOT included here (no hardcoded
-    # phantom deduction with zero live evidence behind it).
-    structure_broker_fee: float = 0.015
     min_profit_threshold: float = 0.0        # Minimum absolute profit/unit to consider
     min_margin_threshold: float = 0.05       # Minimum margin to mark an item "Import"
     # Grace period before actions.do_refresh_and_prune_candidates deactivates a
@@ -585,14 +559,6 @@ class TradingConfig:
 
     # -- Realized trade history --
     lookback_days: int = 30
-    # Which corporation wallet divisions the retired Reconcile Trades matcher
-    # paged; nothing reads it now (kept so saved settings stay valid). ESI exposes
-    # seven numbered divisions (1-7; swagger path param minimum=1 maximum=7).
-    # Empty tuple (the default) = no filter, i.e. all seven — same
-    # "empty means all" pattern as ProductionConfig.stock_hangar_flags.
-    # Only meaningful once a buyer/seller character holds Accountant /
-    # Junior_Accountant and the corp-wallets scope is on their token.
-    wallet_division_ids: tuple[int, ...] = ()
 
     # -- API endpoints --
     esi_base: str = "https://esi.evetech.net/latest"

@@ -9,7 +9,6 @@ vi.mock('../../api/client', () => ({
   tradingApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),
-    walletDivisionOptions: vi.fn(),
   },
   productionApi: {
     structureNames: vi.fn(),
@@ -27,7 +26,7 @@ const SETTINGS = {
   min_avg_movement: 10, min_paired_days: 5, excluded_path_prefixes: [], safe_mode_max_ids: 500,
   lookback_days: 30, jita_region_id: 10000002, reference_region_id: 10000009,
   structure_id: null, structure_market_slug: null, buyer_character_name: null,
-  seller_character_name: null, wallet_division_ids: [], esi_frequent_interval_hours: 1,
+  seller_character_name: null, esi_frequent_interval_hours: 1,
   esi_normal_interval_hours: 6, esi_rare_interval_hours: 24, esi_stale_clear_multiples: 3,
   scheduler_enabled: false,
 }
@@ -46,7 +45,6 @@ function renderPage() {
 describe('TradingSettings buy hub labels', () => {
   it('labels hub-dependent fields with the configured hub', async () => {
     vi.mocked(tradingApi.settings).mockResolvedValue({ ...SETTINGS, jita_region_id: 10000043 } as any)
-    vi.mocked(tradingApi.walletDivisionOptions).mockResolvedValue({ wallet_division_ids: [1, 2] })
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
     renderPage()
 
