@@ -22,7 +22,7 @@ from .actions import ActionError
 from .auth import TokenManager
 from .config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from .esi_client import ESIClient, ESIError
-from .production import esi_sync, jita_price_cache, sde, sde_diff
+from .production import dynamic_targets, esi_sync, jita_price_cache, sde, sde_diff
 from .production.config import PRODUCTION_CONFIG, ProductionConfig
 from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 from .production.sde import FetchedSde
@@ -167,6 +167,10 @@ def do_apply_sde() -> dict:
     # tenant serving stale results for up to the full cache TTL.
     invalidate_discover_cache(all_tenants=True)
     invalidate_ship_margin_cache(all_tenants=True)
+    # Dynamic stock targets (allowlisted trigger, V-01/P-21): no ambient tenant
+    # here, so rows cannot be deleted; frozen rows computed before this instant
+    # count as missing and are recomputed by the next plan run.
+    dynamic_targets.mark_all_invalidated()
     _staged_sde = None
     return result
 

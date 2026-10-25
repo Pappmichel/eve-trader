@@ -10,6 +10,7 @@ import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { StructureIdField } from '../../components/StructureIdField'
+import { DynamicTargetSettingsCard } from './DynamicTargetSettingsCard'
 
 // 2 decimal places, not format.ts's own pct() (1 decimal) - real EVE system
 // cost indices are small enough (e.g. 0.0231) that 1 decimal rounds away
@@ -179,6 +180,8 @@ export default function ProductionSettings() {
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings
       </Button>
+
+      <DynamicTargetSettingsCard />
 
       <Card withBorder mt="lg">
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">Solar Systems (Cost Index)</Title>

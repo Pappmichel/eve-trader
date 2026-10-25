@@ -530,6 +530,101 @@ def manual_locations_unname(location_id: int, tenant_id: str | None):
     click.echo(f"Unnamed location {location_id}.")
 
 
+@production_group.group("targets")
+def targets_group():
+    """Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md). Same do_*
+    actions as /api/production/stock-targets; each command runs inside
+    tenant_scope.enter_tenant."""
+
+
+def _targets_call(tenant_id: str | None, fn):
+    try:
+        with tenant_scope.enter_tenant(tenant_id or storage.DEFAULT_TENANT_ID):
+            return fn()
+    except actions.ActionError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+
+
+@targets_group.command("show")
+@_tenant_id_option
+def targets_show(tenant_id: str | None):
+    """Lists every stock target with its mode, configured and effective home target."""
+    rows = _targets_call(tenant_id, production_actions.do_list_stock_targets)
+    for row in rows:
+        reason = f"  [{row['reason']}]" if row.get("reason") else ""
+        click.echo(
+            f"{row['type_name']:<40} {row['target_mode']:<8} configured={row['home_market_stock']!s:<8} "
+            f"effective={row['effective_home_market_stock']!s:<8}{reason}"
+        )
+
+
+@targets_group.command("mode")
+@click.argument("mode", type=click.Choice(["fixed", "dynamic"]))
+@click.argument("type_id", type=int, required=False)
+@click.option("--all", "apply_all", is_flag=True, default=False, help="Apply to every stock target.")
+@click.option("--min", "dynamic_min", type=float, default=None, help="Row minimum (dynamic only).")
+@click.option("--max", "dynamic_max", type=float, default=None, help="Row maximum (dynamic only).")
+@_tenant_id_option
+def targets_mode(mode: str, type_id: int | None, apply_all: bool, dynamic_min: float | None,
+                 dynamic_max: float | None, tenant_id: str | None):
+    """Switches one row (TYPE_ID) or all rows (--all) to fixed or dynamic."""
+    if apply_all == (type_id is not None):
+        raise click.UsageError("Give either a TYPE_ID or --all.")
+    if apply_all:
+        result = _targets_call(tenant_id, lambda: production_actions.do_set_all_stock_target_modes(mode))
+        click.echo(f"{result['updated']} row(s) set to {mode}.")
+        for skipped in result["skipped"]:
+            click.echo(f"skipped {skipped['type_name']} ({skipped['type_id']}): {skipped['reason']}")
+        return
+    result = _targets_call(tenant_id, lambda: production_actions.do_set_stock_target_mode(
+        type_id, mode, dynamic_min=dynamic_min, dynamic_max=dynamic_max))
+    click.echo(f"{type_id}: {result['target_mode']} (min {result['dynamic_min']}, max {result['dynamic_max']})")
+
+
+@targets_group.command("recalculate")
+@_tenant_id_option
+def targets_recalculate(tenant_id: str | None):
+    """Drops today's frozen values and computes them again."""
+    result = _targets_call(tenant_id, production_actions.do_recalculate_dynamic_targets)
+    click.echo(f"{result['written']} row(s) written.")
+
+
+@targets_group.command("preview")
+@click.option("--limit", type=int, default=25, help="Rows to print, biggest change first.")
+@_tenant_id_option
+def targets_preview(limit: int, tenant_id: str | None):
+    """Dry run for every row with a home target (switch ignored): current vs.
+    proposed with all inputs. Writes nothing."""
+    result = _targets_call(tenant_id, production_actions.do_preview_dynamic_targets)
+    own = result["own"]
+    click.echo(f"own sales: {'available' if own['available'] else 'unavailable (' + str(own['reason']) + ')'}, "
+               f"covered {own['covered_days']:.2f} days")
+    summary = result["summary"]
+    click.echo(
+        f"{summary['rows']} rows: up {summary['up']}, down {summary['down']}, to 0 {summary['to_zero']}, "
+        f"unchanged {summary['unchanged']}, held {summary['held']}, below min margin {summary['below_min_margin']}, "
+        f"at max {summary['clamped_max']}"
+    )
+    if summary["listing_known"]:
+        click.echo(
+            f"listing: {summary['unlisted']} of {summary['listing_known']} rows have no open sell order at the home "
+            "location right now - their own sales understate demand (R-16); fix that before the first switch-on."
+        )
+    click.echo(
+        f"tied-up capital at build cost (rows the planner gate passes): now {summary['tied_current'] / 1e9:.2f} B, "
+        f"day 1 {summary['tied_day1'] / 1e9:.2f} B, converged {summary['tied_converged'] / 1e9:.2f} B"
+    )
+    ranked = sorted(result["rows"], key=lambda r: -abs(r["converged_qty"] - r["configured_home"]) * (r.get("cost") or 0))
+    for row in ranked[:limit]:
+        margin = "-" if row["margin"] is None else f"{row['margin']:.2f}"
+        click.echo(
+            f"{row['type_name']:<36} {row['configured_home']:>8.0f} -> day1 {row['day1_qty']:>8.0f} "
+            f"conv {row['converged_qty']:>8.0f}  margin {margin} ({row['margin_source']})  "
+            f"v={row['velocity_source']}  {row['reason']}"
+        )
+
+
 @production_group.group("realized")
 def realized_group():
     """Realized Production profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).

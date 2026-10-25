@@ -136,7 +136,7 @@ from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
-from . import invention, pricing
+from . import dynamic_targets, invention, pricing
 from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -2085,7 +2085,7 @@ def market_listing_shortfall_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) 
     lists."""
     manual_stock = storage.load_manual_stock()
     wanted: dict[int, float] = {}
-    for type_id, _name, backup_stock, home_market_stock, jita_market_stock in storage.load_stock_targets():
+    for type_id, _name, backup_stock, home_market_stock, jita_market_stock in dynamic_targets.effective_stock_targets(cfg):
         if not home_market_stock and not jita_market_stock:
             continue
         current_stock = _stock_on_hand(type_id, manual_stock, cfg)
@@ -2451,6 +2451,13 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # "Unrefined X" alchemy formula than via the normal recipe - see
     # _unit_cost/_expand_all's own docstrings.
     alchemy_memo: dict[int, bool] = {}
+    # Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 8): swap
+    # in today's frozen effective home-market values *before* _base_runs, so
+    # the overbuild buffer and the shortfall below size from the same numbers
+    # (P-06). Uses the memos created just above so nothing is priced twice
+    # (P-07). With the switch off, or no dynamic row, this is a no-op.
+    stock_targets = ctx.stock_targets = dynamic_targets.apply_dynamic_targets(
+        cfg, ctx, cost_memo, t2_memo, alchemy_memo)
     inventory: list[InventoryRow] = []
     invention_list: list[InventionNeedRow] = []
     # Ledger of how much of each type_id's *own* current stock has already
@@ -3246,6 +3253,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # "Unrefined X" alchemy formula than via the normal recipe - see
     # _unit_cost/_expand_all's own docstrings.
     alchemy_memo: dict[int, bool] = {}
+    # Same effective-target swap as plan_production (P-06): before _base_runs.
+    ctx.stock_targets = dynamic_targets.apply_dynamic_targets(cfg, ctx, cost_memo, t2_memo, alchemy_memo)
     # Stock-oblivious sizing baseline for the overbuild buffer (see
     # _base_runs/_parent_base_runs_for_buffer docstrings) - same call
     # plan_production makes, over the same stock_targets, so the two
@@ -3671,8 +3680,12 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
     market target in practice)."""
     manual_stock = storage.load_manual_stock()
     rows = []
-    for type_id, type_name, backup_target, home_target, jita_target in storage.load_stock_targets():
-        if not home_target and not jita_target:
+    # Dynamic rows stay listed even at an effective 0 (E-09): the #33 rule
+    # below would otherwise make a row vanish exactly when the page should
+    # explain why it is 0. Empty set with the switch off.
+    dynamic_ids = dynamic_targets.dynamic_type_ids(cfg)
+    for type_id, type_name, backup_target, home_target, jita_target in dynamic_targets.effective_stock_targets(cfg):
+        if not home_target and not jita_target and type_id not in dynamic_ids:
             continue
         _, bp = classify_activity(type_id)
         backup_current = _current_stock(type_id, manual_stock, cfg, bp)
@@ -4723,7 +4736,7 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
     pickup_locations.discard(home)
     if not pickup_locations:
         return []
-    targets = [t for t in storage.load_stock_targets() if (t[3] or 0) > 0]
+    targets = [t for t in dynamic_targets.effective_stock_targets(cfg) if (t[3] or 0) > 0]
     if not targets:
         return []
     type_ids = [t[0] for t in targets]

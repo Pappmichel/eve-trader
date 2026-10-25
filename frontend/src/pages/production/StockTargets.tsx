@@ -15,11 +15,44 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, qty } from '../../format'
+import { DynamicTargetsPanel } from './DynamicTargetsPanel'
+import { DYNAMIC_KEYS, DYNAMIC_SETTINGS_KEY } from './dynamicTargetKeys'
 
 const STOCK_KEYS = [
   ['production', 'stock-targets'],
   ['production', 'plan'],
 ]
+
+const REASON_LABEL: Record<string, string> = {
+  ok: 'ok',
+  held_no_data: 'held (no data)',
+  below_min_margin: 'below min margin',
+  clamped_min: 'at min',
+  clamped_max: 'at max',
+  within_deadband: 'steady',
+  min_one: 'min 1',
+}
+
+/** Breakdown shown on a dynamic row's effective target: where the number comes from. */
+function DynamicBreakdown({ target }: { target: StockTarget }) {
+  const pct = (v: number | null) => (v === null ? '–' : `${(v * 100).toFixed(1)}%`)
+  const perDay = (v: number | null) => (v === null ? '–' : `${v.toFixed(2)}/day`)
+  return (
+    <Stack gap={2}>
+      <Text size="xs">Configured (last fixed value): {qty(target.home_market_stock ?? 0)}</Text>
+      <Text size="xs">Demand: {target.velocity_source ?? 'none'} - {perDay(target.velocity_used)}
+        {' '}(own {perDay(target.velocity_own)}, market {perDay(target.velocity_market)})</Text>
+      <Text size="xs">Margin: {pct(target.margin)}{target.margin_source ? ` (${target.margin_source})` : ''}, factor {target.factor === null ? '–' : target.factor.toFixed(2)}</Text>
+      <Text size="xs">Reason: {REASON_LABEL[target.reason ?? ''] ?? target.reason ?? 'not computed yet'}{target.dynamic_day ? `, frozen ${target.dynamic_day}` : ''}</Text>
+      {target.max_day_share !== null && target.max_day_share > 0.5 && (
+        <Text size="xs">{pct(target.max_day_share)} of the recent sales happened on one day.</Text>
+      )}
+      {target.gate_blocked && (
+        <Text size="xs" c="warn">Build gate: margin {pct(target.gate_margin)} is below the minimum, so the planner builds nothing for this row.</Text>
+      )}
+    </Stack>
+  )
+}
 // Both /manual-stock (per-type total) and /manual-stock/entries (per-
 // location breakdown, docs/MANUAL_TRACKING_PLAN.md phase 3) read the same
 // underlying table - a write through either endpoint invalidates both.
@@ -75,6 +108,14 @@ export default function StockTargets() {
   const { data: decryptors } = useQuery({ queryKey: ['production', 'decryptors'], queryFn: productionApi.decryptors })
   const { data: plan } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const { data: stockValue } = useQuery({ queryKey: ['production', 'stock-value'], queryFn: productionApi.stockValue })
+  const { data: dynamicSettings } = useQuery({ queryKey: DYNAMIC_SETTINGS_KEY, queryFn: productionApi.dynamicTargetSettings })
+  const { data: marketStatus } = useQuery({ queryKey: ['production', 'market-status'], queryFn: productionApi.marketStatus })
+  const dynamicOn = dynamicSettings?.dynamic_targets_enabled ?? false
+  const homeListed = useMemo(() => {
+    const m = new Map<number, number>()
+    for (const row of marketStatus ?? []) m.set(row.type_id, row.home_listed)
+    return m
+  }, [marketStatus])
 
   const computedStock = useMemo(() => {
     const m = new Map<number, number>()
@@ -113,6 +154,14 @@ export default function StockTargets() {
     field: 'backup_stock' | 'home_market_stock' | 'jita_market_stock'
     value: number
   }) => productionApi.updateStockTarget(args.typeId, { [args.field]: args.value }), STOCK_KEYS)
+  const setMode = useAction('Save Target Mode', (args: {
+    typeId: number
+    mode: 'fixed' | 'dynamic'
+    dynamic_min?: number
+    dynamic_max?: number
+  }) => productionApi.setStockTargetMode(args.typeId, {
+    mode: args.mode, dynamic_min: args.dynamic_min, dynamic_max: args.dynamic_max,
+  }), DYNAMIC_KEYS)
   const setManualStockAction = useAction('Save Current Stock', (args: { typeId: number; count: number; locationId: number }) =>
     productionApi.setManualStock(args.typeId, args.count, args.locationId), MANUAL_STOCK_KEYS)
   const setManualListed = useAction(
@@ -194,16 +243,72 @@ export default function StockTargets() {
         : '–'),
     }] : []),
     {
-      header: 'Home Market Target', accessorKey: 'home_market_stock', size: 170,
+      header: 'Mode', id: 'mode', size: 120, accessorFn: (r) => r.target_mode,
       cell: (i) => (
-        <EditableNumberCell
-          value={i.getValue() ?? 0}
-          ariaLabel={`Home market target for ${i.row.original.type_name}`}
-          isPending={updateTarget.isPending}
-          onSave={(value) => updateTarget.mutate({ typeId: i.row.original.type_id, field: 'home_market_stock', value })}
+        <Select
+          size="xs"
+          aria-label={`Target mode for ${i.row.original.type_name}`}
+          data={[{ value: 'fixed', label: 'Fixed' }, { value: 'dynamic', label: 'Dynamic' }]}
+          value={i.row.original.target_mode}
+          allowDeselect={false}
+          disabled={!dynamicOn || setMode.isPending}
+          onChange={(v) => v && v !== i.row.original.target_mode
+            && setMode.mutate({ typeId: i.row.original.type_id, mode: v as 'fixed' | 'dynamic' })}
         />
       ),
     },
+    {
+      header: 'Home Market Target', accessorKey: 'home_market_stock', size: 220,
+      cell: (i) => {
+        const t = i.row.original
+        if (dynamicOn && t.target_mode === 'dynamic') {
+          const effective = t.effective_home_market_stock ?? t.home_market_stock ?? 0
+          // Overstock hint (D15): stock plus listed units already above backup + effective target.
+          const known = computedStock.has(t.type_id) && homeListed.has(t.type_id)
+          const over = known ? (computedStock.get(t.type_id) ?? 0) + (homeListed.get(t.type_id) ?? 0) - t.backup_stock - effective : 0
+          return (
+            <Tooltip label={<DynamicBreakdown target={t} />} multiline w={300}>
+              <Group gap={4} wrap="nowrap">
+                <Text size="sm" fw={600} aria-label={`Effective home market target for ${t.type_name}`}>{qty(effective)}</Text>
+                <Badge size="xs" variant="light" color={t.reason === 'below_min_margin' ? 'warn' : 'gray'}>
+                  {REASON_LABEL[t.reason ?? ''] ?? 'pending'}
+                </Badge>
+                {t.gate_blocked && <Badge size="xs" variant="light" color="warn">gate</Badge>}
+                {over > 0 && <Badge size="xs" variant="light" color="info">{`+${qty(over)} over`}</Badge>}
+              </Group>
+            </Tooltip>
+          )
+        }
+        return (
+          <EditableNumberCell
+            value={i.getValue() ?? 0}
+            ariaLabel={`Home market target for ${t.type_name}`}
+            isPending={updateTarget.isPending}
+            onSave={(value) => updateTarget.mutate({ typeId: t.type_id, field: 'home_market_stock', value })}
+          />
+        )
+      },
+    },
+    ...(dynamicOn ? (['dynamic_min', 'dynamic_max'] as const).map((field) => ({
+      header: field === 'dynamic_min' ? 'Dyn. Min' : 'Dyn. Max', id: field, size: 110,
+      accessorFn: (r: StockTarget) => r[field],
+      cell: (i: any) => {
+        const t = i.row.original as StockTarget
+        if (t.target_mode !== 'dynamic') return '–'
+        return (
+          <EditableNumberCell
+            value={t[field] ?? 0}
+            ariaLabel={`${field === 'dynamic_min' ? 'Minimum' : 'Maximum'} for ${t.type_name}`}
+            isPending={setMode.isPending}
+            onSave={(value) => setMode.mutate(
+              field === 'dynamic_min'
+                ? { typeId: t.type_id, mode: 'dynamic', dynamic_min: value }
+                : { typeId: t.type_id, mode: 'dynamic', dynamic_max: value },
+            )}
+          />
+        )
+      },
+    })) : []),
     {
       header: 'Jita Market Target', accessorKey: 'jita_market_stock', size: 160,
       cell: (i) => (
@@ -275,7 +380,7 @@ export default function StockTargets() {
       ),
     },
   ], [manualStock, entriesByType, manualListedByType, computedStock, reservedForOrders, overrides, updateTarget, setManualStockAction,
-      setManualListed, removeTarget, pendingRemoveId])
+      setManualListed, removeTarget, pendingRemoveId, dynamicOn, setMode, homeListed])
 
   return (
     <Stack>
@@ -291,6 +396,8 @@ export default function StockTargets() {
           </Group>
         </Card>
       )}
+
+      <DynamicTargetsPanel targets={targets ?? []} />
 
       <Card withBorder>
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">New Stock Target</Title>

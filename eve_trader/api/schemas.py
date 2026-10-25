@@ -161,8 +161,26 @@ class StockTarget(_Base):
     type_id: int
     type_name: str
     backup_stock: float
-    home_market_stock: Optional[float] = None
+    home_market_stock: Optional[float] = None       # configured (the last fixed value for a dynamic row)
     jita_market_stock: Optional[float] = None
+    # Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 10); new fields must be
+    # listed here or the response model drops them (P-34).
+    target_mode: str = "fixed"
+    dynamic_min: Optional[float] = None
+    dynamic_max: Optional[float] = None
+    effective_home_market_stock: Optional[float] = None
+    dynamic_day: Optional[str] = None
+    reason: Optional[str] = None
+    velocity_source: Optional[str] = None
+    velocity_used: Optional[float] = None
+    velocity_own: Optional[float] = None
+    velocity_market: Optional[float] = None
+    margin: Optional[float] = None
+    margin_source: Optional[str] = None
+    factor: Optional[float] = None
+    gate_margin: Optional[float] = None
+    gate_blocked: Optional[bool] = None
+    max_day_share: Optional[float] = None
 
 
 class InventoryRow(_Base):

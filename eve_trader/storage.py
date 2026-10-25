@@ -36,7 +36,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -1799,16 +1799,162 @@ def upsert_stock_target(type_id: int, type_name: str, backup_stock: Optional[flo
 
 
 def delete_stock_target(type_id: int) -> None:
+    """Also drops the item's frozen dynamic values in the same transaction
+    (docs/DYNAMIC_STOCK_TARGETS_PLAN.md P-24 / E-20). The values table only
+    exists once production_buy_list_schema.sql has been applied; a database
+    without it simply has nothing to delete, so a missing table is skipped
+    inside a savepoint instead of failing the delete."""
     with connect() as conn:
         conn.execute("DELETE FROM stock_targets WHERE type_id = ?", (type_id,))
+        if _dynamic_values_table_exists(conn):
+            conn.execute("DELETE FROM stock_target_dynamic_values WHERE type_id = ?", (type_id,))
+
+
+def _dynamic_values_table_exists(conn) -> bool:
+    row = conn.execute("SELECT to_regclass('stock_target_dynamic_values') IS NOT NULL").fetchone()
+    return bool(row and row[0])
 
 
 def load_stock_targets() -> list[tuple[int, str, float, Optional[float], Optional[float]]]:
-    """Returns (type_id, type_name, backup_stock, home_market_stock, jita_market_stock)."""
+    """Returns (type_id, type_name, backup_stock, home_market_stock, jita_market_stock).
+    The *configured* values - the 5-tuple shape is deliberately unchanged
+    (dozens of tests build it directly); dynamic rows are resolved on top of
+    this in production/dynamic_targets.py."""
     with connect() as conn:
         return conn.execute(
             "SELECT type_id, type_name, backup_stock, home_market_stock, jita_market_stock FROM stock_targets"
         ).fetchall()
+
+
+# ------------------------------------------------ Production: dynamic stock targets
+# docs/DYNAMIC_STOCK_TARGETS_PLAN.md sections 4.1-4.3.
+DYNAMIC_VALUE_COLUMNS = (
+    "type_id", "day", "effective_qty", "smoothed_qty", "raw_qty", "velocity_own", "velocity_market",
+    "velocity_used", "velocity_source", "margin", "margin_source", "factor", "reason", "gate_margin",
+    "gate_blocked", "max_day_share", "region_id", "computed_at",
+)
+_DYNAMIC_VALUE_RETENTION_DAYS = 90
+
+
+def load_stock_target_modes() -> dict[int, tuple[str, Optional[float], Optional[float]]]:
+    """{type_id: (target_mode, dynamic_min, dynamic_max)} for every stock target."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, target_mode, dynamic_min, dynamic_max FROM stock_targets"
+        ).fetchall()
+    return {int(r[0]): (r[1], r[2], r[3]) for r in rows}
+
+
+def set_stock_target_mode(type_id: int, mode: str, dynamic_min: Optional[float],
+                           dynamic_max: Optional[float]) -> bool:
+    """Returns False when the type has no stock target row. home_market_stock
+    is never touched (a dynamic row keeps its last fixed value)."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE stock_targets SET target_mode = ?, dynamic_min = ?, dynamic_max = ? WHERE type_id = ?",
+            (mode, dynamic_min, dynamic_max, type_id),
+        )
+        return (cur.rowcount or 0) > 0
+
+
+def set_stock_target_modes_bulk(rows: list[tuple[int, str, Optional[float], Optional[float]]]) -> int:
+    """One transaction for all (type_id, mode, dynamic_min, dynamic_max) rows
+    (bulk "All to dynamic" / "All to fixed"). Returns the number of rows
+    written."""
+    if not rows:
+        return 0
+    with connect() as conn:
+        conn.executemany(
+            "UPDATE stock_targets SET target_mode = ?, dynamic_min = ?, dynamic_max = ? WHERE type_id = ?",
+            [(mode, dmin, dmax, type_id) for type_id, mode, dmin, dmax in rows],
+        )
+    return len(rows)
+
+
+def _dynamic_value_dict(row) -> dict:
+    return dict(zip(DYNAMIC_VALUE_COLUMNS, row))
+
+
+_DYNAMIC_VALUE_SELECT = "SELECT " + ", ".join(DYNAMIC_VALUE_COLUMNS) + " FROM stock_target_dynamic_values"
+
+
+def freeze_dynamic_values(day, rows: list[dict]) -> int:
+    """Upserts one frozen row per type for `day` (today may be recomputed,
+    earlier days are never touched) and prunes rows older than 90 days, all in
+    one transaction (P-23). Each dict carries the DYNAMIC_VALUE_COLUMNS keys
+    except `day`/`computed_at`."""
+    if not rows:
+        return 0
+    cols = [c for c in DYNAMIC_VALUE_COLUMNS if c not in ("day", "computed_at")]
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "type_id")
+    sql = (
+        f"INSERT INTO stock_target_dynamic_values ({', '.join(cols)}, day, computed_at) "
+        f"VALUES ({placeholders}, ?, now()) "
+        f"ON CONFLICT(tenant_id, type_id, day) DO UPDATE SET {updates}, computed_at=now()"
+    )
+    with connect() as conn:
+        conn.executemany(sql, [tuple(r.get(c) for c in cols) + (day,) for r in rows])
+        conn.execute(
+            "DELETE FROM stock_target_dynamic_values WHERE day < ?",
+            (day - timedelta(days=_DYNAMIC_VALUE_RETENTION_DAYS),),
+        )
+    return len(rows)
+
+
+def load_dynamic_values_for_day(day) -> dict[int, dict]:
+    with connect() as conn:
+        rows = conn.execute(_DYNAMIC_VALUE_SELECT + " WHERE day = ?", (day,)).fetchall()
+    return {int(r[0]): _dynamic_value_dict(r) for r in rows}
+
+
+def load_dynamic_values_on_or_before(day) -> dict[int, dict]:
+    """Newest frozen row per type on or before `day` - what the cheap pages
+    and the planners read."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (type_id) " + ", ".join(DYNAMIC_VALUE_COLUMNS)
+            + " FROM stock_target_dynamic_values WHERE day <= ? ORDER BY type_id, day DESC",
+            (day,),
+        ).fetchall()
+    return {int(r[0]): _dynamic_value_dict(r) for r in rows}
+
+
+def latest_dynamic_value_before(day) -> dict[int, dict]:
+    """Newest frozen row per type strictly before `day` - the smoothing base
+    (E-05: recomputing today never smooths twice)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (type_id) " + ", ".join(DYNAMIC_VALUE_COLUMNS)
+            + " FROM stock_target_dynamic_values WHERE day < ? ORDER BY type_id, day DESC",
+            (day,),
+        ).fetchall()
+    return {int(r[0]): _dynamic_value_dict(r) for r in rows}
+
+
+def dynamic_value_history(type_id: int, days: int) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            _DYNAMIC_VALUE_SELECT + " WHERE type_id = ? ORDER BY day DESC LIMIT ?", (type_id, int(days)),
+        ).fetchall()
+    return [_dynamic_value_dict(r) for r in rows]
+
+
+def delete_dynamic_values_for_day(day, type_ids: Optional[list[int]] = None) -> int:
+    """Drops one day's frozen rows (all, or only `type_ids`) - the next plan
+    run computes them again."""
+    with connect() as conn:
+        if type_ids is None:
+            cur = conn.execute("DELETE FROM stock_target_dynamic_values WHERE day = ?", (day,))
+        elif not type_ids:
+            return 0
+        else:
+            placeholders = ",".join("?" for _ in type_ids)
+            cur = conn.execute(
+                f"DELETE FROM stock_target_dynamic_values WHERE day = ? AND type_id IN ({placeholders})",
+                (day, *[int(t) for t in type_ids]),
+            )
+        return cur.rowcount or 0
 
 
 def upsert_manual_stock(type_id: int, count: float, location_id: int = 0) -> None:
