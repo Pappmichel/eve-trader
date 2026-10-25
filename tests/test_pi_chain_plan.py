@@ -32,8 +32,10 @@ def sd():
     return static.build_static({k: [tuple(r) for r in v] for k, v in _ROWS.items()})
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def _clear_design_cache():
+    # Once per module: designs are cached without prices and keyed by every
+    # input, so the tests here can share them.
     engine.clear_cache()
     yield
     engine.clear_cache()

@@ -403,8 +403,8 @@ class TradingConfig:
     jita_region_id: int = 10000002
     reference_region_id: int = 10000009      # "Insmother" - used as price-history reference region
     # Destination player structure ("C-J" in this project's own docs) - no
-    # sane default across installs, must be set in config.yaml. own_orders.py/
-    # trade_reconciliation.py compare location_id == structure_id, which is
+    # sane default across installs, must be set in config.yaml. own_orders.py
+    # compares location_id == structure_id, which is
     # safely a no-op (never matches) while this is unset.
     structure_id: Optional[int] = None
     # appraise.gnf.lt market slug for structure_id (case-sensitive) - same
@@ -429,10 +429,8 @@ class TradingConfig:
     # by every tool whose hub setting is "All hubs" (eve_trader/hubs.py). A
     # hub without an entry uses that tool's own single freight value.
     hub_freight_cost_per_m3: dict[str, float] = field(default_factory=dict)
-    # Multiplier applied to the C-J structure sell price when no real
-    # per-sale tax figure is available (trade_reconciliation.py's fallback
-    # path only - see structure_broker_fee below for the journal-matched
-    # path). Confirmed against the in-game sell-order breakdown: Broker's
+    # Multiplier applied to the C-J structure sell price (shortlist and
+    # backtest margins, Ore & Minerals pricing). Confirmed against the in-game sell-order breakdown: Broker's
     # fee 1.5% + Sales tax 3.37% = 4.87% total -> 1 - 0.0487 = 0.9513... -
     # historically derived as 0.9463 (including an extra "SCC surcharge
     # 0.5%" term) before T1-01 (2026-09-25) confirmed with the user that SCC
@@ -442,8 +440,8 @@ class TradingConfig:
     # tuned to their own real skills/standing; revisit only with the user.
     #
     # "Sales tax 3.37%" (and the near-identical 3.375% T1-01 (2026-09-25)
-    # live-verified directly from 2396 real ESI wallet-journal entries -
-    # see trade_reconciliation.py's own T1-01 comment) is not EVE's base
+    # live-verified directly from 2396 real ESI wallet-journal entries) is
+    # not EVE's base
     # sales tax rate - base is 8% (0.08) at Accounting level 0. The
     # reduction to ~3.37-3.375% assumes the selling character has the
     # Accounting skill trained to (or near) level 5 ("Accounting V", the
@@ -469,10 +467,9 @@ class TradingConfig:
     # Production/Doctrine code, don't reintroduce a second copy.
     jita_buy_broker_fee: float = 0.0147
     # Broker's fee estimate for the STRUCTURE SELL side specifically (T1-01,
-    # 2026-09-25) - used only in trade_reconciliation.py's journal-matched
-    # path, where the real per-sale sales tax now comes from ESI directly
-    # (see trade_reconciliation.py's own T1-01 comment) and this is the one
-    # remaining modeled component: broker's fee is charged once per ORDER,
+    # 2026-09-25). Its only reader was the retired Reconcile Trades matcher;
+    # nothing reads it now. Kept so saved tenant settings stay valid. The
+    # matcher took the real per-sale tax from ESI and modeled only this: broker's fee is charged once per ORDER,
     # not per fill, so it can never be attributed to one specific
     # FIFO-matched sale the way tax now can be. Confirmed live (2026-09-25)
     # that EVE's "SCC surcharge" is an industry-job-only fee, never charged
@@ -588,7 +585,8 @@ class TradingConfig:
 
     # -- Realized trade history --
     lookback_days: int = 30
-    # Which corporation wallet divisions Reconcile Trades pages. ESI exposes
+    # Which corporation wallet divisions the retired Reconcile Trades matcher
+    # paged; nothing reads it now (kept so saved settings stay valid). ESI exposes
     # seven numbered divisions (1-7; swagger path param minimum=1 maximum=7).
     # Empty tuple (the default) = no filter, i.e. all seven — same
     # "empty means all" pattern as ProductionConfig.stock_hangar_flags.

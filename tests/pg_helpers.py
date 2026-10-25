@@ -6,8 +6,10 @@ RLS-scoped cleanup from scratch.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -17,6 +19,8 @@ import pytest
 from eve_trader import storage
 
 psycopg = pytest.importorskip("psycopg")
+import psycopg.conninfo  # noqa: E402
+import psycopg.sql  # noqa: E402
 
 # Owner/superuser DSN - only used to apply docs/phase1_schema.sql (DDL, role
 # creation, RLS policies). The app itself never connects with this - see
@@ -25,6 +29,41 @@ OWNER_DSN = os.getenv(
     "EVE_TRADER_PG_OWNER_DSN",
     "host=localhost port=5432 dbname=eve_trader user=postgres password=devpassword",
 )
+
+# Tests never run against the dev database the app itself uses: wipe_tables()
+# deletes every tenant's rows, and test rows would pile up next to real dev
+# data. Both DSNs keep their host/user/password (from the environment, .env
+# or the defaults) and only swap the database: `eve_trader_test`, or one
+# database per pytest-xdist worker (`eve_trader_test_gw0`, ...) so parallel
+# workers never wipe each other's rows. _postgres_available() creates the
+# database on first use; the schema fixtures below fill it.
+# EVE_TRADER_TEST_PG_DB overrides the base name.
+_TEST_DB = os.getenv("EVE_TRADER_TEST_PG_DB", "eve_trader_test")
+if os.getenv("PYTEST_XDIST_WORKER"):
+    _TEST_DB = f"{_TEST_DB}_{os.environ['PYTEST_XDIST_WORKER']}"
+_MAINTENANCE_DSN = psycopg.conninfo.make_conninfo(OWNER_DSN, dbname="postgres")
+OWNER_DSN = psycopg.conninfo.make_conninfo(OWNER_DSN, dbname=_TEST_DB)
+# storage reads PG_DSN only when it opens its pool, so this lands before any
+# test connects. The env var is for subprocesses a test might start.
+storage.PG_DSN = psycopg.conninfo.make_conninfo(storage.PG_DSN, dbname=_TEST_DB)
+os.environ["EVE_TRADER_PG_DSN"] = storage.PG_DSN
+
+# Arbitrary key for pg_advisory_lock: serializes database creation and the
+# role-creating phase1 schema across xdist workers (CREATE ROLE is
+# cluster-wide, so two workers' IF NOT EXISTS checks could race).
+_SCHEMA_LOCK_KEY = 7_311_204
+
+
+@contextlib.contextmanager
+def _cluster_lock():
+    """Holds a cluster-wide advisory lock (taken in the maintenance database,
+    which every worker shares) for the duration of the block."""
+    with psycopg.connect(_MAINTENANCE_DSN, autocommit=True, connect_timeout=2) as conn:
+        conn.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_LOCK_KEY,))
+        try:
+            yield conn
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_LOCK_KEY,))
 
 _DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 _PHASE1_SCHEMA_SQL = _DOCS_DIR / "phase1_schema.sql"
@@ -43,7 +82,7 @@ _PRODUCTION_LEDGER_SCHEMA_SQL = _DOCS_DIR / "production_ledger_schema.sql"
 
 @functools.lru_cache(maxsize=1)
 def _postgres_available() -> bool:
-    """Checks reachability via OWNER_DSN, not pg_tenant.PG_DSN - the
+    """Checks reachability via the owner role, not storage.PG_DSN - the
     eve_trader_app role only exists *after* phase1_schema.sql has been
     applied, but this skip check runs at collection time, before the
     _apply_phase1_schema fixture below has had a chance to run. On a freshly
@@ -59,8 +98,14 @@ def _postgres_available() -> bool:
     call is a real network round-trip with a multi-second timeout when
     unreachable, not worth paying twice."""
     try:
-        with psycopg.connect(OWNER_DSN, connect_timeout=2):
-            return True
+        # Probed via the maintenance database, which always exists, so the
+        # test database can be created on first use (first run, or a new
+        # xdist worker).
+        with _cluster_lock() as conn:
+            exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (_TEST_DB,)).fetchone()
+            if not exists:
+                conn.execute(psycopg.sql.SQL("CREATE DATABASE {}").format(psycopg.sql.Identifier(_TEST_DB)))
+        return True
     except Exception:
         return False
 
@@ -85,34 +130,36 @@ def postgres_required() -> pytest.MarkDecorator:
     )
 
 
+def _deploy_schema_files() -> list[Path]:
+    """Every schema file in deploy/deploy.sh's apply order. Read from the
+    script itself so a newly added schema file reaches the test database
+    the moment it reaches deploys."""
+    script = (_DOCS_DIR.parent / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+    match = re.search(r"for f in (phase1_schema\.sql.*?); do", script, re.DOTALL)
+    if match is None:
+        raise RuntimeError("deploy/deploy.sh's schema-apply loop not found")
+    return [_DOCS_DIR / name for name in match.group(1).replace("\\", " ").split()]
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _apply_phase1_schema() -> None:
-    """Applies docs/phase1_schema.sql once per test session, via the owner
-    role - the script is idempotent (see its own header), so this replaces
-    the manual `Get-Content | docker exec ... psql` step as a prerequisite
-    for running these tests. No-ops if Postgres isn't reachable (the
-    `postgres_required` skip on each test module handles that case) - only
-    takes effect in test modules that actually import this fixture."""
+    """Applies every schema file once per test session (per xdist worker),
+    via the owner role, in deploy.sh's order - the files are idempotent, so
+    the test database always matches a deployed one. Before this applied
+    only a handful of files, tables from the rest existed only if an
+    earlier module's own fixture had created them, so results depended on
+    test order. No-ops if Postgres isn't reachable (the `postgres_required`
+    skip on each test module handles that case) - only takes effect in test
+    modules that actually import this fixture."""
     if not _postgres_available():
         return
+    files = _deploy_schema_files()
+    with _cluster_lock(), psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        # phase1 creates the eve_trader_app role (cluster-wide): serialized.
+        conn.execute(files[0].read_text(encoding="utf-8"))
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
-        conn.execute(_PHASE1_SCHEMA_SQL.read_text())
-        # Phase 1 of the ESI access rebuild (docs/esi_access_schema.sql)
-        # landed on main; replace_* INSERTs stamp owner-id columns, so the
-        # Postgres test baseline always includes that file. Idempotent.
-        # Doctrine/sorting fixtures re-apply it after creating those tables
-        # so the DO-block ALTERs land on them too.
-        conn.execute(_ESI_ACCESS_SCHEMA_SQL.read_text())
-        # docs/pi_schema.sql: storage.replace_sde_data writes the sde_pi_*
-        # tables, so every SDE storage test needs them. pi_schema.sql widens
-        # constraints created by character_management_schema.sql, hence both,
-        # and its tenant_settings scope widening needs phase2_schema.sql first
-        # (a fresh CI database has no tenant_settings yet).
-        conn.execute(_PHASE2_SCHEMA_SQL.read_text())
-        conn.execute(_CHARACTER_MANAGEMENT_SCHEMA_SQL.read_text())
-        conn.execute(_PI_SCHEMA_SQL.read_text(encoding="utf-8"))
-        # Production realized-profit ledger (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).
-        conn.execute(_PRODUCTION_LEDGER_SCHEMA_SQL.read_text(encoding="utf-8"))
+        for path in files[1:]:
+            conn.execute(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="session", autouse=True)

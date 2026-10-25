@@ -570,7 +570,10 @@ def test_settings_save_rejects_inconsistent_dynamic_values(tenant):
 
 def _calls_of(path: Path, name: str) -> set[tuple[str, str]]:
     """(file, enclosing function) for every call of `name` in `path`."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    if name not in text:  # skip parsing the files that cannot contain the call
+        return set()
+    tree = ast.parse(text)
     found = set()
     for fn in ast.walk(tree):
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -7,7 +7,7 @@ write pattern each table uses:
      universe/focused_candidates/realized_trades from the no-PK bucket) -
      every real replace_*/save_* function for these does an **unfiltered**
      `DELETE FROM {table}` before re-inserting the latest ESI sync/run's
-     rows (see e.g. storage.py's replace_assets, save_realized_trades).
+     rows (see e.g. storage.py's replace_assets).
      This file's original job was proving that unfiltered DELETE's safety
      rests on RLS alone (it still does, for candidate_universe/
      focused_candidates/realized_trades, which have no PK at all).

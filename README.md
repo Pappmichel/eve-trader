@@ -191,14 +191,20 @@ drift apart.
 ## Tests
 
 ```bash
-pytest
+pytest -n auto     # parallel (pytest-xdist, part of the test extras)
+pytest             # serial
 ```
 
-Most tests use mocked HTTP responses (no network/EVE SSO access required)
-and cover the scoring/decision/pricing logic for both tools. The Postgres-
-specific tests (tenant isolation, RLS, storage - see `tests/pg_helpers.py`)
-need a real local Postgres reachable at `EVE_TRADER_PG_DSN` (see "Postgres"
+Tests never reach the network: `tests/conftest.py` fails any test that
+sends a real HTTP request through `requests` (mock ESI/Goonmetrics
+instead). The Postgres-specific tests (tenant isolation, RLS, storage - see
+`tests/pg_helpers.py`) need a real local Postgres reachable with the
+`EVE_TRADER_PG_DSN` / `EVE_TRADER_PG_OWNER_DSN` credentials (see "Postgres"
 above) - they skip automatically, rather than fail, when one isn't running.
+They never touch the `eve_trader` dev database: they create and use
+`eve_trader_test` (one database per xdist worker, `eve_trader_test_gw0`, ...)
+and apply every schema file to it. `EVE_TRADER_TEST_PG_DB` changes that
+base name.
 
 ## Deploying somewhere reachable beyond localhost
 

@@ -144,8 +144,7 @@ def _wallet_txn_rows(txns: list[dict], division: int) -> list[tuple]:
 
 def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
     """Snapshot rows including journal context fields (production ledger
-    plan Phase 1 - also unblocks trade_reconciliation's deferred real-tax
-    linkage from snapshots)."""
+    plan Phase 1)."""
     return [
         (
             division, e["id"], e["date"], e.get("ref_type") or "", e.get("amount") or 0.0,

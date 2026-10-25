@@ -1918,18 +1918,8 @@ def test_scheduler_status_route_removed():
 # mount, so a genuinely-missing /api/* route used to be silently rewritten
 # into a 200 serving the SPA shell - test_scheduler_status_route_removed and
 # test_unrecognized_role_prefix_start_is_gone (test_gate_router.py) already
-# caught two real instances of this; these five cover every case the fix
+# caught two real instances of this; the tests below cover every case the fix
 # needs to get right at once, not just those two routes.
-
-def test_spa_fallback_valid_api_route_reaches_the_real_handler():
-    resp = client.get("/api/portfolio/scheduler-status")
-    # A real route (even one that itself 404s on purpose, as above) must be
-    # answered by the router, never by the SPA fallback - distinguishing
-    # this from an unmatched path isn't possible from status code alone, so
-    # this is really just re-confirming routers are tried before the "/"
-    # static mount at all (FastAPI's own routing order, not this fix).
-    assert resp.status_code == 404
-
 
 def test_spa_fallback_unknown_api_route_returns_404_not_200():
     resp = client.get("/api/this-route-does-not-exist")

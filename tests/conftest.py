@@ -49,6 +49,29 @@ def _access_gate_test_mode(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_http(monkeypatch):
+    """Fails any test that sends a real HTTP request through `requests`
+    (ESI, Goonmetrics, the SDE download, Discord). An unmocked ESI call used
+    to pass silently after ESIClient's retry backoff (about 4.5 s per test),
+    or reach the live API when the machine was online. The request raises
+    a RuntimeError (not a RequestException, so no retry loop runs) and the
+    test fails at teardown even when the code under test swallows it.
+    FastAPI's TestClient uses httpx and is not affected."""
+    import requests.adapters
+
+    attempts: list[str] = []
+
+    def _blocked(self, request, *args, **kwargs):
+        attempts.append(f"{request.method} {request.url}")
+        raise RuntimeError(f"real HTTP request in a test: {request.method} {request.url}")
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", _blocked)
+    yield
+    if attempts:
+        pytest.fail("test sent real HTTP requests (mock them): " + "; ".join(attempts[:3]))
+
+
+@pytest.fixture(autouse=True)
 def _reset_goonmetrics_region_coverage():
     """goonmetrics_client remembers per process which regions Goonmetrics
     tracks; a probe answered by one test's mocked session must not decide

@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from eve_trader import storage
-from eve_trader.models import RealizedTrade
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant  # noqa: F401
@@ -47,23 +46,6 @@ def _apply_doctrine_schema(_apply_phase1_schema, _apply_phase2_schema):
 _PRICE_A = 535_123_456.78
 _PRICE_B = 679_654_321.43
 _PROFIT = 144_530_864.65
-
-
-def test_realized_trades_price_round_trips_past_float32_precision(tenant):
-    trade = RealizedTrade(
-        type_id=34, item="Tritanium", buy_date="2026-08-01", buy_qty=1,
-        buy_unit_price=_PRICE_A, sell_date="2026-08-02", sell_qty=1,
-        sell_unit_price=_PRICE_B, matched_qty=1, realized_profit=_PROFIT, margin=0.27,
-    )
-    storage.save_realized_trades([trade], run_ts="2026-08-28T00:00:00")
-
-    with storage.connect() as conn:
-        row = conn.execute(
-            "SELECT buy_unit_price, sell_unit_price, realized_profit FROM realized_trades WHERE type_id = ?",
-            (34,),
-        ).fetchone()
-
-    assert row == (_PRICE_A, _PRICE_B, _PROFIT)
 
 
 def test_manual_blueprint_copy_cost_round_trips_past_float32_precision(tenant):
