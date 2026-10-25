@@ -277,6 +277,18 @@ def _run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
     return run, t0, changed
 
 
+def run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
+    """Public wrapper for the dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md
+    P-12): the D11 fingerprint logic stays in one place. Goes through the
+    module-level `_run_state` so tests that patch it keep working."""
+    return _run_state()
+
+
+def production_scope() -> dict:
+    """Public wrapper of `_production_scope` (same reasoning as run_state)."""
+    return _production_scope()
+
+
 def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int,
             *, sharing_changed: bool = False, last_sync: Optional[datetime] = None) -> dict:
     stale = False

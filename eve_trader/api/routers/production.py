@@ -108,10 +108,9 @@ def get_production_kpis():
 
 @router.get("/stock-targets", response_model=list[schemas.StockTarget])
 def get_stock_targets():
-    return [
-        schemas.StockTarget(type_id=t, type_name=n, backup_stock=b, home_market_stock=h, jita_market_stock=j)
-        for t, n, b, h, j in storage.load_stock_targets()
-    ]
+    """Configured values plus, for dynamic rows, the effective value and its
+    inputs - merged in an action (docs/DYNAMIC_STOCK_TARGETS_PLAN.md P-35)."""
+    return _wrap(actions.do_list_stock_targets)
 
 
 @router.get("/manual-stock")
@@ -469,6 +468,35 @@ def update_settings(updates: ProductionSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
 
 
+class DynamicTargetSettings(BaseModel):
+    """Separate from ProductionSettings on purpose: POST /settings saves every
+    field of its model, so the dynamic fields in there would make each plain
+    settings save look like a dynamic-target change (review finding V-06 and
+    the invalidation allowlist of V-01)."""
+    dynamic_targets_enabled: bool
+    dynamic_target_window_days: int
+    dynamic_target_min_history_days: int
+    dynamic_target_market_share: float
+    dynamic_target_coverage_days: float
+    dynamic_target_reference_margin: float
+    dynamic_target_factor_min: float
+    dynamic_target_factor_max: float
+    dynamic_target_smoothing: float
+    dynamic_target_deadband: float
+    dynamic_target_day_cap_multiple: float
+    dynamic_target_margin_hysteresis: float
+
+
+@router.get("/settings/dynamic-targets", response_model=DynamicTargetSettings)
+def get_dynamic_target_settings():
+    return DynamicTargetSettings(**{f: getattr(PRODUCTION_CONFIG, f) for f in DynamicTargetSettings.model_fields})
+
+
+@router.post("/settings/dynamic-targets")
+def update_dynamic_target_settings(updates: DynamicTargetSettings):
+    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+
+
 @router.get("/settings/system-cost-indices")
 def get_system_cost_indices():
     return _wrap(actions.do_get_system_cost_indices)
@@ -750,6 +778,45 @@ def update_stock_target(type_id: int, req: UpdateStockTargetRequest):
 @router.delete("/stock-targets/{type_id}")
 def remove_stock_target(type_id: int):
     return _wrap(actions.do_remove_stock_target, type_id=type_id)
+
+
+# Dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md section 10). Routes go
+# through the `actions` module object (not `from ... import do_x`) so router
+# tests can monkeypatch them (P-04).
+class StockTargetModeRequest(BaseModel):
+    mode: Literal["fixed", "dynamic"]
+    dynamic_min: Optional[float] = None
+    dynamic_max: Optional[float] = None
+
+
+class AllStockTargetModesRequest(BaseModel):
+    mode: Literal["fixed", "dynamic"]
+
+
+@router.put("/stock-targets/mode")
+def set_all_stock_target_modes(req: AllStockTargetModesRequest):
+    return _wrap(actions.do_set_all_stock_target_modes, mode=req.mode)
+
+
+@router.put("/stock-targets/{type_id}/mode")
+def set_stock_target_mode(type_id: int, req: StockTargetModeRequest):
+    return _wrap(actions.do_set_stock_target_mode, type_id=type_id, **req.model_dump())
+
+
+@router.post("/stock-targets/recalculate")
+def recalculate_dynamic_targets():
+    return _wrap(actions.do_recalculate_dynamic_targets)
+
+
+@router.post("/stock-targets/dynamic-preview")
+def preview_dynamic_targets():
+    """Dry run for every row with a home target; writes nothing."""
+    return _wrap(actions.do_preview_dynamic_targets)
+
+
+@router.get("/stock-targets/{type_id}/dynamic-history")
+def get_dynamic_target_history(type_id: int, days: int = 30):
+    return _wrap(actions.do_dynamic_target_history, type_id=type_id, days=days)
 
 
 class ManualStockRequest(BaseModel):
