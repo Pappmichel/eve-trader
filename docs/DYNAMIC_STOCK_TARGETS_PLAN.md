@@ -1251,3 +1251,35 @@ margin, 4 at the max; capital of rows the gate passes 79.25 B now, 61.19 B after
 day 1, 45.83 B converged (-42 %). 126 of 247 rows have nothing listed at C-J
 right now. The earlier figures in 18.2, 18.4 and 18.5 came from the stale,
 differently configured state; their direction holds, the sizes do not.
+
+### 18.7 Where the run drop comes from, and the effect on profit (2026-10-25)
+
+**Run drop by row** (S1, aligned state; each row set alone to its day-1 value,
+the others fixed). Today 154,149 runs, all rows at day 1 24,920 (-129,229). The
+Ishtar alone (home 36 -> 0, margin 6 %, below `min_margin`) saves 43,628 runs,
+about a third: its Advanced Components (mainly Fernite Carbide Composite Armor
+Plate) are one run per unit. The next rows are small (Broadsword 508,
+1400mm Howitzer Artillery II 341, Vulture/Onyx/Jackdaw 334 each, Proteus/Loki
+30 each, Redeemer/Golem 0 because the gate already blocks them). The other
+~85,600 runs come from the many rows that only shrink. So the fixed plan spends
+most of its build work on a low-margin, component-heavy hull; the drop is
+mostly the margin rule, not targets that are too low.
+
+**Profit model** (S1, aligned state, own sales with `min_history_days` 7, 242 of
+247 rows with demand, margin and cost; per restock cycle of C days a row sells
+min(home target, demand x C), profit per unit = margin x build cost):
+
+| cycle | profit/day fixed | day 1 | converged | capital fixed -> converged | return/30 d |
+|---|---|---|---|---|---|
+| 7 d | 1,100 M | 1,319 M | 1,209 M | 71.7 B -> 46.4 B | 46 % -> 78 % |
+| 14 d | 790 M | 1,005 M | 930 M | 71.7 B -> 46.4 B | 33 % -> 60 % |
+| 28 d | 490 M | 606 M | 603 M | 71.7 B -> 46.4 B | 21 % -> 39 % |
+
+With demand +60 % (the backtest's estimate ran about 40 % low) the converged
+figures are 1,646 / 1,125 / 603 M per day against 1,444 / 920 / 544 M fixed. At
+14 days the rows that rise add 323 M/day (Sacrilege, Buzzard, Industrial Jump
+Portal Generator I, Ferox Navy Issue, Prospect lead) and the rows that fall lose
+183 M/day (Vargur, Ishtar, Widow, Devoter, Sleipnir: 15-17 % margin and slow,
+plus the 6 % Ishtar, which the fixed plan does build). The model is a ceiling:
+it assumes the market share is reached at stable prices and ignores slots and
+build time.
