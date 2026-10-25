@@ -5303,48 +5303,38 @@ def search_item_stock_locations(type_id: int,
     """For `type_id`, every character/corp asset (excluding
     NON_STOCK_LOCATION_FLAGS - see esi_stock_at_location above), grouped by
     (resolved_location_id, owner) summing quantity - resolved_location_id is
-    already the outermost station/structure id (see replace_assets), so this
-    no longer needs its own item_id -> location_id walk (formerly duplicated
-    here and in esi_stock_at_location's old Office-only special case).
+    already the outermost station/structure id (see replace_assets).
 
     Returns [(location_id, location_name, owner_name, quantity), ...] sorted
-    by quantity descending. location_name comes from the structure_names
-    cache (player structures - populated via logistics/resolve-structure-
-    name) first, then sde_stations.station_name (NPC stations); None if
-    neither has it yet. owner_name is whichever character or "<corp> (corp)"
-    the sync attributed this asset to (see esi_sync.py) - "?" for data synced
-    before owner_name existed (Sync ESI Data again to backfill).
+    by quantity descending. location_name goes through get_location_names'
+    four tiers (structure_names, global_structure_names,
+    manual_location_names, sde_stations), batched; None if none has it.
+    owner_name is whichever character or "<corp> (corp)" the sync
+    attributed this asset to - "?" for data synced before owner_name existed.
 
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
     both None (the default) is unfiltered."""
+    parts: list[str] = []
+    params: list = []
+    for table in ("character_assets", "corp_assets"):
+        id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+        parts.append(
+            f"SELECT resolved_location_id, COALESCE(owner_name, '?') AS owner_name, quantity FROM {table} "
+            f"WHERE type_id = ? AND {NON_STOCK_SQL}{id_clause}"
+        )
+        params.extend((type_id, *NON_STOCK_SQL_PARAMS, *id_params))
     with connect() as conn:
-        raw_rows: list[tuple[int, str, float]] = []  # (resolved_location_id, owner_name, quantity)
-        for table in ("character_assets", "corp_assets"):
-            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
-            raw_rows.extend(conn.execute(
-                f"SELECT resolved_location_id, owner_name, quantity FROM {table} "
-                f"WHERE type_id = ? AND {NON_STOCK_SQL}{id_clause}",
-                (type_id, *NON_STOCK_SQL_PARAMS, *id_params),
-            ).fetchall())
-
-        grouped: dict[tuple[int, str], float] = {}
-        for location_id, owner_name, quantity in raw_rows:
-            key = (location_id, owner_name or "?")
-            grouped[key] = grouped.get(key, 0.0) + quantity
-
-        results: list[tuple[int, Optional[str], str, float]] = []
-        for (location_id, owner_name), quantity in grouped.items():
-            name_row = conn.execute(
-                "SELECT name FROM structure_names WHERE location_id = ?", (location_id,)
-            ).fetchone()
-            name = name_row[0] if name_row else None
-            if name is None:
-                station_row = conn.execute(
-                    "SELECT station_name FROM sde_stations WHERE station_id = ?", (location_id,)
-                ).fetchone()
-                name = station_row[0] if station_row else None
-            results.append((location_id, name, owner_name, quantity))
-
+        grouped = conn.execute(
+            "SELECT resolved_location_id, owner_name, SUM(quantity) FROM ("
+            + " UNION ALL ".join(parts)
+            + ") x GROUP BY resolved_location_id, owner_name",
+            tuple(params),
+        ).fetchall()
+    names = get_location_names([int(r[0]) for r in grouped if r[0] is not None])
+    results = [
+        (location_id, names.get(location_id) if location_id is not None else None, owner_name, float(quantity))
+        for location_id, owner_name, quantity in grouped
+    ]
     results.sort(key=lambda r: r[3], reverse=True)
     return results
 

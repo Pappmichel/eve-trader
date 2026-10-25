@@ -716,6 +716,7 @@ export interface AssetLocationSearchResult {
   type_id: number
   type_name: string
   locations: AssetLocationRow[]
+  assets_synced_at?: string | null
 }
 
 export interface ProductionUnlistedStockRow {

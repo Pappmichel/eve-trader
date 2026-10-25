@@ -36,7 +36,7 @@ def _wipe():
     # #39 below reuse small hardcoded names ("Alice"/"Bob") too.
     pg_helpers.wipe_tables(
         "character_assets", "corp_assets", "sde_stations", "character_slots",
-        "sorting_intake_sources",
+        "sorting_intake_sources", "global_structure_names", "manual_location_names",
     )
     yield
 
@@ -448,6 +448,19 @@ def test_search_item_stock_locations_falls_back_to_station_name(tenant):
     rows = storage.search_item_stock_locations(TYPE_ID)
 
     assert rows == [(station_location_id, "NPC Station Name", "Alice", 10)]
+
+
+def test_search_item_stock_locations_uses_manual_location_name(tenant):
+    # Phase 0 of docs/ASSET_MANAGER_PLAN.md: the search used to read only
+    # structure_names and sde_stations, so a manual name never showed up.
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 10, 0, "Alice"),
+    ])
+    storage.set_manual_location_name(LOCATION_ID, "My Hideout")
+
+    rows = storage.search_item_stock_locations(TYPE_ID)
+
+    assert rows == [(LOCATION_ID, "My Hideout", "Alice", 10)]
 
 
 def test_get_cached_structure_names_batches_and_preserves_was_cached_semantics(tenant):
