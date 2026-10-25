@@ -1,7 +1,8 @@
 # Asset Manager - plan
 
 Status: **draft, nothing implemented, decisions D1-D13 confirmed with the
-user on 2026-10-25 (section 10).** Real-data checks (section 9) are open:
+user on 2026-10-25 (section 10), reviewed (section 11).** Server checks
+(section 12) are open:
 this container has no `config.yaml` and no production database.
 
 Goal: turn Production's "Asset Search" tab (one exact item name -> where is
@@ -103,7 +104,9 @@ Non-goals:
   that applies exactly the planners' rules).
 - **D5 Manual stock is a separate source.** `manual_stock` rows appear with
   `source: "manual"` (same convention as the Manual tracking plan),
-  location 0 shown as "No location". Toggle, default on.
+  location 0 shown as "No location". Toggle, default on. Only for a
+  session that also holds `production` (manual stock is Production data;
+  same cross-tool rule as PI's demand view, review R-8).
 - **D6 Item names via `/assets/names`, stored on the asset row.** New
   nullable column `item_name` on `character_assets` / `corp_assets`, filled
   by the asset fetcher before `replace_assets` for singleton items whose
@@ -113,7 +116,9 @@ Non-goals:
   hook in `fetchers.py`.
 - **D7 Corp division names as a new data kind `corp_divisions`.**
   Corporation-only, scope `esi-corporations.read_divisions.v1`, Director
-  role, `TIER_RARE`, consumers `asset_manager` and `sorting`. New scope =
+  role, `TIER_RARE`, consumer `asset_manager` only (Sorting is added when
+  its code actually reads the names - the registry lists real readers
+  only, review R-9). New scope =
   re-auth; until then labels fall back to "Division 1".."Division 7".
   Alternative (fetch inside the assets fetcher) rejected: it would tie a new
   scope to an existing kind and break the scope/reauth bookkeeping.
@@ -126,7 +131,8 @@ Non-goals:
   `_resolve_locations` already walks. The tree for one station is built
   from that station's rows on request.
 - **D10 Union of all shares, still fail closed.** For each kind it reads
-  (`assets`, `corp_divisions`, `market_orders`, `contracts`) the tool sees
+  (`assets`, `blueprints`, `corp_divisions`, `market_orders`, `contracts`;
+  `blueprints` added in the review, R-1) the tool sees
   every owner that shares that kind with **any** consuming tool, its own
   row included - the same union rule the realized-profit archive uses
   (`realized/access.py`, unified plan U3a). A character can also share a
@@ -228,7 +234,8 @@ calling the same actions.
 ### Phase 1 - tool scaffolding
 - `asset_manager` in `ALL_TOOL_KEYS`, `DEFAULT_TOOL_KEYS`,
   `_TOOL_PATH_PREFIXES`, registry `consuming_tools` of `assets`,
-  `market_orders` and `contracts` (`corp_divisions` comes in phase 4), Admin
+  `blueprints`, `market_orders` and `contracts` (`corp_divisions` comes in
+  phase 4), Admin
   auto-tick list, Landing card, sidebar/QuickNav, `App.tsx` route.
 - Package `eve_trader/asset_manager/` (`actions.py`, `queries.py`,
   `tree.py`), router `api/routers/asset_manager.py`, empty page.
@@ -295,7 +302,7 @@ calling the same actions.
 ### Phase 6 - change history (confirmed)
 - Daily snapshot of `(owner, location, type) -> quantity` (new table,
   written after each asset sync, retention e.g. 90 days), diff view "what
-  arrived / left since date X". Size the retention after R-07.
+  arrived / left since date X". Size the retention after S-12.
 
 ### Phase 7 - insights (confirmed)
 - Consolidation helper: a type spread over many locations, with m3 to haul
@@ -348,20 +355,11 @@ calling the same actions.
 - Performance check: `/items` with the largest real owner, target < 1 s for
   one page and totals.
 
-## 9. Real-data checks (TODO, needs server/DB access)
+## 9. Real-data checks
 
-- [ ] R-01 Asset row count per tenant and per owner (largest owner) -
-      confirms paging/aggregation needs (D8).
-- [ ] R-02 Distinct `resolved_location_id` count; share without a name in
-      any of the four tiers.
-- [ ] R-03 Count of singleton ships/containers (size of the `/assets/names`
-      calls per sync).
-- [ ] R-04 Which shared corps have a Director token (D7 coverage).
-- [ ] R-05 Rows with a NULL `resolved_location_id` or a parent missing from
-      the same owner's list (orphans for the tree).
-- [ ] R-06 Time of the Portfolio price lookup for all owned types today.
-- [ ] R-07 Distinct (owner, location, type) rows per tenant - storage per
-      day for phase 6's snapshot table.
+Merged into section 12 (S-01..S-13) during the review: R-01 -> S-01,
+R-02 -> S-02, R-03 -> S-08, R-04 -> S-10, R-05 -> S-03, R-06 -> S-07,
+R-07 -> S-12.
 
 ## 10. Decision log (asked one by one, 2026-10-25)
 
@@ -381,3 +379,168 @@ calling the same actions.
 | D12 | Old Production tab? | Removed in phase 5, no redirect |
 | D13 (Q4) | Listed / contracted items? | Yes, own sources |
 | Q3 | Phases 6 and 7? | Both in the plan |
+
+## 11. Review (2026-10-25)
+
+Second pass over the whole plan against the code. Each item says what is
+wrong or missing and what changes. Items marked **(open)** need a user
+decision; the rest are folded into the plan above or are implementation
+rules for the phase named.
+
+### 11.1 Defects in the plan
+
+- **R-1 Blueprints were missing (fixed in D10).** The asset list contains
+  every blueprint item, but ME/TE/runs live in `character_blueprints` /
+  `corp_blueprints` (`blueprints` kind). Portfolio excludes those item_ids
+  from assets and values them from the blueprint table
+  (`storage.load_assets_grouped`, `portfolio._collect_wealth`): BPO via the
+  manual price, BPC via `_bpc_run_values` x runs. Without the `blueprints`
+  share the asset manager can neither show ME/TE/runs nor apply D3, and
+  would value a BPC at the BPO market price. Phase 2: join the blueprint
+  table on `(item_id, owner)`, show ME/TE/runs columns, BPO/BPC badge.
+- **R-2 Price sorting contradicts server-side paging (D8).** Prices come
+  from Python (Goonmetrics, manual prices, BPC run values), not SQL. Rule
+  for phase 2: compute the price map for the distinct type_ids of the whole
+  filter (usually a few thousand; `current_prices` is one cached full-market
+  call per market, 60 s TTL), pass it to SQL as a `VALUES` CTE / temp table,
+  then sort, page and total in SQL. Never page first and price after -
+  totals and "sort by value" would be wrong.
+- **R-3 Do not copy Portfolio's collector, extract it.** `_collect_wealth`
+  already builds exactly the rows D13 needs (sell orders from the
+  `market_orders` snapshot, outstanding contract items from the ledger
+  archive, de-duplicated per contract) and prices them. Phase 2 first
+  extracts a shared, owner-parameterised loader + pricer (e.g.
+  `portfolio_items.py`) that both Portfolio and the asset manager call;
+  Portfolio's numbers must not change (snapshot test before/after).
+- **R-4 Contracts for an asset-manager-only share are never archived.**
+  Outstanding contract items and sell orders come from the ledger archive,
+  and `esi_data/fetchers.py` archives an owner only while a realized-profit
+  tool or Portfolio shares the kind (`_archive_for_production` /
+  `_shared_with_portfolio`). An owner sharing contracts only with the asset
+  manager would show no contract rows. Phase 1: generalise
+  `_shared_with_portfolio` to "shared with Portfolio or the asset manager"
+  (still not part of the costing union) - stays inside `esi_data`, no tool
+  import.
+- **R-5 Contract rows have no location in Portfolio.** `outstanding_
+  contract_lines` drops `start_location_id`. D13 promises a location, so
+  the extracted loader must return `ledger_contracts.start_location_id`
+  (Portfolio may ignore it).
+- **R-6 Stale data from the union (open).** The scheduler refreshes only
+  sharing rows of tools the tenant still holds (`orchestrator.pending_due`,
+  `granted_tools` filter). An owner shared with assets only for Doctrine,
+  in a tenant that lost the Doctrine grant, stays readable by D10 but is
+  never refreshed - the page would show a frozen snapshot as current.
+  Proposal: union over the sharing rows of **granted** tools plus
+  `asset_manager` itself; every row still shows its own age (G5).
+- **R-7 Phase 6 must not write from the asset package inside the
+  fetcher.** CLAUDE.md allows exactly one tool import in
+  `esi_data/fetchers.py` (realized). The history snapshot is either a
+  storage function called from `replace_assets`, or - preferred - a daily
+  per-tenant scheduler job that copies the current grouped totals
+  (one row per owner/location/type/day, same calendar-date "due" rule as
+  `portfolio_snapshot`). Inactive tenants then get gaps, as in Portfolio.
+- **R-8 Manual stock is Production data (fixed in D5).** Show it only when
+  the session also holds `production`, the same rule as the PI demand view
+  and the Doctrine skill check.
+- **R-9 Registry consumers must be real readers (fixed in D7).** Sorting
+  removed from `corp_divisions` until it reads the names.
+- **R-10 Locations that are not stations or structures.** The fetcher does
+  not store ESI's `location_type`. Items in space (deployed mobile depots,
+  POCOs, structures themselves in corp assets) or whose parent is missing
+  end with a solar system id or an unknown id as `resolved_location_id`.
+  `get_location_names` resolves neither solar systems nor regions. Phase 2:
+  classify ids by range (60M stations, 30M systems, 1.0e12+ structures /
+  items), resolve system names from `sde_solar_systems`, and group
+  everything else under "In space / unknown"; store `location_type` from
+  the fetcher (new nullable column, same migration as `item_name`).
+  Check the real distribution first (S-03).
+- **R-11 Unresolved structure names.** A player structure without docking
+  access stays unnamed and without a system. Add a "Resolve names" action
+  that calls the existing `do_resolve_structure_name` path for the
+  location ids on the page, and show unnamed ones with the plain id plus a
+  manual-name link (Manual tracking's `manual_location_names`).
+- **R-12 `DataTable` has no server-side mode.** `frontend/src/components/
+  DataTable.tsx` pages and sorts in the browser. Phase 2 needs a manual
+  pagination/sorting mode (or a separate component); size it as its own
+  task.
+- **R-13 Removing the Production tab (D12) needs the grant first.**
+  `DEFAULT_TOOL_KEYS` only affects new users and approvals. Order for
+  phase 5: deploy phase 1-4, run `eve-trader admin grant-defaults`, then
+  remove the tab. Otherwise existing Production users lose asset search.
+- **R-14 Names refetch must not wipe names.** `replace_assets` deletes and
+  reinserts the owner partition. If `/assets/names` fails, carry the
+  previous `item_name` over by `(item_id, owner)` instead of writing NULL.
+- **R-15 CSV injection.** Container and ship names are free text set by
+  any corp member. Prefix cells starting with `= + - @` (and tab/CR) with
+  `'` in the CSV export.
+- **R-16 Freshness per kind, not per page.** Listed orders refresh on a
+  different tier than assets; totals that mix sources must show the oldest
+  source age, not the newest.
+- **R-17 CLAUDE.md updates.** New section for the tool, the `ALL_TOOL_KEYS`
+  count, the price-sources matrix row "What is an owned item worth" gains
+  the asset manager, and the "Assembled ships are not stock" section names
+  the asset manager next to Portfolio as a deliberate non-filter.
+
+### 11.2 Improvements
+
+- **I-1 Phase order.** Phase 3 (location browser) gives the most value per
+  effort after phase 2 and needs no new ESI calls; keep it before names.
+  Phase 0 can ship alone this week.
+- **I-2 Grouped view as default.** Raw asset rows (one per stack) are
+  noisy; default to `group_by=type_location` with a toggle to item level.
+- **I-3 URL state.** Filters, selected node and grouping in the query
+  string (already in phase 2). A link only works for the same tenant;
+  tenants are isolated, so it is a bookmark, not a share link.
+- **I-4 Performance budget.** One page incl. totals < 1 s for the largest
+  owner (S-01); location summary cached per tenant until the next asset
+  sync (key on tenant_id + newest `esi_freshness` stamp - explicit
+  invalidation for free).
+
+### 11.3 Missing features worth adding (open - pick which)
+
+- **F-1 Ship view.** For an assembled ship: its fitting, cargo and bays as
+  a tree, an EFT export, and - if the tenant holds `doctrine` - which
+  doctrine fitting it matches (reuse Doctrine's matcher through storage,
+  no doctrine import into the asset package).
+- **F-2 In-production items as a source.** Outputs of running industry jobs
+  (`industry_jobs` kind) as virtual rows "in production" at the output
+  location; Production already computes incoming quantities.
+- **F-3 Saved views.** Named filter presets per tenant (e.g. "Fuel at
+  all structures", "Ships in Jita").
+- **F-4 Compare to demand.** A column "wanted by" (Production stock target,
+  Doctrine stockpile, Sorting pot) - the same data Sorting already
+  aggregates; also the base for phase 7's "forgotten assets".
+- **F-5 Multi-character totals per type.** "Where is all my Tritanium":
+  one row per type with locations expandable - mostly I-2 plus a type
+  detail drawer with a mini price history.
+
+Not proposed: PI storage contents (separate ESI endpoint per planet, not
+assets), "open in game" (new `esi-ui.open_window` scope for little value).
+
+## 12. Server checks before implementation
+
+The plan's design depends on facts only the production server has. Run
+these read-only on the server (SQL as the app role inside a tenant, or
+the owner role for counts across tenants) **before the phase named**;
+record each result here. Phase 0 and phase 1 need none of them.
+
+| # | Check | Why / decides | Before |
+|---|---|---|---|
+| S-01 | Asset rows per tenant and largest owner (`count(*)` per owner in both tables) | Paging, cache, performance budget (D8, I-4) | Phase 2 |
+| S-02 | Distinct `resolved_location_id`; share without a name in all four tiers | Size of R-11, UI for unnamed places | Phase 2 |
+| S-03 | `resolved_location_id` by id range (station / structure / system / other) and rows whose parent is missing | R-10 grouping, orphan handling in the tree | Phase 2 |
+| S-04 | Distinct `location_flag` and `resolved_hangar_flag` values with counts | Hangar labels in phase 3 (P-07) | Phase 3 |
+| S-05 | Blueprint items: assets rows whose item_id is not in the blueprint tables (unshared or stale blueprints) | R-1 fallback valuation | Phase 2 |
+| S-06 | Sharing matrix: owners x tools for `assets`, `blueprints`, `market_orders`, `contracts`; owners whose only share is an ungranted tool | R-6 decision, real effect of D10 | Phase 1 |
+| S-07 | Distinct owned type_ids and time of `portfolio._priced` for them on the server | R-2 price map cost | Phase 2 |
+| S-08 | Count of singleton ships/containers per owner | `/assets/names` call volume (D6) | Phase 4 |
+| S-09 | One live `POST /characters/{id}/assets/names` with a real token: response for an unnamed container, a ship, a non-singleton id | P-05 behaviour (ESI docs are vague) | Phase 4 |
+| S-10 | Which shared corps have a Director token; one live `GET /corporations/{id}/divisions` | D7 coverage, 403 mapping (P-06) | Phase 4 |
+| S-11 | Outstanding contracts with `start_location_id` NULL; listed orders per owner | R-5, D13 | Phase 2 |
+| S-12 | Distinct (owner, location, type) per tenant | Phase 6 storage per day and retention | Phase 6 |
+| S-13 | Current Portfolio breakdown JSON saved | Before/after check for the R-3 extraction | Phase 2 |
+
+S-01..S-07, S-11 and S-13 can be one throwaway read-only script in the
+scratch directory (not committed), same method as the dynamic stock
+targets plan. S-09 and S-10 make one live ESI call each with an existing
+token; nothing is written.
