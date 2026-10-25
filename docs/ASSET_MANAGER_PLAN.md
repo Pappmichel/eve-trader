@@ -130,20 +130,27 @@ Non-goals:
   is the immediate parent and `(item_id, owner_name)` the key, exactly what
   `_resolve_locations` already walks. The tree for one station is built
   from that station's rows on request.
-- **D10 Union of all shares, still fail closed.** For each kind it reads
-  (`assets`, `blueprints`, `corp_divisions`, `market_orders`, `contracts`;
-  `blueprints` added in the review, R-1) the tool sees
-  every owner that shares that kind with **any** consuming tool, its own
-  row included - the same union rule the realized-profit archive uses
+- **D10 Union of the shares of granted tools, still fail closed.** For
+  each kind it reads (`assets`, `blueprints`, `corp_divisions`,
+  `market_orders`, `contracts`, `industry_jobs`; `blueprints` added in the
+  review, R-1; `industry_jobs` for F-2) the tool sees every owner that
+  shares that kind with a consuming tool **the tenant still holds**, or
+  with the Asset Manager itself (R-6, confirmed). A share with a tool whose
+  grant was removed does not count: the scheduler no longer refreshes it
+  (`orchestrator.pending_due` filters by granted tools), so it would show a
+  frozen snapshot - the same union rule the realized-profit archive uses
   (`realized/access.py`, unified plan U3a). A character can also share a
   kind with the Asset Manager alone. Revoking the last share of a kind
   hides that owner's rows immediately; an owner with no share is never
   read. This is acceptable because a tenant is one character (DB-enforced),
   so the union never crosses people. Implement it as one helper in
-  `esi_data/access.py` (`owners_shared_with_any(kind)`), not as a loop over
-  tool names in the asset package.
+  `esi_data/access.py` (`owners_shared_with_any(kind, granted_tools)`;
+  `granted_tools` None = gate off = every tool, same convention as
+  `tenant_eligibility.granted_tools()`), not as a loop over tool names in
+  the asset package.
 - **D11 Sync button = `do_sync_for_tool("asset_manager")`** (kinds
-  `assets`, `corp_divisions`, `market_orders`, `contracts`), with the usual per-owner freshness from
+  `assets`, `blueprints`, `corp_divisions`, `market_orders`, `contracts`,
+  `industry_jobs`), with the usual per-owner freshness from
   `esi_freshness`.
 - **D12 Production's Asset Search tab is removed without a replacement
   link** in phase 5: the tab, its route in `App.tsx`, the
@@ -203,8 +210,9 @@ parent_name, path (["Jita IV-4", "Corp Hangar 3 'Fuel'", "Fuel Box"]),
 location_id, location_name, solar_system_name, region_name, security,
 unit_volume_m3, total_volume_m3, unit_price, total_value, price_source,
 badges (["asset_safety","assembled","fitted","delivery","manual",
-         "listed","contract"]),
-source ("esi" | "manual" | "listed" | "contract")
+         "listed","contract","in_production","bpo","bpc"]),
+source ("esi" | "manual" | "listed" | "contract" | "in_production"),
+me, te, runs (blueprints only), wanted_by ([{tool, qty}], F-4)
 ```
 
 ## 5. API (`/api/asset-manager/`, gated by `asset_manager`)
@@ -425,7 +433,8 @@ rules for the phase named.
   contract_lines` drops `start_location_id`. D13 promises a location, so
   the extracted loader must return `ledger_contracts.start_location_id`
   (Portfolio may ignore it).
-- **R-6 Stale data from the union (open).** The scheduler refreshes only
+- **R-6 Stale data from the union (decided: granted tools + own share,
+  folded into D10).** The scheduler refreshes only
   sharing rows of tools the tenant still holds (`orchestrator.pending_due`,
   `granted_tools` filter). An owner shared with assets only for Doctrine,
   in a tenant that lost the Doctrine grant, stays readable by D10 but is
@@ -496,21 +505,21 @@ rules for the phase named.
   sync (key on tenant_id + newest `esi_freshness` stamp - explicit
   invalidation for free).
 
-### 11.3 Missing features worth adding (open - pick which)
+### 11.3 Missing features (all five confirmed 2026-10-25, see section 13)
 
-- **F-1 Ship view.** For an assembled ship: its fitting, cargo and bays as
+- **F-1 Ship view (yes, with Doctrine match).** For an assembled ship: its fitting, cargo and bays as
   a tree, an EFT export, and - if the tenant holds `doctrine` - which
   doctrine fitting it matches (reuse Doctrine's matcher through storage,
   no doctrine import into the asset package).
-- **F-2 In-production items as a source.** Outputs of running industry jobs
+- **F-2 In-production items as a source (yes).** Outputs of running industry jobs
   (`industry_jobs` kind) as virtual rows "in production" at the output
   location; Production already computes incoming quantities.
-- **F-3 Saved views.** Named filter presets per tenant (e.g. "Fuel at
+- **F-3 Saved views (yes, server-side).** Named filter presets per tenant (e.g. "Fuel at
   all structures", "Ships in Jita").
-- **F-4 Compare to demand.** A column "wanted by" (Production stock target,
+- **F-4 Compare to demand (yes, per grant).** A column "wanted by" (Production stock target,
   Doctrine stockpile, Sorting pot) - the same data Sorting already
   aggregates; also the base for phase 7's "forgotten assets".
-- **F-5 Multi-character totals per type.** "Where is all my Tritanium":
+- **F-5 Type detail (yes, with price history).** "Where is all my Tritanium":
   one row per type with locations expandable - mostly I-2 plus a type
   detail drawer with a mini price history.
 
@@ -544,3 +553,62 @@ S-01..S-07, S-11 and S-13 can be one throwaway read-only script in the
 scratch directory (not committed), same method as the dynamic stock
 targets plan. S-09 and S-10 make one live ESI call each with an existing
 token; nothing is written.
+
+## 13. Decisions on the review items (asked one by one, 2026-10-25)
+
+| # | Question | Answer | Where it goes |
+|---|---|---|---|
+| R-6 | Which shares count for the union? | Shares of granted tools + the Asset Manager's own | D10 |
+| F-1 | Ship view? | Yes: fitting/cargo/bay tree, EFT export, Doctrine match with the `doctrine` grant | Phase 3b |
+| F-2 | Running job outputs as a source? | Yes, source `in_production` | Phase 2 |
+| F-3 | Saved views? | Yes, stored server-side per tenant | Phase 5 |
+| F-4 | "Wanted by" column? | Yes, only for tools the session holds | Phase 5, basis for phase 7 |
+| F-5 | Type detail? | Yes, with price history | Phase 5 |
+
+Implementation rules for these:
+
+- **F-1** Phase 3b, after the location tree. Slot flags grouped as High /
+  Mid / Low / Rig / Subsystem / Drone bay / Fighter bay / Cargo / other
+  holds. EFT export built in the backend from SDE names (same reason as
+  PI templates: one serializer, no client-side formatting). Doctrine match
+  reuses the pure scorer `doctrine/validation.match_score` on fittings read
+  through storage; the route additionally requires the `doctrine` grant
+  checked against `request.state.tool_keys` (same pattern as the Doctrine
+  skill check). Importing the pure validation module is acceptable
+  (Sorting already imports Doctrine's engine); importing anything that
+  writes Doctrine state is not.
+- **F-2** Rows from the `industry_jobs` snapshot with status active/ready:
+  product type, runs x product quantity per run (SDE), location =
+  `output_location_id` resolved like assets; invention jobs count expected
+  output only if Production already has a rule for it, otherwise show runs
+  without quantity. Same numbers as Production's incoming figure
+  (`esi_incoming_industry_qty`) - reuse it, do not recompute. Default
+  toggle on, badge "in production", excluded from the "stock only" filter.
+- **F-3** New per-tenant table `asset_manager_views (id, tenant_id, name,
+  query JSONB, created_at, updated_at)`, unique `(tenant_id, name)`, RLS
+  like any tenant table. The asset manager gets its own schema file
+  `docs/asset_manager_schema.sql` (also used by phase 6's history table) -
+  a new schema file must be added to every place that applies schema
+  files: `deploy/deploy.sh`, `deploy/README.md`, root `README.md`,
+  `.cursor/start.sh`, `tests/pg_helpers.py`'s order (grep for
+  `production_buy_list_schema` to find them all). `query` is validated
+  against the `/items` parameter model on save and on load (a stored view
+  from an older version must not 500).
+- **F-4** `wanted_by` reads demand through storage only: Production stock
+  targets (with `production`), Doctrine stockpile targets (with
+  `doctrine`), Sorting pots (with `sorting`). Sorting's
+  `engine.do_sorting_list` already aggregates the three; prefer extracting
+  its demand part into a shared read function over a third copy. Only
+  computed for the types on the current page (not for totals), so it does
+  not slow down paging.
+- **F-5** Drawer opened from a type cell: all owners/locations/sources for
+  that type, value, and a 30/90-day price chart from the existing
+  `price_history` path for the tenant's home region (Goonmetrics where
+  covered, ESI daily history otherwise - CLAUDE.md market hubs section).
+  Read-only; uses the dataviz conventions of the existing charts.
+
+Phase plan after these decisions: 0 fix search -> 1 scaffolding -> 2 list
+(incl. D13, F-2, R-1..R-5, R-10, R-12) -> 3 location tree -> 3b ship view
+(F-1) -> 4 names -> 5 search 2.0, export, saved views, wanted-by, type
+detail, old tab removed (F-3, F-4, F-5, D12, R-13) -> 6 history -> 7
+insights.
