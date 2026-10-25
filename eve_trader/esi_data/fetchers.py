@@ -156,19 +156,26 @@ def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
     ]
 
 
-def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int) -> bool:
-    """True when this owner shares `data_kind` with Portfolio.
+# Tools that read listed orders and outstanding contracts from the ledger
+# without being realized-profit tools (tool names as strings, no import).
+_LEDGER_ONLY_READERS = ("portfolio", "asset_manager")
 
-    Portfolio's Total Wealth reads listed orders and outstanding contracts
-    through its own share (P4). Those rows live in the ledger, which the
-    realized-profit union does not archive for a Portfolio-only share.
-    Archiving them here does not add Portfolio to the costing union.
+
+def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int) -> bool:
+    """True when this owner shares `data_kind` with Portfolio or the Asset
+    Manager.
+
+    Portfolio's Total Wealth (P4) and the Asset Manager
+    (docs/ASSET_MANAGER_PLAN.md R-4) read listed orders and outstanding
+    contracts through their own share. Those rows live in the ledger, which
+    the realized-profit union does not archive for such a share. Archiving
+    them here does not add either tool to the costing union.
     """
     try:
         from .access import is_shared
-        return is_shared(data_kind, "portfolio", owner_type, int(owner_id))
+        return any(is_shared(data_kind, tool, owner_type, int(owner_id)) for tool in _LEDGER_ONLY_READERS)
     except Exception:  # noqa: BLE001 - never fail the snapshot sync
-        log.exception("portfolio share check failed for %s %s %s", data_kind, owner_type, owner_id)
+        log.exception("ledger reader share check failed for %s %s %s", data_kind, owner_type, owner_id)
         return False
 
 

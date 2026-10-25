@@ -570,6 +570,9 @@ ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 -- synced before this column existed counted until their next asset sync.
 ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS is_singleton BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS assembled_or_fitted BOOLEAN NOT NULL DEFAULT false;
+-- Name of a named singleton (ship, container) from ESI /assets/names,
+-- docs/ASSET_MANAGER_PLAN.md D6. NULL until the asset sync fetches names.
+ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS item_name TEXT;
 DROP INDEX IF EXISTS idx_character_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_character_assets_type_resolved_location
     ON character_assets (type_id, resolved_location_id);
@@ -618,6 +621,7 @@ ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS is_singleton BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS assembled_or_fitted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS item_name TEXT;
 DROP INDEX IF EXISTS idx_corp_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_corp_assets_type_resolved_location ON corp_assets (type_id, resolved_location_id);
 ALTER TABLE corp_assets ENABLE ROW LEVEL SECURITY;

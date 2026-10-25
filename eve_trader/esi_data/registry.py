@@ -86,7 +86,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # "portfolio" added for Total Wealth (PORTFOLIO_REWORK_PLAN.md
         # section 4) - a character sharing assets with another tool does
         # NOT also expose them to Portfolio; this is its own opt-in row.
-        consuming_tools=("production", "doctrine", "sorting", "trading", "portfolio"),
+        consuming_tools=("production", "doctrine", "sorting", "trading", "portfolio", "asset_manager"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(
@@ -96,7 +96,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-industry.read_character_jobs.v1",
         corporation_scope="esi-industry.read_corporation_jobs.v1",
         corp_roles=("Director",),
-        consuming_tools=("production",),
+        consuming_tools=("production", "asset_manager"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(
@@ -108,7 +108,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=("Director",),
         # "portfolio" added for Total Wealth - same opt-in reasoning as
         # assets above.
-        consuming_tools=("production", "portfolio"),
+        consuming_tools=("production", "portfolio", "asset_manager"),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(
@@ -121,7 +121,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # "portfolio" values open sell orders in Total Wealth
         # (docs/PORTFOLIO_OVERVIEW_PLAN.md P4). Sharing with Trading does
         # not expose those orders to Portfolio.
-        consuming_tools=("trading", "production", "station_trading", "portfolio"),
+        consuming_tools=("trading", "production", "station_trading", "portfolio", "asset_manager"),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(
@@ -140,7 +140,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # sales stay on production and doctrine. "portfolio" values
         # outstanding contract items in Total Wealth (P4), separate from
         # the realized-profit union.
-        consuming_tools=("doctrine", "production", "trading", "portfolio"),
+        consuming_tools=("doctrine", "production", "trading", "portfolio", "asset_manager"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(

@@ -3155,8 +3155,9 @@ def replace_assets(
     owner_name: Optional[str] = None,
 ) -> None:
     """`rows`: (item_id, type_id, location_id, location_flag, quantity,
-    is_blueprint_copy, owner_name[, is_singleton]) - is_singleton defaults
-    to False when omitted; assembled_or_fitted (see assembled_or_fitted_flags)
+    is_blueprint_copy, owner_name[, is_singleton[, item_name]]) -
+    is_singleton defaults to False and item_name (ESI /assets/names,
+    docs/ASSET_MANAGER_PLAN.md D6) to None when omitted; assembled_or_fitted (see assembled_or_fitted_flags)
     is computed here from it. resolved_location_id (GitHub issue #4/
     #20) and resolved_hangar_flag (the corp-hangar-division flag a nested
     item should actually be counted under - see _resolve_hangar_flags) are
@@ -3204,6 +3205,7 @@ def _replace_assets_one(
     owner_name: Optional[str],
 ) -> None:
     singletons = [bool(row[7]) if len(row) > 7 else False for row in rows]
+    item_names = [row[8] if len(row) > 8 else None for row in rows]
     rows = [tuple(row[:7]) for row in rows]
     resolved_locations = _resolve_locations(rows, location_index=2) if rows else []
     resolved_flags = _resolve_hangar_flags(rows, location_index=2, flag_index=3, type_index=1) if rows else []
@@ -3221,12 +3223,12 @@ def _replace_assets_one(
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
             "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
-            "owner_character_id, owner_corporation_id, is_singleton, assembled_or_fitted) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "owner_character_id, owner_corporation_id, is_singleton, assembled_or_fitted, item_name) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                row + (loc, flag, insert_char, insert_corp, singleton, skip)
-                for row, loc, flag, singleton, skip in zip(
-                    rows, resolved_locations, resolved_flags, singletons, excluded)
+                row + (loc, flag, insert_char, insert_corp, singleton, skip, name)
+                for row, loc, flag, singleton, skip, name in zip(
+                    rows, resolved_locations, resolved_flags, singletons, excluded, item_names)
             ],
         )
 
@@ -5789,6 +5791,189 @@ def load_sell_orders_grouped(owner_character_ids: Optional[list[int]] = None,
             owner_type, owner_id, int(loc) if loc is not None else None, int(type_id), int(qty or 0),
         ))
     return rows
+
+
+# --------------------------------------------------------- Asset Manager reads
+# docs/ASSET_MANAGER_PLAN.md. Owner lists come from the caller's union of
+# shares (esi_data.access.owners_shared_with_any); both empty returns [] and
+# does not query, like load_assets_grouped above.
+
+def load_asset_manager_assets(owner_character_ids: Optional[list[int]],
+                              owner_corporation_ids: Optional[list[int]]) -> list[dict]:
+    """Every stored asset row of the given owners, no flag or assembled
+    filter (the Asset Manager shows everything and badges it, D4)."""
+    out: list[dict] = []
+    if not owner_character_ids and not owner_corporation_ids:
+        return out
+    cols = ("item_id, type_id, location_id, location_flag, quantity, is_blueprint_copy, owner_name, "
+            "resolved_location_id, resolved_hangar_flag, is_singleton, assembled_or_fitted, item_name")
+    with connect() as conn:
+        for table, owner_type, column, ids in (
+            ("character_assets", "character", "owner_character_id", owner_character_ids),
+            ("corp_assets", "corporation", "owner_corporation_id", owner_corporation_ids),
+        ):
+            if not ids:
+                continue
+            for r in conn.execute(
+                f"SELECT {column}, {cols} FROM {table} WHERE {column} = ANY(?)",
+                ([int(i) for i in ids],),
+            ).fetchall():
+                out.append({
+                    "owner_type": owner_type, "owner_id": int(r[0]), "item_id": int(r[1]),
+                    "type_id": int(r[2]) if r[2] is not None else None,
+                    "location_id": int(r[3]) if r[3] is not None else None,
+                    "location_flag": r[4], "quantity": int(r[5] or 0),
+                    "is_blueprint_copy": bool(r[6]), "owner_name": r[7],
+                    "resolved_location_id": int(r[8]) if r[8] is not None else None,
+                    "resolved_hangar_flag": r[9], "is_singleton": bool(r[10]),
+                    "assembled_or_fitted": bool(r[11]), "item_name": r[12],
+                })
+    return out
+
+
+def load_asset_manager_blueprints(owner_character_ids: Optional[list[int]],
+                                  owner_corporation_ids: Optional[list[int]]) -> dict[tuple, tuple]:
+    """(owner_type, owner_id, item_id) -> (material_efficiency,
+    time_efficiency, runs, quantity) for the given owners' blueprints.
+    runs -1 is a BPO (ESI)."""
+    out: dict[tuple, tuple] = {}
+    if not owner_character_ids and not owner_corporation_ids:
+        return out
+    with connect() as conn:
+        for table, owner_type, column, ids in (
+            ("character_blueprints", "character", "owner_character_id", owner_character_ids),
+            ("corp_blueprints", "corporation", "owner_corporation_id", owner_corporation_ids),
+        ):
+            if not ids:
+                continue
+            for owner, item_id, me, te, runs, qty in conn.execute(
+                f"SELECT {column}, item_id, material_efficiency, time_efficiency, runs, quantity "
+                f"FROM {table} WHERE {column} = ANY(?)",
+                ([int(i) for i in ids],),
+            ).fetchall():
+                out[(owner_type, int(owner), int(item_id))] = (me, te, runs, qty)
+    return out
+
+
+def load_asset_manager_job_outputs(owner_character_ids: Optional[list[int]],
+                                   owner_corporation_ids: Optional[list[int]]) -> list[dict]:
+    """Outstanding Manufacturing (1) and Reaction (11) jobs with their output
+    quantity (runs x SDE product quantity per run). Same outstanding status
+    set as esi_incoming_industry_qty (active, paused, ready). Other
+    activities produce blueprints or research, not items, and are left out."""
+    out: list[dict] = []
+    if not owner_character_ids and not owner_corporation_ids:
+        return out
+    with connect() as conn:
+        for table, owner_type, column, ids in (
+            ("character_industry_jobs", "character", "owner_character_id", owner_character_ids),
+            ("corp_industry_jobs", "corporation", "owner_corporation_id", owner_corporation_ids),
+        ):
+            if not ids:
+                continue
+            for owner, job_id, activity_id, product_type_id, runs, product_qty, loc, status, end_date in conn.execute(
+                f"SELECT j.{column}, j.job_id, j.activity_id, j.product_type_id, j.runs, p.quantity, "
+                f"j.output_location_id, j.status, j.end_date "
+                f"FROM {table} j JOIN sde_blueprint_products p "
+                f"  ON p.blueprint_type_id = j.blueprint_type_id AND p.activity_id = j.activity_id "
+                f" AND p.product_type_id = j.product_type_id "
+                f"WHERE j.{column} = ANY(?) AND j.activity_id IN (1, 11) "
+                f"AND j.status IN ('active', 'paused', 'ready')",
+                ([int(i) for i in ids],),
+            ).fetchall():
+                out.append({
+                    "owner_type": owner_type, "owner_id": int(owner), "job_id": int(job_id),
+                    "activity_id": int(activity_id), "type_id": int(product_type_id),
+                    "quantity": float(runs or 0) * float(product_qty or 0),
+                    "location_id": int(loc) if loc is not None else None,
+                    "status": status, "end_date": end_date,
+                })
+    return out
+
+
+def asset_manager_type_info(type_ids: Iterable[int]) -> dict[int, dict]:
+    """type_id -> {type_name, group_id, group_name, category_id,
+    category_name, volume, packaged_volume} from the SDE cache. Types the
+    cache lacks are absent."""
+    ids = sorted({int(t) for t in type_ids if t is not None})
+    if not ids:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id, t.type_name, t.group_id, g.group_name, g.category_id, c.category_name, "
+            "t.volume, pv.packaged_volume "
+            "FROM sde_types t LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "LEFT JOIN sde_categories c ON c.category_id = g.category_id "
+            "LEFT JOIN type_packaged_volume pv ON pv.type_id = t.type_id "
+            "WHERE t.type_id = ANY(?)",
+            (ids,),
+        ).fetchall()
+    return {
+        int(r[0]): {
+            "type_name": r[1], "group_id": r[2], "group_name": r[3], "category_id": r[4],
+            "category_name": r[5], "volume": r[6], "packaged_volume": r[7],
+        }
+        for r in rows
+    }
+
+
+def asset_manager_location_details(location_ids: Iterable[int]) -> dict[int, dict]:
+    """location_id -> {name, solar_system_id, solar_system_name, security,
+    region_id, region_name}. Names go through get_location_names' four
+    tiers. The system comes from structure_names, then
+    global_structure_names, then sde_stations; an id in the solar-system
+    range (30M..33M, items in space) is its own system. Anything unknown
+    keeps None fields - never a guess."""
+    ids = sorted({int(i) for i in location_ids if i})
+    if not ids:
+        return {}
+    names = get_location_names(ids)
+    systems: dict[int, Optional[int]] = {}
+    with connect() as conn:
+        for loc, sys_id in conn.execute(
+            "SELECT location_id, solar_system_id FROM structure_names WHERE location_id = ANY(?)", (ids,),
+        ).fetchall():
+            if sys_id is not None:
+                systems[int(loc)] = int(sys_id)
+        missing = [i for i in ids if i not in systems]
+        if missing:
+            for loc, (_name, sys_id) in get_global_structure_names(missing).items():
+                if sys_id is not None:
+                    systems[int(loc)] = int(sys_id)
+        missing = [i for i in ids if i not in systems]
+        if missing:
+            for loc, sys_id in conn.execute(
+                "SELECT station_id, solar_system_id FROM sde_stations WHERE station_id = ANY(?)", (missing,),
+            ).fetchall():
+                if sys_id is not None:
+                    systems[int(loc)] = int(sys_id)
+        for i in ids:
+            if i not in systems and 30_000_000 <= i < 33_000_000:
+                systems[i] = i
+        sys_ids = sorted(set(systems.values()))
+        sys_rows = {}
+        if sys_ids:
+            sys_rows = {
+                int(r[0]): (r[1], r[2], r[3], r[4])
+                for r in conn.execute(
+                    "SELECT s.solar_system_id, s.solar_system_name, s.security, s.region_id, r.region_name "
+                    "FROM sde_solar_systems s LEFT JOIN sde_regions r ON r.region_id = s.region_id "
+                    "WHERE s.solar_system_id = ANY(?)",
+                    (sys_ids,),
+                ).fetchall()
+            }
+    out: dict[int, dict] = {}
+    for i in ids:
+        sys_id = systems.get(i)
+        sys_name, security, region_id, region_name = sys_rows.get(sys_id, (None, None, None, None))
+        name = names.get(i)
+        if name is None and sys_id == i:
+            name = sys_name
+        out[i] = {
+            "name": name, "solar_system_id": sys_id, "solar_system_name": sys_name,
+            "security": security, "region_id": region_id, "region_name": region_name,
+        }
+    return out
 
 
 def sde_volumes_for_types(type_ids: Iterable[int]) -> list[tuple]:
