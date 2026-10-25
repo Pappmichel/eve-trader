@@ -47,27 +47,27 @@ export interface AccessCapability {
 export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   {
     key: 'assets', section: 'industry', label: 'Assets', group: 1,
-    consumingTools: ['production', 'doctrine', 'sorting', 'trading', 'portfolio'],
+    consumingTools: ['production', 'doctrine', 'sorting', 'trading', 'portfolio', 'asset_manager'],
     corpRoles: ['Director'],
   },
   {
     key: 'industry_jobs', section: 'industry', label: 'Industry Jobs', group: 1,
-    consumingTools: ['production'],
+    consumingTools: ['production', 'asset_manager'],
     corpRoles: ['Director'],
   },
   {
     key: 'blueprints', section: 'industry', label: 'Blueprints', group: 1,
-    consumingTools: ['production', 'portfolio'],
+    consumingTools: ['production', 'portfolio', 'asset_manager'],
     corpRoles: ['Director'],
   },
   {
     key: 'market_orders', section: 'industry', label: 'Market Orders', group: 1,
-    consumingTools: ['trading', 'production', 'station_trading', 'portfolio'],
+    consumingTools: ['trading', 'production', 'station_trading', 'portfolio', 'asset_manager'],
     corpRoles: ['Accountant', 'Trader'],
   },
   {
     key: 'contracts', section: 'industry', label: 'Contracts', group: 1,
-    consumingTools: ['doctrine', 'production', 'trading', 'portfolio'],
+    consumingTools: ['doctrine', 'production', 'trading', 'portfolio', 'asset_manager'],
     corpRoles: [],
   },
   {
@@ -185,11 +185,12 @@ export const TOOL_LABELS: Record<string, string> = {
   char_skill_plans: 'Skill Plans',
   char_alerts: 'Discord Alerts',
   pi: 'Planetary Industry',
+  asset_manager: 'Asset Manager',
 }
 
 export const CONSUMING_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts', 'pi',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts', 'pi', 'asset_manager',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

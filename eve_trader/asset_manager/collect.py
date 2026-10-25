@@ -97,6 +97,10 @@ def load_base_rows(scope: dict[str, tuple[list[int], list[int]]], *, include_man
 
     rows: list[dict] = []
     for a in assets:
+        if a["type_id"] == storage.OFFICE_TYPE_ID:
+            # A corp Office is ESI's container for the division hangars, not
+            # an item; its contents carry the division as their hangar (P-07).
+            continue
         bp = blueprints.get((a["owner_type"], a["owner_id"], a["item_id"]))
         rows.append({
             "source": "esi", "owner_type": a["owner_type"], "owner_id": a["owner_id"],

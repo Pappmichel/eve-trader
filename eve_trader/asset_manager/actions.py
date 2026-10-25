@@ -136,9 +136,16 @@ _CSV_COLUMNS = (
 )
 
 
+_CSV_ITEM_ONLY = {"owner_name", "source", "hangar", "container_path", "item_name"}
+_CSV_GROUP_ONLY = {"owners", "sources"}
+
+
 def do_export_csv(**params) -> str:
     q, rows = all_filtered_rows(**params)
-    present = [(k, label) for k, label in _CSV_COLUMNS if any(k in r for r in rows[:1])] or list(_CSV_COLUMNS)
+    skip = _CSV_GROUP_ONLY if q.group_by == "none" else _CSV_ITEM_ONLY
+    if q.group_by == "type":
+        skip = skip | {"location_name", "solar_system_name", "region_name"}
+    present = [(k, label) for k, label in _CSV_COLUMNS if k not in skip]
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([label for _k, label in present])
@@ -159,7 +166,7 @@ def do_export_eve_list(**params) -> str:
 def do_freshness() -> dict:
     """Per owner and kind: last success, last attempt, last error - only
     owners the page may read, only the kinds it reads (R-16)."""
-    _grants, _allowed, scope = _context()
+    grants, allowed, scope = _context()
     owners: dict[tuple[str, int], set[str]] = {}
     for kind, (chars, corps) in scope.items():
         for c in chars:
@@ -170,7 +177,9 @@ def do_freshness() -> dict:
         (owner_type, owner_id, kind): (success, attempt, error)
         for owner_type, owner_id, kind, success, attempt, error, _as_of in storage.list_esi_freshness()
     }
-    names = collect._owner_names(set(owners), {})
+    known = {(r["owner_type"], r["owner_id"]): r["owner_name"]
+             for r in _rows(grants, allowed, scope) if r["source"] == "esi"}
+    names = collect._owner_names(set(owners), known)
     rows = []
     oldest: dict[str, Optional[str]] = {}
     for (owner_type, owner_id), kinds in sorted(owners.items(), key=lambda kv: names[kv[0]].lower()):

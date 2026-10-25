@@ -1,9 +1,11 @@
 # Asset Manager - plan
 
-Status: **draft, nothing implemented, decisions D1-D13 confirmed with the
-user on 2026-10-25 (section 10), reviewed (section 11).** Server checks
-(section 12) are open:
-this container has no `config.yaml` and no production database.
+Status: **phases 0-3b and 5-7 implemented on branch `feature/asset-manager`
+(2026-10-25, section 14); phase 4 (container/division names) and the removal
+of the old Production tab are open.** Decisions D1-D13 confirmed (section
+10), review items decided (sections 11 and 13). Server checks (section 12)
+are open: they tune, but do not block, what was built - except S-09/S-10,
+which phase 4 waits on.
 
 Goal: turn Production's "Asset Search" tab (one exact item name -> where is
 it, how much, who owns it) into a full asset manager: browse every asset by
@@ -612,3 +614,55 @@ Phase plan after these decisions: 0 fix search -> 1 scaffolding -> 2 list
 (F-1) -> 4 names -> 5 search 2.0, export, saved views, wanted-by, type
 detail, old tab removed (F-3, F-4, F-5, D12, R-13) -> 6 history -> 7
 insights.
+
+## 14. Implementation notes (2026-10-25)
+
+Built without server access, against unit tests (Postgres test database)
+and a live run on the dev database with seeded assets. What differs from the
+plan text above, and why:
+
+- **D8 / R-2 paging in Python, not SQL.** `collect.load_base_rows` loads the
+  owners' rows once (SQL filtered by owner), prices them with
+  `portfolio.price_items` and caches them per tenant for 120 s;
+  `query.run` filters, groups, sorts and pages them. Totals and "sort by
+  value" are correct by construction, so the `VALUES` CTE of R-2 and the new
+  `(tenant_id, resolved_location_id)` indexes of section 4 were not needed.
+  S-01/S-07 decide whether this is fast enough for the largest owner; if
+  not, the cache key already isolates the place to add SQL pushdown.
+- **R-3** became `portfolio.price_items` (the pricing loop of
+  `_collect_wealth`, unchanged behaviour); the loaders (`load_sell_orders_grouped`,
+  `realized.db.outstanding_contract_lines(with_location=True)`) are reused
+  directly instead of a new shared module.
+- **Section 4 schema.** Only `item_name` was added to the asset tables; the
+  PL/pgSQL blocks in `esi_access_schema.sql` are a one-off legacy copy of the
+  retired Doctrine asset tables and need no new column. `location_type`
+  (R-10) was not added: ids are classified by range in `labels.location_kind`
+  and S-03 decides whether the stored type is still needed.
+- **D11** uses a new `orchestrator.do_sync_kinds(kinds, tool_keys=...)`, so
+  the button refreshes the same union the page reads.
+- **F-2** covers Manufacturing and Reaction jobs only (runs x SDE product
+  quantity); invention and copying produce blueprints, not items.
+- **F-4** reads configured demand through storage (stock targets, the last
+  buy list, active doctrine stockpile sets, the active Trading shortlist,
+  mineral targets) instead of extracting Sorting's shortfall code: the
+  question here is "does any tool want this type", not "how much is
+  missing", and it stays cheap enough to run per page.
+- **Phase 6** stores ESI assets only (owner, location, type, quantity per
+  day); manual, listed, contracted and in-production rows are not history.
+  Retention is `TradingConfig.asset_history_retention_days` (default 90),
+  not yet on a Settings page.
+- **Phase 7** "used locations" are the Production home structure and the
+  Trading structure; the Asset Safety list has no timer (ESI has no date).
+- **Live check findings fixed:** a corp Office row is no longer listed as an
+  item; CSV columns depend on the grouping; the freshness panel shows owner
+  names. Goonmetrics is unreachable from the dev container, so the live run
+  used manual prices; the price chart showed its "no history" state.
+
+Still open, in order:
+
+1. Server checks S-01..S-13 (section 12), then tune caching/paging.
+2. Phase 4: `/assets/names` and the `corp_divisions` kind, after S-09/S-10.
+   `hangar_label` already takes division names; `collect.load_base_rows`
+   has the `division_names` parameter waiting for them.
+3. Deploy, run `eve-trader admin grant-defaults`, then remove the Production
+   Asset Search tab (D12, R-13).

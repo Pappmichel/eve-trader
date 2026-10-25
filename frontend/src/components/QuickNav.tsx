@@ -72,6 +72,10 @@ const ACTIONS: SpotlightActionData[] = [
   { id: 'station-trading-undercut', label: 'Station Trading — Undercut Check', description: 'Station Trading', onClick: () => {} },
   { id: 'station-trading-settings', label: 'Station Trading — Settings', description: 'Station Trading', onClick: () => {} },
 
+  { id: 'assets', label: 'Asset Manager — Inventory', description: 'Asset Manager', onClick: () => {} },
+  { id: 'assets-locations', label: 'Asset Manager — Locations', description: 'Asset Manager', onClick: () => {} },
+  { id: 'assets-history', label: 'Asset Manager — History', description: 'Asset Manager', onClick: () => {} },
+  { id: 'assets-insights', label: 'Asset Manager — Insights', description: 'Asset Manager', onClick: () => {} },
   { id: 'sorting', label: 'Sorting — Overview', description: 'Sorting', onClick: () => {} },
   { id: 'sorting-settings', label: 'Sorting — Settings', description: 'Sorting', onClick: () => {} },
 
@@ -109,6 +113,7 @@ const PATHS: Record<string, string> = {
   'station-trading': '/station-trading', 'station-trading-shortlist': '/station-trading/shortlist',
   'station-trading-undercut': '/station-trading/undercut', 'station-trading-settings': '/station-trading/settings',
   sorting: '/sorting', 'sorting-settings': '/sorting/settings',
+  assets: '/assets', 'assets-locations': '/assets/locations', 'assets-history': '/assets/history', 'assets-insights': '/assets/insights',
   'pi': '/pi', 'pi-planner': '/pi/planner', 'pi-system': '/pi/system', 'pi-chains': '/pi/chains', 'pi-templates': '/pi/templates', 'pi-plans': '/pi/plans', 'pi-colonies': '/pi/colonies', 'pi-demand': '/pi/demand', 'pi-settings': '/pi/settings',
 }
 
@@ -134,6 +139,7 @@ const TOOL_KEYS: Record<string, string> = {
   'station-trading': 'station_trading', 'station-trading-shortlist': 'station_trading',
   'station-trading-undercut': 'station_trading', 'station-trading-settings': 'station_trading',
   sorting: 'sorting', 'sorting-settings': 'sorting',
+  assets: 'asset_manager', 'assets-locations': 'asset_manager', 'assets-history': 'asset_manager', 'assets-insights': 'asset_manager',
   'pi': 'pi', 'pi-planner': 'pi', 'pi-system': 'pi', 'pi-chains': 'pi', 'pi-templates': 'pi', 'pi-plans': 'pi', 'pi-colonies': 'pi', 'pi-demand': 'pi', 'pi-settings': 'pi',
 }
 

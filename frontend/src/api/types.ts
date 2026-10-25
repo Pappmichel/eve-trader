@@ -3514,3 +3514,253 @@ export interface HiddenArchiveDeleted {
   kind: string
   deleted: number
 }
+
+// ------------------------------------------------------------ asset manager
+// docs/ASSET_MANAGER_PLAN.md - eve_trader/asset_manager/*.
+export type AssetSource = 'esi' | 'manual' | 'listed' | 'contract' | 'in_production'
+export type AssetGroupBy = 'none' | 'type' | 'type_location'
+
+export interface AssetWantedBy {
+  tool: string
+  label: string
+  quantity: number | null
+}
+
+export interface AssetRow {
+  key: string
+  type_id: number
+  type_name: string
+  group_id: number | null
+  group_name: string | null
+  category_id: number | null
+  category_name: string | null
+  quantity: number
+  volume: number | null
+  value: number | null
+  unit_price: number | null
+  unpriced: number
+  stacks: number
+  owners: string[]
+  sources: AssetSource[]
+  badges: string[]
+  wanted_by?: AssetWantedBy[]
+  location_count?: number
+  // type_location and item rows
+  location_id?: number | null
+  location_name?: string | null
+  location_kind?: string | null
+  solar_system_id?: number | null
+  solar_system_name?: string | null
+  security?: number | null
+  region_id?: number | null
+  region_name?: string | null
+  // item rows (group_by = none)
+  source?: AssetSource
+  owner_type?: string
+  owner_id?: number
+  owner_name?: string | null
+  item_id?: number | null
+  item_name?: string | null
+  flag?: string | null
+  hangar?: string | null
+  container_path?: string[]
+  parent_item_id?: number | null
+  is_singleton?: boolean
+  stock?: boolean
+  me?: number | null
+  te?: number | null
+  runs?: number | null
+  unit_volume?: number | null
+  job_end?: string | null
+}
+
+export interface AssetTotals {
+  stacks: number
+  quantity: number
+  volume: number
+  value: number
+  unpriced: number
+  types: number
+  locations: number
+  owners: number
+}
+
+export interface AssetFacetOption {
+  id?: number
+  key?: string
+  name: string | null
+  count: number
+  owner_type?: string
+  region_id?: number | null
+  solar_system_id?: number | null
+  category_id?: number | null
+  security?: number | null
+  kind?: string | null
+}
+
+export interface AssetFacets {
+  owners: AssetFacetOption[]
+  regions: AssetFacetOption[]
+  systems: AssetFacetOption[]
+  locations: AssetFacetOption[]
+  categories: AssetFacetOption[]
+  groups: AssetFacetOption[]
+  sources: AssetSource[]
+  badges: string[]
+}
+
+export interface AssetItemsResult {
+  rows: AssetRow[]
+  total_rows: number
+  page: number
+  page_size: number
+  totals: AssetTotals
+  facets: AssetFacets
+  manual_stock_visible: boolean
+  shared: boolean
+}
+
+export interface AssetQuery {
+  q?: string
+  owners?: string[]
+  region_id?: number | null
+  system_id?: number | null
+  location_id?: number | null
+  hangar?: string | null
+  container_item_id?: number | null
+  category_ids?: number[]
+  group_ids?: number[]
+  type_ids?: number[]
+  sources?: string[]
+  hide_badges?: string[]
+  stock_only?: boolean
+  group_by?: AssetGroupBy
+  sort?: string
+  desc?: boolean
+  page?: number
+  page_size?: number
+}
+
+export interface AssetTreeNode {
+  key: string
+  label: string
+  kind: 'region' | 'system' | 'location' | 'owner' | 'hangar' | 'ship' | 'container' | 'item' | 'source'
+  quantity: number | null
+  value: number | null
+  volume: number | null
+  unpriced: number
+  stacks: number
+  children: AssetTreeNode[]
+  region_id?: number | null
+  solar_system_id?: number | null
+  security?: number | null
+  location_id?: number | null
+  location_kind?: string | null
+  owners?: string[]
+  sources?: string[]
+  named?: boolean
+  item_id?: number | null
+  type_id?: number
+  owner_type?: string
+  owner_id?: number
+  owner_name?: string | null
+  badges?: string[]
+  section?: string | null
+}
+
+export interface AssetFreshnessKind {
+  last_success_at: string | null
+  last_attempt_at: string | null
+  last_error: string | null
+}
+
+export interface AssetFreshness {
+  owners: { owner_type: string; owner_id: number; owner_name: string; kinds: Record<string, AssetFreshnessKind> }[]
+  oldest_success: Record<string, string | null>
+}
+
+export interface AssetDoctrineMatch {
+  fitting_id: string
+  fitting_name: string
+  variant_label: string | null
+  doctrine_name: string
+  score: number
+  matches: boolean
+  missing: { type_id: number; type_name: string; quantity: number }[]
+}
+
+export interface AssetShip {
+  ship: AssetRow
+  sections: { label: string; items: AssetRow[] }[]
+  eft: string
+  contents_value: number
+  total_value: number
+  doctrine_visible: boolean
+  doctrine_matches: AssetDoctrineMatch[]
+}
+
+export interface AssetTypeDetail {
+  type_id: number
+  type_name: string
+  group_name: string | null
+  category_name: string | null
+  unit_price: number | null
+  totals: AssetTotals
+  places: AssetRow[]
+  stacks: AssetRow[]
+  wanted_by: AssetWantedBy[]
+  price_history: { region_id: number; points: { date: string; avg_price: number; volume: number }[] }
+}
+
+export interface AssetSavedView {
+  id: number
+  name: string
+  query: AssetQuery
+  updated_at: string
+  error: string | null
+}
+
+export interface AssetHistoryRow {
+  type_id: number
+  type_name: string
+  location_id: number | null
+  location_name: string | null
+  solar_system_name: string | null
+  before: number
+  after: number
+  delta: number
+  value_delta: number | null
+  owner_type?: string
+  owner_id?: number
+}
+
+export interface AssetHistory {
+  dates: string[]
+  from_date: string | null
+  to_date: string | null
+  rows: AssetHistoryRow[]
+  total_rows?: number
+  arrived_value?: number
+  left_value?: number
+}
+
+export interface AssetInsights {
+  home_location_id: number | null
+  haul_cost_per_m3: number
+  min_value: number
+  consolidation: {
+    type_id: number; type_name: string; category_name: string | null; quantity: number
+    outside_quantity: number; outside_volume: number; outside_value: number
+    unit_price: number | null; location_count: number; freight_cost: number
+  }[]
+  forgotten: {
+    type_id: number; type_name: string; location_id: number | null; location_name: string | null
+    solar_system_name: string | null; region_name: string | null; quantity: number; value: number
+    volume: number; owners: string[]
+  }[]
+  asset_safety: {
+    owner_name: string | null; location_id: number | null; location_name: string | null
+    solar_system_name: string | null; region_name: string | null; stacks: number; value: number
+    unpriced: number; volume: number
+  }[]
+}
