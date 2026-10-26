@@ -3537,6 +3537,7 @@ export interface AssetRow {
   location_id?: number | null
   location_name?: string | null
   location_kind?: string | null
+  location_status?: string | null
   solar_system_id?: number | null
   solar_system_name?: string | null
   security?: number | null

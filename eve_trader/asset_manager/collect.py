@@ -155,16 +155,13 @@ def load_base_rows(scope: dict[str, tuple[list[int], list[int]]], *, include_man
                 contract_owners, with_location=True):
             rows.append(_virtual("contract", owner_type, owner_id, None, type_id, quantity, location_id))
 
-    # A corp job's output location is often the corp Office item rather than the
-    # structure it stands in, and an Office has no name of its own to resolve.
-    office_locations = {
-        (a["owner_id"], a["item_id"]): a["location_id"]
-        for a in assets if a["type_id"] == storage.OFFICE_TYPE_ID and a["owner_type"] == "corporation"
-    }
-    for job in storage.load_asset_manager_job_outputs(*scope["industry_jobs"]):
-        location_id = job["location_id"]
-        if job["owner_type"] == "corporation":
-            location_id = office_locations.get((job["owner_id"], location_id), location_id)
+    # A job's output location is often a corp Office or a container item rather
+    # than the structure it stands in; storage.asset_item_parents is the one
+    # place that maps an item to its outermost location.
+    jobs = storage.load_asset_manager_job_outputs(*scope["industry_jobs"])
+    parents = storage.asset_item_parents({j["location_id"] for j in jobs if j["location_id"]})
+    for job in jobs:
+        location_id = parents.get(job["location_id"], job["location_id"])
         row = _virtual("in_production", job["owner_type"], job["owner_id"], None,
                        job["type_id"], job["quantity"], location_id)
         row["job_end"] = job["end_date"]
@@ -225,6 +222,7 @@ def _enrich(rows: list[dict], division_names: dict[tuple[int, int], str]) -> Non
         r["security"] = _security(loc.get("security"))
         r["region_id"] = loc.get("region_id")
         r["region_name"] = loc.get("region_name")
+        r["location_status"] = loc.get("status")
         r["location_kind"] = labels.location_kind(r["location_id"], bool(loc.get("name")))
         corp_id = r["owner_id"] if r["owner_type"] == "corporation" else None
         divisions = divisions_by_corp.get(corp_id, {})

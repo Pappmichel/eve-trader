@@ -7,7 +7,7 @@ import {
   SegmentedControl, Select, SimpleGrid, Skeleton, Stack, Switch, Table, Text, TextInput, Tooltip, UnstyledButton,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { IconArrowDown, IconArrowUp, IconDownload, IconSearch, IconShip, IconTrash } from '@tabler/icons-react'
+import { IconArrowDown, IconArrowUp, IconDots, IconDownload, IconSearch, IconShip, IconTrash } from '@tabler/icons-react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
@@ -32,10 +32,74 @@ interface Column {
   render: (row: AssetRow) => React.ReactNode
 }
 
-function locationLabel(row: AssetRow): string {
+// Why a place has no name (location registry status, docs/LOCATION_RESOLUTION_PLAN.md).
+const LOOKUP_HINT: Record<string, string> = {
+  forbidden: 'no access', not_found: 'not found', transient: 'lookup failed, will retry',
+  pending: 'not looked up yet',
+}
+const STRUCTURE_ID_MIN = 1_000_000_000_000
+
+function locationLabel(row: Pick<AssetRow, 'location_id' | 'location_name' | 'location_status'>): string {
   if (row.location_name) return row.location_name
-  if (row.location_id) return `Location ${row.location_id}`
-  return 'No location'
+  if (!row.location_id) return 'No location'
+  const hint = row.location_status ? LOOKUP_HINT[row.location_status] : undefined
+  if (!hint) return `Location ${row.location_id}`
+  return `${row.location_id >= STRUCTURE_ID_MIN ? 'Structure' : 'Location'} ${row.location_id} (${hint})`
+}
+
+// Name, re-check or un-name a player structure the app could not name itself.
+function LocationActions({ locationId }: { locationId: number }) {
+  const queryClient = useQueryClient()
+  const [naming, setNaming] = useState(false)
+  const [name, setName] = useState('')
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['asset-manager'] })
+  const fail = (title: string) => (e: unknown) => notify({ title, message: String((e as Error).message), color: 'danger' })
+  const save = useMutation({
+    mutationFn: () => assetManagerApi.setLocationName(locationId, name),
+    onSuccess: () => { setNaming(false); setName(''); refresh() },
+    onError: fail('Name location'),
+  })
+  const remove = useMutation({
+    mutationFn: () => assetManagerApi.removeLocationName(locationId),
+    onSuccess: refresh,
+    onError: fail('Remove name'),
+  })
+  const retry = useMutation({
+    mutationFn: () => assetManagerApi.retryLocation(locationId),
+    onSuccess: (r) => {
+      notify({ title: 'Look up again', message: r.name ? `Found: ${r.name}` : `Still unnamed (${r.status ?? 'unknown'})` })
+      refresh()
+    },
+    onError: fail('Look up again'),
+  })
+  return (
+    <>
+      <Menu position="bottom-start" withinPortal>
+        <Menu.Target>
+          <ActionIcon size="xs" variant="subtle" aria-label="Location actions" loading={retry.isPending}>
+            <IconDots size={12} />
+          </ActionIcon>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Item onClick={() => setNaming(true)}>Name this location…</Menu.Item>
+          <Menu.Item onClick={() => retry.mutate()}>Look up again</Menu.Item>
+          <Menu.Item onClick={() => remove.mutate()}>Remove my name</Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
+      <Modal opened={naming} onClose={() => setNaming(false)} title="Name this location" size="sm">
+        <Stack>
+          <Text size="xs" c="dimmed">
+            Only you see this name. A name EVE gives the structure later still wins.
+          </Text>
+          <TextInput label="Name" value={name} maxLength={100} data-autofocus
+            onChange={(e) => setName(e.currentTarget.value)} />
+          <Group justify="flex-end">
+            <Button size="xs" onClick={() => save.mutate()} loading={save.isPending} disabled={!name.trim()}>Save</Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  )
 }
 
 function SortHeader({ col, query, onSort }: { col: Column; query: AssetQuery; onSort: (key: string) => void }) {
@@ -149,7 +213,10 @@ export default function AssetInventory() {
       key: 'location', label: 'Location', sort: 'location_name',
       render: (r) => (
         <Stack gap={0}>
-          <Text size="sm">{locationLabel(r)}</Text>
+          <Group gap={4} wrap="nowrap">
+            <Text size="sm">{locationLabel(r)}</Text>
+            {r.location_id != null && r.location_id >= STRUCTURE_ID_MIN && <LocationActions locationId={r.location_id} />}
+          </Group>
           <Text size="xs" c="dimmed">{[r.solar_system_name, r.region_name].filter(Boolean).join(' · ')}</Text>
         </Stack>
       ),

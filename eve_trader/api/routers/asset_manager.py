@@ -83,6 +83,25 @@ def location_tree(location_id: int, params: dict = Depends(_params)):
     return _wrap(actions.do_location_tree, location_id=location_id, **rest)
 
 
+class LocationNameRequest(BaseModel):
+    name: str
+
+
+@router.put("/locations/{location_id}/name")
+def set_location_name(location_id: int, req: LocationNameRequest):
+    return _wrap(actions.do_set_location_name, location_id=location_id, name=req.name)
+
+
+@router.delete("/locations/{location_id}/name")
+def remove_location_name(location_id: int):
+    return _wrap(actions.do_remove_location_name, location_id=location_id)
+
+
+@router.post("/locations/{location_id}/retry")
+def retry_location(location_id: int):
+    return _wrap(actions.do_retry_location, location_id=location_id)
+
+
 @router.get("/ships/{owner_type}/{owner_id}/{item_id}")
 def ship(owner_type: str, owner_id: int, item_id: int):
     return _wrap(actions.do_ship, owner_type=owner_type, owner_id=owner_id, item_id=item_id)

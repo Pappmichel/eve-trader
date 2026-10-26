@@ -1,5 +1,5 @@
 """Resolves player-structure names for one tenant (docs/LOCATION_RESOLUTION_PLAN.md
-phases 2-4).
+phases 2-7).
 
 `resolve_pending` is the bulk entry point (run after every ESI sync pass and by
 the Admin bulk job); `resolve_ids` is the on-demand one for a few ids. Both
@@ -91,9 +91,9 @@ def register_ids(location_ids, now: datetime) -> dict:
 
 def _register(all_ids: set[int], now: datetime) -> dict:
     """Adds every id that is not an NPC station or solar system to the
-    registry, with its kind and (for Offices and containers) its parent. New
-    structure ids start from what is already known: this tenant's
-    structure_names, the shared global names."""
+    registry, with its kind and (for Offices and containers) its parent. A new
+    structure id starts from the shared global name when another tenant
+    already found one."""
     if not all_ids:
         return {"registered": 0, "ids": 0}
     stations, offices, items = storage.location_kind_hints(all_ids)
@@ -103,7 +103,6 @@ def _register(all_ids: set[int], now: datetime) -> dict:
     ]
     existing = store.load(candidates)
     parents = storage.asset_item_parents([i for i in candidates if i in offices or i in items])
-    cached = storage.get_cached_structure_names(candidates)
     global_names = storage.get_global_structure_names([i for i in candidates if i not in existing])
 
     entries = []
@@ -122,10 +121,7 @@ def _register(all_ids: set[int], now: datetime) -> dict:
             continue
         entry = {"location_id": i, "kind": kind, "parent_location_id": parent}
         if old is None and kind == "structure":
-            _, own_name = cached[i]
-            if own_name:
-                entry.update(name=own_name, status="resolved", resolved_at=now)
-            elif i in global_names:
+            if i in global_names:
                 entry.update(name=global_names[i][0], solar_system_id=global_names[i][1],
                              status="resolved", resolved_at=now)
         entries.append(entry)
@@ -213,7 +209,6 @@ def _run(now, budget, force, progress_callback, client, characters, corp_roles, 
         shared = storage.get_global_structure_names([r["location_id"] for r in todo if r["status"] == "pending"])
         for loc, (name, system_id) in shared.items():
             store.record_success(loc, name, system_id, None, now)
-            storage.set_cached_structure_name(loc, name, system_id)
             summary["from_global"] += 1
         todo = [r for r in todo if r["location_id"] not in shared]
     if not todo:
@@ -288,6 +283,4 @@ def record_resolved(location_id: int, name: str, solar_system_id: Optional[int],
 
 def _succeed(loc: int, name: str, system_id: Optional[int], via: Optional[str], now: datetime) -> None:
     store.record_success(loc, name, system_id, via, now)
-    # Write-through for the readers that still use the older tables.
-    storage.set_cached_structure_name(loc, name, system_id)
     storage.upsert_global_structure_name(loc, name, system_id)

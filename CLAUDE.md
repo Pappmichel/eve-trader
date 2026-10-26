@@ -761,14 +761,20 @@ Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
   station or solar system: `kind` (`structure`, `office`, `container`,
   `other`), the `parent_location_id` an Office or container resolves through,
   the name, and the last lookup's `status` (`pending`, `resolved`, `forbidden`,
-  `not_found`, `transient`) with `next_retry_at`. `structure_names` stays as a
-  write-through copy for older readers. A container is any id that is an asset
+  `not_found`, `transient`) with `next_retry_at`. It replaced
+  `structure_names` (phase 7): the schema copies old names over once and no code
+  reads or writes that table any more; it is dropped in a later release. The
+  `storage` helpers `set_cached_structure_name` / `get_cached_structure_name(s)`
+  / `list_cached_structure_names` / `list_structure_system_ids` /
+  `load_category_system_ids` / `search_locations` keep their signatures and
+  work on the registry. A container is any id that is an asset
   `item_id`: an asset's raw `location_id` is its immediate parent, so most
   "huge ids" are containers and ships, which ESI can never name.
 - **One reader.** `locations.reader.describe(ids)` (name, kind, system, region,
   parent). `storage.get_location_names` and `asset_manager_location_details`
-  delegate to it; an Office or container shows its structure. New code reads
-  names through it, not through `structure_names`.
+  delegate to it, and so does the Realized region lookup; an Office or
+  container shows its structure. Tiers: registry, shared global names, the
+  tenant's manual names, SDE stations. New code reads names through it.
 - **One resolver.** `locations.resolver.resolve_pending()` registers what the
   tenant references and looks up only what is due. The ESI orchestrator
   (`esi_data/orchestrator.py` `_sync`) calls it once at the end of every pass
@@ -782,8 +788,15 @@ Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
   an existing name; Offices and containers never reach ESI; one run spends at
   most a call budget and leaves the rest due. Manual names
   (`manual_location_names`) are never looked up.
-- **Do not** add a per-tool "resolve names" step, read `structure_names`
-  directly for display, or treat every id above 10^12 as a structure.
+- **User actions** (`locations/actions.py`): name a location (tenant-only,
+  `manual_location_names`, max 100 chars), remove that name, look one id up
+  again now. The Asset Manager exposes them as `PUT/DELETE
+  /api/asset-manager/locations/{id}/name` and `POST .../retry`; its rows carry
+  `location_status` so the page can say why a place has no name.
+- **Do not** add a per-tool "resolve names" step, read `structure_names` or
+  `location_registry` directly for display, map an Office/container to its
+  structure by hand (`storage.asset_item_parents` does that), or treat every
+  id above 10^12 as a structure.
 - **Consent.** Which characters may look names up is the user's tick of
   "Structure name resolution" (Characters page, Access). The Admin location
   report lists characters that own assets in unnamed structures but have not
