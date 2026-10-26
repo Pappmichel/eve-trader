@@ -141,7 +141,7 @@ def test_character_assets_missing_tenant_propagates():
 # never went through the accessor at all - storage.esi_stock_at_location/
 # assets_at_flag/list_industry_jobs/load_owned_blueprints/sell_order_qty_*/
 # get_owned_bpo_best_me_te/available_blueprint_copies/has_bpo_at_location/
-# search_item_stock_locations/esi_incoming_industry_qty now take an owner-id filter
+# esi_incoming_industry_qty now take an owner-id filter
 # (storage._owner_id_clause), and production/engine.py resolves it via
 # shared_production_owner_ids (esi_data.access.shared_owner_ids) before
 # calling them - the same shape as own_orders' own

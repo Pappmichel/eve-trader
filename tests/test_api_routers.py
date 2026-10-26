@@ -17,7 +17,7 @@ from eve_trader.production import actions as production_actions
 from eve_trader.doctrine import realized as doctrine_realized
 from eve_trader.station_trading import realized as station_realized
 from eve_trader.trade_realized import actions as trade_realized_actions
-from eve_trader.production.models import AssetLocationRow, BuildCandidate, ShipMarginRow
+from eve_trader.production.models import BuildCandidate, ShipMarginRow
 from eve_trader.sorting import actions as sorting_actions
 
 client = TestClient(create_app())
@@ -1670,38 +1670,6 @@ def test_get_material_tree_action_error_maps_to_400(monkeypatch):
     monkeypatch.setattr(production_actions, "do_build_material_tree", _raise)
 
     resp = client.post("/api/production/material-tree", json={"type_name": "Nonexistent Thing"})
-
-    assert resp.status_code == 400
-    assert "Nonexistent Thing" in resp.json()["detail"]
-
-
-def test_search_asset_locations_passes_item_name_and_serializes_result(monkeypatch):
-    captured = {}
-
-    def _capture(item_name):
-        captured["item_name"] = item_name
-        return {"type_id": 34, "type_name": "Tritanium", "locations": [
-            AssetLocationRow(location_id=1000000000001, location_name="Some Station", owner_name="Alice", quantity=100.0),
-        ]}
-    monkeypatch.setattr(production_actions, "do_search_item_locations", _capture)
-
-    resp = client.post("/api/production/asset-locations", json={"item_name": "Tritanium"})
-
-    assert resp.status_code == 200
-    assert captured == {"item_name": "Tritanium"}
-    body = resp.json()
-    assert body["type_name"] == "Tritanium"
-    assert body["locations"] == [{
-        "location_id": 1000000000001, "location_name": "Some Station", "owner_name": "Alice", "quantity": 100.0,
-    }]
-
-
-def test_search_asset_locations_action_error_maps_to_400(monkeypatch):
-    def _raise(item_name):
-        raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
-    monkeypatch.setattr(production_actions, "do_search_item_locations", _raise)
-
-    resp = client.post("/api/production/asset-locations", json={"item_name": "Nonexistent Thing"})
 
     assert resp.status_code == 400
     assert "Nonexistent Thing" in resp.json()["detail"]

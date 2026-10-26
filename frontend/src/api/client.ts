@@ -208,8 +208,6 @@ export const productionApi = {
   itemMargin: (itemName: string) => post<T.ShipMarginRow>('/api/production/margins/search', { item_name: itemName }),
   materialTree: (typeName: string, quantity: number) =>
     post<T.MaterialTreeNode>('/api/production/material-tree', { type_name: typeName, quantity }),
-  searchAssetLocations: (itemName: string) =>
-    post<T.AssetLocationSearchResult>('/api/production/asset-locations', { item_name: itemName }),
   jobs: () => get<T.IndustryJobRow[]>('/api/production/jobs'),
   // Manual industry jobs (docs/MANUAL_TRACKING_PLAN.md phase 6) - rows come
   // back mixed into jobs() above (source: 'manual'); these are the write

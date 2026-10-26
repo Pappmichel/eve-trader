@@ -27,7 +27,6 @@ const TABS = [
   { path: '/production/margin', label: 'Margin' },
   { path: '/production/realized', label: 'Realized Profit' },
   { path: '/production/material-tree', label: 'Material Tree' },
-  { path: '/production/asset-search', label: 'Asset Search' },
   { path: '/production/settings', label: 'Settings' },
 ]
 

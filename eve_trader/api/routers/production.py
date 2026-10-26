@@ -927,22 +927,6 @@ def get_material_tree(req: MaterialTreeRequest):
     return _wrap(actions.do_build_material_tree, type_name=req.type_name, quantity=req.quantity)
 
 
-class AssetLocationSearchRequest(BaseModel):
-    item_name: str
-
-
-class AssetLocationSearchResponse(BaseModel):
-    type_id: int
-    type_name: str
-    locations: list[schemas.AssetLocationRow]
-    assets_synced_at: Optional[str] = None
-
-
-@router.post("/asset-locations", response_model=AssetLocationSearchResponse)
-def search_asset_locations(req: AssetLocationSearchRequest):
-    return _wrap(actions.do_search_item_locations, item_name=req.item_name)
-
-
 @router.post("/plan/refresh")
 def refresh_production():
     result = _wrap(actions.do_refresh_production)

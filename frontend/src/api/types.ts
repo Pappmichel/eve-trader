@@ -705,20 +705,6 @@ export interface MaterialTreeNode {
   children: MaterialTreeNode[]
 }
 
-export interface AssetLocationRow {
-  location_id: number
-  location_name: string | null
-  owner_name: string
-  quantity: number
-}
-
-export interface AssetLocationSearchResult {
-  type_id: number
-  type_name: string
-  locations: AssetLocationRow[]
-  assets_synced_at?: string | null
-}
-
 export interface ProductionUnlistedStockRow {
   type_id: number
   type_name: string
