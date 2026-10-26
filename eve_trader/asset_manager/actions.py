@@ -229,29 +229,11 @@ def do_sync(progress_callback=None) -> dict:
     structure_id = DOCTRINE_CONFIG.effective_structure_id
     extra = {"structure_id": structure_id} if structure_id is not None else None
     result = do_sync_kinds(ASSET_KINDS, tool_keys=allowed, extra=extra)
-    if progress_callback:
-        progress_callback({"message": "Resolving structure names"})
-    result["structure_names"] = _resolve_structure_names()
     invalidate_cache(tenant_id)
     if progress_callback:
         progress_callback({"message": "Pricing"})
     warm_cache()
     return result
-
-
-def _resolve_structure_names() -> dict:
-    """Names the player structures this tenant's data references, through the
-    central resolver (locations.resolver): only structures that are due are
-    looked up, so a repeated sync costs nothing. Needs a character with the
-    Structure name resolution capability. Never raises - names must not fail
-    the asset sync."""
-    try:
-        from ..locations import resolver
-
-        return resolver.resolve_pending()
-    except Exception:  # noqa: BLE001 - best effort
-        log.exception("asset manager structure name resolution failed")
-        return {"resolved": 0, "error": True}
 
 
 def warm_cache() -> bool:

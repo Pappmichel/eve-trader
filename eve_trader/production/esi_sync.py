@@ -5,8 +5,8 @@ of relying on manual entry alone.
 Fetch is `eve_trader.esi_data.orchestrator.do_sync_for_tool("production")`.
 This module keeps character/capability listing (`list_shared_producer_
 characters`/`list_capability_characters` - `list_producer_characters` is
-superseded, see its own docstring) and opportunistic group-3
-structure-name resolution (`_discover_structure_names`). Sequential corp
+superseded, see its own docstring). Structure-name resolution moved to
+`eve_trader.locations` (docs/LOCATION_RESOLUTION_PLAN.md). Sequential corp
 claim (one corp, members retried in order, Director vs Accountant/Trader
 independent) lives in the orchestrator so two characters cannot race to
 claim the same corp.
@@ -27,7 +27,7 @@ PRODUCTION_ROLE_PREFIX = "producer"
 # Upwell structure IDs are always >= this (14 digits, e.g. 1049588174021);
 # NPC station IDs top out around 8 digits (e.g. 60003760) - a cheap range
 # check on a location_id already in hand from an asset row, used by
-# _discover_structure_names below to decide what's even worth attempting to
+# resolve_structure_ids' callers to decide what's even worth attempting to
 # resolve as a structure, with no SDE lookup needed.
 STRUCTURE_ID_MIN = 1_000_000_000_000
 
@@ -95,39 +95,13 @@ def list_shared_producer_characters(tm: TokenManager | None = None) -> list[tupl
 
 
 def list_capability_characters(capability_key: str, tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
-    """Returns (auth_role, character_id, character_name) for every character
-    with `capability_key` ticked (Access section, Characters page) and a
-    token that actually carries its scope - the capability-based
-    counterpart to `list_shared_producer_characters` (Known gap 4). Group 3
-    has no tool dimension (decision 9), so this is gated on
-    `esi_character_capabilities`, not `esi_sharing`. Used by
-    `do_resolve_structure_name`, `pricing.home_prices`/`jita_prices`
-    (`structure_market_book`), and `sync_esi`'s opportunistic structure-name
-    discovery (`structure_name_resolution`).
+    """(auth_role, character_id, character_name) for every character with
+    `capability_key` ticked and a token carrying its scope. The logic lives in
+    locations.access (shared with the ESI sync's structure-name resolution);
+    this name stays for the callers that already use it."""
+    from ..locations import access
 
-    A character with the capability ticked but no token carrying its scope
-    (needs Re-authorize) is omitted, not raised, same as
-    `list_shared_producer_characters`. Raises `ValueError` for an unknown
-    `capability_key` - a typo here is a programming error, not a runtime
-    "nothing shared yet" case."""
-    from ..esi_data.registry import ACCESS_CAPABILITIES
-    from ..esi_data.selector import select_auth_role
-
-    cap = next((c for c in ACCESS_CAPABILITIES if c.key == capability_key), None)
-    if cap is None:
-        raise ValueError(f"unknown capability {capability_key!r}")
-    tm = tm or TokenManager(OAUTH_CONFIG)
-    char_ids = sorted({
-        cid for cid, key in storage.list_esi_character_capabilities() if key == capability_key
-    })
-    out = []
-    for character_id in char_ids:
-        role = select_auth_role(character_id, cap.character_scope, tokens=tm)
-        if role is None:
-            continue
-        record = tm.get_record(role)
-        out.append((role, character_id, record.character_name if record else str(character_id)))
-    return out
+    return access.list_capability_characters(capability_key, tm)
 
 
 _LIVE_REACTION_ACTIVITY_ID = 9  # see _normalize_activity_id
@@ -162,32 +136,21 @@ def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> lis
 
 
 def corp_roles_for_characters(client: ESIClient, characters: list[tuple[str, int, str]]) -> dict[int, str]:
-    """{corporation_id: role} for the first character (in list order) that
-    belongs to each distinct corp - resolve_structure_ids' corp-structure-
-    list tier only needs to try each corp once, no matter how many
-    registered characters share it. Shared by sync_esi (building corp_roles
-    for _discover_structure_names) and production.actions.
-    do_resolve_structure_name (its own on-demand resolve and its
-    operator-fallback tier). Never raises - a character whose corp lookup
-    fails is just skipped, same as every other ESI call in this module."""
-    corp_roles: dict[int, str] = {}
-    for role, character_id, _name in characters:
-        try:
-            corporation_id = client.character_public_info(character_id)["corporation_id"]
-        except ESIError:
-            continue
-        corp_roles.setdefault(corporation_id, role)
-    return corp_roles
+    """{corporation_id: role} for the first character of each distinct corp
+    (see locations.access, where the logic lives)."""
+    from ..locations import access
+
+    return access.corp_roles_for_characters(client, characters)
 
 
 def resolve_structure_ids(
     client: ESIClient, location_ids: set[int], corp_roles: dict[int, str],
     get_characters: Callable[[], list[tuple[str, int, str]]],
 ) -> dict[int, tuple[Optional[str], Optional[int]]]:
-    """Two-tier structure-name resolution, extracted from
-    _discover_structure_names (docs/MANUAL_TRACKING_PLAN.md phase 2) so
-    production.actions.do_resolve_structure_name's own on-demand resolve
-    and its operator-fallback tier share the exact same logic instead of a
+    """Two-tier structure-name resolution, kept for the operator-fallback tier
+    of production.actions.do_resolve_structure_name (the tenant's own lookups
+    go through locations.resolver, docs/LOCATION_RESOLUTION_PLAN.md). Shares the
+    exact same logic as the resolver's corp-list/per-character order instead of a
     second hand-rolled copy:
     1. corporation_structures(corp_id) once per distinct corp in corp_roles
        - returns every structure that corp owns, with its name included, in
@@ -200,8 +163,8 @@ def resolve_structure_ids(
        assets merely sit inside, owned by someone else).
 
     `get_characters` is called at most once, and only if tier 1 leaves
-    something unresolved - _discover_structure_names' own characters list
-    is itself a DB read (list_capability_characters), so a caller whose
+    something unresolved - a characters list is itself a DB read
+    (list_capability_characters), so a caller whose
     corp-structures tier already resolved everything must not pay for it
     (do_resolve_structure_name already has its characters list in hand
     either way, so it just passes `lambda: characters`).
@@ -241,61 +204,14 @@ def resolve_structure_ids(
     return resolved
 
 
-def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_roles: dict[int, str]) -> dict:
-    """Proactive bulk fill of storage.structure_names (and, on success,
-    storage.global_structure_names - decision Q2), driven entirely by this
-    sync's own already-fetched asset data - no extra ESI calls to *discover*
-    location_ids, since character_assets/corporation_assets already return
-    location_id on every asset row (including corp Office folder entries -
-    there's no separate ESI "offices" endpoint, offices are just root-level
-    asset rows at a station). Only location_ids not already cached
-    (storage.get_cached_structure_names) are attempted - this is meant to be
-    cheap and incremental every sync tick, not a forced re-resolve (use POST
-    resolve-structure-name with force=True for that).
-
-    The actual two-tier resolution is resolve_structure_ids above, same
-    preference order as production.actions.do_resolve_structure_name.
-    Never raises - every ESIError is caught and skipped inside
-    resolve_structure_ids, matching sync_esi's "one failure must not abort
-    the whole sync" contract; an unresolved ID just stays unresolved for
-    next sync's retry."""
-    candidate_ids = {a["location_id"] for a in all_assets if a["location_id"] >= STRUCTURE_ID_MIN}
-    if not candidate_ids:
-        return {"candidates": 0, "resolved": 0}
-
-    cached = storage.get_cached_structure_names(list(candidate_ids))
-    unresolved = {loc_id for loc_id in candidate_ids if not cached[loc_id][0]}
-    if not unresolved:
-        return {"candidates": len(candidate_ids), "resolved": 0}
-
-    # structure_name_resolution capability, not producer sharing - see
-    # list_capability_characters' own docstring (Known gap 4, closed).
-    # Fetched lazily (only if tier 1 leaves something unresolved) via
-    # resolve_structure_ids' own get_characters callable.
-    resolved = resolve_structure_ids(
-        client, unresolved, corp_roles, lambda: list_capability_characters("structure_name_resolution"),
-    )
-
-    resolved_count = 0
-    for loc_id in unresolved:
-        name, solar_system_id = resolved.get(loc_id, (None, None))
-        storage.set_cached_structure_name(loc_id, name, solar_system_id)
-        if name is not None:
-            storage.upsert_global_structure_name(loc_id, name, solar_system_id)
-            resolved_count += 1
-
-    return {"candidates": len(candidate_ids), "resolved": resolved_count}
-
-
 def sync_esi() -> dict:
     """Guards on sharing, then delegates the real character/corp fetch to
     the orchestrator (`do_sync_for_tool("production")` - per-owner
     parallelism, sequential corp-role claim, freshness, the per-owner
     guard, all live there now, not in this module - see
     docs/ESI_ACCESS_PLAN.md Phase 3). This function's own remaining job is
-    the guard, plus opportunistic group-3 structure-name resolution
-    (`_discover_structure_names`) afterward - not an orchestrator kind,
-    since it has no freshness/sharing dimension of its own (decision 9)."""
+    the guard. Structure names are resolved by the orchestrator at the end of
+    the pass (locations.resolver), not here."""
     from ..esi_data.orchestrator import do_sync_for_tool
 
     tm = TokenManager(OAUTH_CONFIG)
@@ -306,17 +222,6 @@ def sync_esi() -> dict:
         raise ActionError(
             "No Production character shared yet. Share Assets (and the other Production kinds you need) on the Characters page."
         )
-    result = do_sync_for_tool("production")
-    client = ESIClient(tokens=tm)
-    location_ids: list[dict] = []
-    with storage.connect() as conn:
-        for loc_id, in conn.execute("SELECT DISTINCT location_id FROM character_assets"):
-            location_ids.append({"location_id": loc_id})
-        for loc_id, in conn.execute("SELECT DISTINCT location_id FROM corp_assets"):
-            location_ids.append({"location_id": loc_id})
-    # structure_name_resolution capability characters, not producer sharing
-    # (Known gap 4, closed) - a character resolves structure names for
-    # Production without ever sharing Assets/Market Orders with it.
-    corp_roles = corp_roles_for_characters(client, list_capability_characters("structure_name_resolution", tm))
-    result["structure_names"] = _discover_structure_names(client, location_ids, corp_roles)
-    return result
+    # Structure names are resolved by the orchestrator at the end of the pass
+    # (locations.resolver), for every tool, not here.
+    return do_sync_for_tool("production")

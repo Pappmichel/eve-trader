@@ -190,6 +190,19 @@ Each phase ships on its own and leaves the app working.
    Manager, a "Retry now" for one id.
 7. **Cleanup.** Stop writing `structure_names`, drop it after one release.
 
+## 4a. Status (2026-10-27)
+Phases 1-4 are implemented. Deviations from the text above:
+- **Phase 4 did not add `note_seen` to every fetcher.** The orchestrator calls
+  `resolve_pending()` after each pass that fetched a location kind and the
+  resolver registers ids by scanning the tenant's tables. Measured cost of that
+  scan is about 2 s per pass, small against the pass itself; per-fetcher
+  reporting would touch ten fetchers for little gain. Revisit only if the scan
+  shows up in a profile.
+- The reader has no TTL cache yet; it already needs two queries per call
+  instead of up to five. Add one with explicit invalidation if profiling asks.
+- Phases 5-7 (migrate the remaining readers, UI affordances, drop
+  `structure_names`) are open.
+
 ## 5. Risks and rules
 - **Tenant isolation.** Registry is RLS-scoped. Only names that were resolved
   successfully go to the global cache; negative results (`forbidden`) are never

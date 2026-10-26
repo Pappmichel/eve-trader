@@ -491,6 +491,36 @@ def _empty_result(tool_key: Optional[str]) -> dict:
     }
 
 
+# Kinds whose snapshots carry location ids. When a pass fetched one of them,
+# the sync resolves the player-structure names the new data refers to.
+LOCATION_KINDS = frozenset({
+    "assets", "blueprints", "industry_jobs", "market_orders", "contracts", "wallet", "clones",
+})
+
+
+def _fetched_location_data(results: list[dict]) -> bool:
+    """True when some owner in `results` successfully fetched a location kind
+    (a kind that failed or was skipped is a string, a fetch is a dict)."""
+    return any(
+        isinstance(wrote, dict) and kind in LOCATION_KINDS
+        for r in results for kind, wrote in (r.get("kinds") or {}).items()
+    )
+
+
+def _resolve_locations() -> dict:
+    """Names the player structures this tenant's data references
+    (docs/LOCATION_RESOLUTION_PLAN.md phase 4), once per pass and for every
+    tool. Only structures that are due are looked up, so a repeat costs no ESI
+    call. Never raises: names must not fail a sync."""
+    try:
+        from ..locations import resolver
+
+        return resolver.resolve_pending()
+    except Exception:  # noqa: BLE001 - best effort
+        log.exception("location resolution after the ESI sync failed")
+        return {"resolved": 0, "error": True}
+
+
 def _sync(
     sharing: list[tuple[str, int, str, str]],
     *,
@@ -609,6 +639,7 @@ def _sync(
         r.get("name") or str(r["owner_id"]): r.get("kinds") or r.get("skipped")
         for r in corp_results
     }
+    structure_names = _resolve_locations() if _fetched_location_data(attempted) else None
     return {
         "tool_key": tool_key,
         "characters": per_character,
@@ -616,6 +647,7 @@ def _sync(
         "owners": all_results,
         "ok": not any_failed,
         "null_id_sweep": sweep,
+        "structure_names": structure_names,
     }
 
 

@@ -153,8 +153,7 @@ def test_sync_esi_guard_is_sharing_based_not_prefix_based(tenant, monkeypatch):
     _save_token(f"esi:{ALICE}", ALICE, "Alice", "esi-assets.read_assets.v1")
     _share("character", ALICE, "assets")
     monkeypatch.setattr("eve_trader.esi_data.orchestrator.do_sync_for_tool", lambda tool_key: {})
-    monkeypatch.setattr(esi_sync, "_discover_structure_names", lambda client, location_ids, corp_roles: {})
 
     result = esi_sync.sync_esi()  # must not raise ActionError
 
-    assert result == {"structure_names": {}}
+    assert result == {}
