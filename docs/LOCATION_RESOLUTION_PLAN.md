@@ -183,13 +183,10 @@ Each phase ships on its own and leaves the app working.
 - Live-verify each phase against Server 1 with a full ESI sync first, then
   Server 2, as the project's verification rule requires.
 
-## 6. Open decisions
-1. Retry/refresh ages above (7 d forbidden, 30 d not found, 30 d refresh) are
-   proposals.
-2. Should "Name this location" be tenant-only (as now) or optionally shared
-   through `global_structure_names`? Proposal: tenant-only.
-3. Should the resolver also run when a page is opened (like
-   `useSyncWhenStale`), or only after syncs and on demand? Proposal: only after
-   syncs and on demand.
-4. Phase order: phases 1-4 fix correctness and cost; 5-7 are tidy-up and can
-   wait if priorities change.
+## 6. Decisions (confirmed 2026-10-26)
+1. Retry ages: `forbidden` 7 days (earlier when the set of capable characters
+   or a token changes), `not_found` 30 days, refresh of resolved names 30 days.
+2. "Name this location" is tenant-only (`manual_location_names`), never shared.
+3. The resolver runs after syncs and on demand only, not on page open.
+4. Scope of the first round: phases 1-4. Phases 5-7 (reader migration, UI,
+   cleanup) follow later.
