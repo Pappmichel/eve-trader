@@ -588,100 +588,61 @@ def do_remove_category_location_option(category: str, location_id: int) -> dict:
 
 def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
     """Resolves `location_id` to its structure name (and solar_system_id,
-    GitHub issue #12 - see storage.load_category_system_ids), cached
-    indefinitely unless `force`. Four-tier lookup chain (docs/
-    MANUAL_TRACKING_PLAN.md phase 2 - tiers 3/4 replace the old
-    two-path-inline ESI logic with esi_sync.resolve_structure_ids, shared
-    with _discover_structure_names):
-
-    1. This tenant's own cache (storage.get_cached_structure_name).
-    2. The global cache (storage.get_global_structure_names) - any tenant's
-       earlier successful resolution of the same structure_id. A hit is
-       copied into this tenant's own cache so future lookups stay purely
-       local; no ESI call needed.
-    3. This tenant's own "structure_name_resolution" Access-capability
-       characters (docs/ESI_ACCESS_PLAN.md Known gap 4, closed - not
-       producer sharing, Group 3 has no tool dimension per decision 9),
-       tried corp-structure-list first, then per-character docking history
-       (see esi_sync.resolve_structure_ids' own docstring for why, in that
-       order).
-    4. The operator fallback - only when the switch is on. The switch
-       itself is Default-Tenant-only (admin.do_get/set_structure_resolution_
-       fallback only ever reads/writes it there), so it's read here inside
-       its own tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID), not off
-       the ambient PRODUCTION_CONFIG - the requesting tenant's own copy of
-       that field is always False, since nothing ever saves it there.
-       Resolution itself retries tier 3's same two-path logic with the
-       Default Tenant's own structure_name_resolution characters, inside
-       that same tenant_scope. The token itself never leaves the server -
-       only {name, solar_system_id} crosses back out into this tenant's
-       result.
+    GitHub issue #12 - see storage.load_category_system_ids). The tenant's own
+    lookup is the central resolver (locations.resolver.resolve_ids,
+    docs/LOCATION_RESOLUTION_PLAN.md): the registry/global caches first, then the
+    tenant's own structure_name_resolution characters (corp structure list,
+    then per-character docking), and a refusal or error is remembered with a
+    retry date instead of being cached forever. `force=True` looks it up again
+    now. If that leaves it unresolved, the last tier is the operator fallback -
+    only when the switch is on. The switch itself is Default-Tenant-only
+    (admin.do_get/set_structure_resolution_fallback only ever read/write it
+    there), so it is read inside tenant_scope.enter_tenant(DEFAULT_TENANT_ID),
+    not off the ambient PRODUCTION_CONFIG: the requesting tenant's own copy is
+    always False (confirmed real bug in code review, 2026-09-25). Resolution
+    then retries with the Default Tenant's own characters inside that same
+    scope; the token never leaves the server, only {name, solar_system_id}
+    crosses back out.
 
     A character added before esi-universe.read_structures.v1/
     esi-corporations.read_structures.v1 existed needs to be re-added (remove
-    + add again) before tier 3/4 work for it.
-
-    Every successful resolution (from tier 3 or 4) is written to both this
-    tenant's own cache and the global cache - including a regular tenant
-    resolving with its own characters (decision Q2: every successful
-    resolution becomes globally visible, not just the operator fallback's
-    own). `force=True` skips tiers 1-2 (always re-resolves via ESI) but
-    still updates both caches on success, per decision 6d."""
-    if not force:
-        was_cached, cached_name = storage.get_cached_structure_name(location_id)
-        if was_cached:
-            return {"location_id": location_id, "name": cached_name, "cached": True}
-
-        global_hit = storage.get_global_structure_names([location_id]).get(location_id)
-        if global_hit is not None:
-            name, solar_system_id = global_hit
-            storage.set_cached_structure_name(location_id, name, solar_system_id)
-            return {"location_id": location_id, "name": name, "cached": True}
+    + add again) before the character tiers work for it. Every success is
+    written to this tenant's cache and the global one (decision Q2)."""
+    from ..locations import resolver
 
     characters = esi_sync.list_capability_characters("structure_name_resolution")
-
-    name = None
-    solar_system_id = None
-
-    if characters:
-        client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
-        corp_roles = esi_sync.corp_roles_for_characters(client, characters)
-        resolved = esi_sync.resolve_structure_ids(client, {location_id}, corp_roles, lambda: characters)
-        if location_id in resolved:
-            name, solar_system_id = resolved[location_id]
-
-    if name is None:
-        # The switch is Default-Tenant-only (admin.do_get/set_structure_
-        # resolution_fallback only ever saves it there) - reading the
-        # ambient PRODUCTION_CONFIG here would read *this* tenant's own
-        # (always-default-False) copy, making the fallback silently inert
-        # for every tenant except the Default one. Confirmed real bug in
-        # code review (2026-09-25): the old tests missed it because they
-        # set the flag directly on the ambient PRODUCTION_CONFIG instead of
-        # under enter_tenant. Read lazily (only once tier 3 has failed to
-        # resolve this location) so a normal tier-3 success never pays for
-        # an extra tenant switch.
-        with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-            fallback_enabled = PRODUCTION_CONFIG.global_structure_resolution_fallback
-        if not characters and not fallback_enabled:
-            raise ActionError(
-                "No character has ticked Structure name resolution yet (Characters page, Access section)."
-            )
-        if fallback_enabled:
-            with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-                fallback_characters = esi_sync.list_capability_characters("structure_name_resolution")
-                if fallback_characters:
-                    fallback_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
-                    fallback_corp_roles = esi_sync.corp_roles_for_characters(fallback_client, fallback_characters)
-                    fallback_resolved = esi_sync.resolve_structure_ids(
-                        fallback_client, {location_id}, fallback_corp_roles, lambda: fallback_characters,
-                    )
-                    if location_id in fallback_resolved:
-                        name, solar_system_id = fallback_resolved[location_id]
-
-    storage.set_cached_structure_name(location_id, name, solar_system_id)
+    result = resolver.resolve_ids([location_id], force=force, characters=characters)
+    info = (result.get("ids") or {}).get(location_id) or {}
+    name = info.get("name")
+    attempted = bool(info.get("attempted"))
     if name is not None:
-        storage.upsert_global_structure_name(location_id, name, solar_system_id)
+        return {"location_id": location_id, "name": name, "cached": not attempted}
+    if info.get("status") not in (None, "pending") and not attempted and not force:
+        # A failure the registry remembers; it is retried on its own date.
+        return {"location_id": location_id, "name": None, "cached": True}
+
+    solar_system_id = None
+    # Read lazily (only once the tenant's own lookup has failed) so a normal
+    # success never pays for an extra tenant switch.
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        fallback_enabled = PRODUCTION_CONFIG.global_structure_resolution_fallback
+    if not characters and not fallback_enabled:
+        raise ActionError(
+            "No character has ticked Structure name resolution yet (Characters page, Access section)."
+        )
+    if fallback_enabled:
+        with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+            fallback_characters = esi_sync.list_capability_characters("structure_name_resolution")
+            if fallback_characters:
+                fallback_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+                fallback_corp_roles = esi_sync.corp_roles_for_characters(fallback_client, fallback_characters)
+                fallback_resolved = esi_sync.resolve_structure_ids(
+                    fallback_client, {location_id}, fallback_corp_roles, lambda: fallback_characters,
+                )
+                if location_id in fallback_resolved:
+                    name, solar_system_id = fallback_resolved[location_id]
+    if name is not None:
+        resolver.record_resolved(location_id, name, solar_system_id)
     return {"location_id": location_id, "name": name, "cached": False}
 
 

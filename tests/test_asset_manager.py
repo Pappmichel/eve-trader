@@ -675,31 +675,6 @@ def test_sync_passes_the_doctrine_structure_like_the_scheduler(tenant, gate_on, 
     assert captured["tool_keys"] == gate_on
 
 
-def test_sync_resolves_structure_names_through_the_central_resolver(tenant, gate_on, monkeypatch):
-    from eve_trader.esi_data import orchestrator
-    from eve_trader.locations import resolver
-    monkeypatch.setattr(orchestrator, "do_sync_kinds", lambda kinds, **kw: {"ok": True})
-    monkeypatch.setattr(am_actions, "warm_cache", lambda: True)
-    monkeypatch.setattr(resolver, "resolve_pending", lambda **kw: {"resolved": 2, "due": 3})
-
-    result = am_actions.do_sync()
-
-    assert result["structure_names"] == {"resolved": 2, "due": 3}
-
-
-def test_a_failing_resolver_never_fails_the_sync(tenant, gate_on, monkeypatch):
-    from eve_trader.esi_data import orchestrator
-    from eve_trader.locations import resolver
-    monkeypatch.setattr(orchestrator, "do_sync_kinds", lambda kinds, **kw: {"ok": True})
-    monkeypatch.setattr(am_actions, "warm_cache", lambda: True)
-
-    def boom(**kw):
-        raise RuntimeError("esi exploded")
-    monkeypatch.setattr(resolver, "resolve_pending", boom)
-
-    assert am_actions.do_sync()["structure_names"]["error"] is True
-
-
 def test_history_snapshot_does_not_price(tenant, gate_on, monkeypatch):
     def _boom(_ids):
         raise AssertionError("history must not price")

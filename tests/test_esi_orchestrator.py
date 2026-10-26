@@ -58,6 +58,16 @@ def _wipe():
     orchestrator._in_flight.clear()
 
 
+@pytest.fixture(autouse=True)
+def _resolutions(monkeypatch):
+    """The sync resolves structure names after a pass that fetched location
+    data (locations.resolver); these tests only record that call, the resolver
+    has its own tests."""
+    calls: list[int] = []
+    monkeypatch.setattr(orchestrator, "_resolve_locations", lambda: calls.append(1) or {"resolved": 0})
+    return calls
+
+
 def _share(owner_type: str, owner_id: int, data_kind: str, tool_key: str) -> None:
     with storage.connect() as conn:
         conn.execute(
@@ -841,3 +851,44 @@ def test_non_esi_failure_is_recorded_against_its_kind(tenant, monkeypatch):
         ).fetchall()
     assert [r[0] for r in rows] == ["assets"]
     assert "duplicate key" in rows[0][1]
+
+
+# ----------------------------------------------- structure names after a pass
+def test_a_pass_that_fetched_assets_resolves_structure_names_once(tenant, _resolutions):
+    _share("character", ALICE, "assets", "production")
+    _share("character", BOB, "assets", "production")
+    _tokens((ALICE, "Alice"), (BOB, "Bob"))
+    client = FakeClient(assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]})
+
+    result = do_sync_for_tool("production", client=client)
+
+    assert _resolutions == [1]  # once per pass, not once per owner
+    assert result["structure_names"] == {"resolved": 0}
+
+
+def test_a_pass_that_fetched_nothing_location_bound_does_not_resolve(tenant, _resolutions):
+    _share("character", ALICE, "skills", "production")
+    _tokens((ALICE, "Alice"), scopes="esi-skills.read_skills.v1")
+
+    assert orchestrator._fetched_location_data([{"kinds": {"skills": {"written": 1}}}]) is False
+    assert orchestrator._fetched_location_data([{"kinds": {"assets": "skipped (403)"}}]) is False
+    assert orchestrator._fetched_location_data([{"kinds": {"assets": {"written": 1}}}]) is True
+    assert _resolutions == []
+
+
+def test_nothing_to_fetch_means_no_resolution(tenant, _resolutions):
+    assert "structure_names" not in do_sync_for_tool("production", client=FakeClient())
+    result = do_sync_due(client=FakeClient())
+    assert _resolutions == [] and "structure_names" not in result
+
+
+def test_a_failing_resolution_never_fails_the_sync(tenant, monkeypatch):
+    from eve_trader.locations import resolver
+
+    monkeypatch.undo()  # drop the autouse stub for this test only
+
+    def boom(**kw):
+        raise RuntimeError("resolver exploded")
+    monkeypatch.setattr(resolver, "resolve_pending", boom)
+
+    assert orchestrator._resolve_locations() == {"resolved": 0, "error": True}

@@ -42,7 +42,8 @@ def register(entries: list[dict]) -> None:
         )
 
 
-def due(now: datetime, tried_by: str, refresh_before: datetime, limit: int, force: bool = False) -> list[dict]:
+def due(now: datetime, tried_by: str, refresh_before: datetime, limit: int, force: bool = False,
+        only_ids: Optional[Iterable[int]] = None) -> list[dict]:
     """Structure rows that should be looked up now: never tried, a failure
     whose retry date has passed (or whose capable characters changed since),
     or a name older than the refresh age. Ids with a manual name are never
@@ -52,9 +53,13 @@ def due(now: datetime, tried_by: str, refresh_before: datetime, limit: int, forc
         "WHERE kind = 'structure' "
         "AND location_id NOT IN (SELECT location_id FROM manual_location_names) "
     )
+    id_params: tuple = ()
+    if only_ids is not None:
+        base += "AND location_id = ANY(?) "
+        id_params = (sorted({int(i) for i in only_ids}),)
     order = "ORDER BY (status = 'pending') DESC, last_attempt_at ASC NULLS FIRST, location_id LIMIT ?"
     if force:
-        sql, params = base + order, (limit,)
+        sql, params = base + order, (*id_params, limit)
     else:
         sql = base + (
             "AND (status = 'pending' "
@@ -62,7 +67,7 @@ def due(now: datetime, tried_by: str, refresh_before: datetime, limit: int, forc
             "         AND (next_retry_at IS NULL OR next_retry_at <= ? OR tried_by IS DISTINCT FROM ?)) "
             "     OR (status = 'resolved' AND resolved_at < ? AND (next_retry_at IS NULL OR next_retry_at <= ?))) "
         ) + order
-        params = (now, tried_by, refresh_before, now, limit)
+        params = (*id_params, now, tried_by, refresh_before, now, limit)
     with storage.connect() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [dict(zip(COLUMNS, r)) for r in rows]
