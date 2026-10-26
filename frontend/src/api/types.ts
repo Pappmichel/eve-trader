@@ -3752,3 +3752,34 @@ export interface AssetInsights {
     unpriced: number; volume: number
   }[]
 }
+
+export interface LocationReportUnresolved {
+  location_id: number
+  kind: string
+  state: string
+  sources: string[]
+  reachable_by_bulk_resolve: boolean
+}
+
+export interface LocationReportSource {
+  ids: number
+  structures: number
+  offices: number
+  containers: number
+  unresolved: number
+  covered_by_bulk_resolve: boolean
+}
+
+export interface LocationReport {
+  totals: { ids: number; by_kind: Record<string, number> }
+  structures: Record<'resolved' | 'manual' | 'failed' | 'never_attempted', number>
+  by_source: Record<string, LocationReportSource>
+  unresolved: LocationReportUnresolved[]
+  unresolved_total: number
+  capable_characters: number
+  estimated_esi_calls_per_sync: number
+  offices_resolved_through_parent: number
+  containers_resolved_through_parent: number
+  bulk_resolve_candidates: number
+  registry_status: Record<string, number>
+}

@@ -241,6 +241,11 @@ def start_structure_name_resolve(req: ResolveStructuresRequest):
     return _wrap(admin.do_start_structure_name_resolve, force=req.force)
 
 
+@router.get("/locations/report")
+def location_report():
+    return _wrap(admin.do_location_report)
+
+
 @router.get("/structures/resolve/status")
 def structure_resolve_status():
     return _wrap(admin.do_structure_resolve_status)

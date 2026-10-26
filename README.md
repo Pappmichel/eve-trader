@@ -66,7 +66,7 @@ docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
 # esi_access_schema.sql (also drops the retired per-prefix consent table)/
 # portfolio_schema.sql/module_reprocessing_schema.sql/
 # character_management_schema.sql/pi_schema.sql/
-# production_ledger_schema.sql/asset_manager_schema.sql
+# production_ledger_schema.sql/asset_manager_schema.sql/location_registry_schema.sql
 # back the Admin/Doctrine/error-tracking/Ore & Minerals/Special
 # Orders/Station Trading/Sorting/Module Reprocessing features, and their routers are registered unconditionally, so
 # skipping them means 500s the moment you touch those tools, not just a
@@ -92,6 +92,7 @@ Get-Content docs\character_management_schema.sql | docker exec -i eve-trader-pg 
 Get-Content docs\pi_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\production_ledger_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\asset_manager_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\location_registry_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
 (`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in

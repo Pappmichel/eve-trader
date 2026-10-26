@@ -44,7 +44,7 @@ for f in phase1_schema phase2_schema phase3_schema admin_schema doctrine_schema 
          production_buy_list_schema pipeline_runs_schema session_revocations_schema \
          job_category_cost_index_overrides_schema esi_access_schema portfolio_schema \
          module_reprocessing_schema character_management_schema pi_schema \
-         production_ledger_schema asset_manager_schema; do
+         production_ledger_schema asset_manager_schema location_registry_schema; do
   psql "$APP_DSN" -v ON_ERROR_STOP=1 -q -f "docs/$f.sql" >/dev/null
 done
 
