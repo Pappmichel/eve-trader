@@ -292,7 +292,64 @@ def do_location_report() -> dict:
     report["bulk_resolve_candidates"] = len(_structure_resolve_candidates())
     from .locations import store as location_store
     report["registry_status"] = location_store.status_counts()
+    report["suggested_characters"] = _suggest_resolution_characters(report, characters)
+    planetary = _planetary_goods_only({u["location_id"] for u in report["unresolved"] if u["kind"] == "structure"})
+    for row in report["unresolved"]:
+        row["only_planetary_goods"] = row["location_id"] in planetary
+    report["unresolved_planetary_goods_only"] = len(planetary)
     return report
+
+
+def _planetary_goods_only(location_ids: set[int]) -> set[int]:
+    """Locations whose assets are all Planetary Commodities (category 43). A
+    structure ESI will not name for any character, holding only PI goods, is
+    most likely a PI delivery point rather than a station; the report says only
+    what it observed and does not claim what the place is."""
+    ids = sorted(location_ids)
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT a.location_id FROM (SELECT location_id, type_id FROM character_assets WHERE location_id = ANY(?) "
+            "UNION ALL SELECT location_id, type_id FROM corp_assets WHERE location_id = ANY(?)) a "
+            "JOIN sde_types t ON t.type_id = a.type_id JOIN sde_groups g ON g.group_id = t.group_id "
+            "GROUP BY a.location_id HAVING bool_and(g.category_id = 43)", (ids, ids),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _suggest_resolution_characters(report: dict, capable: list) -> list[dict]:
+    """Characters that own assets in a player structure nobody could name, hold
+    a token with the Structure name resolution scope, but have not ticked that
+    capability - the likely reason a lookup was refused (403): only a character
+    that can see a structure can name it. Ticking is the character's consent
+    and stays the user's decision; this only points at it."""
+    from .esi_data.registry import ACCESS_CAPABILITIES
+    from .esi_data.selector import select_auth_role
+
+    ids = [u["location_id"] for u in report.get("unresolved", []) if u.get("kind") == "structure"]
+    if not ids:
+        return []
+    cap = next(c for c in ACCESS_CAPABILITIES if c.key == "structure_name_resolution")
+    already = {character_id for _role, character_id, _name in capable}
+    tm = TokenManager(OAUTH_CONFIG)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, COUNT(DISTINCT COALESCE(resolved_location_id, location_id)) "
+            "FROM character_assets WHERE (resolved_location_id = ANY(?) OR location_id = ANY(?)) "
+            "GROUP BY owner_character_id ORDER BY 2 DESC", (ids, ids),
+        ).fetchall()
+    out = []
+    for character_id, structures in rows:
+        if character_id in already:
+            continue
+        role = select_auth_role(character_id, cap.character_scope, tokens=tm)
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append({"character_id": int(character_id), "character_name": record.character_name if record else str(character_id),
+                    "structures": int(structures)})
+    return out
 
 
 def _structure_resolve_candidates() -> set[int]:

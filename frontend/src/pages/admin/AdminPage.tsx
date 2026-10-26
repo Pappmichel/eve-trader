@@ -126,6 +126,10 @@ function LocationReportSection() {
       header: 'Bulk resolve reaches it', accessorKey: 'reachable_by_bulk_resolve', size: 150,
       cell: (i) => (i.getValue() ? 'yes' : 'no'),
     },
+    {
+      header: 'Holds only PI goods', accessorKey: 'only_planetary_goods', size: 130,
+      cell: (i) => (i.getValue() ? 'yes' : ''),
+    },
     { header: 'Referenced by', accessorKey: 'sources', size: 320, cell: (i) => (i.getValue() as string[]).join(', ') },
   ], [])
 
@@ -147,6 +151,17 @@ function LocationReportSection() {
             Structures: {data.structures.resolved} named, {data.structures.manual} manual,{' '}
             {data.structures.failed} failed, {data.structures.never_attempted} never tried.
           </Text>
+          {data.unresolved_planetary_goods_only > 0 && (
+            <Text size="sm" c="dimmed">
+              {data.unresolved_planetary_goods_only} unnamed structure(s) hold only Planetary Commodities; ESI refuses their name.
+            </Text>
+          )}
+          {data.suggested_characters.length > 0 && (
+            <Text size="sm" c="warn">
+              Unnamed structures hold assets of {data.suggested_characters.map((c) => `${c.character_name} (${c.structures})`).join(', ')}.
+              These characters have the needed token but have not ticked Structure name resolution (Characters page, Access).
+            </Text>
+          )}
           {Object.keys(data.registry_status).length > 0 && (
             <Text size="sm">
               Lookup status: {Object.entries(data.registry_status).map(([k, n]) => `${n} ${k}`).join(', ')}.

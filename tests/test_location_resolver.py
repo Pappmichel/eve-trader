@@ -280,3 +280,45 @@ def test_describe_office_shows_its_structure_and_manual_is_the_last_tier(tenant)
     assert info[SYSTEM].name == "Testsys" and info[SYSTEM].kind == "solar_system"
     assert info[5].name is None
     assert storage.get_location_names([STRUCT, 5]) == {STRUCT: "Known Fort", 5: None}
+
+
+def test_report_suggests_characters_that_own_assets_but_did_not_tick_the_capability(tenant, monkeypatch):
+    from types import SimpleNamespace
+    from eve_trader import admin
+    from eve_trader.auth import TokenManager
+    from eve_trader.esi_data import selector
+
+    storage.replace_assets("character_assets", [(1, 34, STRUCT, "Hangar", 5, 0, "Alt")],
+                           owner_character_id=777, owner_name="Alt")
+    storage.replace_assets("character_assets", [(2, 34, STRUCT2, "Hangar", 5, 0, "Capable")],
+                           owner_character_id=888, owner_name="Capable")
+    monkeypatch.setattr(selector, "select_auth_role", lambda cid, scope, tokens=None: f"producer:{cid}")
+    monkeypatch.setattr(TokenManager, "get_record", lambda self, role: SimpleNamespace(character_name=f"Name {role}"))
+    report = {"unresolved": [
+        {"location_id": STRUCT, "kind": "structure"}, {"location_id": STRUCT2, "kind": "structure"},
+        {"location_id": OFFICE, "kind": "office"},
+    ]}
+
+    suggested = admin._suggest_resolution_characters(report, [("producer:888", 888, "Capable")])
+
+    assert suggested == [{"character_id": 777, "character_name": "Name producer:777", "structures": 1}]
+
+
+def test_planetary_goods_only_flags_locations_holding_nothing_else(tenant):
+    from eve_trader import admin
+    PI_TYPE, SHIP_TYPE = 990901, 990902
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("INSERT INTO sde_categories VALUES (43, 'Planetary Commodities') ON CONFLICT DO NOTHING")
+        conn.execute("INSERT INTO sde_categories VALUES (6, 'Ship') ON CONFLICT DO NOTHING")
+        conn.execute("INSERT INTO sde_groups VALUES (990043, 43, 'Basic Commodities') ON CONFLICT DO NOTHING")
+        conn.execute("INSERT INTO sde_groups VALUES (990006, 6, 'Frigate') ON CONFLICT DO NOTHING")
+        conn.execute("INSERT INTO sde_types (type_id, group_id, type_name, volume, published) VALUES (%s,990043,'Test Oxygen',0.38,1) ON CONFLICT (type_id) DO NOTHING", (PI_TYPE,))
+        conn.execute("INSERT INTO sde_types (type_id, group_id, type_name, volume, published) VALUES (%s,990006,'Test Ship',1,1) ON CONFLICT (type_id) DO NOTHING", (SHIP_TYPE,))
+    storage.replace_assets("character_assets", [
+        (1, PI_TYPE, STRUCT, "Hangar", 10, 0, "Alt"),
+        (2, PI_TYPE, STRUCT2, "Hangar", 10, 0, "Alt"),
+        (3, SHIP_TYPE, STRUCT2, "Hangar", 1, 0, "Alt"),
+    ], owner_character_id=777, owner_name="Alt")
+
+    assert admin._planetary_goods_only({STRUCT, STRUCT2, STRUCT3}) == {STRUCT}
+    assert admin._planetary_goods_only(set()) == set()
