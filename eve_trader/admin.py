@@ -293,7 +293,29 @@ def do_location_report() -> dict:
     from .locations import store as location_store
     report["registry_status"] = location_store.status_counts()
     report["suggested_characters"] = _suggest_resolution_characters(report, characters)
+    planetary = _planetary_goods_only({u["location_id"] for u in report["unresolved"] if u["kind"] == "structure"})
+    for row in report["unresolved"]:
+        row["only_planetary_goods"] = row["location_id"] in planetary
+    report["unresolved_planetary_goods_only"] = len(planetary)
     return report
+
+
+def _planetary_goods_only(location_ids: set[int]) -> set[int]:
+    """Locations whose assets are all Planetary Commodities (category 43). A
+    structure ESI will not name for any character, holding only PI goods, is
+    most likely a PI delivery point rather than a station; the report says only
+    what it observed and does not claim what the place is."""
+    ids = sorted(location_ids)
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT a.location_id FROM (SELECT location_id, type_id FROM character_assets WHERE location_id = ANY(?) "
+            "UNION ALL SELECT location_id, type_id FROM corp_assets WHERE location_id = ANY(?)) a "
+            "JOIN sde_types t ON t.type_id = a.type_id JOIN sde_groups g ON g.group_id = t.group_id "
+            "GROUP BY a.location_id HAVING bool_and(g.category_id = 43)", (ids, ids),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def _suggest_resolution_characters(report: dict, capable: list) -> list[dict]:
