@@ -207,6 +207,7 @@ sudo -u postgres psql -d eve_trader -f docs/character_management_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pi_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_ledger_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/asset_manager_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/location_registry_schema.sql
 ```
 `pi_schema.sql` (Planetary Industry tool, `docs/PI_PLAN.md`) must run after
 `character_management_schema.sql`: it widens that file's alert type CHECK
@@ -219,6 +220,9 @@ journal context columns on `esi_wallet_journal`.
 holds saved views and the daily asset quantity history. After deploying the
 Asset Manager, run `eve-trader admin grant-defaults` once so existing users
 get the new `asset_manager` grant.
+`location_registry_schema.sql` (central location resolution, `docs/LOCATION_RESOLUTION_PLAN.md`)
+holds one row per referenced player structure, office or container with its
+lookup status and retry date.
 `character_management_schema.sql` creates `character_standings` and
 `character_loyalty_points` (the Character Management hub's Character Info
 snapshots, `docs/CHARACTER_MANAGEMENT_PLAN.md`) plus, since the Skills phase,
@@ -424,6 +428,7 @@ sudo -u postgres psql -d eve_trader -f docs/character_management_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pi_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_ledger_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/asset_manager_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/location_registry_schema.sql
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..

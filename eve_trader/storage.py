@@ -2388,6 +2388,24 @@ def location_kind_hints(location_ids: Iterable[int]) -> tuple[set[int], set[int]
     return stations, offices, items
 
 
+def asset_item_parents(item_ids: Iterable[int]) -> dict[int, int]:
+    """item_id -> the outermost real location it sits in (resolved_location_id,
+    else its immediate parent), for asset items of both owner types. Used to
+    resolve a corp Office or a container to the structure it stands in."""
+    ids = sorted({int(i) for i in item_ids})
+    out: dict[int, int] = {}
+    if not ids:
+        return out
+    with connect() as conn:
+        for table in ("character_assets", "corp_assets"):
+            for item_id, parent in conn.execute(
+                    f"SELECT item_id, COALESCE(resolved_location_id, location_id) FROM {table} "
+                    "WHERE item_id = ANY(?)", (ids,)).fetchall():
+                if parent is not None:
+                    out[int(item_id)] = int(parent)
+    return out
+
+
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
     (plan_production's own buy_list: type_id, quantity) - Sorting only needs
@@ -2671,54 +2689,18 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
 
 
 def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
-    """Batched location_id -> display name, four-tier fallback (docs/
-    MANUAL_TRACKING_PLAN.md phase 2 extended this from the original two
-    tiers): structure_names (this tenant's own ESI-resolved player
-    structures) -> global_structure_names (any tenant's successful
-    resolution, unscoped) -> manual_location_names (this tenant's own
-    manual name) -> sde_stations.station_name (NPC stations). Batched here for a whole set of ids in
-    one call (backs GET /trading/wallet-transactions, which resolves every
-    distinct location_id across a character's transaction page in one shot
-    rather than N+1)."""
-    location_ids = list(location_ids)
-    if not location_ids:
+    """Batched location_id -> display name. Delegates to the central reader
+    (locations.reader.describe, docs/LOCATION_RESOLUTION_PLAN.md): the tenant's
+    structure_names, then the location registry, the shared global names, the
+    tenant's manual names and SDE stations; an Office or container shows the
+    name of the structure it stands in."""
+    from .locations import reader
+
+    ids = list(location_ids)
+    if not ids:
         return {}
-    placeholders = ",".join("?" * len(location_ids))
-    with connect() as conn:
-        structure_rows = conn.execute(
-            f"SELECT location_id, name FROM structure_names WHERE location_id IN ({placeholders})",
-            location_ids,
-        ).fetchall()
-    resolved: dict[int, Optional[str]] = dict(structure_rows)
-    missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
-
-    if missing:
-        for loc_id, (name, _system_id) in get_global_structure_names(missing).items():
-            resolved[loc_id] = name
-        missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
-
-    if missing:
-        missing_placeholders = ",".join("?" * len(missing))
-        with connect() as conn:
-            manual_rows = conn.execute(
-                f"SELECT location_id, name FROM manual_location_names WHERE location_id IN ({missing_placeholders})",
-                missing,
-            ).fetchall()
-        for loc_id, name in manual_rows:
-            resolved[loc_id] = name
-        missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
-
-    if missing:
-        missing_placeholders = ",".join("?" * len(missing))
-        with connect() as conn:
-            station_rows = conn.execute(
-                f"SELECT station_id, station_name FROM sde_stations WHERE station_id IN ({missing_placeholders})",
-                missing,
-            ).fetchall()
-        for station_id, station_name in station_rows:
-            resolved[station_id] = station_name
-
-    return {loc_id: resolved.get(loc_id) for loc_id in location_ids}
+    info = reader.describe(ids)
+    return {loc_id: info[int(loc_id)].name for loc_id in ids}
 
 
 # ------------------------------------------------------------- global structure cache
@@ -5974,61 +5956,19 @@ def asset_manager_type_info(type_ids: Iterable[int]) -> dict[int, dict]:
 
 def asset_manager_location_details(location_ids: Iterable[int]) -> dict[int, dict]:
     """location_id -> {name, solar_system_id, solar_system_name, security,
-    region_id, region_name}. Names go through get_location_names' four
-    tiers. The system comes from structure_names, then
-    global_structure_names, then sde_stations; an id in the solar-system
-    range (30M..33M, items in space) is its own system. Anything unknown
+    region_id, region_name}. Delegates to the central reader; anything unknown
     keeps None fields - never a guess."""
+    from .locations import reader
+
     ids = sorted({int(i) for i in location_ids if i})
-    if not ids:
-        return {}
-    names = get_location_names(ids)
-    systems: dict[int, Optional[int]] = {}
-    with connect() as conn:
-        for loc, sys_id in conn.execute(
-            "SELECT location_id, solar_system_id FROM structure_names WHERE location_id = ANY(?)", (ids,),
-        ).fetchall():
-            if sys_id is not None:
-                systems[int(loc)] = int(sys_id)
-        missing = [i for i in ids if i not in systems]
-        if missing:
-            for loc, (_name, sys_id) in get_global_structure_names(missing).items():
-                if sys_id is not None:
-                    systems[int(loc)] = int(sys_id)
-        missing = [i for i in ids if i not in systems]
-        if missing:
-            for loc, sys_id in conn.execute(
-                "SELECT station_id, solar_system_id FROM sde_stations WHERE station_id = ANY(?)", (missing,),
-            ).fetchall():
-                if sys_id is not None:
-                    systems[int(loc)] = int(sys_id)
-        for i in ids:
-            if i not in systems and 30_000_000 <= i < 33_000_000:
-                systems[i] = i
-        sys_ids = sorted(set(systems.values()))
-        sys_rows = {}
-        if sys_ids:
-            sys_rows = {
-                int(r[0]): (r[1], r[2], r[3], r[4])
-                for r in conn.execute(
-                    "SELECT s.solar_system_id, s.solar_system_name, s.security, s.region_id, r.region_name "
-                    "FROM sde_solar_systems s LEFT JOIN sde_regions r ON r.region_id = s.region_id "
-                    "WHERE s.solar_system_id = ANY(?)",
-                    (sys_ids,),
-                ).fetchall()
-            }
-    out: dict[int, dict] = {}
-    for i in ids:
-        sys_id = systems.get(i)
-        sys_name, security, region_id, region_name = sys_rows.get(sys_id, (None, None, None, None))
-        name = names.get(i)
-        if name is None and sys_id == i:
-            name = sys_name
-        out[i] = {
-            "name": name, "solar_system_id": sys_id, "solar_system_name": sys_name,
-            "security": security, "region_id": region_id, "region_name": region_name,
+    return {
+        i: {
+            "name": info.name, "solar_system_id": info.solar_system_id,
+            "solar_system_name": info.solar_system_name, "security": info.security,
+            "region_id": info.region_id, "region_name": info.region_name,
         }
-    return out
+        for i, info in reader.describe(ids).items()
+    }
 
 
 def list_asset_manager_views() -> list[tuple]:

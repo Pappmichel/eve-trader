@@ -3781,4 +3781,5 @@ export interface LocationReport {
   offices_resolved_through_parent: number
   containers_resolved_through_parent: number
   bulk_resolve_candidates: number
+  registry_status: Record<string, number>
 }

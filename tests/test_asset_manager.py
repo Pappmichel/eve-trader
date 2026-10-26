@@ -675,34 +675,29 @@ def test_sync_passes_the_doctrine_structure_like_the_scheduler(tenant, gate_on, 
     assert captured["tool_keys"] == gate_on
 
 
-def test_sync_resolves_structure_names_for_referenced_structures(tenant, gate_on, monkeypatch):
+def test_sync_resolves_structure_names_through_the_central_resolver(tenant, gate_on, monkeypatch):
     from eve_trader.esi_data import orchestrator
-    from eve_trader.production import esi_sync
+    from eve_trader.locations import resolver
     monkeypatch.setattr(orchestrator, "do_sync_kinds", lambda kinds, **kw: {"ok": True})
     monkeypatch.setattr(am_actions, "warm_cache", lambda: True)
-    seen = {}
-    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda key, tm=None: [("esi:1", 1, "Alice")])
-    monkeypatch.setattr(esi_sync, "corp_roles_for_characters", lambda client, chars: {})
-    monkeypatch.setattr(storage, "candidate_structure_location_ids", lambda: {1050055429685, STATION})
-    monkeypatch.setattr(esi_sync, "_discover_structure_names",
-                        lambda client, locs, roles: seen.update(ids={l["location_id"] for l in locs}) or {"resolved": 1})
+    monkeypatch.setattr(resolver, "resolve_pending", lambda **kw: {"resolved": 2, "due": 3})
 
     result = am_actions.do_sync()
 
-    assert 1050055429685 in seen["ids"]
-    assert result["structure_names"] == {"resolved": 1}
+    assert result["structure_names"] == {"resolved": 2, "due": 3}
 
 
-def test_sync_skips_structure_names_without_a_resolution_character(tenant, gate_on, monkeypatch):
+def test_a_failing_resolver_never_fails_the_sync(tenant, gate_on, monkeypatch):
     from eve_trader.esi_data import orchestrator
-    from eve_trader.production import esi_sync
+    from eve_trader.locations import resolver
     monkeypatch.setattr(orchestrator, "do_sync_kinds", lambda kinds, **kw: {"ok": True})
     monkeypatch.setattr(am_actions, "warm_cache", lambda: True)
-    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda key, tm=None: [])
 
-    result = am_actions.do_sync()
+    def boom(**kw):
+        raise RuntimeError("esi exploded")
+    monkeypatch.setattr(resolver, "resolve_pending", boom)
 
-    assert result["structure_names"]["resolved"] == 0
+    assert am_actions.do_sync()["structure_names"]["error"] is True
 
 
 def test_history_snapshot_does_not_price(tenant, gate_on, monkeypatch):

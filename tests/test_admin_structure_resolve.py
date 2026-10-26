@@ -5,8 +5,6 @@ import pytest
 
 from eve_trader import admin, storage
 from eve_trader.actions import ActionError
-from eve_trader.esi_client import ESIClient
-from eve_trader.production import esi_sync
 from eve_trader.production.config import PRODUCTION_CONFIG
 
 
@@ -27,86 +25,55 @@ def test_structure_resolve_candidates_combines_storage_ids_and_config_locations(
     assert result == {1035466617946, 1035466617947, 1035466617948}
 
 
-def test_do_resolve_structure_names_skips_already_globally_cached_when_not_forced(monkeypatch):
-    monkeypatch.setattr(admin, "_structure_resolve_candidates", lambda: {1035466617946, 1035466617947})
-    monkeypatch.setattr(storage, "get_global_structure_names",
-                         lambda location_ids: {1035466617946: ("Known", 30000142)})
-    monkeypatch.setattr(esi_sync, "list_capability_characters",
-                         lambda capability_key: [("esi:1", 1, "Alice")])
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"corporation_id": 99})
-    monkeypatch.setattr(esi_sync, "corp_roles_for_characters", lambda client, characters: {99: "esi"})
-    resolved_ids = {}
-    monkeypatch.setattr(esi_sync, "resolve_structure_ids", lambda client, to_resolve, corp_roles, get_characters:
-                         resolved_ids.update({loc: ("Newly Resolved", 30000144) for loc in to_resolve}) or resolved_ids)
+def _fake_resolver(monkeypatch, summary, captured=None):
+    from eve_trader.locations import resolver
+
+    def fake(**kw):
+        if captured is not None:
+            captured.update(kw)
+        return dict(summary)
+    monkeypatch.setattr(resolver, "resolve_pending", fake)
+
+
+def test_do_resolve_structure_names_runs_the_central_resolver(monkeypatch):
     captured = {}
-    monkeypatch.setattr(storage, "set_cached_structure_name",
-                         lambda loc_id, name, solar_system_id=None: captured.setdefault("cached", []).append(loc_id))
-    monkeypatch.setattr(storage, "upsert_global_structure_name",
-                         lambda location_id, name, solar_system_id=None: captured.setdefault("global", []).append(location_id))
+    _fake_resolver(monkeypatch, {"due": 3, "resolved": 1, "from_global": 1, "forbidden": 1, "calls": 4}, captured)
 
     result = admin.do_resolve_structure_names(force=False)
 
-    assert result == {"candidates": 2, "resolved": 1}
-    assert captured["cached"] == [1035466617947]
-    assert captured["global"] == [1035466617947]
+    assert result["candidates"] == 3 and result["resolved"] == 2 and result["forbidden"] == 1
+    assert captured["force"] is False and captured["budget"] == admin.ADMIN_RESOLVE_BUDGET
 
 
-def test_do_resolve_structure_names_force_resolves_everything_even_if_globally_cached(monkeypatch):
-    monkeypatch.setattr(admin, "_structure_resolve_candidates", lambda: {1035466617946})
-    monkeypatch.setattr(storage, "get_global_structure_names",
-                         lambda location_ids: pytest.fail("must not consult the global cache when force=True"))
-    monkeypatch.setattr(esi_sync, "list_capability_characters",
-                         lambda capability_key: [("esi:1", 1, "Alice")])
-    monkeypatch.setattr(esi_sync, "corp_roles_for_characters", lambda client, characters: {})
-    monkeypatch.setattr(esi_sync, "resolve_structure_ids",
-                         lambda client, to_resolve, corp_roles, get_characters:
-                         {1035466617946: ("Re-resolved", 30000142)})
-    monkeypatch.setattr(storage, "set_cached_structure_name", lambda *a, **kw: None)
-    monkeypatch.setattr(storage, "upsert_global_structure_name", lambda *a, **kw: None)
+def test_do_resolve_structure_names_passes_force_through(monkeypatch):
+    captured = {}
+    _fake_resolver(monkeypatch, {"due": 1, "resolved": 1}, captured)
 
-    result = admin.do_resolve_structure_names(force=True)
+    admin.do_resolve_structure_names(force=True)
 
-    assert result == {"candidates": 1, "resolved": 1}
+    assert captured["force"] is True
 
 
-def test_do_resolve_structure_names_no_candidates_left_is_a_noop(monkeypatch):
-    monkeypatch.setattr(admin, "_structure_resolve_candidates", lambda: {1035466617946})
-    monkeypatch.setattr(storage, "get_global_structure_names",
-                         lambda location_ids: {1035466617946: ("Known", 30000142)})
-    monkeypatch.setattr(esi_sync, "list_capability_characters",
-                         lambda capability_key: pytest.fail("must not look up characters with nothing to resolve"))
+def test_do_resolve_structure_names_nothing_due_is_a_noop(monkeypatch):
+    _fake_resolver(monkeypatch, {"due": 0, "resolved": 0, "from_global": 0})
 
-    result = admin.do_resolve_structure_names(force=False)
-
-    assert result == {"candidates": 1, "resolved": 0}
+    assert admin.do_resolve_structure_names(force=False)["resolved"] == 0
 
 
 def test_do_resolve_structure_names_raises_without_any_capable_character(monkeypatch):
-    monkeypatch.setattr(admin, "_structure_resolve_candidates", lambda: {1035466617946})
-    monkeypatch.setattr(storage, "get_global_structure_names", lambda location_ids: {})
-    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [])
+    _fake_resolver(monkeypatch, {"due": 2, "skipped": "no character has Structure name resolution ticked"})
 
     with pytest.raises(ActionError, match="Structure name resolution"):
         admin.do_resolve_structure_names(force=False)
 
 
 def test_do_resolve_structure_names_reports_progress(monkeypatch):
-    monkeypatch.setattr(admin, "_structure_resolve_candidates", lambda: {1035466617946})
-    monkeypatch.setattr(storage, "get_global_structure_names", lambda location_ids: {})
-    monkeypatch.setattr(esi_sync, "list_capability_characters",
-                         lambda capability_key: [("esi:1", 1, "Alice")])
-    monkeypatch.setattr(esi_sync, "corp_roles_for_characters", lambda client, characters: {})
-    monkeypatch.setattr(esi_sync, "resolve_structure_ids",
-                         lambda client, to_resolve, corp_roles, get_characters:
-                         {1035466617946: ("Resolved", 30000142)})
-    monkeypatch.setattr(storage, "set_cached_structure_name", lambda *a, **kw: None)
-    monkeypatch.setattr(storage, "upsert_global_structure_name", lambda *a, **kw: None)
+    _fake_resolver(monkeypatch, {"due": 1, "resolved": 1, "from_global": 0})
     messages = []
 
     admin.do_resolve_structure_names(force=False, progress_callback=messages.append)
 
     assert len(messages) == 2
-    assert "1" in messages[0]["message"]
     assert "1" in messages[1]["message"]
 
 

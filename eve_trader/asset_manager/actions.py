@@ -240,29 +240,18 @@ def do_sync(progress_callback=None) -> dict:
 
 
 def _resolve_structure_names() -> dict:
-    """Fills the structure-name cache for every player structure this tenant's
-    data references, the way Production's sync does. Without it a tenant that
-    never runs the Production sync (or lacks its share) keeps nameless
-    "Location <id>" rows. Needs a character with the Structure name resolution
-    capability; ids no character can see stay unresolved and are retried on the
-    next sync. Never raises - names must not fail the asset sync."""
+    """Names the player structures this tenant's data references, through the
+    central resolver (locations.resolver): only structures that are due are
+    looked up, so a repeated sync costs nothing. Needs a character with the
+    Structure name resolution capability. Never raises - names must not fail
+    the asset sync."""
     try:
-        from ..config import OAUTH_CONFIG
-        from ..esi_client import ESIClient
-        from ..auth import TokenManager
-        from ..production import esi_sync
+        from ..locations import resolver
 
-        tm = TokenManager(OAUTH_CONFIG)
-        characters = esi_sync.list_capability_characters("structure_name_resolution", tm)
-        if not characters:
-            return {"candidates": 0, "resolved": 0, "skipped": "no structure name resolution character"}
-        client = ESIClient(tokens=tm)
-        corp_roles = esi_sync.corp_roles_for_characters(client, characters)
-        locations = [{"location_id": i} for i in storage.candidate_structure_location_ids()]
-        return esi_sync._discover_structure_names(client, locations, corp_roles)
+        return resolver.resolve_pending()
     except Exception:  # noqa: BLE001 - best effort
         log.exception("asset manager structure name resolution failed")
-        return {"candidates": 0, "resolved": 0, "error": True}
+        return {"resolved": 0, "error": True}
 
 
 def warm_cache() -> bool:

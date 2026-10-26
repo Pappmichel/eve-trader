@@ -147,6 +147,11 @@ function LocationReportSection() {
             Structures: {data.structures.resolved} named, {data.structures.manual} manual,{' '}
             {data.structures.failed} failed, {data.structures.never_attempted} never tried.
           </Text>
+          {Object.keys(data.registry_status).length > 0 && (
+            <Text size="sm">
+              Lookup status: {Object.entries(data.registry_status).map(([k, n]) => `${n} ${k}`).join(', ')}.
+            </Text>
+          )}
           <Text size="sm" c="dimmed">
             A bulk resolve spends about {data.estimated_esi_calls_per_sync} ESI call(s) with{' '}
             {data.capable_characters} capable character(s); it reaches {data.bulk_resolve_candidates} candidate(s).
@@ -185,7 +190,10 @@ function StructureResolveSection() {
   )
 
   const result = job.status?.status === 'succeeded' || job.status?.status === 'degraded'
-    ? job.status.result as { candidates?: number; resolved?: number } | undefined
+    ? job.status.result as {
+      candidates?: number; resolved?: number; forbidden?: number; not_found?: number; transient?: number
+      deferred?: number
+    } | undefined
     : undefined
 
   return (
@@ -214,7 +222,10 @@ function StructureResolveSection() {
       )}
       {!running && result && (
         <Text size="sm" c="dimmed" mb="xs">
-          Resolved {result.resolved ?? 0} of {result.candidates ?? 0} candidate(s).
+          Resolved {result.resolved ?? 0} of {result.candidates ?? 0} due location(s)
+          {(result.forbidden || result.not_found || result.transient || result.deferred)
+            ? ` - ${result.forbidden ?? 0} no access, ${result.not_found ?? 0} not found, ${result.transient ?? 0} failed for now, ${result.deferred ?? 0} left for the next run`
+            : ''}.
         </Text>
       )}
       <Switch
