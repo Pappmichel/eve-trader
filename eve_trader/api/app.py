@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,7 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import access_policy, scheduler, storage, tenant_scope
+from ..asset_manager import actions as asset_manager_actions
 from ..access_gate import (
     ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie, note_tenant_activity,
 )
@@ -372,6 +374,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 async def _lifespan(app: FastAPI):
     _load_default_tenant_config()
     scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
+    # Price the Asset Manager rows in the background so the first page open is
+    # not a 20 s wait. Daemon thread: it must neither block start nor shutdown.
+    if "PYTEST_CURRENT_TEST" not in os.environ:  # tests start the app against a shared test database
+        threading.Thread(target=asset_manager_actions.warm_all_tenants, name="asset-manager-warmup",
+                         daemon=True).start()
     yield
     scheduler.stop()
 

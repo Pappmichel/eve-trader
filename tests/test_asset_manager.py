@@ -681,3 +681,24 @@ def test_row_cache_keeps_one_entry_per_tenant(tenant, gate_on):
     am_actions.do_list_items()
 
     assert len([k for k in am_actions._cache if k[0] == tenant]) == 1
+
+
+def test_warm_cache_loads_the_rows_once(tenant, gate_on, monkeypatch):
+    _seed_alice()
+    _share("character", ALICE, "asset_manager", "assets")
+    calls = []
+    real = am_actions.collect.load_base_rows
+    monkeypatch.setattr(am_actions.collect, "load_base_rows",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    assert am_actions.warm_cache() is True
+    _rows()  # served from the warmed cache
+
+    assert len(calls) == 1
+
+
+def test_warm_cache_never_raises(tenant, gate_on, monkeypatch):
+    monkeypatch.setattr(am_actions.collect, "load_base_rows",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert am_actions.warm_cache() is False

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import threading
 import time
 from typing import Optional
@@ -17,6 +18,8 @@ from .. import storage
 from ..actions import ActionError
 from . import collect, query
 from .scope import ASSET_KINDS, TOOL_KEY, allowed_tools, granted_tools, may_use, owner_scope
+
+log = logging.getLogger(__name__)
 
 _CACHE_TTL = 120  # seconds
 _cache: dict[tuple, tuple[float, list[dict]]] = {}
@@ -225,7 +228,50 @@ def do_sync(progress_callback=None) -> dict:
     extra = {"structure_id": structure_id} if structure_id is not None else None
     result = do_sync_kinds(ASSET_KINDS, tool_keys=allowed, extra=extra)
     invalidate_cache(tenant_id)
+    if progress_callback:
+        progress_callback({"message": "Pricing"})
+    warm_cache()
     return result
+
+
+def warm_cache() -> bool:
+    """Loads and prices the current tenant's rows so the first page open does
+    not pay for it: a cold load priced ~3,800 types and ~180 blueprint copies
+    and took about 22 s on the 1-vCPU test server (the invention estimates are
+    then cached for six hours, the rows for `_CACHE_TTL`). Never raises."""
+    try:
+        grants, allowed, scope = _context()
+        _rows(grants, allowed, scope)
+        return True
+    except Exception:  # noqa: BLE001 - a warm-up must never break its caller
+        log.exception("asset manager warm-up failed")
+        return False
+
+
+def warm_all_tenants() -> int:
+    """Warm-up at process start: every active tenant that holds the tool and
+    shares something with it. Returns how many tenants were warmed."""
+    from .. import tenant_eligibility, tenant_scope
+
+    warmed = 0
+    try:
+        last_active = storage.list_tenant_last_active()
+        tenants = [str(t[0]) for t in storage.list_tenants()]
+    except Exception:  # noqa: BLE001
+        log.exception("asset manager warm-up could not list tenants")
+        return 0
+    for tenant_id in tenants:
+        try:
+            if not tenant_eligibility.is_active(tenant_id, last_active):
+                continue
+            with tenant_scope.enter_tenant(tenant_id):
+                _grants, _allowed, scope = _context()
+                if not may_use(TOOL_KEY, _grants) or not any(c or o for c, o in scope.values()):
+                    continue
+                warmed += 1 if warm_cache() else 0
+        except Exception:  # noqa: BLE001
+            log.exception("asset manager warm-up failed for tenant %s", tenant_id)
+    return warmed
 
 
 def do_start_sync() -> dict:
