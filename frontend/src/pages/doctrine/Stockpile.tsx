@@ -7,13 +7,21 @@ import { doctrineApi } from '../../api/client'
 import type { AggregatedStockpileRow, StockpileRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
-import { qty } from '../../format'
+import { qty, pct } from '../../format'
 
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn' }
 
 function severityBadge(value: unknown) {
   const severity = value as string | null
   return severity ? <Badge size="xs" color={SEVERITY_COLOR[severity] ?? 'dimmed'} variant="light">{severity}</Badge> : null
+}
+
+function stockPctColumn<T extends { required_total: number; available: number }>(): ColumnDef<T, any> {
+  return {
+    header: 'Stock %', id: 'stock_pct', size: 90,
+    accessorFn: (r) => (r.required_total > 0 ? r.available / r.required_total : null),
+    cell: (i) => pct(i.getValue()),
+  }
 }
 
 export default function Stockpile() {
@@ -30,6 +38,7 @@ export default function Stockpile() {
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
+    stockPctColumn(),
     {
       header: 'Shortfall', accessorKey: 'shortfall', size: 110,
       cell: (i) => (i.getValue() > 0 ? qty(i.getValue()) : '–'),
@@ -47,6 +56,7 @@ export default function Stockpile() {
     { header: 'Section', accessorKey: 'slot_section', size: 110 },
     { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
+    stockPctColumn(),
     {
       header: 'Shortfall', accessorKey: 'shortfall', size: 110,
       cell: (i) => (i.getValue() > 0 ? qty(i.getValue()) : '–'),

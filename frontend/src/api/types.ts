@@ -1278,6 +1278,8 @@ export interface ShoppingListRow {
   total_cost: number | null
   hub_region_id: number | null
   hub_name: string | null
+  required_total: number
+  available: number
 }
 
 export interface FittingStatus {

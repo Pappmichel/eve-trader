@@ -215,6 +215,8 @@ class ShoppingListRow:
     total_cost: Optional[float]         # recommended price * shortfall
     hub_region_id: Optional[int] = None  # hub behind jita_landed_price (#222)
     hub_name: Optional[str] = None
+    required_total: float = 0.0          # combined target across every fitting
+    available: float = 0.0               # combined stock counted against it
 
 
 # --------------------------------------------------------------- status / ampel
