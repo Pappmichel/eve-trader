@@ -11,7 +11,7 @@ this tool may read). They must not be conflated.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
 from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
@@ -58,6 +58,35 @@ def shared_owner_ids(data_kind: str, tool_key: str, owner_type: str) -> list[int
     if owner_type not in ("character", "corporation"):
         raise AccessorError(f"unknown owner_type {owner_type!r}")
     return _shared_owner_ids(data_kind, tool_key, owner_type)
+
+
+def owners_shared_with_any(
+    data_kind: str, tool_keys: Optional[Iterable[str]] = None,
+) -> tuple[list[int], list[int]]:
+    """(character ids, corporation ids) sharing `data_kind` with any of
+    `tool_keys` - a union read (docs/ASSET_MANAGER_PLAN.md D10). `tool_keys`
+    None means any tool (gate off, same convention as
+    `tenant_eligibility.granted_tools`); an empty iterable means nobody.
+    Unknown or live-only kinds raise: there is no snapshot to read for a
+    live-only kind."""
+    kind = _KIND_BY_KEY.get(data_kind)
+    if kind is None:
+        raise AccessorError(f"unknown data_kind {data_kind!r}")
+    if kind.live_only:
+        raise AccessorError(f"{data_kind!r} is live-only: no snapshot owners to union")
+    sql = "SELECT DISTINCT owner_type, owner_id FROM esi_sharing WHERE data_kind = ?"
+    params: tuple = (data_kind,)
+    if tool_keys is not None:
+        keys = sorted({_require_tool_key(k) for k in tool_keys})
+        if not keys:
+            return [], []
+        sql += " AND tool_key = ANY(?)"
+        params += (keys,)
+    with storage.connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    chars = sorted(int(r[1]) for r in rows if r[0] == "character")
+    corps = sorted(int(r[1]) for r in rows if r[0] == "corporation")
+    return chars, corps
 
 
 def is_shared(data_kind: str, tool_key: str, owner_type: str, owner_id: int) -> bool:
@@ -130,6 +159,8 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
         rows.extend(_read_planets(tool_key, owner_id_filter))
     elif data_kind == "wallet_balance":
         rows.extend(_read_wallet_balance(tool_key, owner_id_filter))
+    elif data_kind == "corp_divisions":
+        rows.extend(_read_corp_divisions(tool_key, owner_id_filter))
     elif data_kind == "standings":
         rows.extend(_read_standings(tool_key, owner_id_filter))
     elif data_kind == "loyalty":
@@ -416,6 +447,17 @@ def _read_wallet_balance(tool_key: str, owner_id) -> list[dict]:
     return [
         {"owner_type": "character", "owner_id": cid, "balance": bal}
         for cid, bal in sorted(balances.items())
+    ]
+
+
+def _read_corp_divisions(tool_key: str, owner_id) -> list[dict]:
+    """Corporation division names (`kind` is 'hangar' or 'wallet'); a name
+    CCP never set is None."""
+    ids = _filter_ids(_shared_owner_ids("corp_divisions", tool_key, "corporation"), owner_id)
+    return [
+        {"owner_type": "corporation", "owner_id": int(r[0]), "kind": r[1],
+         "division": int(r[2]), "name": r[3]}
+        for r in storage.load_corp_divisions(ids)
     ]
 
 

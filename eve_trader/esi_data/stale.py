@@ -54,6 +54,7 @@ _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     # online) have no table, so they are correctly absent here.
     "standings": {"character": ("character_standings",)},
     "loyalty": {"character": ("character_loyalty_points",)},
+    "corp_divisions": {"corporation": ("corp_divisions",)},
     # Phase 2. `skills` clears only the new tables, never character_slots.
     "skills": {"character": ("character_skills", "character_attributes")},
     "skillqueue": {"character": ("character_skillqueue",)},

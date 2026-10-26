@@ -935,6 +935,7 @@ class AssetLocationSearchResponse(BaseModel):
     type_id: int
     type_name: str
     locations: list[schemas.AssetLocationRow]
+    assets_synced_at: Optional[str] = None
 
 
 @router.post("/asset-locations", response_model=AssetLocationSearchResponse)

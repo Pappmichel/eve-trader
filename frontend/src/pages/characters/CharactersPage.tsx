@@ -415,7 +415,7 @@ function CorporationsSection({
       </Group>
       <Text size="sm" c="dimmed" mb="xs">
         Corp snapshots are reached through a registered member character, not a second login.
-        EVE requires {formatCorpRoles(['Director'])} for assets, jobs, and blueprints;
+        EVE requires {formatCorpRoles(['Director'])} for assets, jobs, blueprints, and division names;
         {' '}{formatCorpRoles(['Accountant', 'Trader'])} for market orders;
         {' '}{formatCorpRoles(['Accountant', 'Junior_Accountant'])} for wallet.
         A &quot;role missing&quot; badge below only appears for a corp with at least one member who has
@@ -609,7 +609,7 @@ export default function CharactersPage() {
   const extraByCharacter = useMemo(() => {
     const map = new Map<number, string[]>()
     for (const owner of owners) {
-      map.set(owner.character_id, extraKindsForCharacter(owner.character_id, sharing, capabilities))
+      map.set(owner.character_id, extraKindsForCharacter(owner.character_id, sharing, capabilities, owner.corporation_id))
     }
     return map
   }, [owners, sharing, capabilities])

@@ -39,7 +39,7 @@ def _union_token_scopes(character_id: int) -> frozenset[str]:
 def _scopes_for_kind_or_cap(key: str) -> set[str]:
     kind = _KIND_BY_KEY.get(key)
     if kind is not None:
-        out = {kind.character_scope}
+        out = {kind.character_scope} if kind.character_scope else set()
         if kind.corporation_scope:
             out.add(kind.corporation_scope)
         return out
@@ -71,7 +71,7 @@ def do_access_preview(
 
     items: list[dict] = []
     for kind in OWNED_DATA_KINDS:
-        kind_scopes = {kind.character_scope}
+        kind_scopes = {kind.character_scope} if kind.character_scope else set()
         if kind.corporation_scope:
             kind_scopes.add(kind.corporation_scope)
         asking = kind_scopes & requested
@@ -365,6 +365,8 @@ def do_set_sharing(
     kind = _KIND_BY_KEY.get(data_kind)
     if kind is None:
         raise ActionError(f"Unknown data_kind {data_kind!r}")
+    if owner_type == "character" and kind.character_scope is None:
+        raise ActionError(f"{data_kind!r} is a corporation-only data kind")
     if tool_key not in ALL_TOOL_KEYS:
         raise ActionError(f"Unknown tool_key {tool_key!r}")
     if tool_key not in kind.consuming_tools:

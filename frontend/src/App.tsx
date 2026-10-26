@@ -78,6 +78,11 @@ const StationTradingSettings = lazy(() => import('./pages/station_trading/Statio
 const StationTradingRealized = lazy(() => import('./pages/station_trading/RealizedProfit'))
 
 const SortingLayout = lazy(() => import('./pages/sorting/SortingLayout'))
+const AssetManagerLayout = lazy(() => import('./pages/asset_manager/AssetManagerLayout'))
+const AssetInventory = lazy(() => import('./pages/asset_manager/AssetInventory'))
+const AssetLocations = lazy(() => import('./pages/asset_manager/AssetLocations'))
+const AssetHistory = lazy(() => import('./pages/asset_manager/AssetHistory'))
+const AssetInsights = lazy(() => import('./pages/asset_manager/AssetInsights'))
 const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
 const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
 
@@ -313,6 +318,13 @@ function App() {
               <Route path="undercut" element={<StationTradingUndercutCheck />} />
               <Route path="realized" element={<StationTradingRealized />} />
               <Route path="settings" element={<StationTradingSettings />} />
+            </Route>
+
+            <Route path="/assets" element={<AssetManagerLayout />}>
+              <Route index element={<AssetInventory />} />
+              <Route path="locations" element={<AssetLocations />} />
+              <Route path="history" element={<AssetHistory />} />
+              <Route path="insights" element={<AssetInsights />} />
             </Route>
 
             <Route path="/sorting" element={<SortingLayout />}>

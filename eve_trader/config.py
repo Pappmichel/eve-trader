@@ -249,6 +249,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "backup_interval_hours": (0, None),
     "jita_price_cache_interval_hours": (0, None),
     "portfolio_snapshot_interval_hours": (0, None),
+    "asset_history_retention_days": (1, None),
     "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
     "alerts_mail_poll_minutes": (1, None),            # SchedulerOperatorConfig (operator-only)
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
@@ -609,6 +610,9 @@ class TradingConfig:
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
     jita_price_cache_interval_hours: float = 3.0        # production.jita_price_cache.refresh_jita_price_cache()
     portfolio_snapshot_interval_hours: float = 24.0     # portfolio.take_portfolio_snapshot() - see PORTFOLIO_REWORK_PLAN.md
+    # Asset Manager daily quantity history (docs/ASSET_MANAGER_PLAN.md phase 6):
+    # days kept before the daily snapshot job prunes them.
+    asset_history_retention_days: float = 90.0
 
 
 @dataclass

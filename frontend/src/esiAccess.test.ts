@@ -48,7 +48,7 @@ describe('deriveCellState', () => {
     })
     expect(cell.kind).toBe('some')
     expect(cell.sharedCount).toBe(2)
-    expect(cell.capableCount).toBe(5)
+    expect(cell.capableCount).toBe(6)
   })
 
   it('is all when every consuming tool is shared', () => {
@@ -58,6 +58,7 @@ describe('deriveCellState', () => {
       { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'sorting' },
       { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'trading' },
       { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'portfolio' },
+      { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'asset_manager' },
     ]
     const cell = deriveCellState({
       ownerType: 'character', ownerId: 1, dataKind: 'assets',
@@ -150,6 +151,18 @@ describe('tool view / extra kinds', () => {
     expect(extraKindsForCharacter(1, sharing, capabilities).sort()).toEqual([
       'assets', 'structure_market_book',
     ])
+  })
+
+  it('requests the scope of a corporation-only kind for the corp members only', () => {
+    const rows: EsiSharingRow[] = [
+      ...sharing,
+      { owner_type: 'corporation', owner_id: 99, data_kind: 'corp_divisions', tool_key: 'asset_manager' },
+    ]
+    expect(extraKindsForCharacter(1, rows, capabilities, 99)).toContain('corp_divisions')
+    expect(extraKindsForCharacter(1, rows, capabilities, 98)).not.toContain('corp_divisions')
+    expect(extraKindsForCharacter(1, rows, capabilities)).not.toContain('corp_divisions')
+    // The corp's wallet share still does not add wallet to the character's request.
+    expect(extraKindsForCharacter(1, rows, capabilities, 99)).not.toContain('wallet')
   })
 
   it('reads pending keys from the access-preview added flags', () => {

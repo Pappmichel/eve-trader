@@ -265,6 +265,8 @@ def _kinds_for_owner(
         if spec.key in wanted and spec.key not in seen:
             if owner_type == "corporation" and spec.corporation_scope is None:
                 continue
+            if owner_type == "character" and spec.character_scope is None:
+                continue
             seen.add(spec.key)
             kinds.append(spec.key)
     return kinds
@@ -638,6 +640,30 @@ def do_sync_for_tool(
     return _sync(sharing, client=client, tool_key=tool_key, extra=extra)
 
 
+def do_sync_kinds(
+    kinds: Iterable[str],
+    *,
+    tool_keys: Optional[Iterable[str]] = None,
+    client: Optional[ESIClient] = None,
+    extra: Optional[dict] = None,
+) -> dict:
+    """Refresh `kinds` for every owner that shares them with any of
+    `tool_keys` (None = any tool). `extra` is forwarded to the fetchers, as
+    in `do_sync_for_tool`.
+
+    The Asset Manager reads the union of shares (docs/ASSET_MANAGER_PLAN.md
+    D10/D11), so its sync button must refresh exactly that union, not only
+    the rows shared with the Asset Manager itself.
+    """
+    wanted = set(kinds)
+    allowed = None if tool_keys is None else set(tool_keys)
+    sharing = [
+        row for row in storage.list_esi_sharing()
+        if row[2] in wanted and (allowed is None or row[3] in allowed)
+    ]
+    return _sync(sharing, client=client, tool_key=None, extra=extra)
+
+
 def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = None) -> dict:
     """Refresh every shared (owner, kind) for the current tenant.
 
@@ -689,6 +715,8 @@ def pending_due(
         if kind_filter is not None and row[2] not in kind_filter:
             continue
         if row[0] == "corporation" and spec.corporation_scope is None:
+            continue
+        if row[0] == "character" and spec.character_scope is None:
             continue
         if spec.schedule_mode == ON_DEMAND and (row[0], row[1], row[2]) not in wanted:
             continue
