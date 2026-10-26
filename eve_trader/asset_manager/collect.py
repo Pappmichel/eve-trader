@@ -155,9 +155,18 @@ def load_base_rows(scope: dict[str, tuple[list[int], list[int]]], *, include_man
                 contract_owners, with_location=True):
             rows.append(_virtual("contract", owner_type, owner_id, None, type_id, quantity, location_id))
 
+    # A corp job's output location is often the corp Office item rather than the
+    # structure it stands in, and an Office has no name of its own to resolve.
+    office_locations = {
+        (a["owner_id"], a["item_id"]): a["location_id"]
+        for a in assets if a["type_id"] == storage.OFFICE_TYPE_ID and a["owner_type"] == "corporation"
+    }
     for job in storage.load_asset_manager_job_outputs(*scope["industry_jobs"]):
+        location_id = job["location_id"]
+        if job["owner_type"] == "corporation":
+            location_id = office_locations.get((job["owner_id"], location_id), location_id)
         row = _virtual("in_production", job["owner_type"], job["owner_id"], None,
-                       job["type_id"], job["quantity"], job["location_id"])
+                       job["type_id"], job["quantity"], location_id)
         row["job_end"] = job["end_date"]
         row["job_status"] = job["status"]
         rows.append(row)
