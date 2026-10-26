@@ -3782,4 +3782,5 @@ export interface LocationReport {
   containers_resolved_through_parent: number
   bulk_resolve_candidates: number
   registry_status: Record<string, number>
+  suggested_characters: { character_id: number; character_name: string; structures: number }[]
 }

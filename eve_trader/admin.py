@@ -292,7 +292,42 @@ def do_location_report() -> dict:
     report["bulk_resolve_candidates"] = len(_structure_resolve_candidates())
     from .locations import store as location_store
     report["registry_status"] = location_store.status_counts()
+    report["suggested_characters"] = _suggest_resolution_characters(report, characters)
     return report
+
+
+def _suggest_resolution_characters(report: dict, capable: list) -> list[dict]:
+    """Characters that own assets in a player structure nobody could name, hold
+    a token with the Structure name resolution scope, but have not ticked that
+    capability - the likely reason a lookup was refused (403): only a character
+    that can see a structure can name it. Ticking is the character's consent
+    and stays the user's decision; this only points at it."""
+    from .esi_data.registry import ACCESS_CAPABILITIES
+    from .esi_data.selector import select_auth_role
+
+    ids = [u["location_id"] for u in report.get("unresolved", []) if u.get("kind") == "structure"]
+    if not ids:
+        return []
+    cap = next(c for c in ACCESS_CAPABILITIES if c.key == "structure_name_resolution")
+    already = {character_id for _role, character_id, _name in capable}
+    tm = TokenManager(OAUTH_CONFIG)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, COUNT(DISTINCT COALESCE(resolved_location_id, location_id)) "
+            "FROM character_assets WHERE (resolved_location_id = ANY(?) OR location_id = ANY(?)) "
+            "GROUP BY owner_character_id ORDER BY 2 DESC", (ids, ids),
+        ).fetchall()
+    out = []
+    for character_id, structures in rows:
+        if character_id in already:
+            continue
+        role = select_auth_role(character_id, cap.character_scope, tokens=tm)
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append({"character_id": int(character_id), "character_name": record.character_name if record else str(character_id),
+                    "structures": int(structures)})
+    return out
 
 
 def _structure_resolve_candidates() -> set[int]:
