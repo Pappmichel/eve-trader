@@ -551,7 +551,20 @@ record each result here. Phase 0 and phase 1 need none of them.
 | S-12 | Distinct (owner, location, type) per tenant | Phase 6 storage per day and retention | Phase 6 |
 | S-13 | Current Portfolio breakdown JSON saved | Before/after check for the R-3 extraction | Phase 2 |
 
-### Results (2026-10-26, test server "Server 1", read-only)
+### Results (2026-10-26, test server "Server 1" and live "Server 2", read-only)
+
+Server 2 (live, same script) matches Server 1 within a few rows: Default 10,290
+character + 14,246 corp rows, 322 places (17 unnamed, 67 rows), no NULL
+`resolved_location_id`, 43 system-range ids, S-05 65 of 12,626 blueprint items
+unknown (0.5%), S-07 3,758 types in 2.7 s (3,367 priced), S-08 identical
+(~870 nameable items), S-11 94 outstanding contracts (none without start
+location) and 210 listed orders, S-12 9,545 triples. Two differences matter:
+the live Orukka and Hari Lindberg tenants have no sharing rows at all (their
+assets are frozen and invisible to every tool, so the asset manager shows
+nothing for them), and their `resolved_hangar_flag` is NULL for every row, so
+those tenants would show "Unknown" hangars if they shared again before a new
+asset sync. Default has 224 NULL hangar flags (one small corp). Everything
+below is the Server 1 run.
 
 Measured on Server 1 (all six tenants; only Default has volume, the others are
 subsets), not on the live server. Server 1's assets were last synced before
