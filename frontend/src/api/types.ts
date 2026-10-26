@@ -3759,6 +3759,7 @@ export interface LocationReportUnresolved {
   state: string
   sources: string[]
   reachable_by_bulk_resolve: boolean
+  only_planetary_goods?: boolean
 }
 
 export interface LocationReportSource {
@@ -3782,5 +3783,6 @@ export interface LocationReport {
   containers_resolved_through_parent: number
   bulk_resolve_candidates: number
   registry_status: Record<string, number>
+  unresolved_planetary_goods_only: number
   suggested_characters: { character_id: number; character_name: string; structures: number }[]
 }
