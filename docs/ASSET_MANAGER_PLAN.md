@@ -582,7 +582,7 @@ The scripts were throwaway and are not committed.
 | S-07 | Default: 3,758 distinct owned types, `portfolio._priced` 5.9 s (cold cache), 3,367 priced; others 0.06-0.09 s | 120 s row cache is needed for Default; first page open after a cold start is slow |
 | S-08 | Default: 186 + 101 + 86 singleton ships and ~175 + 99 + 66 containers on the three largest characters, 22 ships + 80 containers on the largest corp; ~870 nameable items in total | One `/assets/names` call per 1000 ids: 1-2 calls per owner per asset sync |
 | S-09 | Live (character with a token): ships answered with their names, containers and non-singleton ids answered HTTP 200 with the literal name `"None"`; no 404 for a mixed request | Matches the implementation: "None" -> NULL, a 404 chunk is skipped anyway |
-| S-10 | No stored token holds `esi-corporations.read_divisions.v1`, so no divisions call was possible (18 tokens, 3 corporations) | Director characters must re-authorize before names appear; the response shape is from the ESI docs and unverified |
+| S-10 | After `pappmichl3` re-authorized with the new scope (the Characters page now requests it for a corp that shares `corp_divisions`): `GET /corporations/{id}/divisions/` answered `{"hangar": [{"division": 1}, ... 7], "wallet": [...]}` and a division without a custom name has no `name` key at all. The fetcher stored 14 rows with NULL names | Matches the implementation (missing name -> NULL -> "Division N"). A corp with renamed divisions is still unverified |
 | S-11 | Default: 70 outstanding item exchanges, none with a NULL start location; listed orders: 200 on one character | R-5 fallback unused on this data |
 | S-12 | Default: 9,530 distinct (owner, place, type) rows; other tenants 767 and 3,298 | History is about 10k rows per tenant per day, ~900k at 90 days of retention for the largest |
 | S-13 | Default `total_wealth()` before the asset manager change: total 1,310.4 b ISK (assets 982.0 b, blueprints 153.0 b, wallet 103.4 b, listed 42.4 b, contracts 20.0 b, escrow 9.6 b), 21,606 priced and 3,348 unpriced items, freight 900/m3 | Reference for comparing after a deploy |
@@ -757,8 +757,9 @@ Phase 4 (2026-10-26):
 
 Still open, in order:
 
-1. Server checks were run on Server 1 (section 12, Results). Open from them:
-   S-10 (a real `/divisions` response, needs a Director re-authorization with
-   the new scope) and the same measurements on the live server.
+1. Server checks were run on both servers (section 12, Results). Open: a
+   real renamed division (the test corp has none) and the cold-start cost of
+   the first list call (about 22 s on the 1-vCPU test server: price_items
+   13.5 s, of which BPC invention 7.3 s and Goonmetrics 6 s).
 2. Deploy, run `eve-trader admin grant-defaults`, then remove the Production
    Asset Search tab (D12, R-13).
