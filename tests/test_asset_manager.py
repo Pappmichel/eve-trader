@@ -200,6 +200,21 @@ def test_corp_division_names_label_the_hangar(tenant, gate_on):
     assert rows[902]["hangar"] == "Division 3"  # unnamed division and wallet names never leak in
 
 
+def test_corp_job_output_in_an_office_shows_the_structure(tenant, gate_on):
+    storage.replace_assets("corp_assets", [
+        (900, OFFICE, STATION, "OfficeFolder", 1, 0, "Corp (corp)", True),
+    ], owner_corporation_id=CORP, owner_name="Corp (corp)")
+    storage.replace_industry_jobs("corp_industry_jobs", [
+        (7001, 1, BP, PRODUCT, 3, 900, "active", "2026-11-01T00:00:00Z", None, ALICE, "Alice"),
+    ], owner_corporation_id=CORP)
+    _share("corporation", CORP, "asset_manager", "assets", "industry_jobs")
+
+    job = next(r for r in _rows()["rows"] if r["source"] == "in_production")
+
+    assert job["location_id"] == STATION
+    assert job["location_name"] == "Jita IV - Moon 4"
+
+
 def test_stored_item_names_are_loaded_per_owner(tenant):
     _seed_alice()
     storage.replace_assets("character_assets", [(31, SHIP, STATION, "Hangar", 1, 0, "Bob", True, "Bob's ship")],
