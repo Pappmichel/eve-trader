@@ -6,7 +6,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { doctrineApi } from '../../api/client'
 import type { ShoppingListRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
-import { qty, isk } from '../../format'
+import { qty, isk, pct } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
@@ -22,6 +22,11 @@ export default function ShoppingList() {
 
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
+    {
+      header: 'Stock %', id: 'stock_pct', size: 90,
+      accessorFn: (r) => (r.required_total > 0 ? r.available / r.required_total : null),
+      cell: (i) => pct(i.getValue()),
+    },
     { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()), meta: { exportRole: 'qty' } },
     { header: 'Build', accessorKey: 'build_cost', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
     { header: 'C-J', accessorKey: 'cj_price', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
