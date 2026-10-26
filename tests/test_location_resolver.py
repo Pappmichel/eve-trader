@@ -97,7 +97,7 @@ def test_register_classifies_and_skips_stations(tenant):
     assert rows[STRUCT]["status"] == "resolved" and rows[STRUCT]["name"] == "Known Fort"
     assert rows[STRUCT2]["status"] == "resolved" and rows[STRUCT2]["name"] == "Shared Fort"
     assert rows[STRUCT3]["status"] == "pending"
-    assert result["registered"] == 5
+    assert result["registered"] == 4  # STRUCT was already recorded by set_cached_structure_name
 
 
 def test_offices_and_containers_never_reach_esi(tenant):

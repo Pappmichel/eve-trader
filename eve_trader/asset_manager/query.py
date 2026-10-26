@@ -21,8 +21,8 @@ MAX_PAGE_SIZE = 500
 ROW_FIELDS = (
     "key", "source", "owner_type", "owner_id", "owner_name", "item_id", "item_name", "type_id",
     "type_name", "group_id", "group_name", "category_id", "category_name", "quantity",
-    "location_id", "location_name", "location_kind", "solar_system_id", "solar_system_name",
-    "security", "region_id", "region_name", "flag", "hangar", "container_path",
+    "location_id", "location_name", "location_kind", "location_status", "solar_system_id",
+    "solar_system_name", "security", "region_id", "region_name", "flag", "hangar", "container_path",
     "parent_item_id", "is_singleton", "badges", "stock", "me", "te", "runs", "unit_volume",
     "volume", "unit_price", "value", "job_end",
 )
@@ -156,8 +156,8 @@ def group(rows: list[dict], mode: str) -> list[dict]:
                 "locations": set(),
             }
             if mode == "type_location":
-                for k in ("location_id", "location_name", "location_kind", "solar_system_id",
-                          "solar_system_name", "security", "region_id", "region_name"):
+                for k in ("location_id", "location_name", "location_kind", "location_status",
+                          "solar_system_id", "solar_system_name", "security", "region_id", "region_name"):
                     g[k] = r.get(k)
             groups[key] = g
         g["quantity"] += r["quantity"]
@@ -234,6 +234,7 @@ def facets(rows: list[dict]) -> dict:
         loc = r.get("location_id") or 0
         locations.setdefault(loc, {
             "id": loc, "name": r.get("location_name"), "kind": r.get("location_kind"),
+            "status": r.get("location_status"),
             "solar_system_id": r.get("solar_system_id"), "region_id": r.get("region_id"), "count": 0,
         })["count"] += 1
         if r.get("category_id") is not None:

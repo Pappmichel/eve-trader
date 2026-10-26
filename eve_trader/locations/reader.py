@@ -3,9 +3,8 @@
 shared global names) plus one for system/region, instead of up to five
 sequential lookups per caller.
 
-Name tiers keep the order storage.get_location_names always had: the tenant's
-structure_names, then the registry, then the shared global names, then the
-tenant's manual names, then SDE stations. An Office or container shows its
+Name tiers: the tenant's location registry, then the shared global names, then
+the tenant's manual names, then SDE stations. An Office or container shows its
 parent's name and system (its own id has no name).
 """
 from __future__ import annotations
@@ -37,10 +36,9 @@ class LocationInfo:
 
 
 _RAW_SQL = (
-    "SELECT i.id, sn.name, sn.solar_system_id, r.kind, r.parent_location_id, r.name, r.solar_system_id, "
+    "SELECT i.id, r.kind, r.parent_location_id, r.name, r.solar_system_id, "
     "r.status, m.name, st.station_name, st.solar_system_id "
     "FROM unnest(?::bigint[]) AS i(id) "
-    "LEFT JOIN structure_names sn ON sn.location_id = i.id "
     "LEFT JOIN location_registry r ON r.location_id = i.id "
     "LEFT JOIN manual_location_names m ON m.location_id = i.id "
     "LEFT JOIN sde_stations st ON st.station_id = i.id"
@@ -53,9 +51,9 @@ def _raw(ids: list[int]) -> dict[int, dict]:
     with storage.connect() as conn:
         rows = conn.execute(_RAW_SQL, (ids,)).fetchall()
     out = {}
-    for (i, sn_name, sn_sys, r_kind, r_parent, r_name, r_sys, r_status, m_name, st_name, st_sys) in rows:
+    for (i, r_kind, r_parent, r_name, r_sys, r_status, m_name, st_name, st_sys) in rows:
         out[int(i)] = {
-            "structure_name": sn_name, "structure_sys": sn_sys, "kind": r_kind, "parent": r_parent,
+            "kind": r_kind, "parent": r_parent,
             "registry_name": r_name, "registry_sys": r_sys, "status": r_status, "manual": m_name,
             "station_name": st_name, "station_sys": st_sys,
         }
@@ -75,13 +73,13 @@ def describe(location_ids: Iterable[int]) -> dict[int, LocationInfo]:
     })
     raw.update(_raw(parents))
 
-    needs_global = [i for i, r in raw.items() if not (r["structure_name"] or r["registry_name"])]
+    needs_global = [i for i, r in raw.items() if not r["registry_name"]]
     global_names = storage.get_global_structure_names(needs_global) if needs_global else {}
 
     def own(i: int) -> tuple[Optional[str], Optional[int]]:
         r = raw[i]
-        name = r["structure_name"] or r["registry_name"]
-        system = r["structure_sys"] or r["registry_sys"]
+        name = r["registry_name"]
+        system = r["registry_sys"]
         if not name and i in global_names:
             name, g_sys = global_names[i]
             system = system or g_sys

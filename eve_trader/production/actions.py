@@ -659,20 +659,17 @@ def do_search_locations(query: str) -> dict:
 
 def do_set_manual_location_name(location_id: int, name: str) -> dict:
     """Gives `location_id` a tenant-own display name (docs/
-    MANUAL_TRACKING_PLAN.md phase 2, decision 8) - the lowest-priority tier
-    in storage.get_location_names' lookup chain, for a structure/station
-    this tenant can't resolve via ESI (or doesn't want to). Never written to
-    the global cache - purely this tenant's own opinion."""
-    name = name.strip()
-    if not name:
-        raise ActionError("Name must not be empty.")
-    storage.set_manual_location_name(location_id, name)
-    return {"location_id": location_id, "name": name}
+    MANUAL_TRACKING_PLAN.md phase 2, decision 8). The logic is shared with the
+    other tools in locations.actions."""
+    from ..locations import actions as location_actions
+
+    return location_actions.do_set_manual_name(location_id, name)
 
 
 def do_remove_manual_location_name(location_id: int) -> dict:
-    storage.remove_manual_location_name(location_id)
-    return {"location_id": location_id}
+    from ..locations import actions as location_actions
+
+    return location_actions.do_remove_manual_name(location_id)
 
 
 def do_estimate_invention(product_name: str, decryptor_name: str | None = None,

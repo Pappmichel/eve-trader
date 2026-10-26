@@ -200,8 +200,16 @@ Phases 1-4 are implemented. Deviations from the text above:
   shows up in a profile.
 - The reader has no TTL cache yet; it already needs two queries per call
   instead of up to five. Add one with explicit invalidation if profiling asks.
-- Phases 5-7 (migrate the remaining readers, UI affordances, drop
-  `structure_names`) are open.
+- **Phases 5-7 (2026-10-27).** Every reader goes through the registry or
+  `reader.describe`: Realized regions, category systems, the Production
+  structure lists and the location search; the Asset Manager maps job outputs
+  through `storage.asset_item_parents`. The Asset Manager says why a place has
+  no name and offers "Name this location", "Look up again" and "Remove my
+  name". Phase 7 is split: this release copies `structure_names` into the
+  registry and stops every read and write of it; the `DROP TABLE` follows one
+  release later (rollback safety, as planned). Readers outside the Asset
+  Manager (History, Insights, type drawer) still show a plain id without the
+  reason.
 
 ## 5. Risks and rules
 - **Tenant isolation.** Registry is RLS-scoped. Only names that were resolved

@@ -1098,6 +1098,13 @@ export const assetManagerApi = {
   typeDetail: (typeId: number) => get<T.AssetTypeDetail>(`/api/asset-manager/types/${typeId}`),
   freshness: () => get<T.AssetFreshness>('/api/asset-manager/freshness'),
   sync: () => post<T.PipelineRunStatus>('/api/asset-manager/sync'),
+  setLocationName: (locationId: number, name: string) =>
+    put<{ location_id: number; name: string }>(`/api/asset-manager/locations/${locationId}/name`, { name }),
+  removeLocationName: (locationId: number) =>
+    del<{ location_id: number }>(`/api/asset-manager/locations/${locationId}/name`),
+  retryLocation: (locationId: number) =>
+    post<{ location_id: number; name: string | null; status: string | null }>(
+      `/api/asset-manager/locations/${locationId}/retry`),
   syncStatus: () => get<T.PipelineRunStatus>('/api/asset-manager/sync/status'),
   csvUrl: (query: T.AssetQuery) => `/api/asset-manager/export.csv?${assetQueryString(query)}`,
   eveList: (query: T.AssetQuery) =>

@@ -3,8 +3,10 @@
 -- station or a solar system (those come from the SDE). Records what the id is
 -- (kind), the parent an Office or container resolves through, the resolved
 -- name and the outcome of the last ESI lookup, so a failure has a reason and a
--- retry date instead of a bare NULL name. structure_names stays as a
--- write-through copy for the older readers until the plan's last phase.
+-- retry date instead of a bare NULL name. It replaces structure_names: the
+-- one-time copy at the end of this file moves every name found there, and no
+-- code reads or writes structure_names any more (phase 7; the table itself is
+-- dropped in a later release).
 -- Idempotent - every statement is safe to re-run.
 --
 -- Usage (owner role only, never eve_trader_app):
@@ -44,3 +46,20 @@ CREATE POLICY tenant_isolation ON location_registry
 GRANT SELECT, INSERT, UPDATE, DELETE ON location_registry TO eve_trader_app;
 CREATE INDEX IF NOT EXISTS idx_location_registry_due
     ON location_registry (tenant_id, status, next_retry_at);
+
+-- ====================================================== one-time copy (phase 7)
+-- Names already resolved into the old per-tenant structure_names table. Runs
+-- as the owner role, so RLS does not apply and every tenant is copied.
+-- Idempotent: an id the registry already has keeps its row, except that a row
+-- without a name takes the old name.
+INSERT INTO location_registry (tenant_id, location_id, kind, name, solar_system_id, status, resolved_at)
+SELECT sn.tenant_id, sn.location_id, 'structure', sn.name, sn.solar_system_id, 'resolved', now()
+FROM structure_names sn
+WHERE sn.name IS NOT NULL AND sn.location_id >= 1000000000000
+ON CONFLICT (tenant_id, location_id) DO NOTHING;
+UPDATE location_registry r
+SET name = sn.name, solar_system_id = COALESCE(r.solar_system_id, sn.solar_system_id),
+    status = 'resolved', resolved_at = COALESCE(r.resolved_at, now())
+FROM structure_names sn
+WHERE sn.tenant_id = r.tenant_id AND sn.location_id = r.location_id
+  AND r.name IS NULL AND sn.name IS NOT NULL;
