@@ -433,6 +433,7 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
             build_cost=build_cost, cj_price=cj_price, jita_landed_price=jita_landed_price,
             recommended_source=recommended_source, total_cost=total_cost,
             hub_region_id=hub_id, hub_name=hubs.hub_name(hub_id) if hub_id is not None else None,
+            required_total=row.required_total, available=row.available,
         ))
     return result
 
