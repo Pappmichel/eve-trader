@@ -750,6 +750,45 @@ widens the alert type CHECK constraints).
   product x chain x planet type x CC level x radius) runs only with
   `PI_CORPUS=1` (~3 min).
 
+## Location resolution (names, kinds, parents)
+
+Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
+`eve_trader/locations/`, answers "what is this location id": it imports
+`storage` and the ESI client, never a tool package (same rule as `esi_data/`).
+
+- **One registry.** `location_registry` (per tenant, RLS; `docs/location_
+  registry_schema.sql`) has a row for every referenced id that is not an NPC
+  station or solar system: `kind` (`structure`, `office`, `container`,
+  `other`), the `parent_location_id` an Office or container resolves through,
+  the name, and the last lookup's `status` (`pending`, `resolved`, `forbidden`,
+  `not_found`, `transient`) with `next_retry_at`. `structure_names` stays as a
+  write-through copy for older readers. A container is any id that is an asset
+  `item_id`: an asset's raw `location_id` is its immediate parent, so most
+  "huge ids" are containers and ships, which ESI can never name.
+- **One reader.** `locations.reader.describe(ids)` (name, kind, system, region,
+  parent). `storage.get_location_names` and `asset_manager_location_details`
+  delegate to it; an Office or container shows its structure. New code reads
+  names through it, not through `structure_names`.
+- **One resolver.** `locations.resolver.resolve_pending()` registers what the
+  tenant references and looks up only what is due. The ESI orchestrator
+  (`esi_data/orchestrator.py` `_sync`) calls it once at the end of every pass
+  that fetched a location kind, so idle scheduler ticks stay free and no tool
+  has its own resolution step. `resolve_ids` is the on-demand path behind
+  `production.actions.do_resolve_structure_name` (the Default-Tenant operator
+  fallback stays there). The Admin bulk job calls `resolve_pending(force=...)`.
+- **Retry rules.** 403 `forbidden` 7 days (earlier when the set of capable
+  characters changes), 404 `not_found` 30 days, anything else `transient` with
+  short backoff; a name older than 30 days is refreshed; a failure never hides
+  an existing name; Offices and containers never reach ESI; one run spends at
+  most a call budget and leaves the rest due. Manual names
+  (`manual_location_names`) are never looked up.
+- **Do not** add a per-tool "resolve names" step, read `structure_names`
+  directly for display, or treat every id above 10^12 as a structure.
+- **Consent.** Which characters may look names up is the user's tick of
+  "Structure name resolution" (Characters page, Access). The Admin location
+  report lists characters that own assets in unnamed structures but have not
+  ticked it; it never ticks for them.
+
 ## Testing conventions
 
 - Router tests (`tests/test_api_routers.py`) monkeypatch the already-imported

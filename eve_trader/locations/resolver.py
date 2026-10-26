@@ -1,16 +1,17 @@
 """Resolves player-structure names for one tenant (docs/LOCATION_RESOLUTION_PLAN.md
-phases 2-3).
+phases 2-4).
 
-`resolve_pending` is the single entry point. It registers every location id the
-tenant's data references, works out what each one is (Offices and containers
-resolve through their parent and never reach ESI), then looks up only the
+`resolve_pending` is the bulk entry point (run after every ESI sync pass and by
+the Admin bulk job); `resolve_ids` is the on-demand one for a few ids. Both
+register the ids involved, work out what each one is (Offices and containers
+resolve through their parent and never reach ESI), then look up only the
 structures that are due: never tried, a failure whose retry date has passed (or
 whose capable characters changed), or a name older than the refresh age.
 
 Outcomes are classified from the HTTP status: 403 forbidden (7 days), 404 not
 found (30 days), anything else transient (short exponential backoff, never
 hides an existing name). A run spends at most `budget` ESI calls; ids it did not
-reach stay due for the next run. Idle runs (nothing due) build no ESI client.
+reach stay due for the next run. A run with nothing due builds no ESI client.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from typing import Optional
 
 from .. import storage
 from ..esi_client import ESIError
-from . import store
+from . import access, store
 from .diagnostics import SOLAR_SYSTEM_RANGE, STRUCTURE_ID_MIN
 
 log = logging.getLogger(__name__)
@@ -77,12 +78,22 @@ def _combine(outcomes: list[tuple[str, str]]) -> tuple[str, str]:
 
 
 def register_seen(now: datetime) -> dict:
-    """Adds every referenced id that is not an NPC station or solar system to
-    the registry, with its kind and (for Offices and containers) its parent.
-    New structure ids start from what is already known: this tenant's
-    structure_names, the shared global names."""
+    """Registers every location id any table of this tenant references."""
     sources = storage.location_id_sources()
     all_ids: set[int] = set().union(*sources.values()) if sources else set()
+    return _register(all_ids, now)
+
+
+def register_ids(location_ids, now: datetime) -> dict:
+    """Registers just these ids (the on-demand path)."""
+    return _register({int(i) for i in location_ids if i}, now)
+
+
+def _register(all_ids: set[int], now: datetime) -> dict:
+    """Adds every id that is not an NPC station or solar system to the
+    registry, with its kind and (for Offices and containers) its parent. New
+    structure ids start from what is already known: this tenant's
+    structure_names, the shared global names."""
     if not all_ids:
         return {"registered": 0, "ids": 0}
     stations, offices, items = storage.location_kind_hints(all_ids)
@@ -131,29 +142,68 @@ def resolve_pending(
     """See the module docstring. `client`, `characters` and `corp_roles` are
     injectable for tests; in production they are built only when something is
     due. Never raises for an ESI failure."""
+    return _guarded(
+        lambda now_: _run(now_, budget, force, progress_callback, client, characters, corp_roles,
+                          scan=True, only_ids=None),
+        now)
+
+
+def resolve_ids(
+    location_ids, *, force: bool = False, budget: int = DEFAULT_BUDGET, now: Optional[datetime] = None,
+    client=None, characters: Optional[list[tuple[str, int, str]]] = None,
+    corp_roles: Optional[dict[int, str]] = None,
+) -> dict:
+    """The on-demand path: registers just these ids and looks up the ones that
+    are due (all of them with `force`). The summary carries `ids`:
+    {location_id: {name, status, attempted}} read back from the registry, so a
+    caller can tell a fresh answer from a remembered failure."""
+    from . import reader
+
+    ids = sorted({int(i) for i in location_ids if i})
+    run_at = now or datetime.now(timezone.utc)
+    summary = _guarded(
+        lambda now_: _run(now_, budget, force, None, client, characters, corp_roles,
+                          scan=False, only_ids=ids, register=ids),
+        run_at)
+    rows = store.load(ids)
+    info = reader.describe(ids)
+    summary["ids"] = {
+        i: {
+            "name": info[i].name,
+            "status": (rows.get(i) or {}).get("status"),
+            "attempted": bool((rows.get(i) or {}).get("last_attempt_at") and rows[i]["last_attempt_at"] >= run_at),
+        }
+        for i in ids
+    }
+    return summary
+
+
+def _guarded(fn, now: Optional[datetime]) -> dict:
     tenant = storage.get_current_tenant()
     with _running_guard:
         if tenant in _running:
             return {"skipped": "already running"}
         _running.add(tenant)
     try:
-        return _resolve(budget, force, progress_callback, now or datetime.now(timezone.utc),
-                        client, characters, corp_roles)
+        return fn(now or datetime.now(timezone.utc))
     finally:
         with _running_guard:
             _running.discard(tenant)
 
 
-def _resolve(budget, force, progress_callback, now, client, characters, corp_roles) -> dict:
+def _run(now, budget, force, progress_callback, client, characters, corp_roles, *, scan, only_ids,
+         register=None) -> dict:
     summary = {"registered": 0, "due": 0, "resolved": 0, "from_global": 0, "forbidden": 0,
                "not_found": 0, "transient": 0, "calls": 0, "deferred": 0}
-    summary["registered"] = register_seen(now)["registered"]
+    if scan:
+        summary["registered"] = register_seen(now)["registered"]
+    elif register:
+        summary["registered"] = register_ids(register, now)["registered"]
 
     if characters is None:
-        from ..production import esi_sync
-        characters = esi_sync.list_capability_characters("structure_name_resolution")
+        characters = access.list_capability_characters("structure_name_resolution")
     digest = characters_digest(characters)
-    todo = store.due(now, digest, now - REFRESH_AGE, limit=10_000, force=force)
+    todo = store.due(now, digest, now - REFRESH_AGE, limit=10_000, force=force, only_ids=only_ids)
     summary["due"] = len(todo)
     if not todo:
         return summary
@@ -176,21 +226,19 @@ def _resolve(budget, force, progress_callback, now, client, characters, corp_rol
         from ..auth import TokenManager
         from ..config import OAUTH_CONFIG
         from ..esi_client import ESIClient
-        from ..production import esi_sync
         client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
         if corp_roles is None:
-            corp_roles = esi_sync.corp_roles_for_characters(client, characters)
+            corp_roles = access.corp_roles_for_characters(client, characters)
     corp_roles = corp_roles or {}
 
     listed: dict[int, tuple[Optional[str], Optional[int]]] = {}
     for corporation_id, role in corp_roles.items():
+        summary["calls"] += 1
         try:
             for structure in client.corporation_structures(corporation_id, auth_role=role):
                 listed[structure.get("structure_id")] = (structure.get("name"), structure.get("solar_system_id"))
         except ESIError:
-            summary["calls"] += 1
             continue
-        summary["calls"] += 1
 
     for index, row in enumerate(todo):
         loc = row["location_id"]
@@ -227,6 +275,15 @@ def _resolve(budget, force, progress_callback, now, client, characters, corp_rol
         if progress_callback and index % 25 == 0:
             progress_callback({"message": f"Resolved {summary['resolved']} of {len(todo)}"})
     return summary
+
+
+def record_resolved(location_id: int, name: str, solar_system_id: Optional[int], via: Optional[str] = None,
+                    now: Optional[datetime] = None) -> None:
+    """For a name found outside the resolver (the operator fallback): registers
+    the id if needed and stores the name everywhere the resolver would."""
+    run_at = now or datetime.now(timezone.utc)
+    register_ids([location_id], run_at)
+    _succeed(location_id, name, solar_system_id, via, run_at)
 
 
 def _succeed(loc: int, name: str, system_id: Optional[int], via: Optional[str], now: datetime) -> None:

@@ -322,3 +322,32 @@ def test_planetary_goods_only_flags_locations_holding_nothing_else(tenant):
 
     assert admin._planetary_goods_only({STRUCT, STRUCT2, STRUCT3}) == {STRUCT}
     assert admin._planetary_goods_only(set()) == set()
+
+
+def test_resolve_ids_registers_resolves_and_remembers_a_refusal(tenant):
+    _seed()
+    esi = FakeESI(names={STRUCT3: ("Fort Three", 30099555)})
+
+    first = resolver.resolve_ids([STRUCT3, STRUCT2], client=esi, characters=CHARS, corp_roles={}, now=NOW)
+
+    assert first["ids"][STRUCT3] == {"name": "Fort Three", "status": "resolved", "attempted": True}
+    assert first["ids"][STRUCT2]["name"] is None and first["ids"][STRUCT2]["status"] == "forbidden"
+    assert first["ids"][STRUCT2]["attempted"] is True
+    # only the asked-for ids were registered and looked up
+    assert STRUCT not in store.load([STRUCT]) and OFFICE not in {c[0] for c in esi.calls}
+
+    esi.calls.clear()
+    later = resolver.resolve_ids([STRUCT2], client=esi, characters=CHARS, corp_roles={}, now=NOW + timedelta(days=1))
+    assert esi.calls == [] and later["ids"][STRUCT2]["attempted"] is False  # remembered, not retried
+
+    forced = resolver.resolve_ids([STRUCT2], force=True, client=esi, characters=CHARS, corp_roles={},
+                                  now=NOW + timedelta(days=1))
+    assert esi.calls and forced["ids"][STRUCT2]["attempted"] is True
+
+
+def test_record_resolved_registers_an_id_found_outside_the_resolver(tenant):
+    resolver.record_resolved(STRUCT3, "Operator Fort", 30099555, now=NOW)
+
+    row = store.load([STRUCT3])[STRUCT3]
+    assert row["kind"] == "structure" and row["status"] == "resolved" and row["name"] == "Operator Fort"
+    assert storage.get_global_structure_names([STRUCT3])[STRUCT3][0] == "Operator Fort"
