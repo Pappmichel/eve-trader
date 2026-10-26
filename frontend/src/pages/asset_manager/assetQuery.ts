@@ -71,6 +71,11 @@ export function queryFromParams(params: URLSearchParams): AssetQuery {
 export function paramsFromQuery(q: AssetQuery): URLSearchParams {
   const out = new URLSearchParams()
   for (const [key, value] of Object.entries(q)) {
+    // desc defaults to true, so an explicit ascending sort must be written out.
+    if (key === 'desc' && value === false) {
+      out.set('desc', 'false')
+      continue
+    }
     if (value === undefined || value === null || value === '' || value === false) continue
     if ((DEFAULT_QUERY as Record<string, unknown>)[key] === value) continue
     if (Array.isArray(value)) value.forEach((v) => out.append(key, String(v)))

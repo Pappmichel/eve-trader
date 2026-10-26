@@ -193,6 +193,10 @@ def _enrich(rows: list[dict], division_names: dict[tuple[int, int], str]) -> Non
     pairs = {(r["owner_type"], r["owner_id"]) for r in rows if r["owner_type"] != "manual"}
     owner_names = _owner_names(pairs, known_names)
 
+    divisions_by_corp: dict[int, dict[int, str]] = {}
+    for (corp, number), name in division_names.items():
+        divisions_by_corp.setdefault(corp, {})[number] = name
+
     for index, r in enumerate(rows):
         info = types.get(r["type_id"]) or {}
         r["type_name"] = info.get("type_name") or f"Type {r['type_id']}"
@@ -214,7 +218,7 @@ def _enrich(rows: list[dict], division_names: dict[tuple[int, int], str]) -> Non
         r["region_name"] = loc.get("region_name")
         r["location_kind"] = labels.location_kind(r["location_id"], bool(loc.get("name")))
         corp_id = r["owner_id"] if r["owner_type"] == "corporation" else None
-        divisions = {n: name for (c, n), name in division_names.items() if c == corp_id}
+        divisions = divisions_by_corp.get(corp_id, {})
         r["hangar"] = labels.hangar_label(r["hangar_flag"], divisions) if r["source"] == "esi" else None
         r["container_path"] = [
             name or (types.get(t) or {}).get("type_name") or f"Item {item_id}"

@@ -377,21 +377,28 @@ def _asset_item_names(
     ids = _nameable_item_ids(assets)
     if not ids:
         return {}
+    answered: Optional[set[int]] = None
+    names: dict[int, str] = {}
     try:
+        returned = fetch_names(ids)
+        answered = {int(n["item_id"]) for n in returned}
         names = {
             int(n["item_id"]): n["name"].strip()
-            for n in fetch_names(ids)
+            for n in returned
             if isinstance(n.get("name"), str) and n["name"].strip() not in ("", "None")
         }
     except Exception:  # noqa: BLE001
         log.exception("asset names fetch failed for %s %s", table, owner_id)
-        names = {}
+    # An id ESI did not answer for (a failed call, or a chunk it answered 404)
+    # keeps its stored name; an id answered "None" really has no name now.
+    unanswered = [i for i in ids if answered is None or i not in answered]
+    if unanswered:
         try:
             previous = storage.load_asset_item_names(table, owner_id)
         except Exception:  # noqa: BLE001
             log.exception("asset names carry-over failed for %s %s", table, owner_id)
             previous = {}
-        return {i: previous[i] for i in ids if i in previous}
+        names.update({i: previous[i] for i in unanswered if i in previous})
     return names
 
 

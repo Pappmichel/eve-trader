@@ -11,6 +11,13 @@ describe('asset manager URL state', () => {
     expect(queryFromParams(params)).toEqual(q)
   })
 
+  it('keeps an ascending sort in the URL', () => {
+    const q = { ...DEFAULT_QUERY, sort: 'quantity', desc: false }
+    const params = paramsFromQuery(q)
+    expect(params.get('desc')).toBe('false')
+    expect(queryFromParams(params).desc).toBe(false)
+  })
+
   it('ignores an unknown grouping from a hand-edited URL', () => {
     expect(queryFromParams(new URLSearchParams('group_by=bogus')).group_by).toBe('type_location')
   })

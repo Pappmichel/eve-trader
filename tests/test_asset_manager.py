@@ -702,3 +702,20 @@ def test_warm_cache_never_raises(tenant, gate_on, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
 
     assert am_actions.warm_cache() is False
+
+
+def test_csv_keeps_numbers_raw_and_neutralises_text():
+    assert am_actions._csv_cell(-5.0) == "-5.0"
+    assert am_actions._csv_cell("=1+1") == "'=1+1"
+    assert am_actions._csv_cell(["-x", "y"]) == "'-x / y"
+
+
+def test_history_snapshot_is_not_due_again_after_an_empty_day(tenant, monkeypatch):
+    am_actions._history_empty_day.clear()
+    monkeypatch.setattr(scope.tenant_eligibility, "granted_tools", lambda tid: {"asset_manager"})
+
+    assert am_actions.history_snapshot_due() is True
+    am_actions.take_history_snapshot()  # nothing shared -> writes no rows
+
+    assert am_actions.history_snapshot_due() is False
+    am_actions._history_empty_day.clear()

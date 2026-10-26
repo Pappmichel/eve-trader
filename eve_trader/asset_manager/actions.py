@@ -135,7 +135,9 @@ def _csv_cell(value) -> str:
     if isinstance(value, (list, tuple)):
         value = " / ".join(str(v) for v in value)
     text = str(value)
-    if text.startswith(_FORMULA_PREFIXES):
+    # Numbers are written raw (a negative value must stay a number); only text
+    # can carry a formula.
+    if not isinstance(value, (int, float)) and text.startswith(_FORMULA_PREFIXES):
         return "'" + text
     return text
 
@@ -191,9 +193,9 @@ def do_freshness() -> dict:
         (owner_type, owner_id, kind): (success, attempt, error)
         for owner_type, owner_id, kind, success, attempt, error, _as_of in storage.list_esi_freshness()
     }
-    known = {(r["owner_type"], r["owner_id"]): r["owner_name"]
-             for r in _rows(grants, allowed, scope) if r["source"] == "esi"}
-    names = collect._owner_names(set(owners), known)
+    # No `_rows` here: a cold load prices every asset, and a freshness poll
+    # must not wait for (or hold the lock of) the inventory load.
+    names = collect._owner_names(set(owners), {})
     rows = []
     oldest: dict[str, Optional[str]] = {}
     for (owner_type, owner_id), kinds in sorted(owners.items(), key=lambda kv: names[kv[0]].lower()):
@@ -525,10 +527,18 @@ def _price_history(type_id: int) -> dict:
 
 
 # ------------------------------------------------------------ phase 6
+# Tenants whose snapshot wrote no rows today (nothing shared): without this the
+# scheduler would find the snapshot due again on every tick.
+_history_empty_day: dict[str, object] = {}
+
+
 def history_snapshot_due() -> bool:
     from datetime import date
+    today = date.today()
+    if _history_empty_day.get(storage.get_current_tenant()) == today:
+        return False
     latest = storage.latest_asset_history_date()
-    return latest is None or latest < date.today()
+    return latest is None or latest < today
 
 
 def take_history_snapshot() -> dict:
@@ -544,6 +554,10 @@ def take_history_snapshot() -> dict:
     # Quantities only: no pricing, no other sources (a daily job must not
     # hit Goonmetrics or the invention-cost path just to count items).
     written = storage.write_asset_history(today, collect.history_rows(scope))
+    if written == 0:
+        _history_empty_day[storage.get_current_tenant()] = today
+    else:
+        _history_empty_day.pop(storage.get_current_tenant(), None)
     keep_days = max(1, int(TRADING_CONFIG.asset_history_retention_days or 90))
     pruned = storage.prune_asset_history(today - timedelta(days=keep_days))
     return {"snapshot_date": today.isoformat(), "rows": written, "pruned": pruned}

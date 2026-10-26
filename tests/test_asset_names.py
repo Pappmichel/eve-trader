@@ -149,3 +149,13 @@ def test_divisions_fetcher_is_registered_for_corporations_only():
     assert fetchers.fetcher_for("corp_divisions", "corporation") is fetchers.fetch_corporation_divisions
     with pytest.raises(KeyError):
         fetchers.fetcher_for("corp_divisions", "character")
+
+
+def test_ids_esi_did_not_answer_keep_their_stored_name(written):
+    assets = [_asset(10, SHIP, 100, True), _asset(11, BOX, 100, True), _asset(12, ORE, 11, False)]
+    # A 404 chunk comes back empty: id 10 has a stored name, 11 was answered "None".
+    client = _Client(assets, names=[{"item_id": 11, "name": "None"}])
+
+    fetchers.fetch_character_assets(client, 7, "role", "Alice")
+
+    assert {row[0]: row[8] for row in written["rows"]} == {10: "Old ship", 11: None, 12: None}
