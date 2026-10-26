@@ -273,6 +273,23 @@ def do_structure_resolve_status() -> dict:
     return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN, pipeline_runner.JOB_STRUCTURE_RESOLVE)
 
 
+def do_location_report() -> dict:
+    """Read-only location diagnostics for the admin's own tenant (docs/
+    LOCATION_RESOLUTION_PLAN.md phase 1): ids by kind, name state, per-source
+    coverage and the ESI calls a bulk resolve spends today. Makes no ESI call
+    except the public corporation lookup the resolver itself would make."""
+    from .locations import diagnostics
+
+    characters = esi_sync.list_capability_characters("structure_name_resolution")
+    corporations = 0
+    if characters:
+        client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+        corporations = len(esi_sync.corp_roles_for_characters(client, characters))
+    report = diagnostics.collect(len(characters), corporations)
+    report["bulk_resolve_candidates"] = len(_structure_resolve_candidates())
+    return report
+
+
 def _structure_resolve_candidates() -> set[int]:
     """Every location_id >= STRUCTURE_ID_MIN this tenant's own data
     references (storage.candidate_structure_location_ids), plus the three

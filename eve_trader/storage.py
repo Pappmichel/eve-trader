@@ -2328,6 +2328,61 @@ def candidate_structure_location_ids() -> set[int]:
     return ids
 
 
+# (source label, table, column). Every place this tenant's data stores a
+# location id, for the location diagnostics (docs/LOCATION_RESOLUTION_PLAN.md
+# phase 1). candidate_structure_location_ids above covers only the first few.
+LOCATION_ID_SOURCES: tuple[tuple[str, str, str], ...] = (
+    ("character_assets", "character_assets", "location_id"),
+    ("corp_assets", "corp_assets", "location_id"),
+    ("character_blueprints", "character_blueprints", "location_id"),
+    ("corp_blueprints", "corp_blueprints", "location_id"),
+    ("character_industry_jobs", "character_industry_jobs", "output_location_id"),
+    ("corp_industry_jobs", "corp_industry_jobs", "output_location_id"),
+    ("sell_orders", "character_sell_orders", "location_id"),
+    ("wallet_transactions", "esi_wallet_transactions", "location_id"),
+    ("ledger_wallet_transactions", "ledger_wallet_transactions", "location_id"),
+    ("ledger_market_orders", "ledger_market_orders", "location_id"),
+    ("ledger_contracts_start", "ledger_contracts", "start_location_id"),
+    ("ledger_contracts_end", "ledger_contracts", "end_location_id"),
+    ("doctrine_contracts", "doctrine_contracts", "start_location_id"),
+    ("jump_clones", "character_jump_clones", "location_id"),
+    ("clone_home", "character_clone_meta", "home_location_id"),
+    ("category_locations", "job_category_locations", "location_id"),
+    ("category_location_options", "category_location_options", "location_id"),
+    ("manual_stock", "manual_stock", "location_id"),
+    ("manual_blueprints", "manual_owned_blueprints", "location_id"),
+    ("manual_jobs", "manual_industry_jobs", "location_id"),
+)
+
+
+def location_id_sources() -> dict[str, set[int]]:
+    """{source label: distinct non-zero location ids} for every table in
+    LOCATION_ID_SOURCES, this tenant only (RLS)."""
+    out: dict[str, set[int]] = {}
+    with connect() as conn:
+        for label, table, column in LOCATION_ID_SOURCES:
+            rows = conn.execute(
+                f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> 0"
+            ).fetchall()
+            out[label] = {int(r[0]) for r in rows}
+    return out
+
+
+def location_kind_hints(location_ids: Iterable[int]) -> tuple[set[int], set[int]]:
+    """(NPC station ids, corp Office item ids) among `location_ids`. An Office
+    is an asset row of type OFFICE_TYPE_ID and has no name of its own."""
+    ids = sorted({int(i) for i in location_ids})
+    if not ids:
+        return set(), set()
+    with connect() as conn:
+        stations = {int(r[0]) for r in conn.execute(
+            "SELECT station_id FROM sde_stations WHERE station_id = ANY(?)", (ids,)).fetchall()}
+        offices = {int(r[0]) for r in conn.execute(
+            "SELECT item_id FROM corp_assets WHERE type_id = ? AND item_id = ANY(?)",
+            (OFFICE_TYPE_ID, ids)).fetchall()}
+    return stations, offices
+
+
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
     (plan_production's own buy_list: type_id, quantity) - Sorting only needs
