@@ -2616,9 +2616,7 @@ def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
     tiers): structure_names (this tenant's own ESI-resolved player
     structures) -> global_structure_names (any tenant's successful
     resolution, unscoped) -> manual_location_names (this tenant's own
-    manual name) -> sde_stations.station_name (NPC stations). Same
-    fallback order search_item_stock_locations already does inline per row
-    for its first two tiers, just batched here for a whole set of ids in
+    manual name) -> sde_stations.station_name (NPC stations). Batched here for a whole set of ids in
     one call (backs GET /trading/wallet-transactions, which resolves every
     distinct location_id across a character's transaction page in one shot
     rather than N+1)."""
@@ -2881,7 +2879,7 @@ def _resolve_locations(rows: list[tuple], location_index: int = 2, owner_index: 
 
     Capped at 10 hops as a defensive bound against a cyclical edge case, not
     a realistic EVE nesting depth (mirrors the walk this replaces, formerly
-    duplicated per-query in esi_stock_at_location/search_item_stock_locations)."""
+    duplicated per-query in esi_stock_at_location)."""
     parent_of = {(row[0], row[owner_index]): row[location_index] for row in rows}
     resolved = []
     for row in rows:
@@ -5336,49 +5334,6 @@ def load_sorting_intake_sources() -> list[tuple[int, str, Optional[str], str, Op
             "SELECT id, source_kind, owner_name, hangar_flag, label "
             "FROM sorting_intake_sources ORDER BY id",
         ).fetchall()
-
-
-def search_item_stock_locations(type_id: int,
-                                 owner_character_ids: Optional[list[int]] = None,
-                                 owner_corporation_ids: Optional[list[int]] = None,
-                                 ) -> list[tuple[int, Optional[str], str, float]]:
-    """For `type_id`, every character/corp asset (excluding
-    NON_STOCK_LOCATION_FLAGS - see esi_stock_at_location above), grouped by
-    (resolved_location_id, owner) summing quantity - resolved_location_id is
-    already the outermost station/structure id (see replace_assets).
-
-    Returns [(location_id, location_name, owner_name, quantity), ...] sorted
-    by quantity descending. location_name goes through get_location_names'
-    four tiers (structure_names, global_structure_names,
-    manual_location_names, sde_stations), batched; None if none has it.
-    owner_name is whichever character or "<corp> (corp)" the sync
-    attributed this asset to - "?" for data synced before owner_name existed.
-
-    `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
-    both None (the default) is unfiltered."""
-    parts: list[str] = []
-    params: list = []
-    for table in ("character_assets", "corp_assets"):
-        id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
-        parts.append(
-            f"SELECT resolved_location_id, COALESCE(owner_name, '?') AS owner_name, quantity FROM {table} "
-            f"WHERE type_id = ? AND {NON_STOCK_SQL}{id_clause}"
-        )
-        params.extend((type_id, *NON_STOCK_SQL_PARAMS, *id_params))
-    with connect() as conn:
-        grouped = conn.execute(
-            "SELECT resolved_location_id, owner_name, SUM(quantity) FROM ("
-            + " UNION ALL ".join(parts)
-            + ") x GROUP BY resolved_location_id, owner_name",
-            tuple(params),
-        ).fetchall()
-    names = get_location_names([int(r[0]) for r in grouped if r[0] is not None])
-    results = [
-        (location_id, names.get(location_id) if location_id is not None else None, owner_name, float(quantity))
-        for location_id, owner_name, quantity in grouped
-    ]
-    results.sort(key=lambda r: r[3], reverse=True)
-    return results
 
 
 def set_esi_sync_time(scope: str, synced_at: str) -> None:

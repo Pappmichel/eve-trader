@@ -414,18 +414,6 @@ class MarketRestockRow:
 
 
 @dataclass
-class AssetLocationRow:
-    """One row of the Asset Search tab: how much of a searched item sits at
-    one specific station/structure, owned by one specific character or corp
-    - see storage.search_item_stock_locations for the nested-container
-    resolution and (location, owner) grouping."""
-    location_id: int
-    location_name: Optional[str]  # None if not yet resolved - see logistics/resolve-structure-name for player structures
-    owner_name: str
-    quantity: float
-
-
-@dataclass
 class MarketStatusRow:
     """One row of the Marktstatus tab: personal stock vs. backup target, and
     home/Jita *market-listed* stock (your own open sell order volume, not

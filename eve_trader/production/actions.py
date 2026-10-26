@@ -30,7 +30,7 @@ from .engine import (
     plan_production, plan_special_order, shared_production_owner_ids, stock_value,
 )
 from .models import (
-    AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
+    BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
     SpecialOrder, UnlistedStockRow,
 )
 
@@ -1200,32 +1200,6 @@ def do_build_material_tree(type_name: str, quantity: float = 1.0,
                                 cost_indices=cost_indices)
 
 
-def do_search_item_locations(item_name: str) -> dict:
-    """Resolves `item_name` (exact match, same lookup do_add_stock_target/
-    do_build_material_tree use) and returns every station/structure it's
-    currently sitting at, who owns it (character or corp), and how much -
-    see storage.search_item_stock_locations. Reflects the last "Sync ESI
-    Data" run, not a live ESI call."""
-    matches = storage.search_sde_types(item_name, limit=2)
-    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
-    if not exact:
-        if not matches:
-            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
-        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
-    type_id, resolved_name = exact[0]
-
-    char_ids, corp_ids = shared_production_owner_ids("assets")
-    rows = storage.search_item_stock_locations(
-        type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
-    locations = [
-        AssetLocationRow(location_id=location_id, location_name=location_name,
-                          owner_name=owner_name, quantity=quantity)
-        for location_id, location_name, owner_name, quantity in rows
-    ]
-    return {"type_id": type_id, "type_name": resolved_name, "locations": locations,
-            "assets_synced_at": storage.newest_esi_freshness_success_for_tool("production", ["assets"])}
-
-
 def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODUCTION_CONFIG,
                                   progress_callback=None) -> dict:
     """Scans every manufacturable, market-listed SDE item not already a
@@ -1305,7 +1279,7 @@ def do_get_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
 def do_get_item_margin(item_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> ShipMarginRow:
     """Margin page's search - resolves `item_name` (exact match, same lookup
-    do_build_material_tree/do_search_item_locations use) and returns its
+    do_build_material_tree uses) and returns its
     current home/Jita price, build cost, and both margins for any category,
     not just ships. See engine.item_margin_detail."""
     matches = storage.search_sde_types(item_name, limit=2)
