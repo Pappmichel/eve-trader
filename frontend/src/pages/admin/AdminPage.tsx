@@ -147,6 +147,12 @@ function LocationReportSection() {
             Structures: {data.structures.resolved} named, {data.structures.manual} manual,{' '}
             {data.structures.failed} failed, {data.structures.never_attempted} never tried.
           </Text>
+          {data.suggested_characters.length > 0 && (
+            <Text size="sm" c="warn">
+              Unnamed structures hold assets of {data.suggested_characters.map((c) => `${c.character_name} (${c.structures})`).join(', ')}.
+              These characters have the needed token but have not ticked Structure name resolution (Characters page, Access).
+            </Text>
+          )}
           {Object.keys(data.registry_status).length > 0 && (
             <Text size="sm">
               Lookup status: {Object.entries(data.registry_status).map(([k, n]) => `${n} ${k}`).join(', ')}.

@@ -280,3 +280,25 @@ def test_describe_office_shows_its_structure_and_manual_is_the_last_tier(tenant)
     assert info[SYSTEM].name == "Testsys" and info[SYSTEM].kind == "solar_system"
     assert info[5].name is None
     assert storage.get_location_names([STRUCT, 5]) == {STRUCT: "Known Fort", 5: None}
+
+
+def test_report_suggests_characters_that_own_assets_but_did_not_tick_the_capability(tenant, monkeypatch):
+    from types import SimpleNamespace
+    from eve_trader import admin
+    from eve_trader.auth import TokenManager
+    from eve_trader.esi_data import selector
+
+    storage.replace_assets("character_assets", [(1, 34, STRUCT, "Hangar", 5, 0, "Alt")],
+                           owner_character_id=777, owner_name="Alt")
+    storage.replace_assets("character_assets", [(2, 34, STRUCT2, "Hangar", 5, 0, "Capable")],
+                           owner_character_id=888, owner_name="Capable")
+    monkeypatch.setattr(selector, "select_auth_role", lambda cid, scope, tokens=None: f"producer:{cid}")
+    monkeypatch.setattr(TokenManager, "get_record", lambda self, role: SimpleNamespace(character_name=f"Name {role}"))
+    report = {"unresolved": [
+        {"location_id": STRUCT, "kind": "structure"}, {"location_id": STRUCT2, "kind": "structure"},
+        {"location_id": OFFICE, "kind": "office"},
+    ]}
+
+    suggested = admin._suggest_resolution_characters(report, [("producer:888", 888, "Capable")])
+
+    assert suggested == [{"character_id": 777, "character_name": "Name producer:777", "structures": 1}]
