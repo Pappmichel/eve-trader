@@ -283,13 +283,12 @@ def test_character_esi_fetches_run_in_parallel(monkeypatch):
 
     monkeypatch.setattr(ESIClient, "character_assets", fake_character_assets)
 
-    t0 = time.monotonic()
     result = actions.do_unlisted_stock(cfg)
-    elapsed = time.monotonic() - t0
 
     assert sorted(seen_chars) == [1, 2, 3]
-    assert max_in_flight >= 2  # sequential loop would stay at 1
-    assert elapsed < 0.10  # sequential would be ~0.12s
+    # A sequential loop would stay at 1. No wall-clock bound: under a loaded
+    # parallel test run it fails although the fetches overlap.
+    assert max_in_flight >= 2
     assert result["rows"][0].stock_quantity == 30.0
 
 
