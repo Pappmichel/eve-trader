@@ -159,6 +159,8 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
         rows.extend(_read_planets(tool_key, owner_id_filter))
     elif data_kind == "wallet_balance":
         rows.extend(_read_wallet_balance(tool_key, owner_id_filter))
+    elif data_kind == "corp_divisions":
+        rows.extend(_read_corp_divisions(tool_key, owner_id_filter))
     elif data_kind == "standings":
         rows.extend(_read_standings(tool_key, owner_id_filter))
     elif data_kind == "loyalty":
@@ -445,6 +447,17 @@ def _read_wallet_balance(tool_key: str, owner_id) -> list[dict]:
     return [
         {"owner_type": "character", "owner_id": cid, "balance": bal}
         for cid, bal in sorted(balances.items())
+    ]
+
+
+def _read_corp_divisions(tool_key: str, owner_id) -> list[dict]:
+    """Corporation division names (`kind` is 'hangar' or 'wallet'); a name
+    CCP never set is None."""
+    ids = _filter_ids(_shared_owner_ids("corp_divisions", tool_key, "corporation"), owner_id)
+    return [
+        {"owner_type": "corporation", "owner_id": int(r[0]), "kind": r[1],
+         "division": int(r[2]), "name": r[3]}
+        for r in storage.load_corp_divisions(ids)
     ]
 
 

@@ -99,11 +99,13 @@ def _page_wallet_transactions(fetch_page: Callable) -> list[dict]:
     return all_txns
 
 
-def _asset_rows(assets: list[dict], owner_name: str) -> list[tuple]:
+def _asset_rows(assets: list[dict], owner_name: str,
+                item_names: Optional[dict[int, str]] = None) -> list[tuple]:
+    names = item_names or {}
     return [
         (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
          a["quantity"], int(bool(a.get("is_blueprint_copy"))), owner_name,
-         bool(a.get("is_singleton")))
+         bool(a.get("is_singleton")), names.get(int(a["item_id"])))
         for a in assets
     ]
 
@@ -349,12 +351,60 @@ def _archive_contracts_pass(
 
 
 # ------------------------------------------------------------------ assets
+def _nameable_item_ids(assets: list[dict]) -> list[int]:
+    """Singleton ships and containers: ESI names only singletons, and the ones
+    worth a name are the hulls and whatever holds other assets (a container is
+    any singleton another asset sits in). docs/ASSET_MANAGER_PLAN.md D6/P-05."""
+    singletons = [a for a in assets if a.get("is_singleton")]
+    if not singletons:
+        return []
+    parents = {a["location_id"] for a in assets}
+    ships = storage._ship_type_ids(a["type_id"] for a in singletons)
+    return [
+        int(a["item_id"]) for a in singletons
+        if a["type_id"] in ships or a["item_id"] in parents
+    ]
+
+
+def _asset_item_names(
+    fetch_names: Callable[[list[int]], list[dict]], table: str, owner_id: int, assets: list[dict],
+) -> dict[int, str]:
+    """`{item_id: name}` for the owner's nameable assets. A name is a nicety:
+    any failure is logged and the previously stored names carry over instead
+    of being wiped by the delete-and-reinsert in `replace_assets` (R-14); it
+    never fails the asset sync. ESI answers the literal "None" for an unnamed
+    item, stored as no name."""
+    ids = _nameable_item_ids(assets)
+    if not ids:
+        return {}
+    try:
+        names = {
+            int(n["item_id"]): n["name"].strip()
+            for n in fetch_names(ids)
+            if isinstance(n.get("name"), str) and n["name"].strip() not in ("", "None")
+        }
+    except Exception:  # noqa: BLE001
+        log.exception("asset names fetch failed for %s %s", table, owner_id)
+        names = {}
+        try:
+            previous = storage.load_asset_item_names(table, owner_id)
+        except Exception:  # noqa: BLE001
+            log.exception("asset names carry-over failed for %s %s", table, owner_id)
+            previous = {}
+        return {i: previous[i] for i in ids if i in previous}
+    return names
+
+
 def fetch_character_assets(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     assets = client.character_assets(owner_id, auth_role=auth_role)
+    names = _asset_item_names(
+        lambda ids: client.character_asset_names(owner_id, ids, auth_role=auth_role),
+        "character_assets", owner_id, assets,
+    )
     storage.replace_assets(
-        "character_assets", _asset_rows(assets, owner_name),
+        "character_assets", _asset_rows(assets, owner_name, names),
         owner_character_id=owner_id, owner_name=owner_name,
     )
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
@@ -364,11 +414,32 @@ def fetch_corporation_assets(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     assets = client.corporation_assets(owner_id, auth_role=auth_role)
+    names = _asset_item_names(
+        lambda ids: client.corporation_asset_names(owner_id, ids, auth_role=auth_role),
+        "corp_assets", owner_id, assets,
+    )
     storage.replace_assets(
-        "corp_assets", _asset_rows(assets, owner_name),
+        "corp_assets", _asset_rows(assets, owner_name, names),
         owner_corporation_id=owner_id, owner_name=owner_name,
     )
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
+
+
+def fetch_corporation_divisions(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    """Hangar and wallet division names (docs/ASSET_MANAGER_PLAN.md D7). A
+    division CCP never renamed comes back without a name; stored as NULL so
+    the label falls back to "Division N"."""
+    raw = client.corporation_divisions(owner_id, auth_role=auth_role)
+    rows = [
+        (kind, int(d["division"]), (d.get("name") or "").strip() or None)
+        for kind in ("hangar", "wallet")
+        for d in (raw.get(kind) or [])
+        if 1 <= int(d.get("division", 0)) <= 7
+    ]
+    storage.replace_corp_divisions(owner_id, rows)
+    return {"written": len(rows)}
 
 
 # ----------------------------------------------------------- industry jobs
@@ -985,6 +1056,7 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("notifications", "character"): fetch_character_notifications,
     ("standings", "character"): fetch_character_standings,
     ("loyalty", "character"): fetch_character_loyalty,
+    ("corp_divisions", "corporation"): fetch_corporation_divisions,
     ("contracts", "character"): fetch_character_contracts,
     ("contracts", "corporation"): fetch_corporation_contracts,
 }

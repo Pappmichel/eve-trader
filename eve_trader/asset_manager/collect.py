@@ -107,6 +107,12 @@ def load_base_rows(scope: dict[str, tuple[list[int], list[int]]], *, include_man
     asset_chars, asset_corps = scope["assets"]
     assets = storage.load_asset_manager_assets(asset_chars, asset_corps)
     blueprints = storage.load_asset_manager_blueprints(*scope["blueprints"])
+    if division_names is None:
+        division_names = {
+            (int(corp), int(division)): name
+            for corp, kind, division, name in storage.load_corp_divisions(scope["corp_divisions"][1])
+            if kind == "hangar" and name
+        }
     _paths(assets)
 
     rows: list[dict] = []

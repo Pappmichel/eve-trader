@@ -22,6 +22,9 @@ export interface OwnedDataKind {
   // page is open, never stored or synced (so there is nothing to re-sync and
   // the freshness column never applies to it).
   liveOnly?: boolean
+  // Mirrors the registry's corporation-only kinds (character_scope None):
+  // shown in the Corporations table only, never as a character column.
+  corporationOnly?: boolean
   // Popover note for a live-only kind; falls back to the plain "never stored"
   // wording. Mail overrides it: it can be archived if the user opts in.
   liveNote?: string
@@ -58,6 +61,12 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   {
     key: 'blueprints', section: 'industry', label: 'Blueprints', group: 1,
     consumingTools: ['production', 'portfolio', 'asset_manager'],
+    corpRoles: ['Director'],
+  },
+  {
+    key: 'corp_divisions', section: 'industry', label: 'Corporation Divisions', group: 1,
+    corporationOnly: true,
+    consumingTools: ['asset_manager'],
     corpRoles: ['Director'],
   },
   {
@@ -146,7 +155,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
 ]
 
 export const GROUP_1_KINDS = OWNED_DATA_KINDS.filter((k) => k.group === 1)
-export const CHARACTER_KINDS = OWNED_DATA_KINDS
+export const CHARACTER_KINDS = OWNED_DATA_KINDS.filter((k) => !k.corporationOnly)
 
 export const ACCESS_CAPABILITIES: readonly AccessCapability[] = [
   {

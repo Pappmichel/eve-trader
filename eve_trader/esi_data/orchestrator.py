@@ -265,6 +265,8 @@ def _kinds_for_owner(
         if spec.key in wanted and spec.key not in seen:
             if owner_type == "corporation" and spec.corporation_scope is None:
                 continue
+            if owner_type == "character" and spec.character_scope is None:
+                continue
             seen.add(spec.key)
             kinds.append(spec.key)
     return kinds
@@ -713,6 +715,8 @@ def pending_due(
         if kind_filter is not None and row[2] not in kind_filter:
             continue
         if row[0] == "corporation" and spec.corporation_scope is None:
+            continue
+        if row[0] == "character" and spec.character_scope is None:
             continue
         if spec.schedule_mode == ON_DEMAND and (row[0], row[1], row[2]) not in wanted:
             continue

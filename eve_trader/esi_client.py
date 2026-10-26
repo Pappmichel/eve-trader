@@ -1192,6 +1192,44 @@ class ESIClient:
         return self._get_all_pages(f"/corporations/{corporation_id}/assets/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    _ASSET_NAMES_CHUNK = 1000  # ESI accepts at most 1000 ids per names call
+
+    def _asset_names(self, path: str, item_ids: list[int], auth_role: str) -> list[dict]:
+        """POST /assets/names in chunks. Read-only despite the verb, so a
+        transport error or 5xx is safely retried (`idempotent`). ESI only names
+        singletons and answers 404 for a chunk it cannot resolve at all; that
+        is reported as an empty chunk, not an error, because a name is a
+        nicety and must never fail the asset sync (docs/ASSET_MANAGER_PLAN.md
+        P-05)."""
+        out: list[dict] = []
+        for i in range(0, len(item_ids), self._ASSET_NAMES_CHUNK):
+            chunk = [int(x) for x in item_ids[i:i + self._ASSET_NAMES_CHUNK]]
+            try:
+                resp = self._write("POST", path, auth_role=auth_role, json_body=chunk,
+                                   idempotent=True, expect=(200,))
+            except ESIHTTPError as e:
+                if e.status == 404:
+                    continue
+                raise
+            out.extend(resp.json() or [])
+        return out
+
+    def character_asset_names(self, character_id: int, item_ids: list[int],
+                              auth_role: str) -> list[dict]:
+        """`[{"item_id", "name"}]`. Requires esi-assets.read_assets.v1."""
+        return self._asset_names(f"/characters/{character_id}/assets/names/", item_ids, auth_role)
+
+    def corporation_asset_names(self, corporation_id: int, item_ids: list[int],
+                                auth_role: str) -> list[dict]:
+        """Requires esi-assets.read_corporation_assets.v1 + Director."""
+        return self._asset_names(f"/corporations/{corporation_id}/assets/names/", item_ids, auth_role)
+
+    def corporation_divisions(self, corporation_id: int, auth_role: str) -> dict:
+        """`{"hangar": [{"division", "name"}], "wallet": [...]}`. Requires
+        esi-corporations.read_divisions.v1 + the Director role."""
+        return self._get(f"/corporations/{corporation_id}/divisions/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_industry_jobs(self, character_id: int, auth_role: str,
                                 *, include_completed: bool = False) -> list[dict]:
         """Requires esi-industry.read_character_jobs.v1. Confirmed against the

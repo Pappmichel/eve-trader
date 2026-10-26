@@ -31,6 +31,13 @@ describe('esiRegistry Character Management kinds', () => {
     expect(covered.length).toBe(CHARACTER_KINDS.length)
   })
 
+  it('keeps corporation divisions out of the character columns', () => {
+    const divisions = kindByKey('corp_divisions')!
+    expect(divisions.corporationOnly).toBe(true)
+    expect(divisions.consumingTools).toEqual(['asset_manager'])
+    expect(CHARACTER_KINDS.map((k) => k.key)).not.toContain('corp_divisions')
+  })
+
   it('labels the new tool', () => {
     expect(toolLabel('char_info')).toBe('Character Info')
   })

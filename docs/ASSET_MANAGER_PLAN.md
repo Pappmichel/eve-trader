@@ -1,11 +1,11 @@
 # Asset Manager - plan
 
-Status: **phases 0-3b and 5-7 implemented on branch `feature/asset-manager`
-(2026-10-25, section 14); phase 4 (container/division names) and the removal
-of the old Production tab are open.** Decisions D1-D13 confirmed (section
-10), review items decided (sections 11 and 13). Server checks (section 12)
-are open: they tune, but do not block, what was built - except S-09/S-10,
-which phase 4 waits on.
+Status: **phases 0-7 implemented on branch `feature/asset-manager`
+(2026-10-25/26, section 14); only the removal of the old Production tab is
+open, after deploy.** Decisions D1-D13 confirmed (section 10), review items
+decided (sections 11 and 13). Server checks (section 12) are open: they tune
+what was built; S-09/S-10 now verify phase 4 (built from the ESI docs
+before they ran) instead of gating it.
 
 Goal: turn Production's "Asset Search" tab (one exact item name -> where is
 it, how much, who owns it) into a full asset manager: browse every asset by
@@ -692,11 +692,37 @@ Known limits, not changed:
 - With a text filter the location tree only shows matching rows; a matching
   item whose container does not match hangs directly under its hangar.
 
+Phase 4 (2026-10-26):
+
+- `ESIClient.character_asset_names` / `corporation_asset_names` (POST
+  `/assets/names/`, chunks of 1000, sent through `_write(idempotent=True)`
+  because the call only reads; a 404 chunk is skipped, any other HTTP error
+  propagates) and `corporation_divisions`.
+- The asset fetchers name singleton ships and every singleton that holds
+  another asset (container detection by parent, not by SDE group, so
+  nothing depends on a container group list). A failed names call is
+  logged and the owner's previously stored names are kept (R-14); "None"
+  and blank names are stored as NULL.
+- `corp_divisions` is a corporation-only kind: `OwnedDataKind.
+  character_scope` is now optional (None = no character variant). Guards:
+  `fetcher_scope_map`, `all_registry_scopes`, the orchestrator's owner
+  task and due lists, `do_set_sharing` (rejects a character owner) and the
+  scope lookups in `esi_data/actions.py` / `fields.SCOPE_BY_KIND`. The
+  frontend mirror has `corporationOnly` and shows the kind only in the
+  Corporations table. Table `corp_divisions` is in `esi_access_schema.sql`
+  (existing file, no deploy-list change); `read_esi` has a reader; the stale
+  clear covers it.
+- `collect.load_base_rows` loads the hangar names for the corps that share
+  `corp_divisions`, so a named division labels the hangar and the tree; an
+  unnamed one stays "Division N". `corp_divisions` is in `ASSET_KINDS`, so
+  the freshness panel and the sync button include it.
+- Existing tokens lack `esi-corporations.read_divisions.v1`: until a Director
+  character re-authorizes and the corp is shared, labels stay "Division N".
+
 Still open, in order:
 
-1. Server checks S-01..S-13 (section 12), then tune caching/paging.
-2. Phase 4: `/assets/names` and the `corp_divisions` kind, after S-09/S-10.
-   `hangar_label` already takes division names; `collect.load_base_rows`
-   has the `division_names` parameter waiting for them.
-3. Deploy, run `eve-trader admin grant-defaults`, then remove the Production
+1. Server checks S-01..S-13 (section 12), then tune caching/paging. S-09 and
+   S-10 now confirm the real `/assets/names` and `/divisions` responses
+   against the code above.
+2. Deploy, run `eve-trader admin grant-defaults`, then remove the Production
    Asset Search tab (D12, R-13).

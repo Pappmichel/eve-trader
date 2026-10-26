@@ -64,16 +64,27 @@ def test_importing_registry_does_not_load_tool_packages():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_group_1_has_seven_owned_kinds_with_corp_variant():
+def test_group_1_has_eight_owned_kinds_with_corp_variant():
     group_1 = [k for k in OWNED_DATA_KINDS if k.group == GROUP_1]
-    assert len(group_1) == 7
+    assert len(group_1) == 8
     assert {k.key for k in group_1} == {
         "assets", "industry_jobs", "blueprints", "market_orders", "contracts", "wallet",
-        "wallet_balance",
+        "wallet_balance", "corp_divisions",
     }
     for kind in group_1:
         assert kind.corporation_scope
-        assert kind.character_scope
+        # corp_divisions is corporation-only (docs/ASSET_MANAGER_PLAN.md D7).
+        assert kind.character_scope or kind.key == "corp_divisions"
+
+
+def test_corp_divisions_is_corporation_only_and_read_by_the_asset_manager():
+    kind = {k.key: k for k in OWNED_DATA_KINDS}["corp_divisions"]
+    assert kind.character_scope is None
+    assert kind.corporation_scope == "esi-corporations.read_divisions.v1"
+    assert kind.corp_roles == ("Director",)
+    assert kind.consuming_tools == ("asset_manager",)
+    assert ("corp_divisions", "character") not in fetcher_scope_map()
+    assert fetcher_scope_map()[("corp_divisions", "corporation")] == (kind.corporation_scope,)
 
 
 def test_group_2_is_character_only_kinds_with_no_corp_variant():
@@ -96,7 +107,7 @@ def test_every_kind_has_exactly_one_character_scope_and_scopes_are_unique():
     # Characters page all assume. Two kinds sharing a scope would silently
     # double-book a token.
     scopes = [k.character_scope for k in OWNED_DATA_KINDS
-              if k.key not in ("wallet_balance",)]  # wallet_balance shares wallet's scope by design
+              if k.key not in ("wallet_balance", "corp_divisions")]  # wallet_balance shares wallet's scope by design
     assert all(isinstance(s, str) and s for s in scopes)
     assert len(scopes) == len(set(scopes))
 
@@ -190,3 +201,12 @@ def test_default_freshness_tiers_match_the_plan():
     assert by_key["contracts"] == "normal"
     assert by_key["blueprints"] == "rare"
     assert by_key["skills"] == "rare"
+
+
+def test_corporation_only_kind_cannot_be_shared_for_a_character():
+    import pytest
+
+    from eve_trader.esi_data import actions as esi_actions
+
+    with pytest.raises(esi_actions.ActionError, match="corporation-only"):
+        esi_actions.do_set_sharing("character", 1, "corp_divisions", "asset_manager", True)

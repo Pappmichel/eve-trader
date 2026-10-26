@@ -164,6 +164,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "mail_labels": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 3 - opt-in mail archive, never existed in the pre-migration SQLite schema)",
     "mail_lists": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 3 - opt-in mail archive, never existed in the pre-migration SQLite schema)",
     "corp_wallet_balances": "Postgres-native (PORTFOLIO_REWORK_PLAN.md - wallet_balance ESI data kind, never existed in the pre-migration SQLite schema)",
+    "corp_divisions": "Postgres-native (ASSET_MANAGER_PLAN.md - corp_divisions ESI data kind, never existed in the pre-migration SQLite schema)",
     "manual_item_prices": "Postgres-native (PORTFOLIO_REWORK_PLAN.md - Portfolio's own manual price overrides, never existed in the pre-migration SQLite schema)",
     "manual_location_names": "Postgres-native (Manual tracking plan phase 2 - never existed in the pre-migration SQLite schema)",
     "manual_owned_blueprints": "Postgres-native (Manual tracking plan phase 5 - never existed in the pre-migration SQLite schema)",

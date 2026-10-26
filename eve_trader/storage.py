@@ -3097,7 +3097,7 @@ def delete_owner_snapshot_rows(
         "character_standings", "character_loyalty_points",
         "character_skills", "character_attributes", "character_skillqueue", "character_pi_colonies",
         "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
-        "character_notifications", "character_notification_reads",
+        "character_notifications", "character_notification_reads", "corp_divisions",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
@@ -3107,7 +3107,7 @@ def delete_owner_snapshot_rows(
                       "character_standings", "character_loyalty_points",
                       "character_skills", "character_attributes", "character_skillqueue", "character_pi_colonies",
                       "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
-                      "character_notifications", "character_notification_reads"):
+                      "character_notifications", "character_notification_reads", "corp_divisions"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3859,6 +3859,46 @@ def load_character_standings(character_ids: list[int]) -> list[tuple]:
             f"WHERE owner_character_id IN ({placeholders}) "
             "ORDER BY owner_character_id, standing DESC, from_id",
             character_ids,
+        ).fetchall()
+
+
+def load_asset_item_names(table: str, owner_id: int) -> dict[int, str]:
+    """`{item_id: item_name}` of one owner's stored named assets - the names a
+    failed `/assets/names` call must not wipe (docs/ASSET_MANAGER_PLAN.md R-14)."""
+    assert table in _ASSET_TABLES
+    column = "owner_character_id" if table in _CHAR_ASSET_TABLES else "owner_corporation_id"
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT item_id, item_name FROM {table} WHERE {column} = ? AND item_name IS NOT NULL",
+            (owner_id,),
+        ).fetchall()
+    return {int(r[0]): r[1] for r in rows}
+
+
+# ------------------------------------------- Asset Manager: corp division names
+def replace_corp_divisions(corporation_id: int, rows: list[tuple[str, int, Optional[str]]]) -> None:
+    """Replaces one corporation's division names. `rows`:
+    [(kind 'hangar'|'wallet', division 1..7, name or None), ...]."""
+    with connect() as conn:
+        conn.execute("DELETE FROM corp_divisions WHERE owner_corporation_id = ?", (corporation_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO corp_divisions (owner_corporation_id, kind, division, name, synced_at) "
+                "VALUES (?,?,?,?, now())",
+                [(corporation_id, kind, division, name) for kind, division, name in rows],
+            )
+
+
+def load_corp_divisions(corporation_ids: list[int]) -> list[tuple]:
+    """`(owner_corporation_id, kind, division, name)`; an empty id list gives
+    an empty result, never an unfiltered read."""
+    if not corporation_ids:
+        return []
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_corporation_id, kind, division, name FROM corp_divisions "
+            "WHERE owner_corporation_id = ANY(?) ORDER BY owner_corporation_id, kind, division",
+            ([int(c) for c in corporation_ids],),
         ).fetchall()
 
 

@@ -34,7 +34,9 @@ class OwnedDataKind:
     key: str
     label: str
     group: int
-    character_scope: str
+    # None for a corporation-only kind (corp_divisions): there is no
+    # character variant, so no sharing row, fetch or scope for a character.
+    character_scope: Optional[str]
     corporation_scope: Optional[str]
     corp_roles: tuple[str, ...]
     consuming_tools: tuple[str, ...]
@@ -109,6 +111,19 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # "portfolio" added for Total Wealth - same opt-in reasoning as
         # assets above.
         consuming_tools=("production", "portfolio", "asset_manager"),
+        freshness_tier=TIER_RARE,
+    ),
+    # docs/ASSET_MANAGER_PLAN.md D7: division names for the corp hangar labels.
+    # Corporation-only (no character variant). Consumer is the Asset Manager
+    # only; Sorting is added when its code reads the names (review R-9).
+    OwnedDataKind(
+        key="corp_divisions",
+        label="Corporation Divisions",
+        group=GROUP_1,
+        character_scope=None,
+        corporation_scope="esi-corporations.read_divisions.v1",
+        corp_roles=("Director",),
+        consuming_tools=("asset_manager",),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(
@@ -427,7 +442,8 @@ def fetcher_scope_map() -> dict[tuple[str, str], tuple[str, ...]]:
     """
     out: dict[tuple[str, str], tuple[str, ...]] = {}
     for kind in OWNED_DATA_KINDS:
-        out[(kind.key, "character")] = (kind.character_scope,)
+        if kind.character_scope is not None:
+            out[(kind.key, "character")] = (kind.character_scope,)
         if kind.corporation_scope is not None:
             out[(kind.key, "corporation")] = (kind.corporation_scope,)
     for cap in ACCESS_CAPABILITIES:
@@ -440,7 +456,8 @@ def fetcher_scope_map() -> dict[tuple[str, str], tuple[str, ...]]:
 def all_registry_scopes() -> frozenset[str]:
     scopes: set[str] = set()
     for kind in OWNED_DATA_KINDS:
-        scopes.add(kind.character_scope)
+        if kind.character_scope is not None:
+            scopes.add(kind.character_scope)
         if kind.corporation_scope is not None:
             scopes.add(kind.corporation_scope)
     for cap in ACCESS_CAPABILITIES:

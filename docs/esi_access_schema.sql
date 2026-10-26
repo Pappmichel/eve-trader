@@ -417,3 +417,23 @@ CREATE POLICY tenant_isolation ON corp_wallet_balances
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON corp_wallet_balances TO eve_trader_app;
+
+-- Asset Manager (docs/ASSET_MANAGER_PLAN.md D7): corporation hangar and wallet
+-- division names, one snapshot per corporation, replaced on each successful
+-- sync. Needs esi-corporations.read_divisions.v1 and the Director role.
+CREATE TABLE IF NOT EXISTS corp_divisions (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_corporation_id BIGINT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('hangar', 'wallet')),
+    division INTEGER NOT NULL CHECK (division BETWEEN 1 AND 7),
+    name TEXT,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_corporation_id, kind, division)
+);
+ALTER TABLE corp_divisions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON corp_divisions;
+CREATE POLICY tenant_isolation ON corp_divisions
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON corp_divisions TO eve_trader_app;

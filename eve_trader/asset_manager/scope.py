@@ -16,7 +16,7 @@ TOOL_KEY = "asset_manager"
 
 # Every kind the page reads. `blueprints` gives ME/TE/runs and the copy
 # valuation (R-1), `industry_jobs` the in-production source (F-2).
-ASSET_KINDS = ("assets", "blueprints", "market_orders", "contracts", "industry_jobs")
+ASSET_KINDS = ("assets", "blueprints", "market_orders", "contracts", "industry_jobs", "corp_divisions")
 
 
 def granted_tools() -> Optional[set[str]]:

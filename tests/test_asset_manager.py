@@ -28,7 +28,7 @@ _TABLES = (
     "character_assets", "corp_assets", "character_blueprints", "corp_blueprints",
     "character_industry_jobs", "corp_industry_jobs", "character_sell_orders", "esi_sharing",
     "manual_stock", "structure_names", "global_structure_names", "manual_location_names",
-    "asset_manager_views", "asset_manager_history",
+    "asset_manager_views", "asset_manager_history", "corp_divisions",
 )
 
 
@@ -181,6 +181,40 @@ def test_corp_office_division_is_the_hangar(tenant, gate_on):
     assert rows[901]["hangar"] == "Division 2"
     assert rows[901]["container_path"] == []
     assert rows[901]["owner_name"] == "Corp (corp)"
+
+
+def test_corp_division_names_label_the_hangar(tenant, gate_on):
+    storage.replace_assets("corp_assets", [
+        (900, OFFICE, STATION, "OfficeFolder", 1, 0, "Corp (corp)", True),
+        (901, TRIT, 900, "CorpSAG2", 400, 0, "Corp (corp)"),
+        (902, TRIT, 900, "CorpSAG3", 5, 0, "Corp (corp)"),
+    ], owner_corporation_id=CORP, owner_name="Corp (corp)")
+    storage.replace_corp_divisions(CORP, [
+        ("hangar", 2, "Ore"), ("hangar", 3, None), ("wallet", 3, "Wallet name"),
+    ])
+    _share("corporation", CORP, "asset_manager", "assets", "corp_divisions")
+
+    rows = {r["item_id"]: r for r in _rows()["rows"]}
+
+    assert rows[901]["hangar"] == "Ore"
+    assert rows[902]["hangar"] == "Division 3"  # unnamed division and wallet names never leak in
+
+
+def test_stored_item_names_are_loaded_per_owner(tenant):
+    _seed_alice()
+    storage.replace_assets("character_assets", [(31, SHIP, STATION, "Hangar", 1, 0, "Bob", True, "Bob's ship")],
+                           owner_character_id=BOB, owner_name="Bob")
+
+    assert storage.load_asset_item_names("character_assets", ALICE) == {2: "Alice's Rifter", 3: "Spare parts"}
+
+
+def test_corp_divisions_are_replaced_per_corporation(tenant):
+    storage.replace_corp_divisions(CORP, [("hangar", 1, "A"), ("hangar", 2, "B")])
+    storage.replace_corp_divisions(CORP + 1, [("hangar", 1, "Other")])
+    storage.replace_corp_divisions(CORP, [("hangar", 1, "A2")])
+
+    assert storage.load_corp_divisions([CORP]) == [(CORP, "hangar", 1, "A2")]
+    assert storage.load_corp_divisions([]) == []
 
 
 def test_virtual_sources_listed_jobs_and_manual(tenant, gate_on):
