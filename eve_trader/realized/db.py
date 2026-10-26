@@ -17,35 +17,15 @@ THE_FORGE_REGION_ID = 10000002
 
 
 def region_id_for_location(location_id: int) -> Optional[int]:
-    """Resolve an ESI location_id to a region_id.
+    """Resolve an ESI location_id to a region_id through the central reader
+    (locations.reader.describe): NPC stations from the SDE, player structures
+    from the tenant's location registry or the shared global names, an Office
+    or container through the structure it stands in. Unresolved -> None (the
+    caller records a warning / leaves region_id NULL)."""
+    from ..locations import reader
 
-    NPC stations: sde_stations -> sde_solar_systems.
-    Player structures: this tenant's structure_names, then global_structure_names.
-    Unresolved -> None (caller records a warning / leaves region_id NULL).
-    """
-    loc = int(location_id)
-    with storage.connect() as conn:
-        row = conn.execute(
-            "SELECT sys.region_id FROM sde_stations st "
-            "JOIN sde_solar_systems sys ON sys.solar_system_id = st.solar_system_id "
-            "WHERE st.station_id = ?",
-            (loc,),
-        ).fetchone()
-        if row is not None:
-            return int(row[0])
-        row = conn.execute(
-            "SELECT solar_system_id FROM structure_names WHERE location_id = ?",
-            (loc,),
-        ).fetchone()
-    system_id = int(row[0]) if row and row[0] is not None else None
-    if system_id is None:
-        global_hit = storage.get_global_structure_names([loc]).get(loc)
-        if global_hit is not None and global_hit[1] is not None:
-            system_id = int(global_hit[1])
-    if system_id is None:
-        return None
-    system = storage.get_solar_system(system_id)
-    return int(system[3]) if system is not None else None
+    info = reader.describe([int(location_id)]).get(int(location_id))
+    return info.region_id if info is not None else None
 
 
 def upsert_ledger_wallet_transactions(rows: list[tuple]) -> int:

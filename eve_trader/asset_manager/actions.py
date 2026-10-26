@@ -281,6 +281,34 @@ def do_start_sync() -> dict:
     return pipeline_runner.start_job(TOOL_KEY, "sync", "Sync assets", lambda cb: do_sync(progress_callback=cb))
 
 
+def do_set_location_name(location_id: int, name: str) -> dict:
+    """Names a location for this tenant (locations.actions) and drops the
+    cached rows so the next page shows it."""
+    from ..locations import actions as location_actions
+
+    result = location_actions.do_set_manual_name(location_id, name)
+    invalidate_cache(storage.get_current_tenant())
+    return result
+
+
+def do_remove_location_name(location_id: int) -> dict:
+    from ..locations import actions as location_actions
+
+    result = location_actions.do_remove_manual_name(location_id)
+    invalidate_cache(storage.get_current_tenant())
+    return result
+
+
+def do_retry_location(location_id: int) -> dict:
+    """Looks one location up again now (locations.actions) and drops the
+    cached rows."""
+    from ..locations import actions as location_actions
+
+    result = location_actions.do_retry_lookup(location_id)
+    invalidate_cache(storage.get_current_tenant())
+    return result
+
+
 def do_sync_status() -> dict:
     from .. import pipeline_runner
     return pipeline_runner.job_status(TOOL_KEY, "sync")

@@ -2655,45 +2655,39 @@ def delete_category_location_option(category: str, location_id: int) -> None:
 
 
 def get_cached_structure_name(location_id: int) -> tuple[bool, Optional[str]]:
-    """Returns (was_cached, name). was_cached=False means resolution has
-    never been attempted for this location_id - was_cached=True with
-    name=None means it *was* attempted and failed (no producer character
-    could see that structure), so callers know not to silently keep retrying
-    every page load."""
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT name FROM structure_names WHERE location_id = ?", (location_id,),
-        ).fetchone()
-    if row is None:
-        return False, None
-    return True, row[0]
+    """Returns (was_cached, name) from the location registry
+    (docs/LOCATION_RESOLUTION_PLAN.md). was_cached=False means no lookup was
+    ever made or recorded for this id; was_cached=True with name=None means a
+    lookup was made and failed."""
+    return get_cached_structure_names([location_id])[location_id]
 
 
 def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool, Optional[str]]]:
-    """Batched form of get_cached_structure_name above - one query instead of
-    N. Confirmed real (if minor - storage.py's own connect() docstring notes
-    ~3ms/call) N+1-connection gap: GET /logistics/structure-names used to
-    call get_cached_structure_name once per location_id in a Python loop.
-    Returns {location_id: (was_cached, name)} for every id in location_ids,
-    same was_cached semantics as the single-id version."""
-    if not location_ids:
+    """Batched form of get_cached_structure_name: {location_id: (was_cached,
+    name)} for every id, one query. A registry row that is still `pending`
+    without a name was registered but never looked up, so it does not count as
+    cached."""
+    ids = [int(i) for i in location_ids]
+    if not ids:
         return {}
-    placeholders = ",".join("?" * len(location_ids))
     with connect() as conn:
         rows = conn.execute(
-            f"SELECT location_id, name FROM structure_names WHERE location_id IN ({placeholders})",
-            location_ids,
+            "SELECT location_id, name, status FROM location_registry WHERE location_id = ANY(?)", (ids,),
         ).fetchall()
-    found = dict(rows)
-    return {loc_id: (loc_id in found, found.get(loc_id)) for loc_id in location_ids}
+    found = {int(loc): (name, status) for loc, name, status in rows}
+    out = {}
+    for loc_id in ids:
+        name, status = found.get(loc_id, (None, None))
+        out[loc_id] = (name is not None or (status is not None and status != "pending"), name)
+    return out
 
 
 def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
     """Batched location_id -> display name. Delegates to the central reader
-    (locations.reader.describe, docs/LOCATION_RESOLUTION_PLAN.md): the tenant's
-    structure_names, then the location registry, the shared global names, the
-    tenant's manual names and SDE stations; an Office or container shows the
-    name of the structure it stands in."""
+    (locations.reader.describe, docs/LOCATION_RESOLUTION_PLAN.md): the
+    location registry, the shared global names, the tenant's manual names and
+    SDE stations; an Office or container shows the name of the structure it
+    stands in."""
     from .locations import reader
 
     ids = list(location_ids)
@@ -2772,20 +2766,18 @@ def remove_manual_location_name(location_id: int) -> None:
 
 def search_locations(query: str, limit: int = 20) -> list[tuple[int, str, str]]:
     """The LocationPicker's own type-ahead (docs/MANUAL_TRACKING_PLAN.md
-    phase 2) - NPC stations (sde_stations, shared/no tenant_id), this
-    tenant's own resolved structures (structure_names) and this tenant's
-    own manual names (manual_location_names). The global structure cache is
-    deliberately NOT searched here - only pick-by-ID surfaces it, via
-    do_resolve_structure_name's own lookup chain, so a structure another
+    phase 2) - NPC stations (sde_stations, shared/no tenant_id), this tenant's
+    own resolved structures (location_registry) and this tenant's own manual
+    names (manual_location_names). The global structure cache is deliberately
+    NOT searched here - only pick-by-ID surfaces it, so a structure another
     tenant resolved can't be *browsed* by name, only reached if you already
     know its numeric ID.
 
-    Returns (location_id, name, kind) tuples, kind in
-    {"station", "structure", "manual"}, name-ordered (an exact
-    case-insensitive match sorts first, same precedent as
-    search_sde_types), deduplicated by location_id - a structure resolved
-    via ESI and also given a manual name keeps only its ESI-resolved
-    row (same precedence as get_location_names)."""
+    Returns (location_id, name, kind) tuples, kind in {"station",
+    "structure", "manual"}, name-ordered (an exact case-insensitive match
+    sorts first), deduplicated by location_id - a structure resolved via ESI
+    and also given a manual name keeps only its ESI-resolved row (same
+    precedence as get_location_names)."""
     query = query.strip()
     if not query:
         return []
@@ -2793,8 +2785,8 @@ def search_locations(query: str, limit: int = 20) -> list[tuple[int, str, str]]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT location_id, name, kind FROM ("
-            "  SELECT location_id, name, 'structure' AS kind, 1 AS pref FROM structure_names "
-            "  WHERE name IS NOT NULL AND name ILIKE ? "
+            "  SELECT location_id, name, 'structure' AS kind, 1 AS pref FROM location_registry "
+            "  WHERE kind = 'structure' AND name IS NOT NULL AND name ILIKE ? "
             "  UNION ALL "
             "  SELECT station_id, station_name, 'station', 2 FROM sde_stations "
             "  WHERE station_name ILIKE ? "
@@ -2816,79 +2808,78 @@ def search_locations(query: str, limit: int = 20) -> list[tuple[int, str, str]]:
 
 
 def list_cached_structure_names() -> list[tuple[int, Optional[str]]]:
-    """Every location_id this tenant has ever attempted to resolve a
-    structure name for (RLS-scoped), success or failure - name is None for
-    an attempted-but-failed resolution (see get_cached_structure_name's
-    was_cached/name semantics). Backs GET /logistics/structure-names (a
-    superset of the old config-assigned-only filter) and the structure-ID
-    picker's option list."""
+    """Every structure id this tenant has looked up (RLS-scoped), success or
+    failure - name is None for a failed lookup (see get_cached_structure_name).
+    Backs GET /logistics/structure-names and the structure-ID picker's option
+    list. Read from the location registry; ids registered but never looked up
+    are left out."""
     with connect() as conn:
-        return conn.execute("SELECT location_id, name FROM structure_names ORDER BY name").fetchall()
+        return conn.execute(
+            "SELECT location_id, name FROM location_registry "
+            "WHERE kind = 'structure' AND (name IS NOT NULL OR status <> 'pending') ORDER BY name"
+        ).fetchall()
 
 
 def list_structure_system_ids() -> list[tuple[int, Optional[int]]]:
-    """Every location_id this tenant has ever attempted to resolve a
-    structure name for, alongside whatever solar_system_id (GitHub issue
-    #12) was actually captured for it - None for a location resolved before
-    that field existed (or a resolve whose ESI response didn't include
-    one), not just for a never-attempted one. Backs GET /logistics/
+    """Every structure id this tenant has looked up, with whatever
+    solar_system_id (GitHub issue #12) was captured for it - None when the
+    lookup failed or the response had none. Backs GET /logistics/
     structure-system-ids, which the Logistik page uses to tell "fully
-    resolved" apart from "name known, system still missing" - a plain name-
-    only check (get_cached_structure_name's own was_cached semantics)
-    can't distinguish those two states, which is exactly why a structure
-    stuck in the latter one had no way to trigger a re-resolve from the UI
-    at all (confirmed live, 2026-09-16 - see do_resolve_structure_name's
-    own `force` docstring)."""
+    resolved" apart from "name known, system still missing" (confirmed live,
+    2026-09-16 - see do_resolve_structure_name's own `force` docstring)."""
     with connect() as conn:
-        return conn.execute("SELECT location_id, solar_system_id FROM structure_names").fetchall()
+        return conn.execute(
+            "SELECT location_id, solar_system_id FROM location_registry "
+            "WHERE kind = 'structure' AND (name IS NOT NULL OR status <> 'pending')"
+        ).fetchall()
 
 
 def set_cached_structure_name(location_id: int, name: Optional[str], solar_system_id: Optional[int] = None) -> None:
-    """solar_system_id (GitHub issue #12) is best-effort - do_resolve_
-    structure_name passes it whenever the ESI response it just resolved
-    `name` from happened to include one; a resolution failure (name=None)
-    never has one. Only ever overwritten with a non-None value (COALESCE)
-    so a later best-effort call with solar_system_id=None (or a caller that
-    predates this parameter) can't blow away a value an earlier call already
-    captured."""
+    """Records a lookup result for a structure in the location registry: a
+    name marks it resolved, None marks a failed lookup (due again at once - no
+    error class is known here). solar_system_id (GitHub issue #12) is
+    best-effort and only ever overwritten with a non-None value, so a later
+    call without one can't blow away a value an earlier call captured. The
+    resolver records its own results with error classes and retry dates
+    (locations.store); this stays for callers that only know name or none."""
+    status = "resolved" if name is not None else "transient"
     with connect() as conn:
         conn.execute(
-            "INSERT INTO structure_names (location_id, name, solar_system_id) VALUES (?, ?, ?) "
-            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name=excluded.name, "
-            "solar_system_id=COALESCE(excluded.solar_system_id, structure_names.solar_system_id)",
-            (location_id, name, solar_system_id),
+            "INSERT INTO location_registry (location_id, kind, name, solar_system_id, status, "
+            "last_attempt_at, resolved_at) VALUES (?, 'structure', ?, ?, ?, now(), "
+            "CASE WHEN ? THEN now() END) "
+            "ON CONFLICT (tenant_id, location_id) DO UPDATE SET name = excluded.name, "
+            "solar_system_id = COALESCE(excluded.solar_system_id, location_registry.solar_system_id), "
+            "status = excluded.status, last_attempt_at = excluded.last_attempt_at, "
+            "resolved_at = COALESCE(excluded.resolved_at, location_registry.resolved_at)",
+            (location_id, name, solar_system_id, status, name is not None),
         )
 
 
 def get_structure_system_id(location_id: int) -> Optional[int]:
-    """solar_system_id cached for `location_id` (see set_cached_structure_name),
-    None if never resolved with one. Used by production/engine.py's
-    _job_cost_rate (GitHub issue #12) via load_category_system_ids below,
-    not called per-item directly - system security likewise stays on
-    get_system_security's own separate sde_solar_systems lookup, unrelated
-    to this cache."""
+    """solar_system_id recorded for `location_id` (see
+    set_cached_structure_name), None if none was captured."""
     with connect() as conn:
         row = conn.execute(
-            "SELECT solar_system_id FROM structure_names WHERE location_id = ?", (location_id,)
+            "SELECT solar_system_id FROM location_registry WHERE location_id = ?", (location_id,)
         ).fetchone()
     return row[0] if row else None
 
 
 def load_category_system_ids() -> dict[str, int]:
     """{job_category: solar_system_id} for every job_category_locations entry
-    whose structure's solar_system_id has actually been resolved (see
-    set_cached_structure_name) - categories with no assigned structure, or
-    one whose name/system hasn't been resolved yet, are simply absent (the
-    caller, production/engine.py's _PlanContext, falls back to the existing
-    flat component/manufacturing system split for those). GitHub issue #12:
-    "the cost index should be calculated by the system where the specific
-    item is being built... can use the systems that are specified in
-    logistics" - this is that lookup, one query instead of N."""
+    whose structure's solar_system_id is known (location registry) -
+    categories with no assigned structure, or one whose system isn't known
+    yet, are simply absent (the caller, production/engine.py's _PlanContext,
+    falls back to the flat component/manufacturing system split for those).
+    GitHub issue #12: "the cost index should be calculated by the system where
+    the specific item is being built... can use the systems that are specified
+    in logistics" - this is that lookup, one query instead of N."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT jcl.category, sn.solar_system_id FROM job_category_locations jcl "
-            "JOIN structure_names sn ON sn.location_id = jcl.location_id "
-            "WHERE sn.solar_system_id IS NOT NULL"
+            "SELECT jcl.category, r.solar_system_id FROM job_category_locations jcl "
+            "JOIN location_registry r ON r.location_id = jcl.location_id "
+            "WHERE r.solar_system_id IS NOT NULL"
         ).fetchall()
     return {category: system_id for category, system_id in rows}
 
@@ -5956,8 +5947,9 @@ def asset_manager_type_info(type_ids: Iterable[int]) -> dict[int, dict]:
 
 def asset_manager_location_details(location_ids: Iterable[int]) -> dict[int, dict]:
     """location_id -> {name, solar_system_id, solar_system_name, security,
-    region_id, region_name}. Delegates to the central reader; anything unknown
-    keeps None fields - never a guess."""
+    region_id, region_name, status}. Delegates to the central reader; anything
+    unknown keeps None fields - never a guess. `status` is the registry's
+    lookup status (None for stations and unregistered ids)."""
     from .locations import reader
 
     ids = sorted({int(i) for i in location_ids if i})
@@ -5966,6 +5958,7 @@ def asset_manager_location_details(location_ids: Iterable[int]) -> dict[int, dic
             "name": info.name, "solar_system_id": info.solar_system_id,
             "solar_system_name": info.solar_system_name, "security": info.security,
             "region_id": info.region_id, "region_name": info.region_name,
+            "status": info.status,
         }
         for i, info in reader.describe(ids).items()
     }
