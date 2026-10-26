@@ -551,6 +551,29 @@ record each result here. Phase 0 and phase 1 need none of them.
 | S-12 | Distinct (owner, location, type) per tenant | Phase 6 storage per day and retention | Phase 6 |
 | S-13 | Current Portfolio breakdown JSON saved | Before/after check for the R-3 extraction | Phase 2 |
 
+### Results (2026-10-26, test server "Server 1", read-only)
+
+Measured on Server 1 (all six tenants; only Default has volume, the others are
+subsets), not on the live server. Server 1's assets were last synced before
+the resolved-hangar column was filled for every tenant, so S-04 reflects that.
+The scripts were throwaway and are not committed.
+
+| # | Result | Consequence |
+|---|---|---|
+| S-01 | Default: 10,275 character + 14,246 corp rows. Largest owner: corp "RichlTech" 14,022; largest character 5,293. Next tenant: corp "Les bobos batisseurs" 15,654 rows | Python paging over one owner set is a few tens of thousands of rows; keep it, revisit only if a tenant passes ~100k |
+| S-02 | Default: 321 distinct places, 16 without a name in any tier (59 rows). Others: 0-1 | Unnamed places are rare; the "Structure <id>" fallback is enough |
+| S-03 | Default: 17,653 structure-range, 6,825 station-range, 43 system-range ids (items in space); no NULL `resolved_location_id` | System-range ids need the "in space" label (`labels.location_kind` already classifies by range); no orphan handling needed on this data |
+| S-04 | Flags seen: AutoFit, Hangar, CorpSAG1-7, Cargo, Unlocked, slots, DroneBay, FighterBay/Tube, SpecializedXHold, AssetSafety, CorpDeliveries, Deliveries, OfficeFolder, Impounded. `resolved_hangar_flag` is NULL for every row of three tenants (stale rows, filled on the next asset sync) | Hangar labels cover these flags; tenants with NULL show "Unknown" until synced (P-10), so the freshness panel's "Sync to refresh" matters |
+| S-05 | Default: 105 of 12,626 blueprint items are not in the blueprint tables (0.8%); the other tenants 0 | R-1 fallback applies to <1%; it stays |
+| S-06 | Sharing is per tool as expected (production, portfolio, trading, doctrine); no owner shares only with a tool that is not granted on this server | R-6 decision unchanged |
+| S-07 | Default: 3,758 distinct owned types, `portfolio._priced` 5.9 s (cold cache), 3,367 priced; others 0.06-0.09 s | 120 s row cache is needed for Default; first page open after a cold start is slow |
+| S-08 | Default: 186 + 101 + 86 singleton ships and ~175 + 99 + 66 containers on the three largest characters, 22 ships + 80 containers on the largest corp; ~870 nameable items in total | One `/assets/names` call per 1000 ids: 1-2 calls per owner per asset sync |
+| S-09 | Live (character with a token): ships answered with their names, containers and non-singleton ids answered HTTP 200 with the literal name `"None"`; no 404 for a mixed request | Matches the implementation: "None" -> NULL, a 404 chunk is skipped anyway |
+| S-10 | No stored token holds `esi-corporations.read_divisions.v1`, so no divisions call was possible (18 tokens, 3 corporations) | Director characters must re-authorize before names appear; the response shape is from the ESI docs and unverified |
+| S-11 | Default: 70 outstanding item exchanges, none with a NULL start location; listed orders: 200 on one character | R-5 fallback unused on this data |
+| S-12 | Default: 9,530 distinct (owner, place, type) rows; other tenants 767 and 3,298 | History is about 10k rows per tenant per day, ~900k at 90 days of retention for the largest |
+| S-13 | Default `total_wealth()` before the asset manager change: total 1,310.4 b ISK (assets 982.0 b, blueprints 153.0 b, wallet 103.4 b, listed 42.4 b, contracts 20.0 b, escrow 9.6 b), 21,606 priced and 3,348 unpriced items, freight 900/m3 | Reference for comparing after a deploy |
+
 S-01..S-07, S-11 and S-13 can be one throwaway read-only script in the
 scratch directory (not committed), same method as the dynamic stock
 targets plan. S-09 and S-10 make one live ESI call each with an existing
@@ -721,8 +744,8 @@ Phase 4 (2026-10-26):
 
 Still open, in order:
 
-1. Server checks S-01..S-13 (section 12), then tune caching/paging. S-09 and
-   S-10 now confirm the real `/assets/names` and `/divisions` responses
-   against the code above.
+1. Server checks were run on Server 1 (section 12, Results). Open from them:
+   S-10 (a real `/divisions` response, needs a Director re-authorization with
+   the new scope) and the same measurements on the live server.
 2. Deploy, run `eve-trader admin grant-defaults`, then remove the Production
    Asset Search tab (D12, R-13).
