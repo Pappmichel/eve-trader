@@ -269,6 +269,13 @@ def _check_and_run_due_jobs_for_tenant(
     if _portfolio_snapshot_due(cfg):
         _run_job(tenant_id, "portfolio_snapshot", lambda: portfolio.take_portfolio_snapshot(cfg))
 
+    # Same calendar-date rule as portfolio_snapshot (one row set per day);
+    # only for tenants that still hold the Asset Manager.
+    if tenant_eligibility.may_use("asset_manager", grants):
+        from .asset_manager import actions as asset_manager_actions
+        if asset_manager_actions.history_snapshot_due():
+            _run_job(tenant_id, "asset_history", asset_manager_actions.take_history_snapshot)
+
 
 def _check_and_run_backup_job() -> None:
     """Global, unscoped - reads DEFAULT_TENANT_ID's own backup_interval_hours

@@ -18,14 +18,19 @@ from .pg_helpers import (  # noqa: F401
 @pytest.fixture(autouse=True)
 def _scheduler_isolation(monkeypatch):
     """Job outcomes live in module-level dicts (the failure backoff reads
-    them), so start every test clean; and by default pretend the ESI sync has
-    something due - tests that care override `pending_due` themselves."""
+    them), so start every test clean; by default pretend the ESI sync has
+    something due - tests that care override `pending_due` themselves - and
+    the Asset Manager history has nothing due."""
     scheduler.last_run_status.clear()
     scheduler._backup_status.clear()
     scheduler._jita_price_cache_status.clear()
     monkeypatch.setattr(
         esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "assets", "production")],
     )
+    # The Asset Manager's daily history check reads the database; tests here
+    # do not seed it (its own test lives in test_asset_manager.py).
+    from eve_trader.asset_manager import actions as asset_manager_actions
+    monkeypatch.setattr(asset_manager_actions, "history_snapshot_due", lambda: False)
 
 
 def _fake_enter_tenant(cfg: TradingConfig):

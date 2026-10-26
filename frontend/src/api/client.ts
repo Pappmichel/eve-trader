@@ -1070,3 +1070,49 @@ export const piApi = {
   }) => post<T.PiGrow>('/api/pi/design/grow', body),
   chainPlan: (body: T.PiChainPlanBody) => post<T.PiChainPlanResult>('/api/pi/design/chain-plan', body),
 }
+
+// --------------------------------------------------------- asset manager
+// docs/ASSET_MANAGER_PLAN.md. Filters travel as repeated query parameters
+// (owners=a&owners=b), the shape FastAPI's list[str] = Query() reads.
+export function assetQueryString(query: object): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value)) {
+      for (const v of value) params.append(key, String(v))
+    } else {
+      params.set(key, String(value))
+    }
+  }
+  return params.toString()
+}
+
+export const assetManagerApi = {
+  items: (query: T.AssetQuery) => get<T.AssetItemsResult>(`/api/asset-manager/items?${assetQueryString(query)}`),
+  locations: (query: T.AssetQuery) =>
+    get<{ regions: T.AssetTreeNode[] }>(`/api/asset-manager/locations?${assetQueryString(query)}`),
+  locationTree: (locationId: number, query: T.AssetQuery) =>
+    get<{ location_id: number | null; nodes: T.AssetTreeNode[] }>(
+      `/api/asset-manager/locations/${locationId}/tree?${assetQueryString(query)}`),
+  ship: (ownerType: string, ownerId: number, itemId: number) =>
+    get<T.AssetShip>(`/api/asset-manager/ships/${ownerType}/${ownerId}/${itemId}`),
+  typeDetail: (typeId: number) => get<T.AssetTypeDetail>(`/api/asset-manager/types/${typeId}`),
+  freshness: () => get<T.AssetFreshness>('/api/asset-manager/freshness'),
+  sync: () => post<T.PipelineRunStatus>('/api/asset-manager/sync'),
+  syncStatus: () => get<T.PipelineRunStatus>('/api/asset-manager/sync/status'),
+  csvUrl: (query: T.AssetQuery) => `/api/asset-manager/export.csv?${assetQueryString(query)}`,
+  eveList: (query: T.AssetQuery) =>
+    fetch(`/api/asset-manager/export-eve-list?${assetQueryString(query)}`).then((r) => {
+      if (!r.ok) throw new ApiError(r.status, r.statusText)
+      return r.text()
+    }),
+  views: () => get<{ views: T.AssetSavedView[] }>('/api/asset-manager/views'),
+  saveView: (name: string, query: T.AssetQuery) =>
+    post<{ id: number; name: string; query: T.AssetQuery }>('/api/asset-manager/views', { name, query }),
+  deleteView: (id: number) => del<{ deleted: number }>(`/api/asset-manager/views/${id}`),
+  history: (fromDate?: string | null, toDate?: string | null, byOwner = false) =>
+    get<T.AssetHistory>(`/api/asset-manager/history?${assetQueryString({
+      from_date: fromDate, to_date: toDate, by_owner: byOwner || undefined,
+    })}`),
+  insights: (minValue: number) => get<T.AssetInsights>(`/api/asset-manager/insights?min_value=${minValue}`),
+}

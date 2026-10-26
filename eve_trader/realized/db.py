@@ -834,28 +834,39 @@ def outstanding_contract_qty_by_type(owners: list[tuple[str, int]]) -> dict[int,
     return {int(r[0]): float(r[1]) for r in rows}
 
 
-def outstanding_contract_lines(owners: list[tuple[str, int]]) -> list[tuple]:
+def outstanding_contract_lines(owners: list[tuple[str, int]], *,
+                               with_location: bool = False) -> list[tuple]:
     """(owner_type, owner_id, type_id, quantity) for included items of
     outstanding item-exchange contracts this owner issued. Same contract
-    once, even when archived for both a character and its corp."""
+    once, even when archived for both a character and its corp.
+
+    `with_location` adds the contract's start location:
+    (owner_type, owner_id, location_id, type_id, quantity), location_id
+    None when the archive has none (Asset Manager, docs/ASSET_MANAGER_PLAN.md
+    R-5)."""
     if not owners:
         return []
     where, params = _owner_in_clause(owners)
     where = where.replace("owner_type", "c.owner_type").replace("owner_id", "c.owner_id")
+    loc_inner = "c.start_location_id AS location_id, " if with_location else ""
+    loc_outer = "location_id, " if with_location else ""
     with storage.connect() as conn:
         rows = conn.execute(
-            "SELECT owner_type, owner_id, type_id, SUM(quantity) FROM ("
+            f"SELECT owner_type, owner_id, {loc_outer}type_id, SUM(quantity) FROM ("
             "  SELECT DISTINCT ON (c.contract_id, i.record_id) "
-            "         c.owner_type, c.owner_id, i.type_id, i.quantity "
+            f"         c.owner_type, c.owner_id, {loc_inner}i.type_id, i.quantity "
             "  FROM ledger_contracts c JOIN ledger_contract_items i "
             "    ON i.owner_type = c.owner_type AND i.owner_id = c.owner_id "
             "   AND i.contract_id = c.contract_id "
             f"  WHERE {where} AND c.status = 'outstanding' AND i.is_included "
             "   AND ((c.owner_type = 'character' AND c.issuer_id = c.owner_id) "
             "     OR (c.owner_type = 'corporation' AND c.issuer_corporation_id = c.owner_id)) "
-            ") x GROUP BY owner_type, owner_id, type_id",
+            f") x GROUP BY owner_type, owner_id, {loc_outer}type_id",
             tuple(params),
         ).fetchall()
+    if with_location:
+        return [(r[0], int(r[1]), int(r[2]) if r[2] is not None else None, int(r[3]), float(r[4]))
+                for r in rows]
     return [(r[0], int(r[1]), int(r[2]), float(r[3])) for r in rows]
 
 

@@ -9,7 +9,7 @@ import { HintCard } from '../../components/HintCard'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
-import { qty } from '../../format'
+import { dateTime, qty } from '../../format'
 
 export default function AssetSearch() {
   const { data: itemNameOptions } = useItemNameOptions()
@@ -56,6 +56,12 @@ export default function AssetSearch() {
           Search
         </Button>
       </Group>
+
+      {result && (
+        <Text size="xs" c="dimmed">
+          Assets last synced: {result.assets_synced_at ? dateTime(result.assets_synced_at) : 'never'}
+        </Text>
+      )}
 
       {result && (
         result.locations.length === 0 ? (

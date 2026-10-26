@@ -206,6 +206,7 @@ sudo -u postgres psql -d eve_trader -f docs/module_reprocessing_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/character_management_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pi_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_ledger_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/asset_manager_schema.sql
 ```
 `pi_schema.sql` (Planetary Industry tool, `docs/PI_PLAN.md`) must run after
 `character_management_schema.sql`: it widens that file's alert type CHECK
@@ -214,6 +215,10 @@ grant-defaults` once so existing users get the new `pi` grant.
 `production_ledger_schema.sql` (Production realized profit archive,
 `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`) is append-only ledger tables plus
 journal context columns on `esi_wallet_journal`.
+`asset_manager_schema.sql` (Asset Manager, `docs/ASSET_MANAGER_PLAN.md`)
+holds saved views and the daily asset quantity history. After deploying the
+Asset Manager, run `eve-trader admin grant-defaults` once so existing users
+get the new `asset_manager` grant.
 `character_management_schema.sql` creates `character_standings` and
 `character_loyalty_points` (the Character Management hub's Character Info
 snapshots, `docs/CHARACTER_MANAGEMENT_PLAN.md`) plus, since the Skills phase,
@@ -418,6 +423,7 @@ sudo -u postgres psql -d eve_trader -f docs/module_reprocessing_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/character_management_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pi_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_ledger_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/asset_manager_schema.sql
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..

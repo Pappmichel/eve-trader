@@ -78,9 +78,9 @@ def test_every_snapshot_kind_has_fetcher_stale_table_and_reader(monkeypatch):
     for kind in OWNED_DATA_KINDS:
         if kind.live_only:
             continue
-        assert (kind.key, "character") in fetchers.FETCHERS, kind.key
+        assert ((kind.key, "character") in fetchers.FETCHERS) == bool(kind.character_scope), kind.key
         assert ("corporation" in stale._KIND_TABLES.get(kind.key, {})) == bool(kind.corporation_scope), kind.key
-        assert "character" in stale._KIND_TABLES[kind.key], kind.key
+        assert ("character" in stale._KIND_TABLES[kind.key]) == bool(kind.character_scope), kind.key
         # a reader branch exists: an unknown kind would raise AccessorError
         access.read_esi(kind.key, kind.consuming_tools[0])
 

@@ -20,7 +20,7 @@ describe('esiRegistry Character Management kinds', () => {
     expect(wallet.consumingTools).toContain('station_trading')
     expect(wallet.toolDataKind?.char_info).toBe('wallet_balance')
     expect(wallet.toolDataKind?.station_trading).toBeUndefined()
-    expect(kindByKey('contracts')!.consumingTools).toEqual(['doctrine', 'production', 'trading', 'portfolio'])
+    expect(kindByKey('contracts')!.consumingTools).toEqual(['doctrine', 'production', 'trading', 'portfolio', 'asset_manager'])
     expect(kindByKey('market_orders')!.consumingTools).toContain('portfolio')
   })
 
@@ -29,6 +29,13 @@ describe('esiRegistry Character Management kinds', () => {
     for (const kind of CHARACTER_KINDS) expect(sections.has(kind.section)).toBe(true)
     const covered = KIND_SECTIONS.flatMap((s) => CHARACTER_KINDS.filter((k) => k.section === s.key))
     expect(covered.length).toBe(CHARACTER_KINDS.length)
+  })
+
+  it('keeps corporation divisions out of the character columns', () => {
+    const divisions = kindByKey('corp_divisions')!
+    expect(divisions.corporationOnly).toBe(true)
+    expect(divisions.consumingTools).toEqual(['asset_manager'])
+    expect(CHARACTER_KINDS.map((k) => k.key)).not.toContain('corp_divisions')
   })
 
   it('labels the new tool', () => {

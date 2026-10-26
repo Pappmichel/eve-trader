@@ -754,20 +754,7 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
             "manual_only": False,
         })
 
-    market_ids = {item["type_id"] for item in items if not item["manual_only"]}
-    manual_ids = {item["type_id"] for item in items if item["manual_only"]}
-    prices = _priced(market_ids)
-    manuals = _manual_only_priced(manual_ids)
-    per_run = _bpc_run_values(manual_ids - set(manuals))
-    for item in items:
-        book = manuals if item["manual_only"] else prices
-        item["price"] = book.get(item["type_id"])
-        # A copy without a manual price: what re-inventing its remaining
-        # runs would cost. Copies of a BPO (no invention recipe) stay unpriced.
-        if item["price"] is None and item["manual_only"] and (item.get("runs") or 0) > 0:
-            value = per_run.get(item["type_id"])
-            if value is not None:
-                item["price"] = value * item["runs"]
+    price_items(items)
 
     wallets = [
         {"owner_type": owner_type, "owner_id": owner_id, "amount": amount}
@@ -784,6 +771,32 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
         "escrow_known": escrow_known,
         "structure_id": cfg.structure_id,
     }
+
+
+def price_items(items: list[dict]) -> list[dict]:
+    """Sets `price` (per unit, None = unpriced) on every item, in place.
+
+    The one valuation rule for owned items, shared by Total Wealth and the
+    Asset Manager (docs/ASSET_MANAGER_PLAN.md D3 / R-3). Each item carries
+    `type_id`, `manual_only` (a blueprint copy: only a manual price or its
+    invention cost counts) and, for copies, `runs`. Market items use
+    `_priced`; copies without a manual price are valued at their invention
+    cost per run x remaining runs, copies of a BPO stay unpriced."""
+    market_ids = {item["type_id"] for item in items if not item["manual_only"]}
+    manual_ids = {item["type_id"] for item in items if item["manual_only"]}
+    prices = _priced(market_ids)
+    manuals = _manual_only_priced(manual_ids)
+    per_run = _bpc_run_values(manual_ids - set(manuals))
+    for item in items:
+        book = manuals if item["manual_only"] else prices
+        item["price"] = book.get(item["type_id"])
+        # A copy without a manual price: what re-inventing its remaining
+        # runs would cost. Copies of a BPO (no invention recipe) stay unpriced.
+        if item["price"] is None and item["manual_only"] and (item.get("runs") or 0) > 0:
+            value = per_run.get(item["type_id"])
+            if value is not None:
+                item["price"] = value * item["runs"]
+    return items
 
 
 def _wealth_from(collected: dict) -> dict:

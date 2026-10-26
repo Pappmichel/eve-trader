@@ -29,7 +29,7 @@ STATE_REAUTH = "reauth_needed"
 STATE_NOT_SYNCED = "not_synced"
 STATE_ERROR = "error"
 
-SCOPE_BY_KIND = {k.key: k.character_scope for k in OWNED_DATA_KINDS}
+SCOPE_BY_KIND = {k.key: k.character_scope for k in OWNED_DATA_KINDS if k.character_scope}
 
 
 def field(state: str, value: Any = None, detail: Optional[str] = None) -> dict:

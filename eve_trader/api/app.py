@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,7 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import access_policy, scheduler, storage, tenant_scope
+from ..asset_manager import actions as asset_manager_actions
 from ..access_gate import (
     ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie, note_tenant_activity,
 )
@@ -31,7 +33,7 @@ from ..doctrine.config import DOCTRINE_CONFIG
 from ..pi.config import PI_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
+    admin, asset_manager, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
     station_trading, trading,
 )
 
@@ -152,6 +154,7 @@ _TOOL_PATH_PREFIXES = {
     "/api/char-skill-plans/": "char_skill_plans",
     "/api/char-alerts/": "char_alerts",
     "/api/pi/": "pi",
+    "/api/asset-manager/": "asset_manager",
 }
 
 
@@ -371,6 +374,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 async def _lifespan(app: FastAPI):
     _load_default_tenant_config()
     scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
+    # Price the Asset Manager rows in the background so the first page open is
+    # not a 20 s wait. Daemon thread: it must neither block start nor shutdown.
+    if "PYTEST_CURRENT_TEST" not in os.environ:  # tests start the app against a shared test database
+        threading.Thread(target=asset_manager_actions.warm_all_tenants, name="asset-manager-warmup",
+                         daemon=True).start()
     yield
     scheduler.stop()
 
@@ -454,6 +462,7 @@ def create_app() -> FastAPI:
     app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
     app.include_router(pi.router, prefix="/api/pi", tags=["pi"])
     app.include_router(pi_design.router, prefix="/api/pi/design", tags=["pi"])
+    app.include_router(asset_manager.router, prefix="/api/asset-manager", tags=["asset_manager"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
     app.include_router(sde.router, prefix="/api/sde", tags=["sde"])
     app.include_router(hubs.router, prefix="/api/hubs", tags=["hubs"])

@@ -1222,7 +1222,8 @@ def do_search_item_locations(item_name: str) -> dict:
                           owner_name=owner_name, quantity=quantity)
         for location_id, location_name, owner_name, quantity in rows
     ]
-    return {"type_id": type_id, "type_name": resolved_name, "locations": locations}
+    return {"type_id": type_id, "type_name": resolved_name, "locations": locations,
+            "assets_synced_at": storage.newest_esi_freshness_success_for_tool("production", ["assets"])}
 
 
 def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODUCTION_CONFIG,
