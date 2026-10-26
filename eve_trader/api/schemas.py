@@ -247,13 +247,6 @@ class MarketRestockRow(_Base):
     home_short: float
 
 
-class AssetLocationRow(_Base):
-    location_id: int
-    location_name: Optional[str] = None
-    owner_name: str
-    quantity: float
-
-
 class MarketStatusRow(_Base):
     type_id: int
     type_name: str

@@ -74,7 +74,6 @@ def test_items_inside_an_asset_safety_wrap_are_not_stock(tenant):
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 100
     assert storage.esi_stock_at_location(TYPE_ID, None) == 100
     assert storage.esi_stock_by_location_bulk([TYPE_ID]) == {TYPE_ID: {LOCATION_ID: 100}}
-    assert [r[3] for r in storage.search_item_stock_locations(TYPE_ID)] == [100]
     rows = [
         {"type_id": TYPE_ID, "location_flag": "Hangar", "resolved_hangar_flag": "Hangar",
          "resolved_location_id": LOCATION_ID, "quantity": 100},
@@ -360,107 +359,6 @@ def test_esi_stock_at_location_sees_stock_inside_a_container_in_corp_hangar(tena
     ])
 
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 300000000
-
-
-def test_search_item_stock_locations_groups_by_location_and_owner(tenant):
-    other_location = 1000000000002
-    storage.replace_assets("character_assets", [
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "Alice"),
-        (2, TYPE_ID, LOCATION_ID, "Hangar", 50, 0, "Alice"),  # same (location, owner) - must sum, not duplicate
-        (3, TYPE_ID, other_location, "Hangar", 20, 0, "Bob"),
-    ])
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    by_key = {(r[0], r[2]): r[3] for r in rows}
-    assert by_key[(LOCATION_ID, "Alice")] == 150
-    assert by_key[(other_location, "Bob")] == 20
-
-
-def test_search_item_stock_locations_excludes_non_stock_flags(tenant):
-    storage.replace_assets("character_assets", [
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "Alice"),
-        (2, TYPE_ID, LOCATION_ID, "AssetSafety", 999, 0, "Alice"),
-    ])
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    assert len(rows) == 1
-    assert rows[0][3] == 100  # AssetSafety quantity never counted
-
-
-def test_search_item_stock_locations_resolves_multi_hop_nested_containers(tenant):
-    # A real EVE shape: item sits inside a container, which sits inside a
-    # ship, which sits in a station hangar - three hops up to the station.
-    ship_item_id = 500
-    container_item_id = 501
-    storage.replace_assets("character_assets", [
-        (ship_item_id, 600, LOCATION_ID, "Hangar", 1, 0, "Alice"),  # the ship itself, in station hangar
-        (container_item_id, 601, ship_item_id, "Cargo", 1, 0, "Alice"),  # a container, inside the ship's cargo
-        (99, TYPE_ID, container_item_id, "Unlocked", 42, 0, "Alice"),  # the searched item, inside the container
-    ])
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    assert rows == [(LOCATION_ID, None, "Alice", 42)]  # resolved all the way up to the station, not the container
-
-
-def test_search_item_stock_locations_resolves_corp_office_nesting(tenant):
-    office_item_id = 900
-    storage.replace_assets("corp_assets", [
-        (office_item_id, storage.OFFICE_TYPE_ID, LOCATION_ID, "OfficeFolder", 1, 0, "My Corp (corp)"),
-        (2, TYPE_ID, office_item_id, "CorpSAG1", 300, 0, "My Corp (corp)"),
-    ])
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    assert rows == [(LOCATION_ID, None, "My Corp (corp)", 300)]
-
-
-def test_search_item_stock_locations_prefers_structure_name_over_station_name(tenant):
-    # sde_stations.station_id is a real NPC station id (small - INTEGER, not
-    # BIGINT like a player structure's location_id, see phase1_schema.sql) -
-    # this test needs the *same* id in both structure_names and sde_stations
-    # to exercise the prefer-structure-name-over-station-name fallback, so
-    # it uses a station-scale id here rather than the module's LOCATION_ID
-    # (which represents a player structure elsewhere in this file).
-    station_location_id = 60003760
-    storage.replace_assets("character_assets", [
-        (1, TYPE_ID, station_location_id, "Hangar", 10, 0, "Alice"),
-    ])
-    storage.set_cached_structure_name(station_location_id, "Player Structure Name")
-    with storage.connect() as conn:
-        conn.execute("INSERT INTO sde_stations VALUES (?,?,?)", (station_location_id, 30000142, "NPC Station Name"))
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    assert rows == [(station_location_id, "Player Structure Name", "Alice", 10)]
-
-
-def test_search_item_stock_locations_falls_back_to_station_name(tenant):
-    station_location_id = 60003761
-    storage.replace_assets("character_assets", [
-        (1, TYPE_ID, station_location_id, "Hangar", 10, 0, "Alice"),
-    ])
-    with storage.connect() as conn:
-        conn.execute("INSERT INTO sde_stations VALUES (?,?,?)", (station_location_id, 30000142, "NPC Station Name"))
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    assert rows == [(station_location_id, "NPC Station Name", "Alice", 10)]
-
-
-def test_search_item_stock_locations_uses_manual_location_name(tenant):
-    # Phase 0 of docs/ASSET_MANAGER_PLAN.md: the search used to read only
-    # structure_names and sde_stations, so a manual name never showed up.
-    storage.replace_assets("character_assets", [
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 10, 0, "Alice"),
-    ])
-    storage.set_manual_location_name(LOCATION_ID, "My Hideout")
-
-    rows = storage.search_item_stock_locations(TYPE_ID)
-
-    assert rows == [(LOCATION_ID, "My Hideout", "Alice", 10)]
 
 
 def test_get_cached_structure_names_batches_and_preserves_was_cached_semantics(tenant):
