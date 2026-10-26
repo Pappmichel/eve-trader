@@ -57,6 +57,29 @@ ESI sync feeds it, and the cost of resolving stays bounded and predictable.
    and Portfolio call per request. Resolution runs inside one tool's sync, so
    work is duplicated if several tools run.
 
+### 1.4 Baseline measured on the test server (phase 1, 2026-10-26)
+Default tenant, `GET /api/admin/locations/report` logic:
+
+| | count |
+|---|---|
+| distinct location ids across all tables | 880 |
+| NPC stations / solar systems | 251 / 2 |
+| corp Offices | 28 |
+| **containers and ships** (immediate parent of an asset) | **511** |
+| real structures | 88 (73 named, 15 failed) |
+| candidates the bulk resolver sends to ESI | 604 |
+| estimated ESI calls per bulk run (2 capable characters) | ~1010 |
+| the same if only real structures were asked | ~32 |
+
+So 511 of the 577 ids the old logic called "structures" are items that can
+never resolve (an asset's `location_id` is its immediate parent, which is often
+a container or a ship). About 97% of the ESI calls of a bulk run are wasted, and
+they are repeated on every Production sync. The kind classification in 2.1 is
+therefore the first and largest efficiency win, before any backoff. Several
+sources (`ledger_*`, wallet transactions, sell orders, clones, Doctrine
+contracts) are not in the bulk candidate list at all; their structures were
+mostly already named here, but that is not guaranteed.
+
 ## 2. Target design
 
 New package `eve_trader/locations/` (names are proposals). It imports
