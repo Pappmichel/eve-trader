@@ -153,6 +153,18 @@ describe('tool view / extra kinds', () => {
     ])
   })
 
+  it('requests the scope of a corporation-only kind for the corp members only', () => {
+    const rows: EsiSharingRow[] = [
+      ...sharing,
+      { owner_type: 'corporation', owner_id: 99, data_kind: 'corp_divisions', tool_key: 'asset_manager' },
+    ]
+    expect(extraKindsForCharacter(1, rows, capabilities, 99)).toContain('corp_divisions')
+    expect(extraKindsForCharacter(1, rows, capabilities, 98)).not.toContain('corp_divisions')
+    expect(extraKindsForCharacter(1, rows, capabilities)).not.toContain('corp_divisions')
+    // The corp's wallet share still does not add wallet to the character's request.
+    expect(extraKindsForCharacter(1, rows, capabilities, 99)).not.toContain('wallet')
+  })
+
   it('reads pending keys from the access-preview added flags', () => {
     const pending = pendingKeysFromPreview({
       title: 'Confirm ESI access',

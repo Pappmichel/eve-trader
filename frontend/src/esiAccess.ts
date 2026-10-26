@@ -109,10 +109,18 @@ export function extraKindsForCharacter(
   characterId: number,
   sharing: EsiSharingRow[],
   capabilities: EsiCapabilityRow[],
+  corporationId?: number | null,
 ): string[] {
   const keys = new Set<string>()
   for (const row of sharing) {
     if (row.owner_type === 'character' && row.owner_id === characterId) {
+      keys.add(row.data_kind)
+    }
+    // A corporation-only kind (corp_divisions) has no character row to tick,
+    // so its scope is requested for the member characters of a corp that
+    // shares it. Other corp kinds keep coming from the character's own rows.
+    if (corporationId != null && row.owner_type === 'corporation' && row.owner_id === corporationId
+        && kindByKey(row.data_kind)?.corporationOnly) {
       keys.add(row.data_kind)
     }
   }

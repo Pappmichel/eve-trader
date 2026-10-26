@@ -609,7 +609,7 @@ export default function CharactersPage() {
   const extraByCharacter = useMemo(() => {
     const map = new Map<number, string[]>()
     for (const owner of owners) {
-      map.set(owner.character_id, extraKindsForCharacter(owner.character_id, sharing, capabilities))
+      map.set(owner.character_id, extraKindsForCharacter(owner.character_id, sharing, capabilities, owner.corporation_id))
     }
     return map
   }, [owners, sharing, capabilities])
