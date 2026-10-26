@@ -2368,19 +2368,24 @@ def location_id_sources() -> dict[str, set[int]]:
     return out
 
 
-def location_kind_hints(location_ids: Iterable[int]) -> tuple[set[int], set[int]]:
-    """(NPC station ids, corp Office item ids) among `location_ids`. An Office
-    is an asset row of type OFFICE_TYPE_ID and has no name of its own."""
+def location_kind_hints(location_ids: Iterable[int]) -> tuple[set[int], set[int], set[int]]:
+    """(NPC station ids, corp Office item ids, other asset item ids) among
+    `location_ids`. An asset's raw location_id is its immediate parent, so it
+    is often a container or ship item, which ESI cannot resolve as a structure;
+    an Office is the corp special case (OFFICE_TYPE_ID)."""
     ids = sorted({int(i) for i in location_ids})
     if not ids:
-        return set(), set()
+        return set(), set(), set()
     with connect() as conn:
         stations = {int(r[0]) for r in conn.execute(
             "SELECT station_id FROM sde_stations WHERE station_id = ANY(?)", (ids,)).fetchall()}
-        offices = {int(r[0]) for r in conn.execute(
-            "SELECT item_id FROM corp_assets WHERE type_id = ? AND item_id = ANY(?)",
-            (OFFICE_TYPE_ID, ids)).fetchall()}
-    return stations, offices
+        offices: set[int] = set()
+        items: set[int] = set()
+        for table in ("character_assets", "corp_assets"):
+            for item_id, type_id in conn.execute(
+                    f"SELECT item_id, type_id FROM {table} WHERE item_id = ANY(?)", (ids,)).fetchall():
+                (offices if type_id == OFFICE_TYPE_ID else items).add(int(item_id))
+    return stations, offices, items
 
 
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:

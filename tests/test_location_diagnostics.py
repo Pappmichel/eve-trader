@@ -11,6 +11,7 @@ from .pg_helpers import _apply_esi_access_schema, _apply_phase1_schema, tenant  
 
 STATION, OFFICE_ID = 60099991, 1050055429685
 KNOWN, FAILED_ID, NEW_ID, ORDER_ONLY = 1049865184988, 1049865184989, 1049865184990, 1049865184991
+CONTAINER = 1049865184999
 
 
 def test_classify_separates_stations_systems_offices_and_structures():
@@ -20,23 +21,25 @@ def test_classify_separates_stations_systems_offices_and_structures():
     assert d.classify(OFFICE_ID, stations, offices) == "office"
     assert d.classify(KNOWN, stations, offices) == "structure"
     assert d.classify(5_000_000, stations, offices) == "other"
+    assert d.classify(CONTAINER, stations, offices, {CONTAINER}) == "container"
 
 
 def test_report_counts_states_sources_and_esi_cost():
     sources = {
-        "corp_assets": {STATION, OFFICE_ID, KNOWN, FAILED_ID},
+        "corp_assets": {STATION, OFFICE_ID, KNOWN, FAILED_ID, CONTAINER},
         "corp_industry_jobs": {OFFICE_ID},
         "sell_orders": {KNOWN, ORDER_ONLY},
         "ledger_contracts_end": {NEW_ID},
     }
     state = {KNOWN: d.RESOLVED, FAILED_ID: d.FAILED}  # NEW_ID / ORDER_ONLY never attempted
 
-    r = d.build_report(sources, {STATION}, {OFFICE_ID}, state, capable_characters=2, corporations=1)
+    r = d.build_report(sources, {STATION}, {OFFICE_ID}, {CONTAINER}, state, capable_characters=2, corporations=1)
 
     assert r["totals"]["by_kind"]["structure"] == 4 and r["totals"]["by_kind"]["office"] == 1
     assert r["structures"] == {d.RESOLVED: 1, d.MANUAL: 0, d.FAILED: 1, d.NEVER: 2}
     # 1 corporation list + (1 failed + 2 never attempted) ids x 2 characters
     assert r["estimated_esi_calls_per_sync"] == 1 + 3 * 2
+    assert r["totals"]["by_kind"]["container"] == 1
     assert r["by_source"]["sell_orders"]["covered_by_bulk_resolve"] is False
     assert r["by_source"]["corp_assets"]["covered_by_bulk_resolve"] is True
     by_id = {u["location_id"]: u for u in r["unresolved"]}
@@ -44,6 +47,7 @@ def test_report_counts_states_sources_and_esi_cost():
     assert by_id[FAILED_ID]["reachable_by_bulk_resolve"] is True
     assert by_id[ORDER_ONLY]["reachable_by_bulk_resolve"] is False
     assert by_id[NEW_ID]["reachable_by_bulk_resolve"] is False  # only a ledger contract references it
+    assert CONTAINER not in by_id  # resolved through its parent, not an unresolved name
     assert KNOWN not in by_id and STATION not in by_id
     # ids the bulk resolver can reach come first
     assert r["unresolved"][0]["reachable_by_bulk_resolve"] is True

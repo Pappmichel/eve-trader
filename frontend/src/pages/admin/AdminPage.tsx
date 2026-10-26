@@ -150,7 +150,7 @@ function LocationReportSection() {
           <Text size="sm" c="dimmed">
             A bulk resolve spends about {data.estimated_esi_calls_per_sync} ESI call(s) with{' '}
             {data.capable_characters} capable character(s); it reaches {data.bulk_resolve_candidates} candidate(s).
-            Offices ({data.offices_resolved_through_parent}) never get a name of their own - they show their structure.
+            Offices ({data.offices_resolved_through_parent}) and containers/ships ({data.containers_resolved_through_parent}) never get a name of their own - they show their structure.
           </Text>
           {data.unresolved_total > data.unresolved.length && (
             <Text size="sm" c="dimmed">Showing {data.unresolved.length} of {data.unresolved_total} unresolved.</Text>

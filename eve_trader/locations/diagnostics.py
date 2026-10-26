@@ -21,18 +21,20 @@ COVERED_SOURCES = frozenset({
     "category_location_options", "manual_stock", "manual_blueprints",
 })
 
-KINDS = ("npc_station", "solar_system", "office", "structure", "other")
+KINDS = ("npc_station", "solar_system", "office", "container", "structure", "other")
 # name states of a structure-sized id
 RESOLVED, MANUAL, FAILED, NEVER = "resolved", "manual", "failed", "never_attempted"
 
 
-def classify(location_id: int, stations: set[int], offices: set[int]) -> str:
+def classify(location_id: int, stations: set[int], offices: set[int], items: frozenset[int] | set[int] = frozenset()) -> str:
     if location_id in stations:
         return "npc_station"
     if SOLAR_SYSTEM_RANGE[0] <= location_id < SOLAR_SYSTEM_RANGE[1]:
         return "solar_system"
     if location_id in offices:
         return "office"
+    if location_id in items:
+        return "container"
     if location_id >= STRUCTURE_ID_MIN:
         return "structure"
     return "other"
@@ -42,6 +44,7 @@ def build_report(
     sources: dict[str, set[int]],
     stations: set[int],
     offices: set[int],
+    items: set[int],
     name_state: dict[int, str],
     capable_characters: int,
     corporations: int,
@@ -53,7 +56,7 @@ def build_report(
     stops at the first character that succeeds, so this is the failing case).
     """
     all_ids: set[int] = set().union(*sources.values()) if sources else set()
-    kinds = {i: classify(i, stations, offices) for i in all_ids}
+    kinds = {i: classify(i, stations, offices, items) for i in all_ids}
 
     by_kind = {k: 0 for k in KINDS}
     for k in kinds.values():
@@ -75,6 +78,7 @@ def build_report(
             "ids": len(ids),
             "structures": sum(1 for i in ids if kinds[i] == "structure"),
             "offices": sum(1 for i in ids if kinds[i] == "office"),
+            "containers": sum(1 for i in ids if kinds[i] == "container"),
             "unresolved": sum(
                 1 for i in ids if kinds[i] == "structure" and name_state.get(i, NEVER) in (FAILED, NEVER)
             ),
@@ -103,6 +107,7 @@ def build_report(
         "capable_characters": capable_characters,
         "estimated_esi_calls_per_sync": corporations + retried * capable_characters,
         "offices_resolved_through_parent": by_kind["office"],
+        "containers_resolved_through_parent": by_kind["container"],
     }
 
 
@@ -112,8 +117,8 @@ def collect(capable_characters: int, corporations: int) -> dict:
 
     sources = storage.location_id_sources()
     all_ids: set[int] = set().union(*sources.values()) if sources else set()
-    stations, offices = storage.location_kind_hints(all_ids)
-    structure_ids = [i for i in all_ids if classify(i, stations, offices) == "structure"]
+    stations, offices, items = storage.location_kind_hints(all_ids)
+    structure_ids = [i for i in all_ids if classify(i, stations, offices, items) == "structure"]
 
     name_state: dict[int, str] = {}
     if structure_ids:
@@ -131,7 +136,7 @@ def collect(capable_characters: int, corporations: int) -> dict:
                 name_state[i] = FAILED
             else:
                 name_state[i] = NEVER
-    return build_report(sources, stations, offices, name_state, capable_characters, corporations)
+    return build_report(sources, stations, offices, items, name_state, capable_characters, corporations)
 
 
 def _manual_ids(ids: Iterable[int]) -> set[int]:
