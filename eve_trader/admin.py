@@ -260,6 +260,9 @@ def do_set_structure_resolution_fallback(enabled: bool) -> dict:
     return {"global_structure_resolution_fallback": enabled}
 
 
+ADMIN_RESOLVE_BUDGET = 1000  # ESI calls per manual bulk run; the scheduled path uses the resolver default
+
+
 def do_start_structure_name_resolve(force: bool = False) -> dict:
     """Kicks off bulk structure-name resolution as a background job (docs/
     MANUAL_TRACKING_PLAN.md phase 8) - the HTTP handler must not block on
@@ -271,6 +274,25 @@ def do_start_structure_name_resolve(force: bool = False) -> dict:
 def do_structure_resolve_status() -> dict:
     from . import pipeline_runner
     return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN, pipeline_runner.JOB_STRUCTURE_RESOLVE)
+
+
+def do_location_report() -> dict:
+    """Read-only location diagnostics for the admin's own tenant (docs/
+    LOCATION_RESOLUTION_PLAN.md phase 1): ids by kind, name state, per-source
+    coverage and the ESI calls a bulk resolve spends today. Makes no ESI call
+    except the public corporation lookup the resolver itself would make."""
+    from .locations import diagnostics
+
+    characters = esi_sync.list_capability_characters("structure_name_resolution")
+    corporations = 0
+    if characters:
+        client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+        corporations = len(esi_sync.corp_roles_for_characters(client, characters))
+    report = diagnostics.collect(len(characters), corporations)
+    report["bulk_resolve_candidates"] = len(_structure_resolve_candidates())
+    from .locations import store as location_store
+    report["registry_status"] = location_store.status_counts()
+    return report
 
 
 def _structure_resolve_candidates() -> set[int]:
@@ -288,50 +310,28 @@ def _structure_resolve_candidates() -> set[int]:
 
 
 def do_resolve_structure_names(force: bool = False, progress_callback=None) -> dict:
-    """The actual bulk resolution (docs/MANUAL_TRACKING_PLAN.md phase 8,
-    decision 6b - the admin's click is the consent to use their own
-    structure_name_resolution characters for every candidate, not just
-    ones they personally asked about). `force=False` (the default) only
-    resolves candidates missing from the global cache; `force=True`
-    re-resolves everything. Every successful resolution lands in both this
-    tenant's own cache and the global one (storage.set_cached_structure_name/
-    upsert_global_structure_name) - same two-tier ESI logic as
-    do_resolve_structure_name and _discover_structure_names, shared via
-    esi_sync.resolve_structure_ids."""
-    all_candidates = _structure_resolve_candidates()
-    if force:
-        to_resolve = set(all_candidates)
-    else:
-        cached_globally = storage.get_global_structure_names(list(all_candidates))
-        to_resolve = {loc for loc in all_candidates if loc not in cached_globally}
+    """The bulk resolution (docs/MANUAL_TRACKING_PLAN.md phase 8, decision 6b -
+    the admin's click is the consent to use their own structure_name_resolution
+    characters for every candidate). Runs the central resolver
+    (locations.resolver, docs/LOCATION_RESOLUTION_PLAN.md): only structures
+    that are due are looked up, Offices and containers never reach ESI, and a
+    refused or failed lookup is retried on its own schedule instead of on every
+    run. `force=True` looks every structure up again. Every success lands in
+    this tenant's cache and the shared global one."""
+    from .locations import resolver
 
     if progress_callback:
-        progress_callback({"message": f"Resolving {len(to_resolve)} of {len(all_candidates)} candidate(s)"})
-
-    if not to_resolve:
-        return {"candidates": len(all_candidates), "resolved": 0}
-
-    characters = esi_sync.list_capability_characters("structure_name_resolution")
-    if not characters:
+        progress_callback({"message": "Resolving structure names"})
+    summary = resolver.resolve_pending(budget=ADMIN_RESOLVE_BUDGET, force=force,
+                                       progress_callback=progress_callback)
+    if str(summary.get("skipped", "")).startswith("no character"):
         raise ActionError(
             "No character has ticked Structure name resolution yet (Characters page, Access section)."
         )
-
-    client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
-    corp_roles = esi_sync.corp_roles_for_characters(client, characters)
-    resolved = esi_sync.resolve_structure_ids(client, to_resolve, corp_roles, lambda: characters)
-
-    resolved_count = 0
-    for loc_id in to_resolve:
-        name, solar_system_id = resolved.get(loc_id, (None, None))
-        storage.set_cached_structure_name(loc_id, name, solar_system_id)
-        if name is not None:
-            storage.upsert_global_structure_name(loc_id, name, solar_system_id)
-            resolved_count += 1
-
+    resolved = summary.get("resolved", 0) + summary.get("from_global", 0)
     if progress_callback:
-        progress_callback({"message": f"Resolved {resolved_count} of {len(to_resolve)}"})
-    return {"candidates": len(all_candidates), "resolved": resolved_count}
+        progress_callback({"message": f"Resolved {resolved} of {summary.get('due', 0)}"})
+    return {**summary, "candidates": summary.get("due", 0), "resolved": resolved}
 
 
 def _require_allowlist_type(entry_type: str) -> None:

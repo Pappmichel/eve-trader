@@ -728,6 +728,7 @@ export const adminApi = {
   startStructureNameResolve: (force: boolean) =>
     post<T.PipelineRunStatus>('/api/admin/structures/resolve', { force }),
   structureResolveStatus: () => get<T.PipelineRunStatus>('/api/admin/structures/resolve/status'),
+  locationReport: () => get<T.LocationReport>('/api/admin/locations/report'),
   allowlist: () => get<T.AllowlistEntry[]>('/api/admin/allowlist'),
   searchAllowlist: (q: string) =>
     get<T.AllowlistCandidate[]>(`/api/admin/allowlist/search?q=${encodeURIComponent(q)}`),

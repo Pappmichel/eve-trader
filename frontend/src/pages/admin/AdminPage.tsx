@@ -18,7 +18,7 @@ import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import { ALL_TOOL_KEYS, DEFAULT_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
 import type {
-  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow,
+  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow, LocationReportUnresolved,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 
@@ -110,6 +110,64 @@ const STRUCTURE_RESOLVE_RESULT_KEYS: string[][] = []
 // setting (see admin.do_get/set_structure_resolution_fallback's own
 // docstring) - shown here since both concern the same "who resolves
 // structure names" question, not because they share implementation.
+// docs/LOCATION_RESOLUTION_PLAN.md phase 1 - read-only diagnostics for this
+// tenant: which location ids the data holds, which have a name, and what a
+// bulk resolve costs in ESI calls today. Loaded on demand, nothing is written.
+function LocationReportSection() {
+  const [enabled, setEnabled] = useState(false)
+  const { data, isFetching, isError, refetch } = useQuery({
+    queryKey: ['admin', 'location-report'], queryFn: adminApi.locationReport, enabled, staleTime: 0,
+  })
+  const columns = useMemo<ColumnDef<LocationReportUnresolved, any>[]>(() => [
+    { header: 'Location ID', accessorKey: 'location_id', size: 150, meta: { copyable: true } },
+    { header: 'Kind', accessorKey: 'kind', size: 90 },
+    { header: 'State', accessorKey: 'state', size: 120 },
+    {
+      header: 'Bulk resolve reaches it', accessorKey: 'reachable_by_bulk_resolve', size: 150,
+      cell: (i) => (i.getValue() ? 'yes' : 'no'),
+    },
+    { header: 'Referenced by', accessorKey: 'sources', size: 320, cell: (i) => (i.getValue() as string[]).join(', ') },
+  ], [])
+
+  return (
+    <div>
+      <Title order={5} mt="md" mb="xs">Location report (this tenant)</Title>
+      <Button size="xs" variant="default" loading={isFetching}
+        onClick={() => { if (enabled) refetch(); else setEnabled(true) }}>
+        {data ? 'Refresh report' : 'Load report'}
+      </Button>
+      {isError && <Text size="sm" c="danger" mt="xs">Could not load the location report.</Text>}
+      {data && (
+        <Stack gap="xs" mt="xs">
+          <Text size="sm">
+            {data.totals.ids} location id(s):{' '}
+            {Object.entries(data.totals.by_kind).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`).join(', ')}.
+          </Text>
+          <Text size="sm">
+            Structures: {data.structures.resolved} named, {data.structures.manual} manual,{' '}
+            {data.structures.failed} failed, {data.structures.never_attempted} never tried.
+          </Text>
+          {Object.keys(data.registry_status).length > 0 && (
+            <Text size="sm">
+              Lookup status: {Object.entries(data.registry_status).map(([k, n]) => `${n} ${k}`).join(', ')}.
+            </Text>
+          )}
+          <Text size="sm" c="dimmed">
+            A bulk resolve spends about {data.estimated_esi_calls_per_sync} ESI call(s) with{' '}
+            {data.capable_characters} capable character(s); it reaches {data.bulk_resolve_candidates} candidate(s).
+            Offices ({data.offices_resolved_through_parent}) and containers/ships ({data.containers_resolved_through_parent}) never get a name of their own - they show their structure.
+          </Text>
+          {data.unresolved_total > data.unresolved.length && (
+            <Text size="sm" c="dimmed">Showing {data.unresolved.length} of {data.unresolved_total} unresolved.</Text>
+          )}
+          <DataTable data={data.unresolved} columns={columns} tableId="admin-location-report"
+            exportFilename="location-report" getRowId={(r) => String(r.location_id)} maxHeight={320} />
+        </Stack>
+      )}
+    </div>
+  )
+}
+
 function StructureResolveSection() {
   const job = useBackgroundJob({
     queryKey: ['admin', 'pipeline', 'structure-resolve'],
@@ -132,7 +190,10 @@ function StructureResolveSection() {
   )
 
   const result = job.status?.status === 'succeeded' || job.status?.status === 'degraded'
-    ? job.status.result as { candidates?: number; resolved?: number } | undefined
+    ? job.status.result as {
+      candidates?: number; resolved?: number; forbidden?: number; not_found?: number; transient?: number
+      deferred?: number
+    } | undefined
     : undefined
 
   return (
@@ -161,7 +222,10 @@ function StructureResolveSection() {
       )}
       {!running && result && (
         <Text size="sm" c="dimmed" mb="xs">
-          Resolved {result.resolved ?? 0} of {result.candidates ?? 0} candidate(s).
+          Resolved {result.resolved ?? 0} of {result.candidates ?? 0} due location(s)
+          {(result.forbidden || result.not_found || result.transient || result.deferred)
+            ? ` - ${result.forbidden ?? 0} no access, ${result.not_found ?? 0} not found, ${result.transient ?? 0} failed for now, ${result.deferred ?? 0} left for the next run`
+            : ''}.
         </Text>
       )}
       <Switch
@@ -172,6 +236,7 @@ function StructureResolveSection() {
         onChange={(e) => setFallback.mutate(e.currentTarget.checked)}
         disabled={setFallback.isPending}
       />
+      <LocationReportSection />
     </div>
   )
 }
