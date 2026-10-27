@@ -1,11 +1,12 @@
 # Reaction capacity plan
 
-Status: phases 0, 1, 1b, 1c and 2 done (2026-10-27). The phase 2 run against
+Status: phases 0, 1, 1b, 1c, 2 and 3 done (2026-10-27). The phase 2 run against
 production data (section 1.4) found that the single-window model never builds
 intermediates; the model is now two windows (D13, D14, section 3). Phase 1b
 reworked the solver; the two-window re-run (section 1.5) surfaced five fixes
-done in phase 1c; the final re-run (section 1.6) passed. Next: phase 3
-(wiring) and phase 4 (settings and UI).
+done in phase 1c; the final re-run (section 1.6) passed. Phase 3 wired the
+solver into both Build Lists behind `reaction_capacity_enabled`. Next: phase 4
+(settings and UI).
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
@@ -363,7 +364,7 @@ matters.
 | 2 | Solver prototype run on the server against the real layer (read-only script) before wiring, to check runtime and that the result is plausible (jobs, purchases, shadow prices). | **Done 2026-10-27, section 1.4.** |
 | 1b | Rework the solver to the two-window model (D13, D14) and the revised D10; shadow prices from LP duals; formula shadow fix; busy slots skip excluded characters; `reaction_next_window_demand_factor` setting. Tests: an intermediate with spare W1 slots is reacted for W2 composites; "wait" runs the composite in W2 instead of buying; default buy; shadow prices non-empty and match a brute-force probe on a small layer; runtime guard on a 60-product synthetic layer. Then re-run the phase 2 script. | **Tests green (PR #330).** Two-window production re-run done (section 1.5). |
 | 1c | Fixes from section 1.5: W2 continuous (no `jobs2` integrality) + `mip_rel_gap`; hard W1 slots; like-for-like LP chaining with `isk_saved >= 0`; `w1_cost` / `w2_preview_cost` keeping W2-feeding `buy1`; formula dual = `d1 + d2`; D11 W2 formulas bought now. | **Done; production re-run passed (section 1.6).** |
-| 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. |
+| 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. **Done.** |
 | 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check. |
 | 5 | Test server with a copy of the production stock targets: compare jobs, purchases and total cost with today's plan; then enable on production. | Numbers reported to the user. |
 

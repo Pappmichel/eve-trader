@@ -1,4 +1,4 @@
-"""Reaction-layer capacity solver (docs/REACTION_CAPACITY_PLAN.md phase 1c).
+"""Reaction-layer capacity solver (docs/REACTION_CAPACITY_PLAN.md phase 1c/3).
 
 Pure mixed-integer program over **two** reaction windows (D13): W1 is the
 next window (executed), W2 is a continuous preview. Intermediates reacted
@@ -11,14 +11,17 @@ Only ``jobs1`` and ``new_formulas`` are integer; ``jobs2`` stays continuous
 (plan: W2 is a preview). Shadow prices come from LP duals; chaining
 compares continuous LP objectives on the same basis. Window helpers read
 already-synced industry-job / character-slot tables; they never call ESI.
-No planner wiring here.
+
+Phase 3 adds ``build_layer`` / ``build_window`` (from a plan context) and
+``plan_payload`` so the planners can wire the solution behind
+``reaction_capacity_enabled``.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 from scipy.optimize import linprog
@@ -26,7 +29,7 @@ from scipy.optimize import linprog
 from .. import storage
 from . import jobs as jobs_mod
 from .config import ProductionConfig
-from .constants import ACTIVITY_SLOT_CATEGORY, SLOT_CATEGORY_LABELS
+from .constants import ACTIVITY_REACTION, ACTIVITY_SLOT_CATEGORY, SLOT_CATEGORY_LABELS
 
 _EPS = 1e-6
 _TOL = 1e-7
@@ -50,6 +53,15 @@ class ReactionRecipe:
     fit: int
     owned_formulas: int
     formula_price: Optional[float]
+    # Product type queued in EVE (Unrefined X for alchemy; else product_type_id).
+    job_product_type_id: Optional[int] = None
+
+    @property
+    def queued_product_type_id(self) -> int:
+        return (
+            self.product_type_id if self.job_product_type_id is None
+            else self.job_product_type_id
+        )
 
 
 @dataclass(frozen=True)
@@ -1207,3 +1219,499 @@ def _chaining_comparisons(
             short_input_ids=tuple(sorted(short_ids)),
         ))
     return tuple(comparisons)
+
+
+# ---------------------------------------------------------- planner wiring
+def _recipe_inputs_per_run(
+    blueprint_id: int,
+    activity_id: int,
+    material_mult: float,
+) -> dict[int, float]:
+    """ME-reduced inputs for one run (same batch rounding as ``_material_qty``)."""
+    from .engine import _material_qty
+    out: dict[int, float] = {}
+    for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
+        qty = _material_qty(base_qty, material_mult, 1)
+        if qty > 0:
+            out[int(material_id)] = float(qty)
+    return out
+
+
+def _formula_price(
+    blueprint_id: int,
+    cfg: ProductionConfig,
+    home: Mapping[int, Any],
+    jita: Mapping[int, Any],
+) -> Optional[float]:
+    from . import pricing
+    from .engine import _haul_volume
+    return pricing.buy_price(blueprint_id, home, jita, _haul_volume(blueprint_id, cfg), cfg)
+
+
+def build_layer(
+    cfg: ProductionConfig,
+    demand: Mapping[int, float],
+    *,
+    home: Mapping[int, Any],
+    jita: Mapping[int, Any],
+    cost_indices: Mapping[str, Any],
+    adjusted_prices: Mapping[int, float],
+    cost_memo: Mapping[int, Optional[float]],
+    owner_character_ids: Optional[list[int]] = None,
+    owner_corporation_ids: Optional[list[int]] = None,
+) -> ReactionLayer:
+    """Build the reaction recipe set the solver may run for ``demand``.
+
+    Normal recipe for every demanded Reaction product; alchemy recipe too
+    when ``alchemy_reactions_enabled`` and an Unrefined alternative exists
+    (same ``find_alchemy_alternative`` + scrapmetal yield as ``_alchemy_yield``).
+    Seconds/ME from ``_activity_mods``, fee from EIV x ``_job_cost_rate``,
+    ``fit`` from ``reaction_cycle_days``, owned formulas from
+    ``storage.count_owned_formula_originals``, formula price from
+    ``pricing.buy_price``.
+    """
+    from .engine import (
+        _activity_mods, _alchemy_yield, classify_activity, find_alchemy_alternative,
+    )
+
+    product_ids = sorted({int(p) for p, qty in demand.items() if qty > _EPS})
+    # Close under reaction inputs so composite intermediates get recipes too
+    # even when only the composite is in demand (W1 may still react them for W2).
+    frontier = list(product_ids)
+    seen: set[int] = set(product_ids)
+    while frontier:
+        tid = frontier.pop()
+        activity, bp = classify_activity(tid)
+        if activity != "Reaction" or bp is None:
+            continue
+        blueprint_id, activity_id, _ = bp
+        material_mult, _, _ = _activity_mods(
+            "Reaction", tid, cfg, cost_indices, blueprint_id)
+        for mid in _recipe_inputs_per_run(blueprint_id, activity_id, material_mult):
+            m_act, m_bp = classify_activity(mid)
+            if m_act == "Reaction" and m_bp is not None and mid not in seen:
+                seen.add(mid)
+                frontier.append(mid)
+                product_ids.append(mid)
+
+    # Alchemy alternatives may introduce Unrefined blueprints not in product_ids.
+    alchemy_targets: list[int] = []
+    if cfg.alchemy_reactions_enabled:
+        for tid in list(product_ids):
+            if cost_indices.get(f"alchemy:{tid}") or find_alchemy_alternative(tid):
+                alchemy_targets.append(tid)
+
+    blueprint_ids: set[int] = set()
+    pending_normal: list[tuple[int, int, int, float]] = []  # tid, bp_id, act_id, product_qty
+    for tid in product_ids:
+        activity, bp = classify_activity(tid)
+        if activity != "Reaction" or bp is None:
+            continue
+        blueprint_id, activity_id, product_qty = bp
+        blueprint_ids.add(int(blueprint_id))
+        pending_normal.append((tid, int(blueprint_id), int(activity_id), float(product_qty)))
+
+    pending_alchemy: list[tuple[int, tuple, int, dict[int, int]]] = []
+    for tid in alchemy_targets:
+        resolved = _alchemy_yield(tid, cost_indices)
+        if resolved is None:
+            # cost_indices may not yet hold alchemy:<tid> (e.g. type only
+            # reached as an intermediate). Resolve and cache for this call.
+            alt = find_alchemy_alternative(tid)
+            if alt is None:
+                continue
+            # Mutating caller's cost_indices is intentional: same shape
+            # _PlanContext uses, and _alchemy_yield reads it.
+            if hasattr(cost_indices, "__setitem__"):
+                cost_indices[f"alchemy:{tid}"] = alt  # type: ignore[index]
+            resolved = _alchemy_yield(tid, cost_indices)
+            if resolved is None:
+                continue
+        alchemy_recipe, unrefined_type_id, reprocessed = resolved
+        blueprint_id = int(alchemy_recipe[0])
+        blueprint_ids.add(blueprint_id)
+        pending_alchemy.append((tid, alchemy_recipe, int(unrefined_type_id), reprocessed))
+
+    owned = storage.count_owned_formula_originals(
+        sorted(blueprint_ids) if blueprint_ids else None,
+        owner_character_ids=owner_character_ids,
+        owner_corporation_ids=owner_corporation_ids,
+    )
+
+    recipes: list[ReactionRecipe] = []
+    for tid, blueprint_id, activity_id, product_qty in pending_normal:
+        material_mult, time_mult, job_cost_rate = _activity_mods(
+            "Reaction", tid, cfg, cost_indices, blueprint_id)
+        base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
+        seconds = float(base_time) * float(time_mult)
+        materials = storage.get_blueprint_materials(blueprint_id, activity_id)
+        eiv = sum(
+            float(base_qty) * float(adjusted_prices.get(int(mid), 0.0))
+            for mid, base_qty in materials
+        )
+        fee = eiv * float(job_cost_rate)
+        inputs = _recipe_inputs_per_run(blueprint_id, activity_id, material_mult)
+        outputs = {tid: float(product_qty)}
+        recipes.append(ReactionRecipe(
+            key=f"normal:{tid}",
+            product_type_id=tid,
+            blueprint_type_id=blueprint_id,
+            seconds_per_run=seconds,
+            fee_per_run=fee,
+            inputs=inputs,
+            outputs=outputs,
+            fit=fit_runs(seconds, cfg.reaction_cycle_days),
+            owned_formulas=int(owned.get(blueprint_id, 0)),
+            formula_price=_formula_price(blueprint_id, cfg, home, jita),
+            job_product_type_id=tid,
+        ))
+
+    for tid, alchemy_recipe, unrefined_type_id, reprocessed in pending_alchemy:
+        blueprint_id, activity_id, _reprocess_qty = (
+            int(alchemy_recipe[0]), int(alchemy_recipe[1]), float(alchemy_recipe[2]))
+        material_mult, time_mult, job_cost_rate = _activity_mods(
+            "Reaction", unrefined_type_id, cfg, cost_indices, blueprint_id)
+        base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
+        seconds = float(base_time) * float(time_mult)
+        materials = storage.get_blueprint_materials(blueprint_id, activity_id)
+        eiv = sum(
+            float(base_qty) * float(adjusted_prices.get(int(mid), 0.0))
+            for mid, base_qty in materials
+        )
+        fee = eiv * float(job_cost_rate)
+        inputs = _recipe_inputs_per_run(blueprint_id, activity_id, material_mult)
+        outputs = {int(m): float(q) for m, q in reprocessed.items() if q > 0}
+        recipes.append(ReactionRecipe(
+            key=f"alchemy:{tid}",
+            product_type_id=tid,
+            blueprint_type_id=blueprint_id,
+            seconds_per_run=seconds,
+            fee_per_run=fee,
+            inputs=inputs,
+            outputs=outputs,
+            fit=fit_runs(seconds, cfg.reaction_cycle_days),
+            owned_formulas=int(owned.get(blueprint_id, 0)),
+            formula_price=_formula_price(blueprint_id, cfg, home, jita),
+            job_product_type_id=unrefined_type_id,
+        ))
+
+    return ReactionLayer(recipes=tuple(recipes))
+
+
+def build_window(
+    cfg: ProductionConfig,
+    demand: Mapping[int, float],
+    layer: ReactionLayer,
+    *,
+    home: Mapping[int, Any],
+    jita: Mapping[int, Any],
+    cost_memo: Mapping[int, Optional[float]],
+    manual_overrides: Mapping[int, str],
+    manual_stock: Mapping[int, float],
+    chain_choice: Optional[Mapping[int, str]] = None,
+    character_rows: Optional[list] = None,
+    industry_jobs: Optional[list[tuple]] = None,
+) -> tuple[ReactionWindow, WindowState]:
+    """Capacities, stocks, prices and demand for ``solve`` (plan section 3/4).
+
+    ``on_hand`` = ``_stock_on_hand`` + jobs ending before the window;
+    ``incoming1``/``incoming2`` from ``window_state`` (and non-reaction
+    incoming via ``_current_stock - _stock_on_hand`` when no window date).
+    Prices: ``pricing.buy_price``; buildable non-layer inputs (fuel blocks)
+    fall back to ``cost_memo``.
+    """
+    from . import pricing
+    from .engine import _current_stock, _haul_volume, _stock_on_hand, classify_activity
+
+    state = window_state(
+        cfg, character_rows=character_rows, industry_jobs=industry_jobs)
+
+    material_ids: set[int] = set(int(p) for p in demand) | set(layer.product_ids)
+    for recipe in layer.recipes:
+        material_ids.update(int(m) for m in recipe.inputs)
+        material_ids.update(int(m) for m in recipe.outputs)
+
+    on_hand: dict[int, float] = {}
+    incoming1: dict[int, float] = dict(state.incoming1_from_jobs)
+    incoming2: dict[int, float] = dict(state.incoming2_from_jobs)
+    window_dt = _parse_window_dt(cfg.reaction_window_next)
+
+    for mid in material_ids:
+        activity, bp = classify_activity(mid)
+        hangar = float(_stock_on_hand(mid, dict(manual_stock), cfg))
+        from_jobs = float(state.on_hand_from_jobs.get(mid, 0.0))
+        on_hand[mid] = hangar + from_jobs
+        if window_dt is None:
+            # No window date: all slots free; non-reaction incoming still
+            # covers demand but cannot feed this window's inputs (D12).
+            total = float(_current_stock(mid, dict(manual_stock), cfg, bp))
+            extra = max(0.0, total - hangar)
+            if extra > _EPS:
+                incoming1[mid] = incoming1.get(mid, 0.0) + extra
+
+    prices: dict[int, float] = {}
+    for mid in material_ids:
+        volume = _haul_volume(mid, cfg)
+        price = pricing.buy_price(mid, home, jita, volume, cfg)
+        if price is not None and price > 0:
+            prices[mid] = float(price)
+            continue
+        # Fuel blocks etc.: planner's best buy-or-build unit cost.
+        if mid not in layer.product_ids:
+            memo = cost_memo.get(mid)
+            if memo is not None and memo > 0:
+                prices[mid] = float(memo)
+
+    manual_buy = frozenset(
+        int(t) for t, choice in manual_overrides.items() if choice == "Buy")
+    manual_build = frozenset(
+        int(t) for t, choice in manual_overrides.items() if choice == "Build")
+
+    window = ReactionWindow(
+        slots=int(state.free_slots),
+        slots2=int(state.free_slots_w2),
+        on_hand=on_hand,
+        incoming1=incoming1,
+        incoming2=incoming2,
+        demand={int(k): float(v) for k, v in demand.items() if v > _EPS},
+        prices=prices,
+        manual_buy=manual_buy,
+        manual_build=manual_build,
+        chain_choice=dict(chain_choice or {}),
+        formula_payback_cycles=float(cfg.reaction_formula_payback_cycles),
+        demand_factor=float(cfg.reaction_next_window_demand_factor),
+    )
+    return window, state
+
+
+def input_demand_from_plan(
+    layer: ReactionLayer,
+    plan: ReactionPlan,
+) -> dict[int, float]:
+    """Non-reaction inputs consumed by W1 runs (moon materials, fuel blocks).
+
+    Reaction products stay inside the layer; only materials without a layer
+    recipe go back into the planner walk as manufacturing/buy demand.
+    """
+    by_key = {r.key: r for r in layer.recipes}
+    consumed: dict[int, float] = {}
+    for alloc in plan.recipes:
+        recipe = by_key.get(alloc.recipe_key)
+        if recipe is None or alloc.runs <= _EPS:
+            continue
+        for mid, qty in recipe.inputs.items():
+            if mid in layer.product_ids:
+                continue
+            consumed[mid] = consumed.get(mid, 0.0) + float(qty) * float(alloc.runs)
+    return {m: q for m, q in consumed.items() if q > _EPS}
+
+
+def alchemy_build_runs_from_plan(
+    layer: ReactionLayer,
+    plan: ReactionPlan,
+) -> dict[tuple[int, int, int], int]:
+    """``_expand_all``-shaped build_runs for W1 alchemy allocations only."""
+    by_key = {r.key: r for r in layer.recipes}
+    out: dict[tuple[int, int, int], int] = {}
+    for alloc in plan.recipes:
+        if not alloc.recipe_key.startswith("alchemy:"):
+            continue
+        recipe = by_key.get(alloc.recipe_key)
+        if recipe is None or alloc.runs <= _EPS:
+            continue
+        runs = int(math.ceil(alloc.runs - _TOL))
+        if runs <= 0:
+            continue
+        key = (recipe.blueprint_type_id, ACTIVITY_REACTION, recipe.queued_product_type_id)
+        out[key] = out.get(key, 0) + runs
+    return out
+
+
+def apply_plan_to_build_buy(
+    layer: ReactionLayer,
+    plan: ReactionPlan,
+    *,
+    cost_memo: Mapping[int, Optional[float]],
+    home: Mapping[int, Any],
+    jita: Mapping[int, Any],
+    cfg: ProductionConfig,
+) -> tuple[
+    dict[tuple[int, int, int], int],
+    dict[int, float],
+    dict[int, str],
+    dict[int, Optional[float]],
+    dict[tuple[int, int, int], ReactionRecipe],
+]:
+    """Map a W1 solution onto planner ``build_runs`` / ``buy_totals``.
+
+    Returns
+    ``(build_runs, buy_totals, capacity_reason, isk_given_up, recipe_by_key)``.
+    ``buy_totals`` holds reaction products and formulas only — non-reaction
+    inputs are left for the planner walk via ``input_demand_from_plan``.
+    """
+    from . import pricing
+    from .engine import _haul_volume
+
+    by_key = {r.key: r for r in layer.recipes}
+    build_runs: dict[tuple[int, int, int], int] = {}
+    buy_totals: dict[int, float] = {}
+    capacity_reason: dict[int, str] = {}
+    isk_given_up: dict[int, Optional[float]] = {}
+    recipe_by_build_key: dict[tuple[int, int, int], ReactionRecipe] = {}
+
+    for alloc in plan.recipes:
+        recipe = by_key.get(alloc.recipe_key)
+        if recipe is None:
+            continue
+        runs = int(math.ceil(alloc.runs - _TOL)) if alloc.runs > _EPS else 0
+        if runs <= 0 and alloc.jobs <= 0:
+            continue
+        if runs > 0:
+            key = (recipe.blueprint_type_id, ACTIVITY_REACTION, recipe.queued_product_type_id)
+            build_runs[key] = build_runs.get(key, 0) + runs
+            recipe_by_build_key[key] = recipe
+        if alloc.formulas_to_buy > 0:
+            buy_totals[recipe.blueprint_type_id] = (
+                buy_totals.get(recipe.blueprint_type_id, 0.0) + float(alloc.formulas_to_buy)
+            )
+            capacity_reason[recipe.blueprint_type_id] = "formula"
+            if recipe.formula_price is not None:
+                isk_given_up[recipe.blueprint_type_id] = (
+                    float(recipe.formula_price) * float(alloc.formulas_to_buy)
+                )
+
+    for mid, qty in plan.buy.items():
+        if qty <= _EPS:
+            continue
+        if mid not in layer.product_ids:
+            # Moon materials / fuel: planner walk owns these.
+            continue
+        buy_totals[mid] = buy_totals.get(mid, 0.0) + float(qty)
+        capacity_reason[mid] = "capacity"
+        build_cost = cost_memo.get(mid)
+        buy_px = pricing.buy_price(mid, home, jita, _haul_volume(mid, cfg), cfg)
+        if build_cost is not None and buy_px is not None:
+            isk_given_up[mid] = max(0.0, (float(buy_px) - float(build_cost)) * float(qty))
+        else:
+            isk_given_up[mid] = None
+
+    return build_runs, buy_totals, capacity_reason, isk_given_up, recipe_by_build_key
+
+
+def plan_payload(
+    plan: ReactionPlan,
+    state: WindowState,
+    cfg: ProductionConfig,
+    *,
+    component_slot_days: float = 0.0,
+) -> dict[str, Any]:
+    """JSON-friendly ``reaction_capacity`` block for both plan results."""
+    by_recipe = [
+        {
+            "recipe_key": a.recipe_key,
+            "product_type_id": a.product_type_id,
+            "jobs": a.jobs,
+            "runs": a.runs,
+            "runs_per_job": a.runs_per_job,
+            "formulas_to_buy": a.formulas_to_buy,
+            "units": {str(k): v for k, v in a.units.items()},
+        }
+        for a in plan.recipes
+    ]
+    chaining = [
+        {
+            "product_type_id": c.product_type_id,
+            "buy_now_cost": c.buy_now_cost,
+            "wait_cost": c.wait_cost,
+            "isk_saved_by_waiting": c.isk_saved_by_waiting,
+            "units_delayed": c.units_delayed,
+            "preferred": c.preferred,
+            "short_input_ids": list(c.short_input_ids),
+        }
+        for c in plan.chaining
+    ]
+    next_window = None
+    if plan.next_window is not None:
+        nw = plan.next_window
+        next_window = {
+            "jobs_used": nw.jobs_used,
+            "buy": {str(k): v for k, v in nw.buy.items()},
+            "recipes": [
+                {
+                    "recipe_key": a.recipe_key,
+                    "product_type_id": a.product_type_id,
+                    "jobs": a.jobs,
+                    "runs": a.runs,
+                    "runs_per_job": a.runs_per_job,
+                    "formulas_to_buy": a.formulas_to_buy,
+                }
+                for a in nw.recipes
+            ],
+        }
+    return {
+        "slots_used": plan.jobs_used,
+        "slots_available": plan.slots,
+        "total_slots": state.total_slots,
+        "busy_slots": state.busy_slots,
+        "window_next": cfg.reaction_window_next,
+        "w1_cost": plan.w1_cost,
+        "w2_preview_cost": plan.w2_preview_cost,
+        "slot_shadow_price": plan.slot_shadow_price,
+        "formula_shadow_prices": dict(plan.formula_shadow_prices),
+        "chaining": chaining,
+        "warnings": list(plan.warnings),
+        "recipes": by_recipe,
+        "buy": {str(k): v for k, v in plan.buy.items()},
+        "deferred": {str(k): v for k, v in plan.deferred.items()},
+        "next_window": next_window,
+        "component_slot_days": component_slot_days,
+        "cycle_days": cfg.reaction_cycle_days,
+    }
+
+
+def solve_cached(
+    ctx: Any,
+    cfg: ProductionConfig,
+    demand: Mapping[int, float],
+    cost_memo: Mapping[int, Optional[float]],
+    *,
+    chain_choice: Optional[Mapping[int, str]] = None,
+) -> tuple[ReactionLayer, ReactionWindow, WindowState, ReactionPlan]:
+    """Solve once per plan context; reuse when demand fingerprint matches.
+
+    ``ctx`` is a ``_PlanContext`` (duck-typed): needs ``home``, ``jita``,
+    ``cost_indices``, ``adjusted_prices``, ``manual_stock``,
+    ``manual_overrides``, and optional ``_reaction_solve_cache``.
+    """
+    demand_key = tuple(sorted((int(k), round(float(v), 6)) for k, v in demand.items() if v > _EPS))
+    cache = getattr(ctx, "_reaction_solve_cache", None)
+    if cache is not None and cache[0] == demand_key:
+        return cache[1]
+
+    from .engine import shared_production_owner_ids
+    char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    layer = build_layer(
+        cfg, demand,
+        home=ctx.home, jita=ctx.jita,
+        cost_indices=ctx.cost_indices,
+        adjusted_prices=ctx.adjusted_prices,
+        cost_memo=cost_memo,
+        owner_character_ids=char_ids,
+        owner_corporation_ids=corp_ids,
+    )
+    window, state = build_window(
+        cfg, demand, layer,
+        home=ctx.home, jita=ctx.jita,
+        cost_memo=cost_memo,
+        manual_overrides=ctx.manual_overrides,
+        manual_stock=ctx.manual_stock,
+        chain_choice=chain_choice,
+    )
+    plan = solve(layer, window) if layer.recipes else ReactionPlan(
+        recipes=(), buy={}, total_cost=0.0, slot_shadow_price=0.0,
+        formula_shadow_prices={}, warnings=(), slots=window.slots,
+        w1_cost=0.0, w2_preview_cost=0.0,
+    )
+    result = (layer, window, state, plan)
+    ctx._reaction_solve_cache = (demand_key, result)
+    return result
