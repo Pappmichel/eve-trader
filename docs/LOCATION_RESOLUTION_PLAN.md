@@ -205,9 +205,11 @@ Phases 1-4 are implemented. Deviations from the text above:
   structure lists and the location search; the Asset Manager maps job outputs
   through `storage.asset_item_parents`. The Asset Manager says why a place has
   no name and offers "Name this location", "Look up again" and "Remove my
-  name". Phase 7 is split: this release copies `structure_names` into the
-  registry and stops every read and write of it; the `DROP TABLE` follows one
-  release later (rollback safety, as planned). The Asset Manager's other
+  name". Phase 7 was split: one release copied `structure_names` into the
+  registry and stopped every read and write of it; the next one drops the
+  table (rollback safety, as planned). The schema file runs the copy and the
+  drop in one guarded block, so a deployment that skipped the first release
+  still keeps its names. The Asset Manager's other
   views (History, Insights, type and ship drawers) share the same label
   (`frontend/src/pages/asset_manager/locationLabel.ts`) and say why a place
   has no name too.

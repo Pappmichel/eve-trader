@@ -1,6 +1,7 @@
 """Location resolution phases 5-7 (docs/LOCATION_RESOLUTION_PLAN.md): naming
 and retrying one location, the Asset Manager routes for it, the one-time copy
-out of structure_names, and the readers that moved onto the registry."""
+out of structure_names (and its drop), and the readers that moved onto the
+registry."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -103,15 +104,21 @@ def test_asset_manager_location_name_error_is_400(monkeypatch):
 
 # ------------------------------------------------------------------ phase 7: registry is the source
 @pg_helpers.postgres_required()
-def test_schema_copies_old_structure_names_into_the_registry(tenant, sde):
+def test_schema_copies_old_structure_names_into_the_registry_and_drops_them(tenant, sde):
+    # The shape structure_names had on a deployment before phase 7.
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
-        conn.execute("INSERT INTO structure_names (tenant_id, location_id, name, solar_system_id) "
-                     "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING", (tenant, STRUCT, "Old Fort", SYSTEM))
+        conn.execute("CREATE TABLE structure_names (tenant_id UUID NOT NULL, location_id BIGINT NOT NULL, "
+                     "name TEXT, solar_system_id INTEGER, PRIMARY KEY (tenant_id, location_id))")
+        conn.execute("INSERT INTO structure_names VALUES (%s, %s, %s, %s), (%s, %s, NULL, NULL)",
+                     (tenant, STRUCT, "Old Fort", SYSTEM, tenant, STRUCT + 1))
         conn.execute(SCHEMA.read_text(encoding="utf-8"))
-        conn.execute(SCHEMA.read_text(encoding="utf-8"))  # idempotent
+        assert conn.execute("SELECT to_regclass('public.structure_names')").fetchone()[0] is None
+        conn.execute(SCHEMA.read_text(encoding="utf-8"))  # safe to re-run once the table is gone
 
-    row = store.load([STRUCT])[STRUCT]
-    assert row["name"] == "Old Fort" and row["status"] == "resolved" and row["solar_system_id"] == SYSTEM
+    rows = store.load([STRUCT, STRUCT + 1])
+    assert rows[STRUCT]["name"] == "Old Fort" and rows[STRUCT]["status"] == "resolved"
+    assert rows[STRUCT]["solar_system_id"] == SYSTEM
+    assert STRUCT + 1 not in rows  # a failed lookup is not copied; the resolver registers it again
     assert storage.get_location_names([STRUCT]) == {STRUCT: "Old Fort"}
 
 
@@ -124,8 +131,6 @@ def test_legacy_writer_and_readers_use_the_registry(tenant, sde):
     assert (STRUCT, SYSTEM) in storage.list_structure_system_ids()
     assert storage.get_structure_system_id(STRUCT) == SYSTEM
     assert [r[0] for r in storage.search_locations("Fort")] == [STRUCT]
-    with storage.connect() as conn:
-        assert conn.execute("SELECT count(*) FROM structure_names WHERE location_id = ?", (STRUCT,)).fetchone()[0] == 0
     storage.set_cached_structure_name(STRUCT, None)
     assert storage.get_cached_structure_name(STRUCT) == (True, None)
 

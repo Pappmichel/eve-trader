@@ -21,9 +21,9 @@ pytestmark = pg_helpers.postgres_required()
 
 @pytest.fixture(autouse=True)
 def _clean(tenant_pair):
-    pg_helpers.clean_tables(tenant_pair, "manual_location_names", "structure_names")
+    pg_helpers.clean_tables(tenant_pair, "manual_location_names", "location_registry")
     yield
-    pg_helpers.clean_tables(tenant_pair, "manual_location_names", "structure_names")
+    pg_helpers.clean_tables(tenant_pair, "manual_location_names", "location_registry")
 
 
 def test_set_then_list_manual_location_name(tenant_pair):

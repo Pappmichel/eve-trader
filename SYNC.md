@@ -193,7 +193,7 @@ out there as web-UI-specific one-offs (a one-time fix-up for a bug the
 local shortlist never had, and a character picker for a tab that doesn't
 exist); port them if a GUI needs them. `do_wallet_transactions` returns raw
 `location_id`s on the local side where this repo resolves display names —
-that needs this repo's persisted `structure_names` table, which
+that needs this repo's persisted `location_registry` table, which
 eve-trader-local has no equivalent of yet.
 
 Added on the local side specifically to support this layer:

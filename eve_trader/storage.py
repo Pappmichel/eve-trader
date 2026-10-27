@@ -2707,8 +2707,8 @@ def get_global_structure_names(location_ids: list[int]) -> dict[int, tuple[str, 
     isn't tenant-private data (decision Q2). Only successful resolutions
     are ever stored here - a location_id absent from the result was either
     never resolved anywhere, or only resolved as a failure (which is never
-    written to this table at all, unlike this tenant's own structure_names
-    cache)."""
+    written to this table at all, unlike this tenant's own location
+    registry)."""
     if not location_ids:
         return {}
     placeholders = ",".join("?" * len(location_ids))
