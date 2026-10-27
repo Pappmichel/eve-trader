@@ -1,6 +1,6 @@
 # Reaction capacity plan
 
-Status: proposal (2026-10-27). Nothing here is implemented.
+Status: decisions confirmed (2026-10-27), not implemented yet.
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
@@ -64,18 +64,19 @@ component cost index override 0.14 %, Tatara T1 for reactions,
    read from `cost_memo` under the "Unrefined X" id, which only holds the
    target's entry), so the list shows no cost or margin for them.
 
-## 2. Decisions to confirm
+## 2. Decisions (confirmed with the user 2026-10-27)
 
-| # | Question | Proposal |
+| # | Question | Decision |
 |---|---|---|
-| D1 | Is the capacity per cycle or for the whole backlog? | Per cycle: `reaction slots x reaction_cycle_days`. Everything that does not fit this cycle is bought. A backlog larger than one cycle is bought now rather than waiting for the next window. |
-| D2 | Which slots count? | All reaction slots of characters not excluded from planning (`character_slots`, total, not "free now"): at the window every slot is free again. Optional manual override for the slot count. |
-| D3 | Runtime per slot? | New setting `reaction_cycle_days`, default 13. |
+| D1 | Is the capacity per cycle or for the whole backlog? | Per cycle: `reaction slots x reaction_cycle_days`. Everything that does not fit this cycle is bought now, also when the backlog is larger than one cycle (no spreading over several cycles). |
+| D2 | Which slots count? | All reaction slots of characters not excluded from planning (`character_slots`, total, not "free now"): at the window every slot is free again. Optional manual override for the slot count (`reaction_slot_override`, empty = derived). |
+| D3 | Runtime per slot? | Adjustable, not fixed: new Production setting `reaction_cycle_days` (default 13, range 1-30), edited on the Settings page. Every capacity figure in this plan uses it; 13 days is only today's value. |
 | D4 | What is optimized? | Minimum total cost of the reaction layer (bought products + bought inputs + job fees), subject to the capacity. This is the same as "build what saves most per slot-day first". |
 | D5 | Alchemy | A second recipe per product, mixed freely with the normal one per product ("anteilig"). It only gets slot time that the normal recipes do not need more urgently. |
 | D6 | Manual Build/Buy overrides | Respected: a manual Buy is never built; a manual Build is always built, even if that exceeds the capacity (shown as a warning). |
 | D7 | Switch | `reaction_capacity_enabled`, default off. Off = exactly today's behaviour. |
-| D8 | Components | No capacity constraint now (564 of about 2,500 slot-days). The plan reports component slot-days per cycle so a future constraint can be added. |
+| D8 | Components | Shown, not constrained (564 of about 2,500 slot-days today). The plan reports component slot-days per cycle so a constraint can be added later. |
+| D9 | Overbuild buffer (`component_overbuild`) | Counts as real demand: the buffer on reaction products competes for slot time like any other demand and is bought when it does not fit. |
 
 ## 3. Model
 
@@ -156,8 +157,8 @@ it matters.
 ## 5. UI
 
 - Production Settings: `reaction_capacity_enabled`, `reaction_cycle_days`,
-  optional reaction slot override; the derived slot count and capacity shown
-  next to them.
+  `reaction_slot_override`; the derived slot count and the resulting capacity
+  shown next to them.
 - Build List header: "Reactions: 2,580 of 2,587 slot-days (13 d x 199 slots)",
   and the value of one extra slot-day.
 - Build List reaction rows: share built normal / alchemy; Buy List rows that
@@ -175,13 +176,7 @@ it matters.
 | 3 | Settings, API fields, Build/Buy List UI from section 5. | Browser check. |
 | 4 | Run on the test server with a copy of the production stock targets; compare slot-days and total cost against today's plan; then enable on production. | Numbers reported to the user. |
 
-## 7. Open questions
-- Should a backlog larger than one cycle be bought now (D1), or should the
-  planner offer "spread over N cycles" (capacity x N, nothing bought) as an
-  alternative? The LP supports both through the capacity value.
-- `component_overbuild` adds a buffer to reaction demand. With a hard capacity
-  that buffer costs real slot time. Should the capacity apply to the buffer
-  too, or should the buffer be the first thing dropped?
+## 7. Notes
 - Reaction skills: most characters have 10 slots, the maximum is 11 (Mass
   Reactions V + Advanced Mass Reactions V). That is up to 32 more slots
   (about 416 slot-days per cycle). It does not affect the plan; the shadow price
