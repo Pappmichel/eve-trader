@@ -1,11 +1,11 @@
 # Reaction capacity plan
 
-Status: phases 0, 1, 1b and 1c implemented in PR #330 (not merged). The phase 2
-run against production data (section 1.4) found that the single-window model
-never builds intermediates; the model is now two windows (D13, D14, section 3).
-Phase 1b reworked the solver; the two-window production re-run (section 1.5)
-surfaced five fixes done in phase 1c. Another production re-run is still open
-before wiring (phase 3).
+Status: phases 0, 1, 1b, 1c and 2 done (2026-10-27). The phase 2 run against
+production data (section 1.4) found that the single-window model never builds
+intermediates; the model is now two windows (D13, D14, section 3). Phase 1b
+reworked the solver; the two-window re-run (section 1.5) surfaced five fixes
+done in phase 1c; the final re-run (section 1.6) passed. Next: phase 3
+(wiring) and phase 4 (settings and UI).
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
@@ -143,6 +143,29 @@ Findings (fixed in phase 1c):
    `w2_preview_cost`; MIP `buy1` that feeds W2 stays on the W1 buy list.
 5. **Formula dual** — an extra owned formula relaxes both window rows, so
    the dual is `d1 + d2`, not `max(d1, d2)`.
+
+### 1.6 Final re-run after phase 1c (2026-10-27)
+Same layer and scenarios as 1.5.
+
+| | A: real stock | B: empty reaction stock |
+|---|---|---|
+| Full `solve` (incl. shadow prices and chaining) | 4.1 s | 3.7 s |
+| W1 jobs | 199 / 199 | 199 / 199 |
+| W1 cost (fees, purchases, formulas) | 40.2 B | 159.5 B |
+| W2 preview cost | 15.2 B | 32.0 B |
+| Slot shadow price | 104.8 M | 77.8 M |
+| Warnings | none | none |
+
+- No time limit hit, no slot slack, `isk_saved_by_waiting` never negative.
+  The largest saving from waiting is Ferrogel (0.14 B in A, 1.6 B in B);
+  everything else is a few hundred million or less, so the buy default (D10)
+  is reasonable.
+- W1 runs intermediates (Neo Mercurite, Crystallite Alloy, Platinum
+  Technite, ...) next to composites; the W2 preview runs the composites.
+- Formula shadow prices equal the formula price / payback (about 20 M) for
+  every bought formula: correct by design, but not very informative in the UI.
+- Two runs on the same data differ slightly in purchases (36.8 B vs 37.2 B)
+  because of `mip_rel_gap` 0.005.
 
 ### 1.3 Gaps
 1. **No capacity constraint.** The planner builds every reaction whose unit
@@ -339,7 +362,7 @@ matters.
 | 1 | `reaction_capacity.py`: formula counting, window inputs and the pure solver (`solve(layer, window) -> plan`), no planner wiring. Unit tests on small synthetic layers: spare slots -> all built, alchemy added; tight slots -> weakest per slot-day bought first; formula limit and formula purchase; job size `fit`; no chaining inside a window; byproduct credit; manual overrides; busy slots; infeasible -> warning. | Tests green. **Done (PR #330), single-window model.** |
 | 2 | Solver prototype run on the server against the real layer (read-only script) before wiring, to check runtime and that the result is plausible (jobs, purchases, shadow prices). | **Done 2026-10-27, section 1.4.** |
 | 1b | Rework the solver to the two-window model (D13, D14) and the revised D10; shadow prices from LP duals; formula shadow fix; busy slots skip excluded characters; `reaction_next_window_demand_factor` setting. Tests: an intermediate with spare W1 slots is reacted for W2 composites; "wait" runs the composite in W2 instead of buying; default buy; shadow prices non-empty and match a brute-force probe on a small layer; runtime guard on a 60-product synthetic layer. Then re-run the phase 2 script. | **Tests green (PR #330).** Two-window production re-run done (section 1.5). |
-| 1c | Fixes from section 1.5: W2 continuous (no `jobs2` integrality) + `mip_rel_gap`; hard W1 slots; like-for-like LP chaining with `isk_saved >= 0`; `w1_cost` / `w2_preview_cost` keeping W2-feeding `buy1`; formula dual = `d1 + d2`; D11 W2 formulas bought now. | **Tests green (PR #330).** Production re-run of the scratch script still open. |
+| 1c | Fixes from section 1.5: W2 continuous (no `jobs2` integrality) + `mip_rel_gap`; hard W1 slots; like-for-like LP chaining with `isk_saved >= 0`; `w1_cost` / `w2_preview_cost` keeping W2-feeding `buy1`; formula dual = `d1 + d2`; D11 W2 formulas bought now. | **Done; production re-run passed (section 1.6).** |
 | 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. |
 | 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check. |
 | 5 | Test server with a copy of the production stock targets: compare jobs, purchases and total cost with today's plan; then enable on production. | Numbers reported to the user. |
