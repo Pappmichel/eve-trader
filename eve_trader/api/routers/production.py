@@ -624,7 +624,7 @@ def get_t1_bpc_invention_needs():
 @router.get("/logistics/structure-names")
 def get_structure_names():
     """Every location_id this tenant has ever cached a structure-name
-    resolution for (storage.structure_names) - broadened from the original
+    resolution for (the location registry) - broadened from the original
     config-assigned-IDs-only filter (GitHub issue #21) so this can also back
     the structure-ID picker's option list across Trading/Production/Doctrine
     Settings, not just Distribution's "From" column and the Invention

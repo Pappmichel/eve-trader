@@ -75,7 +75,9 @@ _PER_TENANT_TABLES: list[tuple[str, tuple[str, ...] | None]] = [
     ("job_category_locations", ("tenant_id", "category")),
     ("esi_sync_state", ("tenant_id", "scope")),
     ("candidate_search_cursor", ("tenant_id", "id")),
-    ("structure_names", ("tenant_id", "location_id")),
+    # The SQLite-era structure_names table is not migrated: its Postgres
+    # successor location_registry is rebuilt from the asset tables and the
+    # names are looked up again (docs/LOCATION_RESOLUTION_PLAN.md phase 7).
     ("category_location_options", ("tenant_id", "category", "location_id")),
     # column-only-turned-composite bucket - originally PK'd on the bare ESI
     # ID alone (globally unique per character), but a corp-owned table can

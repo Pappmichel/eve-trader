@@ -59,7 +59,7 @@ pytestmark_db = pg_helpers.postgres_required()
 @pytestmark_db
 def test_collect_reads_every_source_for_the_tenant(tenant, _apply_esi_access_schema):  # noqa: F811
     pg_helpers.wipe_tables(
-        "corp_assets", "character_sell_orders", "structure_names", "global_structure_names",
+        "corp_assets", "character_sell_orders", "location_registry", "global_structure_names",
         "manual_location_names",
     )
     storage.replace_assets("corp_assets", [
