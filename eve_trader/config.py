@@ -252,6 +252,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "asset_history_retention_days": (1, None),
     "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
     "alerts_mail_poll_minutes": (1, None),            # SchedulerOperatorConfig (operator-only)
+    "alerts_contract_poll_minutes": (5, None),        # SchedulerOperatorConfig (operator-only)
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
@@ -736,12 +737,15 @@ class SchedulerOperatorConfig:
       runs independently of every tenant's scheduler_enabled.
     - alerts_mail_poll_minutes: how often an opted-in character's mail headers
       are polled (ESI caches the mail list ~30 s; more often only costs calls).
+    - alerts_contract_poll_minutes: the same for the contract list behind the
+      finished/expired contract alert (ESI caches it 5 min).
     """
     inactive_tenant_days: float = 14.0
     backup_job_enabled: bool = True
     jita_price_cache_job_enabled: bool = True
     alerts_job_enabled: bool = False
     alerts_mail_poll_minutes: float = 10.0
+    alerts_contract_poll_minutes: float = 15.0
 
 
 _trading_config_yaml_cache: dict[Path, TradingConfig] = {}

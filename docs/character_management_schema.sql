@@ -441,7 +441,8 @@ CREATE TABLE IF NOT EXISTS alert_subscriptions (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     character_id BIGINT NOT NULL,
     alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
-                                                 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty')),
+                                                 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty',
+                                                 'contract_status')),
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
     include_content BOOLEAN NOT NULL DEFAULT FALSE,
     lead_hours INTEGER NOT NULL DEFAULT 12 CHECK (lead_hours BETWEEN 1 AND 168),
@@ -459,7 +460,8 @@ CREATE TABLE IF NOT EXISTS alert_state (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     character_id BIGINT NOT NULL,
     alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
-                                                 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty')),
+                                                 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty',
+                                                 'contract_status')),
     last_seen_mail_id BIGINT,
     last_key TEXT,
     last_sent_at TIMESTAMPTZ,
@@ -472,3 +474,21 @@ CREATE POLICY tenant_isolation ON alert_state
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON alert_state TO eve_trader_app;
+
+-- Contract alert dedupe, per contract and event (finished / expired): each
+-- one is announced once. Rows older than ESI's 30-day contract window are
+-- pruned by the alerts job.
+CREATE TABLE IF NOT EXISTS contract_alert_state (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    contract_id BIGINT NOT NULL,
+    event TEXT NOT NULL CHECK (event IN ('finished', 'expired')),
+    seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, character_id, contract_id, event)
+);
+ALTER TABLE contract_alert_state ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON contract_alert_state;
+CREATE POLICY tenant_isolation ON contract_alert_state
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON contract_alert_state TO eve_trader_app;

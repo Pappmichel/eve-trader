@@ -605,7 +605,8 @@ since a `char_skills` grant alone must not expose another tool's fittings).
 **Discord alerts.** Implemented and live in production since 2026-10-02 (test DM confirmed;
 scheduled 2026-09-29): bot DMs
 to an OAuth-linked Discord account, tool_key `char_alerts`, opt-in per
-character x alert type (`skillqueue_empty`, `mail_new`). Code lives in
+character x alert type (`skillqueue_empty`, `mail_new`, `contract_status`, and
+the PI types). Code lives in
 `eve_trader/alerts/` (`discord_client.py`, pure `logic.py`, `actions.py` with
 `deliver()` as the one send path that re-checks opt-in/sharing/token at send
 time), router `/api/char-alerts/`. Bot token and OAuth client are operator env
@@ -636,7 +637,10 @@ sent once per `finish_date`, with one live re-check before sending;
 `mail_new` sends count, sender and subject, the mail text only with the separate
 `include_content` opt-in, and takes a baseline on first poll so old mail is never
 announced; `mail` stays `live_only` (polled by the alerts job, not
-`do_sync_due`); messages disable mentions and are English-only, no quiet hours.
+`do_sync_due`); `contract_status` polls the character's contract list live every
+`alerts_contract_poll_minutes` (15) and announces each contract the character
+issued once when it finishes or passes its expiry (`contract_alert_state`,
+first poll = baseline); messages disable mentions and are English-only, no quiet hours.
 
 **Scheduler integration** is covered by the Scheduler section above
 (`schedule_mode = "on_demand"`, `useSyncWhenStale.ts`'s page-open sync) -
