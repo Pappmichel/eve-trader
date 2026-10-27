@@ -1652,6 +1652,12 @@ def apply_plan_to_build_buy(
                     float(recipe.formula_price) * float(alloc.formulas_to_buy)
                 )
 
+    # A product bought while W1 slots are still free was not short of slots:
+    # its reaction inputs were not on hand at the window (gap 7, D10), so it
+    # is labelled "inputs" instead of "capacity".
+    slots_binding = plan.jobs_used >= plan.slots
+    input_short = {c.product_type_id for c in plan.chaining}
+
     for mid, qty in plan.buy.items():
         if qty <= _EPS:
             continue
@@ -1659,15 +1665,16 @@ def apply_plan_to_build_buy(
             # Moon materials / fuel: planner walk owns these.
             continue
         buy_totals[mid] = buy_totals.get(mid, 0.0) + float(qty)
-        # D4: "capacity" only when slots force a buy that building would
-        # have done cheaper. A buy that is simply cheaper stays an ordinary
-        # Buy List row (capacity_reason None).
+        # D4: "capacity" / "inputs" only when a limit forces a buy that
+        # building would have done cheaper. A buy that is simply cheaper stays
+        # an ordinary Buy List row (capacity_reason None).
         build_cost = cost_memo.get(mid)
         buy_px = pricing.buy_price(mid, home, jita, _haul_volume(mid, cfg), cfg)
         if build_cost is not None and buy_px is not None:
             given_up = (float(buy_px) - float(build_cost)) * float(qty)
             if given_up > _EPS:
-                capacity_reason[mid] = "capacity"
+                capacity_reason[mid] = (
+                    "inputs" if not slots_binding and mid in input_short else "capacity")
                 isk_given_up[mid] = given_up
             else:
                 isk_given_up[mid] = None

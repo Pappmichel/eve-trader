@@ -20,7 +20,10 @@ from eve_trader.production.constants import ACTIVITY_MANUFACTURING, ACTIVITY_REA
 from eve_trader.production.reaction_capacity import WindowState
 
 from . import pg_helpers
-from .pg_helpers import tenant  # noqa: F401
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+# reaction_chain_choice lives in this schema file; apply it here so the module
+# does not depend on another test module having run first.
+from .test_storage_production_buy_list import _apply_production_buy_list_schema  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 

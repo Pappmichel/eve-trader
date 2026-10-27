@@ -16,9 +16,12 @@ from eve_trader.production.models import CharacterSlotRow
 from datetime import datetime, timezone
 
 from eve_trader.production.reaction_capacity import (
+    ChainingComparison,
     ReactionLayer,
+    ReactionPlan,
     ReactionRecipe,
     ReactionWindow,
+    apply_plan_to_build_buy,
     effective_window_datetime,
     effective_window_iso,
     fit_runs,
@@ -718,3 +721,35 @@ def test_runtime_guard_sixty_products():
     assert plan.next_window is not None
     for comp in plan.chaining:
         assert comp.isk_saved_by_waiting >= 0
+
+
+# ------------------------------------------------------------------ Buy List reason
+def _bought_plan(*, jobs_used: int, slots: int, chained: bool) -> tuple[ReactionLayer, ReactionPlan]:
+    layer = ReactionLayer(recipes=[_recipe("normal:20", 20, inputs={10: 1.0})])
+    chaining = (ChainingComparison(
+        product_type_id=20, buy_now_cost=1.0, wait_cost=1.0, isk_saved_by_waiting=0.0,
+        units_delayed=100.0, preferred="buy", short_input_ids=(10,)),) if chained else ()
+    plan = ReactionPlan(
+        recipes=(), buy={20: 100.0}, total_cost=0.0, slot_shadow_price=0.0,
+        formula_shadow_prices={}, warnings=(), chaining=chaining,
+        jobs_used=jobs_used, slots=slots)
+    return layer, plan
+
+
+@pytest.mark.parametrize("jobs_used, slots, chained, expected", [
+    (2, 10, True, "inputs"),      # slots free, inputs short at the window
+    (10, 10, True, "capacity"),   # slots full: capacity wins
+    (2, 10, False, "capacity"),   # free slots but no input shortage (formulas)
+])
+def test_buy_reason_separates_missing_inputs_from_capacity(monkeypatch, jobs_used, slots, chained, expected):
+    from eve_trader.production import engine, pricing
+    monkeypatch.setattr(pricing, "buy_price", lambda *a, **k: 1000.0)
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 0.0)
+    layer, plan = _bought_plan(jobs_used=jobs_used, slots=slots, chained=chained)
+
+    _runs, buys, reason, given_up, _keys = apply_plan_to_build_buy(
+        layer, plan, cost_memo={20: 400.0}, home={}, jita={}, cfg=ProductionConfig())
+
+    assert buys[20] == 100.0
+    assert reason[20] == expected
+    assert given_up[20] == pytest.approx(60_000.0)

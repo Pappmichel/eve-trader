@@ -74,8 +74,9 @@ class BuyListEntry:
     special_order_quantity: float = 0.0
     # docs/REACTION_CAPACITY_PLAN.md: why this Buy List row exists when the
     # reaction capacity solver is on. "capacity" = reaction product bought
-    # because slots/formulas were not enough; "formula" = formula purchase;
-    # None = ordinary buy (or the switch is off).
+    # because slots/formulas were not enough; "inputs" = bought with W1 slots
+    # free because its reaction inputs were not on hand at the window;
+    # "formula" = formula purchase; None = ordinary buy (or the switch is off).
     capacity_reason: Optional[str] = None
     # ISK given up by buying instead of building (capacity rows) or the
     # formula purchase cost (formula rows); None when unknown.

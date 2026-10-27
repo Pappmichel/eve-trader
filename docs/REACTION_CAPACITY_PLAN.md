@@ -350,7 +350,9 @@ matters.
 - Build List reaction rows: jobs x runs per job, recipe (normal / alchemy),
   formulas owned / needed.
 - Buy List rows that exist only because of the capacity get a "capacity" badge
-  with the ISK given up; formula purchases get their own badge.
+  with the ISK given up; formula purchases get their own badge. A reaction
+  product bought while W1 slots are still free gets "inputs" instead: its
+  reaction inputs were not on hand at the window (D10), not the slots.
 - Chaining table (D10): per affected product "buy now" vs "wait", the ISK
   waiting saves, the units delayed by one cycle, and the choice (default buy).
 - Next-window preview (D13): the W2 jobs and purchases, marked as a forecast.

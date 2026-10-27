@@ -120,5 +120,11 @@ describe('CapacityReasonBadge', () => {
       </MantineProvider>,
     )
     expect(screen.getByText('formula')).toBeInTheDocument()
+    rerender(
+      <MantineProvider>
+        <CapacityReasonBadge reason="inputs" iskGivenUp={3e6} />
+      </MantineProvider>,
+    )
+    expect(screen.getByText(/inputs/)).toBeInTheDocument()
   })
 })

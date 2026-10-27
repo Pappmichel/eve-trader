@@ -14,6 +14,7 @@ from eve_trader.production.config import ProductionConfig, validate_production_o
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+from .test_storage_production_buy_list import _apply_production_buy_list_schema  # noqa: F401
 
 client = TestClient(create_app())
 
