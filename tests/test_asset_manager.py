@@ -27,7 +27,7 @@ OFFICE = storage.OFFICE_TYPE_ID
 _TABLES = (
     "character_assets", "corp_assets", "character_blueprints", "corp_blueprints",
     "character_industry_jobs", "corp_industry_jobs", "character_sell_orders", "esi_sharing",
-    "manual_stock", "structure_names", "global_structure_names", "manual_location_names",
+    "manual_stock", "location_registry", "global_structure_names", "manual_location_names",
     "asset_manager_views", "asset_manager_history", "corp_divisions",
 )
 

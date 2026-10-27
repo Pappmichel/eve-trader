@@ -75,7 +75,9 @@ _PER_TENANT_TABLES: list[tuple[str, tuple[str, ...] | None]] = [
     ("job_category_locations", ("tenant_id", "category")),
     ("esi_sync_state", ("tenant_id", "scope")),
     ("candidate_search_cursor", ("tenant_id", "id")),
-    ("structure_names", ("tenant_id", "location_id")),
+    # The SQLite-era structure_names table is not migrated: its Postgres
+    # successor location_registry is rebuilt from the asset tables and the
+    # names are looked up again (docs/LOCATION_RESOLUTION_PLAN.md phase 7).
     ("category_location_options", ("tenant_id", "category", "location_id")),
     # column-only-turned-composite bucket - originally PK'd on the bare ESI
     # ID alone (globally unique per character), but a corp-owned table can
@@ -182,6 +184,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "pi_yield_samples": "Postgres-native (PI tool, docs/PI_PLAN.md - never existed in the pre-migration SQLite schema)",
     "character_pi_colonies": "Postgres-native (PI tool, ESI planets data kind - never existed in the pre-migration SQLite schema)",
     "pi_alert_state": "Postgres-native (PI tool, Discord alerts - never existed in the pre-migration SQLite schema)",
+    "contract_alert_state": "Postgres-native (Discord contract alerts - never existed in the pre-migration SQLite schema)",
     "ledger_wallet_transactions": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_wallet_journal": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_market_orders": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",

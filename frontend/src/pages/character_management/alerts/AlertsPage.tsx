@@ -25,8 +25,11 @@ const ALERT_LABELS: Record<AlertType, { label: string; aria: string }> = {
   pi_extractor_expiry: { label: 'PI: extractor program ends', aria: 'PI extractor' },
   pi_pad_full: { label: 'PI: launchpads nearly full (estimate)', aria: 'PI pad full' },
   pi_inputs_empty: { label: 'PI: factory inputs nearly used up (estimate)', aria: 'PI inputs empty' },
+  contract_status: { label: 'Contracts: finished or expired', aria: 'contract status' },
 }
-const ALERT_TYPES: AlertType[] = ['skillqueue_empty', 'mail_new', 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty']
+const ALERT_TYPES: AlertType[] = [
+  'skillqueue_empty', 'mail_new', 'contract_status', 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty',
+]
 const LEAD_TIME_TYPES = new Set<AlertType>(['skillqueue_empty', 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty'])
 
 function errorMessage(e: unknown): string {

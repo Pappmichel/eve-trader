@@ -154,8 +154,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # courier freight (docs/COURIER_FREIGHT_PLAN.md F4); item-exchange
         # sales stay on production and doctrine. "portfolio" values
         # outstanding contract items in Total Wealth (P4), separate from
-        # the realized-profit union.
-        consuming_tools=("doctrine", "production", "trading", "portfolio", "asset_manager"),
+        # the realized-profit union. "char_alerts" polls the character's own
+        # contracts live for the finished/expired alert (alerts/runner.py).
+        consuming_tools=("doctrine", "production", "trading", "portfolio", "asset_manager", "char_alerts"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(

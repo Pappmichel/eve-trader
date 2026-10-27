@@ -605,7 +605,8 @@ since a `char_skills` grant alone must not expose another tool's fittings).
 **Discord alerts.** Implemented and live in production since 2026-10-02 (test DM confirmed;
 scheduled 2026-09-29): bot DMs
 to an OAuth-linked Discord account, tool_key `char_alerts`, opt-in per
-character x alert type (`skillqueue_empty`, `mail_new`). Code lives in
+character x alert type (`skillqueue_empty`, `mail_new`, `contract_status`, and
+the PI types). Code lives in
 `eve_trader/alerts/` (`discord_client.py`, pure `logic.py`, `actions.py` with
 `deliver()` as the one send path that re-checks opt-in/sharing/token at send
 time), router `/api/char-alerts/`. Bot token and OAuth client are operator env
@@ -636,7 +637,10 @@ sent once per `finish_date`, with one live re-check before sending;
 `mail_new` sends count, sender and subject, the mail text only with the separate
 `include_content` opt-in, and takes a baseline on first poll so old mail is never
 announced; `mail` stays `live_only` (polled by the alerts job, not
-`do_sync_due`); messages disable mentions and are English-only, no quiet hours.
+`do_sync_due`); `contract_status` polls the character's contract list live every
+`alerts_contract_poll_minutes` (15) and announces each contract the character
+issued once when it finishes or passes its expiry (`contract_alert_state`,
+first poll = baseline); messages disable mentions and are English-only, no quiet hours.
 
 **Scheduler integration** is covered by the Scheduler section above
 (`schedule_mode = "on_demand"`, `useSyncWhenStale.ts`'s page-open sync) -
@@ -762,8 +766,8 @@ Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
   `other`), the `parent_location_id` an Office or container resolves through,
   the name, and the last lookup's `status` (`pending`, `resolved`, `forbidden`,
   `not_found`, `transient`) with `next_retry_at`. It replaced
-  `structure_names` (phase 7): the schema copies old names over once and no code
-  reads or writes that table any more; it is dropped in a later release. The
+  `structure_names` (phase 7): `docs/location_registry_schema.sql` copies any
+  old names over and drops that table, so it no longer exists. The
   `storage` helpers `set_cached_structure_name` / `get_cached_structure_name(s)`
   / `list_cached_structure_names` / `list_structure_system_ids` /
   `load_category_system_ids` / `search_locations` keep their signatures and
@@ -793,8 +797,8 @@ Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
   again now. The Asset Manager exposes them as `PUT/DELETE
   /api/asset-manager/locations/{id}/name` and `POST .../retry`; its rows carry
   `location_status` so the page can say why a place has no name.
-- **Do not** add a per-tool "resolve names" step, read `structure_names` or
-  `location_registry` directly for display, map an Office/container to its
+- **Do not** add a per-tool "resolve names" step, read `location_registry`
+  directly for display, map an Office/container to its
   structure by hand (`storage.asset_item_parents` does that), or treat every
   id above 10^12 as a structure.
 - **Consent.** Which characters may look names up is the user's tick of
