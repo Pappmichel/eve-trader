@@ -8,6 +8,7 @@ alchemy only when enabled; solver runs once per plan context.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import asdict
 
 import pytest
@@ -96,7 +97,13 @@ def reaction_bom(monkeypatch, tenant):
     monkeypatch.setattr(storage, "list_integrated_special_order_items", lambda: [])
     monkeypatch.setattr(engine, "_activity_mods",
                         lambda activity, type_id, cfg, cost_indices, blueprint_id=None: (1.0, 1.0, 0.02))
-    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 1000.0)
+
+    def _unit_cost(type_id, cfg, home, jita, cost_memo, *a, **k):
+        # Real _unit_cost writes the memo; capacity_reason compares against it.
+        cost_memo[type_id] = 1000.0
+        return 1000.0
+
+    monkeypatch.setattr(engine, "_unit_cost", _unit_cost)
     monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)  # always clears min_margin
     monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
     monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
@@ -291,3 +298,196 @@ def test_solver_runs_once_per_plan_context(monkeypatch, reaction_bom, tenant):
     )
     engine.plan_production(cfg)
     assert calls["n"] == 1, f"solver should run once per plan context, got {calls['n']}"
+
+
+@pg_helpers.postgres_required()
+def test_ample_slots_match_switch_off_with_stock_and_incoming(monkeypatch, reaction_bom, tenant):
+    """Live production bug: stock netted in the walk *and* again in the
+    solver wiped all reaction demand. With hangar stock + running-job
+    incoming, ample slots, alchemy off and no window date, switch on must
+    produce the same reaction runs per product as switch off (within one
+    run of rounding).
+
+    ``reaction_next_window_demand_factor=0`` isolates W1 from W2 pre-build
+    so the comparison is about double-netting, not D13/D14 foresight.
+    """
+    hangar = {10: 200.0}  # ReactionProd on hand
+    incoming = {10: 100.0}  # still-running reaction jobs
+
+    def current_stock(type_id, manual_stock, cfg, bp=None):
+        return hangar.get(type_id, 0.0) + incoming.get(type_id, 0.0)
+
+    def stock_on_hand(type_id, manual_stock, cfg):
+        return hangar.get(type_id, 0.0)
+
+    monkeypatch.setattr(engine, "_current_stock", current_stock)
+    monkeypatch.setattr(engine, "_stock_on_hand", stock_on_hand)
+    monkeypatch.setattr(
+        reaction_capacity, "window_state",
+        lambda cfg, **k: WindowState(
+            total_slots=50, busy_slots=0, free_slots=50,
+            busy_slots_w2=0, free_slots_w2=50,
+            # No window date → build_window folds incoming into incoming1
+            # from _current_stock - _stock_on_hand; keep jobs empty here.
+            on_hand_from_jobs={}, incoming1_from_jobs={}, incoming2_from_jobs={},
+        ),
+    )
+    # Component needs 1000 R (10 units × 10/run); stock covers 300 → 700 left.
+    stock_targets = [(1, "Component", 100, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+
+    cfg_off = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=False, alchemy_reactions_enabled=False,
+    )
+    cfg_on = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, alchemy_reactions_enabled=False,
+        reaction_slot_override=50, reaction_cycle_days=13.0,
+        reaction_next_window_demand_factor=0.0,
+    )
+    off = engine.plan_production(cfg_off)
+    on = engine.plan_production(cfg_on)
+
+    def reaction_runs(plan):
+        return {
+            e.type_id: e.job_runs
+            for e in plan["build_list"] if e.activity == "Reaction"
+        }
+
+    off_runs = reaction_runs(off)
+    on_runs = reaction_runs(on)
+    assert off_runs, "switch-off fixture must build reaction products"
+    assert on_runs, "switch-on must not wipe reaction jobs when slots are ample"
+    assert set(off_runs) == set(on_runs)
+    for tid, runs_off in off_runs.items():
+        assert abs(on_runs[tid] - runs_off) <= 1, (
+            f"type {tid}: on={on_runs[tid]} off={runs_off} (allowed ±1 run)"
+        )
+
+
+@pg_helpers.postgres_required()
+def test_top_level_reaction_target_nets_stock_once(monkeypatch, reaction_bom, tenant):
+    """W1 demand for a Reaction stock target equals target − stock once."""
+    hangar = {10: 250.0}
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: hangar.get(a[0], 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: hangar.get(a[0], 0.0))
+    monkeypatch.setattr(
+        reaction_capacity, "window_state",
+        lambda cfg, **k: WindowState(
+            total_slots=20, busy_slots=0, free_slots=20,
+            busy_slots_w2=0, free_slots_w2=20,
+            on_hand_from_jobs={}, incoming1_from_jobs={}, incoming2_from_jobs={},
+        ),
+    )
+    stock_targets = [(10, "ReactionProd", 1000, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    captured = {}
+    real_solve = reaction_capacity.solve
+
+    def capture(layer, window):
+        captured["demand"] = dict(window.demand)
+        captured["on_hand"] = dict(window.on_hand)
+        return real_solve(layer, window)
+
+    monkeypatch.setattr(reaction_capacity, "solve", capture)
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True,
+        reaction_slot_override=20, alchemy_reactions_enabled=False,
+        reaction_next_window_demand_factor=0.0,
+    )
+    prod = engine.plan_production(cfg)
+    assert captured["demand"].get(10, 0) == pytest.approx(1000.0)
+    assert captured["on_hand"].get(10, 0) == pytest.approx(250.0)
+    # Net need the solver covers by build/buy: 750, not 1000-250-250=500.
+    rx = [e for e in prod["build_list"] if e.type_id == 10 and e.activity == "Reaction"]
+    bought = sum(e.quantity for e in prod["buy_list"] if e.type_id == 10)
+    built_units = sum(e.quantity for e in rx)
+    assert built_units + bought == pytest.approx(750.0, abs=100.0)  # one-run slack
+
+
+def test_recipe_inputs_per_run_are_continuous(monkeypatch):
+    """Per-run inputs stay base×mult; EVE rounds once per job, not per run."""
+    monkeypatch.setattr(
+        storage, "get_blueprint_materials",
+        lambda blueprint_id, activity_id: [(30, 5)],  # base 5
+    )
+    # material_mult 0.9 → 4.5 continuous; per-run ceil would wrongly yield 5.
+    out = reaction_capacity._recipe_inputs_per_run(1010, ACTIVITY_REACTION, 0.9)
+    assert out[30] == pytest.approx(4.5)
+    # Two-run job quantity in the planner would be ceil(4.5 * 2) = 9, not 10.
+    assert math.ceil(out[30] * 2) == 9
+
+
+@pg_helpers.postgres_required()
+def test_capacity_reason_none_when_buy_is_cheaper(monkeypatch, reaction_bom, tenant):
+    # Buy cheaper than build → ordinary buy, not a capacity badge.
+    def _expensive_build(type_id, cfg, home, jita, cost_memo, *a, **k):
+        cost_memo[type_id] = 50_000.0
+        return 50_000.0
+
+    monkeypatch.setattr(engine, "_unit_cost", _expensive_build)
+    monkeypatch.setattr(
+        engine.pricing, "buy_price",
+        lambda type_id, *a, **k: {
+            10: 100.0, 20: 50_000.0, 30: 1000.0, 40: 5.0, 1010: 10_000_000.0,
+        }.get(type_id, 1000.0),
+    )
+    stock_targets = [(10, "ReactionProd", 100, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True,
+        reaction_slot_override=50, alchemy_reactions_enabled=False,
+    )
+    prod = engine.plan_production(cfg)
+    buys = [e for e in prod["buy_list"] if e.type_id == 10]
+    assert buys, "cheaper buy must still appear on the Buy List"
+    assert all(e.capacity_reason is None for e in buys)
+
+
+@pg_helpers.postgres_required()
+def test_capacity_reason_when_slots_force_purchase(monkeypatch, reaction_bom, tenant):
+    # Build cheaper, but one slot with fit=1 cannot cover demand → capacity.
+    monkeypatch.setattr(
+        storage, "get_blueprint_time",
+        lambda blueprint_id, activity_id: (
+            13 * 86400.0 if activity_id == ACTIVITY_REACTION else 600.0),
+    )
+    monkeypatch.setattr(
+        reaction_capacity, "window_state",
+        lambda cfg, **k: WindowState(
+            total_slots=1, busy_slots=0, free_slots=1,
+            busy_slots_w2=0, free_slots_w2=1,
+            on_hand_from_jobs={}, incoming1_from_jobs={}, incoming2_from_jobs={},
+        ),
+    )
+    stock_targets = [(1, "Component", 50, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True,
+        reaction_slot_override=1, reaction_cycle_days=13.0,
+    )
+    prod = engine.plan_production(cfg)
+    capacity_buys = [e for e in prod["buy_list"] if e.type_id == 10 and e.capacity_reason == "capacity"]
+    assert capacity_buys
+    assert all((e.isk_given_up or 0) > 0 for e in capacity_buys)
+
+
+@pg_helpers.postgres_required()
+def test_asset_plan_recommends_only_startable_jobs(monkeypatch, reaction_bom, tenant):
+    stock_targets = [(1, "Component", 10, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    # Inputs not on hand → readiness fraction < 1.
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: 0.0)
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+    asset = engine.plan_asset_optimized(cfg)
+    rx = [j for j in asset["jobs"] if j.activity == "Reaction"]
+    assert rx
+    for job in rx:
+        assert job.formulas_needed is not None and job.formulas_needed > 0
+        if job.runs_ready_now <= 0:
+            assert job.recommended_slots in (0, None)
+        else:
+            assert job.runs_per_slot and job.runs_per_slot > 0
+            assert job.recommended_slots == math.ceil(job.runs_ready_now / job.runs_per_slot)
+            assert job.recommended_slots <= job.formulas_needed

@@ -1227,13 +1227,17 @@ def _recipe_inputs_per_run(
     activity_id: int,
     material_mult: float,
 ) -> dict[int, float]:
-    """ME-reduced inputs for one run (same batch rounding as ``_material_qty``)."""
-    from .engine import _material_qty
+    """ME-reduced inputs per run as a continuous ``base × mult``.
+
+    EVE rounds ``ceil(base × mult × runs)`` once per job, not per run.
+    Rounding here per run overstates purchases; real job quantities are
+    rounded where jobs are built (``_material_qty``).
+    """
     out: dict[int, float] = {}
     for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
-        qty = _material_qty(base_qty, material_mult, 1)
+        qty = float(base_qty) * float(material_mult)
         if qty > 0:
-            out[int(material_id)] = float(qty)
+            out[int(material_id)] = qty
     return out
 
 
@@ -1587,11 +1591,18 @@ def apply_plan_to_build_buy(
             # Moon materials / fuel: planner walk owns these.
             continue
         buy_totals[mid] = buy_totals.get(mid, 0.0) + float(qty)
-        capacity_reason[mid] = "capacity"
+        # D4: "capacity" only when slots force a buy that building would
+        # have done cheaper. A buy that is simply cheaper stays an ordinary
+        # Buy List row (capacity_reason None).
         build_cost = cost_memo.get(mid)
         buy_px = pricing.buy_price(mid, home, jita, _haul_volume(mid, cfg), cfg)
         if build_cost is not None and buy_px is not None:
-            isk_given_up[mid] = max(0.0, (float(buy_px) - float(build_cost)) * float(qty))
+            given_up = (float(buy_px) - float(build_cost)) * float(qty)
+            if given_up > _EPS:
+                capacity_reason[mid] = "capacity"
+                isk_given_up[mid] = given_up
+            else:
+                isk_given_up[mid] = None
         else:
             isk_given_up[mid] = None
 
