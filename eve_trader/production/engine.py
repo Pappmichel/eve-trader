@@ -2272,8 +2272,13 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
 
     An alchemy-sourced row (recipe_source "alchemy", see BuildJobEntry) is
     already keyed by the "Unrefined X" intermediate and its own formula
-    blueprint - that's the job actually queued in EVE - so every field below
-    reads off the intermediate, not the target item it reprocesses into."""
+    blueprint - that's the job actually queued in EVE - so most fields below
+    read off the intermediate. unit_build_cost is the exception: cost_memo
+    only holds the *target* Reaction product (the id _unit_cost priced), so
+    an alchemy row derives its per-Unrefined-X unit cost from that target's
+    alchemy unit cost times the reprocess yield of one Unrefined batch
+    (docs/REACTION_CAPACITY_PLAN.md gap 4). Margin still uses the row's own
+    type_id against that unit cost, same as every other row."""
     alchemy_keys = _alchemy_build_run_keys(cost_indices) if cfg.alchemy_reactions_enabled else {}
     build_list = []
     for (blueprint_id, activity_id, product_type_id), runs in build_runs.items():
@@ -2291,7 +2296,20 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
         job_time = base_time * time_mult * runs
-        unit_cost = cost_memo.get(product_type_id)
+        alchemy_entry = alchemy_keys.get((blueprint_id, activity_id, product_type_id))
+        if alchemy_entry is not None:
+            # Per Unrefined X: alchemy's per-target-unit cost x how many
+            # target units one Unrefined batch recovers, divided by how many
+            # Unrefined X one run produces (almost always 1).
+            target_type_id, reprocessed = alchemy_entry
+            target_unit_cost = cost_memo.get(target_type_id)
+            target_yield = reprocessed.get(target_type_id, 0)
+            if target_unit_cost is not None and target_yield > 0 and product_qty:
+                unit_cost = target_unit_cost * target_yield / product_qty
+            else:
+                unit_cost = None
+        else:
+            unit_cost = cost_memo.get(product_type_id)
         materials = storage.get_blueprint_materials(blueprint_id, activity_id)
         eiv = sum(base_qty * adjusted_prices.get(material_id, 0.0) for material_id, base_qty in materials)
         job_cost = (eiv * job_cost_rate) / product_qty if product_qty else None
@@ -2301,7 +2319,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
             tech_level=product_activity,
             job_category=job_category(product_type_id), job_cost=job_cost,
-            recipe_source="alchemy" if (blueprint_id, activity_id, product_type_id) in alchemy_keys else None,
+            recipe_source="alchemy" if alchemy_entry is not None else None,
             # GitHub issue #38: margin_home, not margin_jita - Production
             # sells only at C-J, never Jita (see CLAUDE.md), so the
             # Bauliste's own margin must be the real C-J one, not the
