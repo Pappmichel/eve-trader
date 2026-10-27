@@ -295,6 +295,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "reaction_slot_override": (0, None),
     "reaction_window_interval_days": (1, None),
     "reaction_formula_payback_cycles": (0.01, None),
+    "reaction_next_window_demand_factor": (0, None),
 }
 
 

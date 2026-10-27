@@ -210,6 +210,8 @@ class ProductionConfig:
     # Bought formulas amortise over this many cycles in the objective (D11);
     # 1.0 = a formula must pay back within the current window.
     reaction_formula_payback_cycles: float = 1.0
+    # D14: W2 demand = W1 demand x this factor (1.0 = same again next cycle).
+    reaction_next_window_demand_factor: float = 1.0
 
     # -- Manual tracking (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) --
     # Default Tenant only - do_resolve_structure_name reads this under

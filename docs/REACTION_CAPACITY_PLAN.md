@@ -1,9 +1,10 @@
 # Reaction capacity plan
 
-Status: phases 0 and 1 implemented in PR #330 (not merged). The phase 2 run
-against production data (section 1.4) found that the single-window model never
-builds intermediates; the model is now two windows (D13, D14, section 3).
-Phase 1b fixes the solver before wiring.
+Status: phases 0, 1 and 1b implemented in PR #330 (not merged). The phase 2
+run against production data (section 1.4) found that the single-window model
+never builds intermediates; the model is now two windows (D13, D14, section 3).
+Phase 1b reworked the solver; the production re-run of the phase 2 script is
+still open before wiring (phase 3).
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
@@ -297,7 +298,7 @@ matters.
 | 0 | Fix gap 4: alchemy rows get their unit cost (per "Unrefined X" unit, from `_alchemy_unit_cost`) and margin. Independent of the switch. | Build List shows cost for alchemy rows; test. **Done (PR #330).** |
 | 1 | `reaction_capacity.py`: formula counting, window inputs and the pure solver (`solve(layer, window) -> plan`), no planner wiring. Unit tests on small synthetic layers: spare slots -> all built, alchemy added; tight slots -> weakest per slot-day bought first; formula limit and formula purchase; job size `fit`; no chaining inside a window; byproduct credit; manual overrides; busy slots; infeasible -> warning. | Tests green. **Done (PR #330), single-window model.** |
 | 2 | Solver prototype run on the server against the real layer (read-only script) before wiring, to check runtime and that the result is plausible (jobs, purchases, shadow prices). | **Done 2026-10-27, section 1.4.** |
-| 1b | Rework the solver to the two-window model (D13, D14) and the revised D10; shadow prices from LP duals; formula shadow fix; busy slots skip excluded characters; `reaction_next_window_demand_factor` setting. Tests: an intermediate with spare W1 slots is reacted for W2 composites; "wait" runs the composite in W2 instead of buying; default buy; shadow prices non-empty and match a brute-force probe on a small layer; runtime guard on a 60-product synthetic layer. Then re-run the phase 2 script. | Tests green; production re-run shows intermediate jobs and `solve` under 5 s. |
+| 1b | Rework the solver to the two-window model (D13, D14) and the revised D10; shadow prices from LP duals; formula shadow fix; busy slots skip excluded characters; `reaction_next_window_demand_factor` setting. Tests: an intermediate with spare W1 slots is reacted for W2 composites; "wait" runs the composite in W2 instead of buying; default buy; shadow prices non-empty and match a brute-force probe on a small layer; runtime guard on a 60-product synthetic layer. Then re-run the phase 2 script. | **Tests green (PR #330).** Production re-run of the updated scratch script still open (expect intermediate jobs and `solve` under 5 s). |
 | 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. |
 | 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check. |
 | 5 | Test server with a copy of the production stock targets: compare jobs, purchases and total cost with today's plan; then enable on production. | Numbers reported to the user. |
