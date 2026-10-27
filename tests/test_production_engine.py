@@ -5756,6 +5756,40 @@ def test_plan_production_byproduct_credits_other_demand(monkeypatch, tenant):
     assert buy_by_id[_CADMIUM] == 1020
 
 
+def test_build_build_list_alchemy_row_has_unit_cost_and_margin(monkeypatch):
+    # Gap 4 (docs/REACTION_CAPACITY_PLAN.md): cost_memo is keyed by the
+    # *target* Reaction product, so an alchemy Build List row keyed by
+    # "Unrefined X" used to show no unit_build_cost and no margin. The per-
+    # Unrefined-X cost is the target's alchemy unit cost times how many
+    # target units one Unrefined batch recovers (19 Caesarium from 1
+    # Unrefined at 55% scrapmetal). Does not change any build/buy decision.
+    _install_alchemy_recipe_engine(monkeypatch)
+    monkeypatch.setattr(engine, "classify_activity",
+                         lambda type_id: ("Reaction", (_ALCHEMY_BP, 11, 1.0))
+                         if type_id == _UNREFINED else ("Reaction", None))
+    monkeypatch.setattr(engine, "job_category", lambda type_id: "Reactions")
+    monkeypatch.setattr(engine, "_activity_mods",
+                         lambda *a, **k: (1.0, 1.0, 0.0))
+    alchemy_unit = 70_000.0 / 19.0  # same figure as test_unit_cost_picks_alchemy_when_cheaper
+    cost_memo = {_CAESARIUM: alchemy_unit}
+    cost_indices = _alchemy_cost_indices()
+    # One Unrefined X at home sell 80k -> margin vs 70k cost = (80k - 70k) / 70k
+    home = _alchemy_home(**{str(_UNREFINED): 80_000.0})
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, market_fees=0.0)
+
+    rows = engine._build_build_list(
+        {(_ALCHEMY_BP, ACTIVITY_REACTION, _UNREFINED): 2},
+        cost_memo, {}, cfg, home, cost_indices, {},
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.recipe_source == "alchemy"
+    assert row.type_id == _UNREFINED
+    assert row.unit_build_cost == pytest.approx(70_000.0)  # alchemy_unit * 19 / 1
+    assert row.margin == pytest.approx((80_000.0 - 70_000.0) / 70_000.0)
+
+
 @pg_helpers.postgres_required()
 def test_plan_production_alchemy_disabled_matches_pre_feature_behavior(monkeypatch, tenant):
     # Regression safety net, same short-circuit-proving shape as

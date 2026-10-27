@@ -192,6 +192,27 @@ class ProductionConfig:
                                                 # up at all, behavior is identical
                                                 # to before this feature existed
 
+    # -- Reaction capacity solver (docs/REACTION_CAPACITY_PLAN.md) --
+    # Off by default: plan_production / plan_asset_optimized keep today's
+    # per-unit build/buy behaviour until phase 3 wires the solver in.
+    reaction_capacity_enabled: bool = False
+    # Max days one reaction job may run in a window (D3); fit[r] =
+    # floor(reaction_cycle_days * 86400 / seconds_per_run).
+    reaction_cycle_days: float = 13.0
+    # Manual slot count override (D2); None = derived from character_slots
+    # minus slots still busy at reaction_window_next (D12).
+    reaction_slot_override: Optional[int] = None
+    # ISO datetime of the next reaction window start (D12). None = every
+    # reaction slot counts as free and no running job's output is moved
+    # into on_hand ahead of schedule.
+    reaction_window_next: Optional[str] = None
+    reaction_window_interval_days: float = 14.0
+    # Bought formulas amortise over this many cycles in the objective (D11);
+    # 1.0 = a formula must pay back within the current window.
+    reaction_formula_payback_cycles: float = 1.0
+    # D14: W2 demand = W1 demand x this factor (1.0 = same again next cycle).
+    reaction_next_window_demand_factor: float = 1.0
+
     # -- Manual tracking (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) --
     # Default Tenant only - do_resolve_structure_name reads this under
     # enter_tenant(DEFAULT_TENANT_ID) regardless of the caller's own tenant,
