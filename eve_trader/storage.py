@@ -6111,6 +6111,38 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int,
     return (best_me, best_te)
 
 
+def load_reaction_chain_choices() -> dict[int, str]:
+    """Per-product buy/wait choices for the reaction capacity solver (D10).
+    Missing type_id = buy (the default)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, choice FROM reaction_chain_choice").fetchall()
+    return {int(r[0]): str(r[1]) for r in rows}
+
+
+def upsert_reaction_chain_choice(type_id: int, choice: str) -> None:
+    """Set a product's chaining choice to ``buy`` or ``wait``."""
+    if choice not in ("buy", "wait"):
+        raise ValueError(f"choice must be 'buy' or 'wait', got {choice!r}")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO reaction_chain_choice (type_id, choice, updated_at) "
+            "VALUES (?, ?, now()) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET "
+            "choice=excluded.choice, updated_at=excluded.updated_at",
+            (int(type_id), choice),
+        )
+
+
+def delete_reaction_chain_choice(type_id: int) -> None:
+    """Remove a stored choice (back to the default buy)."""
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM reaction_chain_choice WHERE type_id = ?",
+            (int(type_id),),
+        )
+
+
 def count_owned_formula_originals(
     type_ids: Optional[list[int]] = None,
     owner_character_ids: Optional[list[int]] = None,

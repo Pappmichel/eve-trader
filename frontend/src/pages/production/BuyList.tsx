@@ -8,6 +8,7 @@ import type { BuyListEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StalePlanAlert } from './StalePlanAlert'
+import { CapacityReasonBadge } from './ReactionCapacityPanel'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
 
@@ -35,7 +36,18 @@ export default function BuyList() {
   // Best-hub mode (hub setting 'Best hub'): rows carry the hub their buy is priced at.
   const showHub = buyList.some((e) => e.hub_name)
   const columns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
+    {
+      header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true },
+      cell: (i) => {
+        const row = i.row.original
+        return (
+          <Group gap="xs" wrap="nowrap">
+            <Text>{row.type_name}</Text>
+            <CapacityReasonBadge reason={row.capacity_reason} iskGivenUp={row.isk_given_up} />
+          </Group>
+        )
+      },
+    },
     { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
     {
       header: 'Buy From', accessorKey: 'buy_from', size: 120,

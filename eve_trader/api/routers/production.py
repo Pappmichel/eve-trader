@@ -456,6 +456,14 @@ class ProductionSettings(BaseModel):
     manufacturing_cost_index_override: Optional[float] = None
     asset_plan_slot_days_target: Optional[float] = None
     alchemy_reactions_enabled: bool = False
+    # docs/REACTION_CAPACITY_PLAN.md phase 4
+    reaction_capacity_enabled: bool = False
+    reaction_cycle_days: float = 13.0
+    reaction_slot_override: Optional[int] = None
+    reaction_window_next: Optional[str] = None
+    reaction_window_interval_days: float = 14.0
+    reaction_formula_payback_cycles: float = 1.0
+    reaction_next_window_demand_factor: float = 1.0
 
 
 @router.get("/settings", response_model=ProductionSettings)
@@ -466,6 +474,28 @@ def get_settings():
 @router.post("/settings")
 def update_settings(updates: ProductionSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
+
+
+@router.get("/settings/reaction-capacity")
+def get_reaction_capacity_status():
+    """Derived slots / busy / capacity for the Settings card (read-only)."""
+    return _wrap(actions.do_get_reaction_capacity_status)
+
+
+class ReactionChainChoiceRequest(BaseModel):
+    type_id: int
+    # None deletes the row (= back to the default buy).
+    choice: Optional[Literal["buy", "wait"]] = None
+
+
+@router.get("/reaction-chain-choices")
+def get_reaction_chain_choices():
+    return storage.load_reaction_chain_choices()
+
+
+@router.put("/reaction-chain-choice")
+def set_reaction_chain_choice(req: ReactionChainChoiceRequest):
+    return _wrap(actions.do_set_reaction_chain_choice, type_id=req.type_id, choice=req.choice)
 
 
 class DynamicTargetSettings(BaseModel):

@@ -281,6 +281,17 @@ def validate_production_overrides(overrides: dict) -> None:
         if bad:
             raise ConfigError(f"stock_hangar_flags: {bad!r} are not known hangar divisions. "
                                f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
+    if "reaction_window_next" in overrides and overrides["reaction_window_next"] is not None:
+        raw = overrides["reaction_window_next"]
+        if not isinstance(raw, str) or not raw.strip():
+            raise ConfigError("reaction_window_next: expected a non-empty ISO datetime string or null")
+        from datetime import datetime
+        try:
+            datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ConfigError(
+                f"reaction_window_next: {raw!r} is not a valid ISO datetime"
+            ) from e
 
 
 def validate_production_merged(cfg, overrides: dict) -> None:

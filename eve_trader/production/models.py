@@ -72,6 +72,15 @@ class BuyListEntry:
     # Share of `quantity` that comes from integrated special orders
     # (SPECIAL_ORDERS_INTEGRATION_PLAN.md D8), never above `quantity`.
     special_order_quantity: float = 0.0
+    # docs/REACTION_CAPACITY_PLAN.md: why this Buy List row exists when the
+    # reaction capacity solver is on. "capacity" = reaction product bought
+    # because slots/formulas were not enough; "inputs" = bought with W1 slots
+    # free because its reaction inputs were not on hand at the window;
+    # "formula" = formula purchase; None = ordinary buy (or the switch is off).
+    capacity_reason: Optional[str] = None
+    # ISK given up by buying instead of building (capacity rows) or the
+    # formula purchase cost (formula rows); None when unknown.
+    isk_given_up: Optional[float] = None
 
 
 @dataclass
@@ -110,6 +119,12 @@ class BuildJobEntry:
     # Share of `quantity` (product units) that comes from integrated special
     # orders (SPECIAL_ORDERS_INTEGRATION_PLAN.md D8), never above `quantity`.
     special_order_quantity: float = 0.0
+    # docs/REACTION_CAPACITY_PLAN.md: W1 jobs and runs/job from the capacity
+    # solver (None when the switch is off or this is not a reaction row).
+    reaction_jobs: Optional[int] = None
+    reaction_runs_per_job: Optional[float] = None
+    formulas_owned: Optional[int] = None
+    formulas_needed: Optional[int] = None
 
 
 @dataclass
@@ -342,6 +357,10 @@ class AssetPlanJob:
     # in the same order ("" for an order without a note).
     special_order_ids: list[str] = field(default_factory=list)
     special_order_notes: list[str] = field(default_factory=list)
+    # docs/REACTION_CAPACITY_PLAN.md: owned / needed formula originals when
+    # the capacity solver sized this reaction job (None when switch off).
+    formulas_owned: Optional[int] = None
+    formulas_needed: Optional[int] = None
 
 
 @dataclass

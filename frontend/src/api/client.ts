@@ -283,6 +283,12 @@ export const productionApi = {
     del(`/api/production/blueprints/manual-me-te-overrides/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
   updateSettings: (s: T.ProductionSettings) => post<T.ProductionSettings>('/api/production/settings', s),
+  reactionCapacityStatus: () => get<T.ReactionCapacityStatus>('/api/production/settings/reaction-capacity'),
+  reactionChainChoices: () => get<Record<number, string>>('/api/production/reaction-chain-choices'),
+  setReactionChainChoice: (typeId: number, choice: 'buy' | 'wait' | null) =>
+    put<{ type_id: number; choice: string | null }>('/api/production/reaction-chain-choice', {
+      type_id: typeId, choice,
+    }),
   structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; hangar_division_flags: string[] }>(
     '/api/production/settings/structure-options',
   ),

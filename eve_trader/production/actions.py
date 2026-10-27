@@ -34,10 +34,28 @@ from .models import (
     SpecialOrder, UnlistedStockRow,
 )
 
+# Capacity fields whose real change marks cached plans stale (phase 4).
+# Compared against live cfg before save_tenant_config_overrides mutates it —
+# POST /settings dumps every field, so a plain freight edit still carries
+# reaction_* keys.
+_REACTION_CAPACITY_KEYS = (
+    "reaction_capacity_enabled",
+    "reaction_cycle_days",
+    "reaction_slot_override",
+    "reaction_window_next",
+    "reaction_window_interval_days",
+    "reaction_formula_payback_cycles",
+    "reaction_next_window_demand_factor",
+)
+
 
 def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Persists `updates` to tenant_settings and applies them to the live
     PRODUCTION_CONFIG immediately (see Settings tab)."""
+    reaction_capacity_changed = any(
+        key in updates and getattr(cfg, key) != updates[key]
+        for key in _REACTION_CAPACITY_KEYS
+    )
     try:
         validate_production_overrides(updates)  # structure_type/rig_tier enum check - see its docstring
         validate_production_merged(cfg, updates)  # dynamic stock target cross-field checks (V-06)
@@ -51,10 +69,54 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
     if cfg.dynamic_targets_enabled or "dynamic_targets_enabled" in updates:
         dynamic_targets.invalidate_today()
         _mark_cached_production_plans_stale()
+    # Reaction capacity settings change the next plan's jobs/buys (D7/D12).
+    if reaction_capacity_changed:
+        _mark_cached_production_plans_stale()
     invalidate_ship_margin_cache()  # structure/rig/fee settings feed build_cost/margins here too
     if "home_location_id" in updates:
         invalidate_production_locations_cache()  # _current_stock's location set includes this
     return updates
+
+
+def do_set_reaction_chain_choice(type_id: int, choice: Optional[str]) -> dict:
+    """Store a D10 chaining choice (``buy`` / ``wait``), or ``None`` to
+    delete the row and return to the default buy. Marks cached plans stale."""
+    if not isinstance(type_id, int) or type_id <= 0:
+        raise ActionError(f"type_id must be a positive integer, got {type_id!r}")
+    if choice is None:
+        storage.delete_reaction_chain_choice(type_id)
+        _mark_cached_production_plans_stale()
+        return {"type_id": type_id, "choice": None}
+    if choice not in ("buy", "wait"):
+        raise ActionError(f"choice must be 'buy', 'wait', or null, got {choice!r}")
+    storage.upsert_reaction_chain_choice(type_id, choice)
+    _mark_cached_production_plans_stale()
+    return {"type_id": type_id, "choice": choice}
+
+
+def do_get_reaction_capacity_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Derived slots / busy / capacity for the Settings card (read-only)."""
+    from . import reaction_capacity
+    state = reaction_capacity.window_state(cfg)
+    total, _free_now = reaction_capacity.reaction_slot_totals(cfg)
+    window_anchor = cfg.reaction_window_next
+    window_effective = reaction_capacity.effective_window_iso(
+        window_anchor, float(cfg.reaction_window_interval_days),
+    )
+    return {
+        "derived_slots": total if cfg.reaction_slot_override is None else None,
+        "slot_override": cfg.reaction_slot_override,
+        "slots_total": state.total_slots,
+        "slots_busy": state.busy_slots,
+        "slots_free": state.free_slots,
+        "slots_busy_w2": state.busy_slots_w2,
+        "slots_free_w2": state.free_slots_w2,
+        "window_anchor": window_anchor,
+        "window_next": window_effective,
+        "cycle_days": cfg.reaction_cycle_days,
+        "capacity_slot_days": state.free_slots * float(cfg.reaction_cycle_days),
+        "enabled": cfg.reaction_capacity_enabled,
+    }
 
 
 def do_set_system(profile: str, system_id: int, system_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:

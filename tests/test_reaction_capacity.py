@@ -13,10 +13,17 @@ import pytest
 
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.models import CharacterSlotRow
+from datetime import datetime, timezone
+
 from eve_trader.production.reaction_capacity import (
+    ChainingComparison,
     ReactionLayer,
+    ReactionPlan,
     ReactionRecipe,
     ReactionWindow,
+    apply_plan_to_build_buy,
+    effective_window_datetime,
+    effective_window_iso,
     fit_runs,
     solve,
     window_state,
@@ -279,6 +286,74 @@ def test_manual_build_exceeds_capacity_warns():
     assert any("Manual Build" in w or "exceed" in w.lower() or "Unmet" in w
                for w in plan.warnings)
     assert plan.buy.get(1, 0) < 1e-6
+
+
+def test_effective_window_rolls_forward_two_intervals():
+    # Anchor two full intervals in the past → effective = anchor + 2×interval.
+    now = datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc)
+    anchor = "2026-09-29T12:00:00+00:00"  # exactly 28 days = 2×14 before now
+    effective = effective_window_datetime(anchor, 14.0, now=now)
+    assert effective == datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc)
+    assert effective_window_iso(anchor, 14.0, now=now) == effective.isoformat()
+
+    # Still in the past by a second → roll one more interval.
+    now2 = datetime(2026, 10, 27, 12, 0, 1, tzinfo=timezone.utc)
+    effective2 = effective_window_datetime(anchor, 14.0, now=now2)
+    assert effective2 == datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Future anchor is unchanged.
+    future = "2030-01-15T12:00:00+00:00"
+    assert effective_window_datetime(future, 14.0, now=now) == datetime(
+        2030, 1, 15, 12, 0, 0, tzinfo=timezone.utc,
+    )
+    assert effective_window_datetime(None, 14.0, now=now) is None
+
+
+def test_window_state_uses_effective_next_when_anchor_is_past(monkeypatch):
+    """A past anchor must not treat every running job as busy for W1."""
+    from eve_trader import storage
+
+    monkeypatch.setattr(storage, "get_product_quantity", lambda *a, **k: 10.0)
+    # Anchor two intervals before "now"; effective W1 = 2026-10-27.
+    # Freeze wall clock by patching effective_window_datetime's now via
+    # the cfg path: monkeypatch datetime used inside by injecting through
+    # a thin wrapper — instead pass jobs relative to a known effective.
+    cfg = ProductionConfig(
+        reaction_slot_override=5,
+        reaction_window_next="2026-09-29T12:00:00+00:00",
+        reaction_window_interval_days=14.0,
+    )
+    rows = [
+        CharacterSlotRow(
+            character_name="A", job_type="Reactions",
+            total_slots=5, used_slots=0, free_slots=5,
+            excluded_from_planning=False,
+        ),
+    ]
+    # Job ends after the stored (past) anchor but before the effective next
+    # window — under a naive past-anchor read it would count as busy; with
+    # roll-forward it is on_hand for W1.
+    from eve_trader.production import reaction_capacity as rc
+    real_eff = rc.effective_window_datetime
+
+    def _eff(anchor, interval_days, *, now=None):
+        return real_eff(
+            anchor, interval_days,
+            now=datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+    monkeypatch.setattr(rc, "effective_window_datetime", _eff)
+    industry_jobs = [
+        # Ends 2026-10-20: after past anchor, before effective W1 → on_hand.
+        (1, 11, 100, 50, "X", 2, 0, "active", "2026-10-20T00:00:00+00:00", None, "A"),
+        # Ends 2026-11-01: after effective W1, before W2 → busy W1 / incoming1.
+        (2, 11, 100, 51, "Y", 1, 0, "active", "2026-11-01T00:00:00+00:00", None, "A"),
+    ]
+    state = window_state(cfg, character_rows=rows, industry_jobs=industry_jobs)
+    assert state.busy_slots == 1
+    assert state.free_slots == 4
+    assert state.on_hand_from_jobs.get(50) == 20.0
+    assert state.incoming1_from_jobs.get(51) == 10.0
 
 
 def test_busy_slots_reduce_capacity_via_window_state(monkeypatch):
@@ -646,3 +721,35 @@ def test_runtime_guard_sixty_products():
     assert plan.next_window is not None
     for comp in plan.chaining:
         assert comp.isk_saved_by_waiting >= 0
+
+
+# ------------------------------------------------------------------ Buy List reason
+def _bought_plan(*, jobs_used: int, slots: int, chained: bool) -> tuple[ReactionLayer, ReactionPlan]:
+    layer = ReactionLayer(recipes=[_recipe("normal:20", 20, inputs={10: 1.0})])
+    chaining = (ChainingComparison(
+        product_type_id=20, buy_now_cost=1.0, wait_cost=1.0, isk_saved_by_waiting=0.0,
+        units_delayed=100.0, preferred="buy", short_input_ids=(10,)),) if chained else ()
+    plan = ReactionPlan(
+        recipes=(), buy={20: 100.0}, total_cost=0.0, slot_shadow_price=0.0,
+        formula_shadow_prices={}, warnings=(), chaining=chaining,
+        jobs_used=jobs_used, slots=slots)
+    return layer, plan
+
+
+@pytest.mark.parametrize("jobs_used, slots, chained, expected", [
+    (2, 10, True, "inputs"),      # slots free, inputs short at the window
+    (10, 10, True, "capacity"),   # slots full: capacity wins
+    (2, 10, False, "capacity"),   # free slots but no input shortage (formulas)
+])
+def test_buy_reason_separates_missing_inputs_from_capacity(monkeypatch, jobs_used, slots, chained, expected):
+    from eve_trader.production import engine, pricing
+    monkeypatch.setattr(pricing, "buy_price", lambda *a, **k: 1000.0)
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 0.0)
+    layer, plan = _bought_plan(jobs_used=jobs_used, slots=slots, chained=chained)
+
+    _runs, buys, reason, given_up, _keys = apply_plan_to_build_buy(
+        layer, plan, cost_memo={20: 400.0}, home={}, jita={}, cfg=ProductionConfig())
+
+    assert buys[20] == 100.0
+    assert reason[20] == expected
+    assert given_up[20] == pytest.approx(60_000.0)
