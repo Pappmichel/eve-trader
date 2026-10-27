@@ -1,12 +1,13 @@
 # Reaction capacity plan
 
-Status: phases 0, 1, 1b, 1c, 2 and 3 done (2026-10-27). The phase 2 run against
-production data (section 1.4) found that the single-window model never builds
-intermediates; the model is now two windows (D13, D14, section 3). Phase 1b
-reworked the solver; the two-window re-run (section 1.5) surfaced five fixes
-done in phase 1c; the final re-run (section 1.6) passed. Phase 3 wired the
-solver into both Build Lists behind `reaction_capacity_enabled`. Next: phase 4
-(settings and UI).
+Status: phases 0, 1, 1b, 1c, 2, 3 and 4 done (2026-10-27). The phase 2 run
+against production data (section 1.4) found that the single-window model never
+builds intermediates; the model is now two windows (D13, D14, section 3).
+Phase 1b reworked the solver; the two-window re-run (section 1.5) surfaced five
+fixes done in phase 1c; the final re-run (section 1.6) passed. Phase 3 wired
+the solver into both Build Lists behind `reaction_capacity_enabled`. Phase 4
+added settings, chaining-choice storage, API fields and the Build/Buy List UI.
+Next: phase 5 (test-server comparison and production enablement — operator).
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
