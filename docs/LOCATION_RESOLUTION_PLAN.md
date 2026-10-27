@@ -207,9 +207,10 @@ Phases 1-4 are implemented. Deviations from the text above:
   no name and offers "Name this location", "Look up again" and "Remove my
   name". Phase 7 is split: this release copies `structure_names` into the
   registry and stops every read and write of it; the `DROP TABLE` follows one
-  release later (rollback safety, as planned). Readers outside the Asset
-  Manager (History, Insights, type drawer) still show a plain id without the
-  reason.
+  release later (rollback safety, as planned). The Asset Manager's other
+  views (History, Insights, type and ship drawers) share the same label
+  (`frontend/src/pages/asset_manager/locationLabel.ts`) and say why a place
+  has no name too.
 
 ## 5. Risks and rules
 - **Tenant isolation.** Registry is RLS-scoped. Only names that were resolved

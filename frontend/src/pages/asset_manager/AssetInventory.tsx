@@ -18,6 +18,7 @@ import { isk, qty, volume } from '../../format'
 import { notify } from '../../notify'
 import { AssetBadges, WantedBy } from './common'
 import { DEFAULT_QUERY, SOURCE_LABELS, filterPart, paramsFromQuery, queryFromParams } from './assetQuery'
+import { STRUCTURE_ID_MIN, locationLabel } from './locationLabel'
 import { ShipDrawer, type ShipRef } from './ShipDrawer'
 import { TypeDetailDrawer } from './TypeDetailDrawer'
 
@@ -30,21 +31,6 @@ interface Column {
   sort?: string
   align?: 'right'
   render: (row: AssetRow) => React.ReactNode
-}
-
-// Why a place has no name (location registry status, docs/LOCATION_RESOLUTION_PLAN.md).
-const LOOKUP_HINT: Record<string, string> = {
-  forbidden: 'no access', not_found: 'not found', transient: 'lookup failed, will retry',
-  pending: 'not looked up yet',
-}
-const STRUCTURE_ID_MIN = 1_000_000_000_000
-
-function locationLabel(row: Pick<AssetRow, 'location_id' | 'location_name' | 'location_status'>): string {
-  if (row.location_name) return row.location_name
-  if (!row.location_id) return 'No location'
-  const hint = row.location_status ? LOOKUP_HINT[row.location_status] : undefined
-  if (!hint) return `Location ${row.location_id}`
-  return `${row.location_id >= STRUCTURE_ID_MIN ? 'Structure' : 'Location'} ${row.location_id} (${hint})`
 }
 
 // Name, re-check or un-name a player structure the app could not name itself.

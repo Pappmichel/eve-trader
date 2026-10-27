@@ -7,6 +7,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { assetManagerApi } from '../../api/client'
 import { HintCard } from '../../components/HintCard'
 import { isk, qty } from '../../format'
+import { locationLabel } from './locationLabel'
 
 export default function AssetHistory() {
   const [fromDate, setFromDate] = useState<string | null>(null)
@@ -58,7 +59,7 @@ export default function AssetHistory() {
                 {data.rows.map((r) => (
                   <Table.Tr key={`${r.type_id}:${r.location_id}:${r.owner_type ?? ''}:${r.owner_id ?? ''}`}>
                     <Table.Td>{r.type_name}</Table.Td>
-                    <Table.Td>{r.location_name ?? (r.location_id ? `Location ${r.location_id}` : 'Unknown')}
+                    <Table.Td>{locationLabel(r, 'Unknown')}
                       {r.solar_system_name && <Text span size="xs" c="dimmed"> · {r.solar_system_name}</Text>}</Table.Td>
                     <Table.Td ta="right">{qty(r.before)}</Table.Td>
                     <Table.Td ta="right">{qty(r.after)}</Table.Td>
