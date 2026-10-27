@@ -7,6 +7,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { assetManagerApi } from '../../api/client'
 import { isk, qty, volume } from '../../format'
+import { locationLabel } from './locationLabel'
 
 function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
   return (
@@ -74,7 +75,7 @@ export default function AssetInsights() {
               {data.forgotten.map((r) => (
                 <Table.Tr key={`${r.type_id}:${r.location_id}`}>
                   <Table.Td>{r.type_name}</Table.Td>
-                  <Table.Td>{r.location_name ?? (r.location_id ? `Location ${r.location_id}` : 'Unknown')}
+                  <Table.Td>{locationLabel(r, 'Unknown')}
                     {r.solar_system_name && <Text span size="xs" c="dimmed"> · {r.solar_system_name}</Text>}</Table.Td>
                   <Table.Td>{r.owners.join(', ')}</Table.Td><Table.Td ta="right">{qty(r.quantity)}</Table.Td>
                   <Table.Td ta="right">{isk(r.value)}</Table.Td><Table.Td ta="right">{volume(r.volume)}</Table.Td>
@@ -97,7 +98,7 @@ export default function AssetInsights() {
             {data.asset_safety.map((r) => (
               <Table.Tr key={`${r.owner_name}:${r.location_id}`}>
                 <Table.Td>{r.owner_name}</Table.Td>
-                <Table.Td>{r.location_name ?? (r.location_id ? `Location ${r.location_id}` : 'Unknown')}
+                <Table.Td>{locationLabel(r, 'Unknown')}
                   {r.solar_system_name && <Text span size="xs" c="dimmed"> · {r.solar_system_name}</Text>}</Table.Td>
                 <Table.Td ta="right">{r.stacks}</Table.Td>
                 <Table.Td ta="right">{isk(r.value)}{r.unpriced ? <Text span c="orange"> *</Text> : null}</Table.Td>

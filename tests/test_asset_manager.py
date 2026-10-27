@@ -614,6 +614,27 @@ def test_history_snapshot_and_diff(tenant, gate_on):
     assert len(result["dates"]) == 2  # the 400-day-old row was pruned (retention 90)
 
 
+def test_history_and_insights_say_why_a_structure_has_no_name(tenant, gate_on):
+    import datetime as dt
+
+    from eve_trader.locations import store
+    structure = 1049865184779
+    now = dt.datetime.now(dt.timezone.utc)
+    store.register([{"location_id": structure, "kind": "structure"}])
+    store.record_failure(structure, "forbidden", "403", now + dt.timedelta(days=7), "x", now)
+    _share("character", ALICE, "asset_manager")
+    storage.replace_assets("character_assets", [(5, WRAP, structure, "AssetSafety", 1, 0, "Alice", True)],
+                           owner_character_id=ALICE, owner_name="Alice")
+    storage.write_asset_history(dt.date.today() - dt.timedelta(days=1), [("character", ALICE, structure, TRIT, 1.0)])
+
+    changes = am_actions.do_history()["rows"]
+    (safety,) = am_actions.do_insights()["asset_safety"]
+
+    assert {(c["location_id"], c["location_name"], c["location_status"]) for c in changes} == {
+        (structure, None, "forbidden")}
+    assert (safety["location_name"], safety["location_status"]) == (None, "forbidden")
+
+
 def test_insights_consolidation_forgotten_and_safety(tenant, gate_on, monkeypatch):
     from eve_trader.production.config import PRODUCTION_CONFIG
     other_station = 60099991

@@ -9,6 +9,7 @@ import { isk, qty, volume } from '../../format'
 import { COLORS } from '../../theme'
 import { AssetBadges, WantedBy } from './common'
 import { SOURCE_LABELS } from './assetQuery'
+import { locationLabel } from './locationLabel'
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -76,7 +77,7 @@ export function TypeDetailDrawer({ typeId, onClose }: { typeId: number | null; o
               <Table.Tbody>
                 {data.places.map((p) => (
                   <Table.Tr key={p.key}>
-                    <Table.Td>{p.location_name ?? (p.location_id ? `Location ${p.location_id}` : 'No location')}
+                    <Table.Td>{locationLabel(p)}
                       {p.solar_system_name && <Text span size="xs" c="dimmed"> · {p.solar_system_name}</Text>}</Table.Td>
                     <Table.Td>{p.owners.join(', ')}</Table.Td>
                     <Table.Td>{p.sources.map((s) => SOURCE_LABELS[s] ?? s).join(', ')}</Table.Td>
@@ -99,7 +100,7 @@ export function TypeDetailDrawer({ typeId, onClose }: { typeId: number | null; o
                 {data.stacks.map((s) => (
                   <Table.Tr key={s.key}>
                     <Table.Td>{s.owner_name}</Table.Td>
-                    <Table.Td>{[s.location_name, s.hangar, ...(s.container_path ?? [])].filter(Boolean).join(' › ')}</Table.Td>
+                    <Table.Td>{[locationLabel(s), s.hangar, ...(s.container_path ?? [])].filter(Boolean).join(' › ')}</Table.Td>
                     <Table.Td><AssetBadges badges={s.badges} /></Table.Td>
                     <Table.Td ta="right">{qty(s.quantity)}</Table.Td>
                   </Table.Tr>

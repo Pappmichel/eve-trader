@@ -3714,6 +3714,7 @@ export interface AssetHistoryRow {
   type_name: string
   location_id: number | null
   location_name: string | null
+  location_status?: string | null
   solar_system_name: string | null
   before: number
   after: number
@@ -3744,11 +3745,13 @@ export interface AssetInsights {
   }[]
   forgotten: {
     type_id: number; type_name: string; location_id: number | null; location_name: string | null
+    location_status?: string | null
     solar_system_name: string | null; region_name: string | null; quantity: number; value: number
     volume: number; owners: string[]
   }[]
   asset_safety: {
     owner_name: string | null; location_id: number | null; location_name: string | null
+    location_status?: string | null
     solar_system_name: string | null; region_name: string | null; stacks: number; value: number
     unpriced: number; volume: number
   }[]
