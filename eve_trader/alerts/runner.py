@@ -12,6 +12,10 @@ Mail: `mail` is live-only (never an orchestrator kind), so it is polled here,
 headers only; bodies only with the `include_content` opt-in. The first poll
 after an opt-in stores a baseline and sends nothing.
 
+Contracts: the character's contract list is polled live too (the snapshot only
+refreshes every few hours); each finished or expired contract it issued is
+announced once (`contract_alert_state`), again after a first-poll baseline.
+
 A failed attempt (ESI or Discord) records `last_attempt_at` and leaves the
 dedupe cursor alone, so nothing is lost or duplicated and a broken destination
 is retried at most every `RETRY_BACKOFF_MINUTES`, never on every tick.
@@ -289,6 +293,70 @@ def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_mi
     _send(cid, logic.MAIL_NEW, result.decision, now, mail_cursor=cursor, tokens=tokens)
 
 
+CONTRACT_STATE_KEEP_DAYS = 45                      # ESI lists finished contracts for 30 days
+
+
+def _contract_items(client: ESIClient, cid: int, role: str, contract_ids: list[int]) -> dict[int, str]:
+    """Short item summary per untitled contract ("Rifter x2, 1 more"). A
+    failed lookup just leaves the line without items."""
+    raw: dict[int, list[dict]] = {}
+    for contract_id in contract_ids:
+        try:
+            raw[contract_id] = [i for i in client.character_contract_items(cid, contract_id, role) if i.get("is_included", True)]
+        except ESIError:
+            continue
+    names = storage.sde_type_names({int(i["type_id"]) for rows in raw.values() for i in rows if i.get("type_id")})
+    out = {}
+    for contract_id, rows in raw.items():
+        if not rows:
+            continue
+        first = rows[0]
+        label = names.get(int(first.get("type_id") or 0)) or f"Type {first.get('type_id')}"
+        qty = int(first.get("quantity") or 1)
+        out[contract_id] = label + (f" x{qty}" if qty > 1 else "") + (f", {len(rows) - 1} more" if len(rows) > 1 else "")
+    return out
+
+
+def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, client: ESIClient,
+                   tokens: TokenManager) -> None:
+    """Contracts the character issued that finished or expired since the
+    opt-in, each announced once. Polled live like mail: the contracts snapshot
+    refreshes only every few hours. The first poll stores a baseline."""
+    state = storage.get_alert_state(cid, logic.CONTRACT_STATUS)
+    if _recently_attempted(state, now, poll_minutes):
+        return
+    if fields.gate("contracts", TOOL_KEY, cid, tokens):
+        return
+    role = select_auth_role(cid, fields.SCOPE_BY_KIND["contracts"], tokens=tokens)
+    if role is None:
+        return
+    try:
+        contracts = client.character_contracts(cid, role)
+    except ESIError as e:
+        log.warning("Contract poll for character %s failed: %s", cid, e)
+        storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
+        return
+    events = logic.contract_events(contracts, cid, now)
+    storage.prune_contract_alerts(cid, now - timedelta(days=CONTRACT_STATE_KEEP_DAYS))
+    if state is None or state[1] is None:              # first poll after the opt-in: nothing old is announced
+        storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in events], at=now)
+        storage.save_alert_state(cid, logic.CONTRACT_STATUS, last_key="baseline", at=now)
+        return
+    seen = storage.seen_contract_alerts(cid)
+    fresh = [ev for ev in events if (ev[0], ev[1]) not in seen]
+    if not fresh:
+        storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
+        return
+    listed = sorted(fresh, key=lambda ev: ev[0])[:logic.MAX_CONTRACTS_LISTED]
+    untitled = [i for i, _e, c in listed if not str(c.get("title") or "").strip() and c.get("type") != "courier"]
+    items = _contract_items(client, cid, role, untitled)
+    places = storage.get_location_names({int(c["start_location_id"]) for _i, _e, c in listed if c.get("start_location_id")})
+    message = logic.contract_message(fresh, name, items, {k: v for k, v in places.items() if v})
+    decision = logic.Decision(f"contracts:{max(i for i, _e, _c in fresh)}", message)
+    if _send(cid, logic.CONTRACT_STATUS, decision, now, tokens=tokens):
+        storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in fresh], at=now)
+
+
 def run_for_tenant(
     *, now: Optional[datetime] = None, client: Optional[ESIClient] = None,
     tokens: Optional[TokenManager] = None, poll_minutes: Optional[float] = None,
@@ -332,6 +400,9 @@ def run_for_tenant(
                     _run_mail(cid, include_content, name, now, poll, client, tokens)
                 elif alert_type in logic.PI_ALERT_TYPES:
                     _run_pi(cid, alert_type, lead_hours, name, now, client, tokens, freshness, tenant_id)
+                elif alert_type == logic.CONTRACT_STATUS:
+                    _run_contracts(cid, name, now, SCHEDULER_OPERATOR_CONFIG.alerts_contract_poll_minutes,
+                                   client, tokens)
             except Exception as e:  # noqa: BLE001 - one character's failure must not skip the others
                 log.warning("Alert %s for character %s failed: %s", alert_type, cid, e)
         return {"subscriptions": len(subs), "ran": True}

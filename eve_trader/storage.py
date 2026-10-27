@@ -8014,6 +8014,7 @@ def delete_alert_data_for_character(character_id: int) -> None:
         conn.execute("DELETE FROM alert_subscriptions WHERE character_id = ?", (character_id,))
         conn.execute("DELETE FROM alert_state WHERE character_id = ?", (character_id,))
         conn.execute("DELETE FROM pi_alert_state WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM contract_alert_state WHERE character_id = ?", (character_id,))
 
 
 def get_alert_state(character_id: int, alert_type: str) -> Optional[tuple]:
@@ -8378,3 +8379,36 @@ def reset_pi_alert_state(character_id: int, alert_type: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM pi_alert_state WHERE character_id = ? AND alert_type = ?",
                      (character_id, alert_type))
+
+
+def seen_contract_alerts(character_id: int) -> set[tuple[int, str]]:
+    """`(contract_id, event)` pairs already announced (or part of the opt-in
+    baseline) for one character."""
+    with connect() as conn:
+        rows = conn.execute("SELECT contract_id, event FROM contract_alert_state WHERE character_id = ?",
+                            (character_id,)).fetchall()
+    return {(int(r[0]), r[1]) for r in rows}
+
+
+def mark_contract_alerts(character_id: int, events: Iterable[tuple[int, str]],
+                         at: Optional[datetime] = None) -> None:
+    rows = [(character_id, int(cid), event, at or datetime.now(timezone.utc)) for cid, event in events]
+    if not rows:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO contract_alert_state (character_id, contract_id, event, seen_at) VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, character_id, contract_id, event) DO NOTHING", rows,
+        )
+
+
+def prune_contract_alerts(character_id: int, before: datetime) -> None:
+    """ESI lists finished contracts for 30 days; older dedupe rows can go."""
+    with connect() as conn:
+        conn.execute("DELETE FROM contract_alert_state WHERE character_id = ? AND seen_at < ?",
+                     (character_id, before))
+
+
+def reset_contract_alert_state(character_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM contract_alert_state WHERE character_id = ?", (character_id,))

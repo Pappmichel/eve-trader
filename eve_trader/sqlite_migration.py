@@ -184,6 +184,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "pi_yield_samples": "Postgres-native (PI tool, docs/PI_PLAN.md - never existed in the pre-migration SQLite schema)",
     "character_pi_colonies": "Postgres-native (PI tool, ESI planets data kind - never existed in the pre-migration SQLite schema)",
     "pi_alert_state": "Postgres-native (PI tool, Discord alerts - never existed in the pre-migration SQLite schema)",
+    "contract_alert_state": "Postgres-native (Discord contract alerts - never existed in the pre-migration SQLite schema)",
     "ledger_wallet_transactions": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_wallet_journal": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_market_orders": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",

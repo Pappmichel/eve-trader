@@ -12,7 +12,8 @@ PI_EXTRACTOR_EXPIRY = "pi_extractor_expiry"
 PI_PAD_FULL = "pi_pad_full"
 PI_INPUTS_EMPTY = "pi_inputs_empty"
 PI_ALERT_TYPES = (PI_EXTRACTOR_EXPIRY, PI_PAD_FULL, PI_INPUTS_EMPTY)
-ALERT_TYPES = (SKILLQUEUE_EMPTY, MAIL_NEW) + PI_ALERT_TYPES
+CONTRACT_STATUS = "contract_status"
+ALERT_TYPES = (SKILLQUEUE_EMPTY, MAIL_NEW) + PI_ALERT_TYPES + (CONTRACT_STATUS,)
 DEFAULT_LEAD_HOURS = 12
 MIN_LEAD_HOURS, MAX_LEAD_HOURS = 1, 168
 MAX_SUBJECT_CHARS = 100
@@ -107,6 +108,62 @@ def mail_decision(
         lines.append(f"... and {n - MAX_MAILS_LISTED} more")
     text = f"{character_name}: {n} new EVE mail" + ("s" if n != 1 else "") + ".\n" + "\n".join(lines)
     return MailDecision(newest, Decision(f"mail:{newest}", text))
+
+
+# ------------------------------------------------------------------- contracts
+FINISHED_CONTRACT_STATUSES = frozenset({"finished", "finished_issuer", "finished_contractor"})
+CONTRACT_FINISHED, CONTRACT_EXPIRED = "finished", "expired"
+CONTRACT_TYPE_LABELS = {"item_exchange": "Item exchange", "courier": "Courier", "auction": "Auction", "loan": "Loan"}
+MAX_CONTRACTS_LISTED = 10
+
+
+def contract_events(contracts: Sequence[dict], character_id: int, now: datetime) -> list[tuple[int, str, dict]]:
+    """`(contract_id, event, contract)` for every contract the character
+    issued (also on behalf of the corporation) that is finished, or still
+    outstanding past its expiry date (ESI has no "expired" status)."""
+    out = []
+    for c in contracts:
+        if int(c.get("issuer_id") or 0) != int(character_id) or "contract_id" not in c:
+            continue
+        status = c.get("status")
+        if status in FINISHED_CONTRACT_STATUSES:
+            event = CONTRACT_FINISHED
+        elif status == "outstanding" and (parse_iso(c.get("date_expired")) or now) < now:
+            event = CONTRACT_EXPIRED
+        else:
+            continue
+        out.append((int(c["contract_id"]), event, c))
+    return out
+
+
+def _isk(value: float) -> str:
+    for size, unit, digits in ((1e9, "B", 2), (1e6, "M", 1), (1e3, "k", 0)):
+        if abs(value) >= size:
+            return f"{value / size:.{digits}f}{unit} ISK"
+    return f"{value:.0f} ISK"
+
+
+def contract_message(events: Sequence[tuple[int, str, dict]], character_name: str,
+                     items: Optional[dict[int, str]] = None, places: Optional[dict[int, str]] = None) -> str:
+    """One message for the given new events. `items` maps a contract id to a
+    short item summary (used when the contract has no title), `places` a
+    location id to its name; both are optional."""
+    finished = sum(1 for _i, e, _c in events if e == CONTRACT_FINISHED)
+    expired = len(events) - finished
+    parts = [f"{n} contract{'s' if n != 1 else ''} {what}"
+             for n, what in ((finished, "finished"), (expired, "expired")) if n]
+    lines = []
+    for contract_id, event, c in sorted(events, key=lambda e: e[0])[:MAX_CONTRACTS_LISTED]:
+        kind = CONTRACT_TYPE_LABELS.get(c.get("type"), "Contract")
+        what = str(c.get("title") or "").strip()[:MAX_SUBJECT_CHARS] or (items or {}).get(contract_id)
+        value = float((c.get("reward") if c.get("type") == "courier" else c.get("price")) or 0)
+        place = (places or {}).get(int(c.get("start_location_id") or 0))
+        line = f"- {event.capitalize()}: {kind}" + (f" \"{what}\"" if what else "")
+        line += (f", {_isk(value)}" if value else "") + (f" at {place}" if place else "")
+        lines.append(line)
+    if len(events) > MAX_CONTRACTS_LISTED:
+        lines.append(f"... and {len(events) - MAX_CONTRACTS_LISTED} more")
+    return f"{character_name}: " + ", ".join(parts) + ".\n" + "\n".join(lines)
 
 
 # ------------------------------------------------------------ Planetary Industry

@@ -31,6 +31,7 @@ LINK_STATE_MAX_AGE_SECONDS = 600
 KIND_BY_ALERT = {
     logic.SKILLQUEUE_EMPTY: "skillqueue", logic.MAIL_NEW: "mail",
     **{t: "planets" for t in logic.PI_ALERT_TYPES},
+    logic.CONTRACT_STATUS: "contracts",
 }
 
 
@@ -116,6 +117,8 @@ def do_set_subscription(
         storage.reset_alert_state(character_id, alert_type)
         if alert_type in logic.PI_ALERT_TYPES:
             storage.reset_pi_alert_state(character_id, alert_type)
+        if alert_type == logic.CONTRACT_STATUS:
+            storage.reset_contract_alert_state(character_id)
     return {"character_id": character_id, "alert_type": alert_type, "enabled": bool(enabled),
             "include_content": bool(include_content), "lead_hours": lead_hours}
 

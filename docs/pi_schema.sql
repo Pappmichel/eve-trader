@@ -178,11 +178,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON pi_alert_state TO eve_trader_app;
 ALTER TABLE alert_subscriptions DROP CONSTRAINT IF EXISTS alert_subscriptions_alert_type_check;
 ALTER TABLE alert_subscriptions ADD CONSTRAINT alert_subscriptions_alert_type_check
     CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
-                          'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty'));
+                          'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty', 'contract_status'));
 ALTER TABLE alert_state DROP CONSTRAINT IF EXISTS alert_state_alert_type_check;
 ALTER TABLE alert_state ADD CONSTRAINT alert_state_alert_type_check
     CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
-                          'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty'));
+                          'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty', 'contract_status'));
 
 -- ======================================= tenant_settings scope 'pi'
 -- PiConfig Settings saves use tenant_settings scope 'pi'. Restates the FULL

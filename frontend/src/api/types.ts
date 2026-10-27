@@ -2145,6 +2145,7 @@ export interface MailRecipientHit {
 
 // ------------------------------------------------------------- discord alerts
 export type AlertType = 'skillqueue_empty' | 'mail_new' | 'pi_extractor_expiry' | 'pi_pad_full' | 'pi_inputs_empty'
+  | 'contract_status'
 
 export interface AlertSubscription {
   shared: boolean
