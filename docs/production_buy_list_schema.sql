@@ -73,3 +73,21 @@ CREATE POLICY tenant_isolation ON stock_target_dynamic_values
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON stock_target_dynamic_values TO eve_trader_app;
+
+-- ============================== per-tenant: reaction chaining choice (D10)
+-- docs/REACTION_CAPACITY_PLAN.md phase 4. Per reaction product: "buy" (default
+-- when missing) or "wait" (defer W1 demand to W2). Missing row = buy.
+CREATE TABLE IF NOT EXISTS reaction_chain_choice (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    choice TEXT NOT NULL CHECK (choice IN ('buy', 'wait')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE reaction_chain_choice ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON reaction_chain_choice;
+CREATE POLICY tenant_isolation ON reaction_chain_choice
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON reaction_chain_choice TO eve_trader_app;

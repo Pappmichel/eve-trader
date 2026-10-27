@@ -8,6 +8,7 @@ import type { BuildJobEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StalePlanAlert } from './StalePlanAlert'
+import ReactionCapacityPanel from './ReactionCapacityPanel'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 
@@ -47,7 +48,17 @@ export default function BuildList() {
             <Text>{row.type_name}</Text>
             {row.recipe_source === 'alchemy' && (
               <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
-                ⚗ Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
+                Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
+              </Text>
+            )}
+            {row.activity === 'Reaction' && row.reaction_jobs != null && (
+              <Text size="xs" c="dimmed">
+                {row.reaction_jobs} job{row.reaction_jobs === 1 ? '' : 's'}
+                {row.reaction_runs_per_job != null ? ` × ${row.reaction_runs_per_job.toFixed(1)} runs/job` : ''}
+                {row.recipe_source === 'alchemy' ? ' · alchemy' : ' · normal'}
+                {row.formulas_owned != null && row.formulas_needed != null
+                  ? ` · formulas ${row.formulas_owned}/${row.formulas_needed}`
+                  : ''}
               </Text>
             )}
           </Stack>
@@ -101,6 +112,7 @@ export default function BuildList() {
   return (
     <Stack>
       <StalePlanAlert stale={plan.stale} />
+      <ReactionCapacityPanel block={plan.reaction_capacity} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={280}>

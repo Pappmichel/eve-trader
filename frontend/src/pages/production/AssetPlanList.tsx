@@ -8,6 +8,7 @@ import type { AssetPlanJob } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StalePlanAlert } from './StalePlanAlert'
+import ReactionCapacityPanel from './ReactionCapacityPanel'
 import { useAction } from '../../hooks/useAction'
 import { duration, isk, pct, qty } from '../../format'
 import { blockedRunsTitle } from './assetPlanBlockers'
@@ -133,7 +134,15 @@ export default function AssetPlanList() {
             <Text>{row.type_name}</Text>
             {row.recipe_source === 'alchemy' && (
               <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
-                ⚗ Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
+                Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
+              </Text>
+            )}
+            {row.activity === 'Reaction' && (row.formulas_owned != null || row.recipe_source != null) && (
+              <Text size="xs" c="dimmed">
+                {row.recipe_source === 'alchemy' ? 'alchemy' : 'normal'}
+                {row.formulas_owned != null && row.formulas_needed != null
+                  ? ` · formulas ${row.formulas_owned}/${row.formulas_needed}`
+                  : ''}
               </Text>
             )}
           </Stack>
@@ -236,6 +245,7 @@ export default function AssetPlanList() {
   return (
     <Stack>
       <StalePlanAlert stale={plan.stale} />
+      <ReactionCapacityPanel block={plan.reaction_capacity} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={220}>

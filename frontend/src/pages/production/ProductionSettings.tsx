@@ -11,6 +11,7 @@ import { HubSelect } from '../../components/HubSelect'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { DynamicTargetSettingsCard } from './DynamicTargetSettingsCard'
+import { ReactionCapacitySettingsSection } from './ReactionCapacitySettingsSection'
 
 // 2 decimal places, not format.ts's own pct() (1 decimal) - real EVE system
 // cost indices are small enough (e.g. 0.0231) that 1 decimal rounds away
@@ -62,7 +63,7 @@ export default function ProductionSettings() {
       }
     }
     return result
-  }, [['production', 'settings'], ['production', 'structure-names']])
+  }, [['production', 'settings'], ['production', 'structure-names'], ['production', 'reaction-capacity-status']])
   const saveComponentSystem = useAction('Save Component System', () => {
     const opt = systemSelectData.find((o) => o.value === componentSystemId)
     return productionApi.setSystem('component', Number(componentSystemId), opt?.label ?? '')
@@ -176,6 +177,8 @@ export default function ProductionSettings() {
         whenever that is cheaper, and counts the reprocessing byproduct as stock against the rest of the plan.
         Build Candidates additionally shows a side-by-side ISK/hour comparison for Reaction items.
       </Text>
+
+      <ReactionCapacitySettingsSection form={form} set={set} />
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings
