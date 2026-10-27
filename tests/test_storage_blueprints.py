@@ -77,6 +77,28 @@ def test_replace_blueprints_resolves_location_through_a_container(tenant):
     assert row[0] == LOCATION_ID
 
 
+def test_count_owned_formula_originals_counts_minus_one_and_stacks(tenant):
+    # docs/REACTION_CAPACITY_PLAN.md D11: quantity=-1 is one original,
+    # quantity>0 is a stack of that many unresearched originals, quantity=-2
+    # (copy) never counts.
+    other = TYPE_ID + 1
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=-1, quantity=-1),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=-1, quantity=3),
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=5, quantity=-2),  # copy
+        _bp_row(4, other, me=0, te=0, runs=-1, quantity=-1),
+    ])
+    storage.replace_blueprints("corp_blueprints", [
+        _bp_row(5, TYPE_ID, me=0, te=0, runs=-1, quantity=-1),
+    ])
+
+    counts = storage.count_owned_formula_originals([TYPE_ID, other])
+
+    assert counts[TYPE_ID] == 1 + 3 + 1  # char -1 + stack 3 + corp -1
+    assert counts[other] == 1
+    assert storage.count_owned_formula_originals([TYPE_ID + 99]) == {}
+
+
 def test_available_blueprint_copies_sums_runs_not_copy_count(tenant):
     """Confirmed real bug (reported by a user, 2026-08-30): one invention
     attempt consumes exactly one *run* from a T1 BPC, not the whole copy
@@ -240,3 +262,25 @@ def test_replace_blueprints_without_matching_asset_row_keeps_own_location(tenant
             "SELECT resolved_location_id FROM character_blueprints WHERE item_id = ?", (1,)
         ).fetchone()
     assert row[0] == LOCATION_ID
+
+
+def test_count_owned_formula_originals_counts_minus_one_and_stacks(tenant):
+    # docs/REACTION_CAPACITY_PLAN.md D11: quantity=-1 is one original,
+    # quantity>0 is a stack of that many unresearched originals, quantity=-2
+    # (copy) never counts.
+    other = TYPE_ID + 1
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=-1, quantity=-1),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=-1, quantity=3),
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=5, quantity=-2),  # copy
+        _bp_row(4, other, me=0, te=0, runs=-1, quantity=-1),
+    ])
+    storage.replace_blueprints("corp_blueprints", [
+        _bp_row(5, TYPE_ID, me=0, te=0, runs=-1, quantity=-1),
+    ])
+
+    counts = storage.count_owned_formula_originals([TYPE_ID, other])
+
+    assert counts[TYPE_ID] == 1 + 3 + 1  # char -1 + stack 3 + corp -1
+    assert counts[other] == 1
+    assert storage.count_owned_formula_originals([TYPE_ID + 99]) == {}

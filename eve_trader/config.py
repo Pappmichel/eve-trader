@@ -290,6 +290,11 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "dynamic_target_deadband": (0, 1),
     "dynamic_target_day_cap_multiple": (0, None),
     "dynamic_target_margin_hysteresis": (0, None),
+    # -- Production: reaction capacity solver (docs/REACTION_CAPACITY_PLAN.md) --
+    "reaction_cycle_days": (1, 30),
+    "reaction_slot_override": (0, None),
+    "reaction_window_interval_days": (1, None),
+    "reaction_formula_payback_cycles": (0.01, None),
 }
 
 
