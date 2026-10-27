@@ -75,7 +75,8 @@ def forgotten(rows: list[dict], used_locations: set[int], wanted: set[int], min_
             continue
         g = groups.setdefault((r["type_id"], loc), {
             "type_id": r["type_id"], "type_name": r["type_name"], "location_id": loc or None,
-            "location_name": r.get("location_name"), "solar_system_name": r.get("solar_system_name"),
+            "location_name": r.get("location_name"), "location_status": r.get("location_status"),
+            "solar_system_name": r.get("solar_system_name"),
             "region_name": r.get("region_name"), "quantity": 0.0, "value": 0.0, "volume": 0.0, "owners": set(),
         })
         g["quantity"] += r["quantity"]
@@ -103,8 +104,8 @@ def asset_safety(rows: list[dict]) -> list[dict]:
         key = (r["owner_type"], r["owner_id"], r.get("location_id") or 0)
         g = groups.setdefault(key, {
             "owner_name": r.get("owner_name"), "location_id": key[2] or None,
-            "location_name": r.get("location_name"), "solar_system_name": r.get("solar_system_name"),
-            "region_name": r.get("region_name"), "stacks": 0, "value": 0.0, "unpriced": 0, "volume": 0.0,
+            "location_name": r.get("location_name"), "location_status": r.get("location_status"),
+            "solar_system_name": r.get("solar_system_name"), "region_name": r.get("region_name"), "stacks": 0, "value": 0.0, "unpriced": 0, "volume": 0.0,
         })
         g["stacks"] += 1
         if r.get("value") is None:

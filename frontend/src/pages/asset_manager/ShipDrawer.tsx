@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { assetManagerApi } from '../../api/client'
 import { isk, qty } from '../../format'
+import { locationLabel } from './locationLabel'
 
 export interface ShipRef { ownerType: string; ownerId: number; itemId: number }
 
@@ -22,7 +23,7 @@ export function ShipDrawer({ ship, onClose }: { ship: ShipRef | null; onClose: (
       {data && (
         <Stack>
           <Text size="sm" c="dimmed">
-            {data.ship.owner_name} · {data.ship.location_name ?? 'Unknown location'} · hull {isk(data.ship.value)} ·
+            {data.ship.owner_name} · {locationLabel(data.ship, 'Unknown location')} · hull {isk(data.ship.value)} ·
             contents {isk(data.contents_value)} · total {isk(data.total_value)}
           </Text>
 

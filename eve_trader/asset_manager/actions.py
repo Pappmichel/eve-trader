@@ -623,6 +623,7 @@ def do_history(from_date: Optional[str] = None, to_date: Optional[str] = None,
         c["type_name"] = (types.get(c["type_id"]) or {}).get("type_name") or f"Type {c['type_id']}"
         place = places.get(c["location_id"]) or {}
         c["location_name"] = place.get("name")
+        c["location_status"] = place.get("status")
         c["solar_system_name"] = place.get("solar_system_name")
         price = prices.get(c["type_id"])
         c["value_delta"] = price * c["delta"] if price is not None else None
