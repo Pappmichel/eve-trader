@@ -1,8 +1,9 @@
-"""Pure solver tests for docs/REACTION_CAPACITY_PLAN.md phase 1 / 1b.
+"""Pure solver tests for docs/REACTION_CAPACITY_PLAN.md phase 1 / 1b / 1c.
 
 Synthetic layers only - no ESI, no planner wiring. Covers the two-window
-model (D13/D14), revised D10, LP dual shadow prices, and excluded-character
-busy-slot filtering.
+model (D13/D14), revised D10, LP dual shadow prices, phase 1c fixes
+(continuous W2, hard W1 slots, like-for-like chaining, w1/w2 costs), and
+excluded-character busy-slot filtering.
 """
 from __future__ import annotations
 
@@ -459,10 +460,14 @@ def test_chaining_comparison_reports_positive_saving_for_wait():
     plan = solve(layer, window)
 
     assert plan.chaining
+    for comp in plan.chaining:
+        assert comp.isk_saved_by_waiting >= 0
     comp = next(c for c in plan.chaining if c.product_type_id == 20)
     assert comp.preferred == "buy"  # default
     assert comp.isk_saved_by_waiting > 0
     assert comp.units_delayed == pytest.approx(100.0)
+    # Like-for-like: both sides are continuous LP objectives.
+    assert comp.wait_cost <= comp.buy_now_cost + 1e-6
 
 
 def test_shadow_prices_match_brute_force_plus_one():
@@ -502,12 +507,12 @@ def test_shadow_prices_match_brute_force_plus_one():
         prices={1: 500_000.0, 9000: 1.0},
         demand_factor=0.0,
     ))
-    brute_slot = plan2.total_cost - more_slots.total_cost
+    brute_slot = plan2.w1_cost - more_slots.w1_cost
     assert plan2.slot_shadow_price > 0
     # Continuous-LP dual vs integer re-solve: same order, small gap allowed.
     assert plan2.slot_shadow_price == pytest.approx(brute_slot, rel=0.15, abs=1.0)
 
-    # Formula binds with 2 slots and 1 owned formula.
+    # Formula binds with 2 slots and 1 owned formula (W1 only).
     recipe3 = _recipe("r", 1, seconds=86400, fee=100.0, formulas=1,
                       formula_price=None, outputs={1: 100.0}, inputs={9000: 1.0})
     layer3 = ReactionLayer(recipes=[recipe3])
@@ -525,9 +530,74 @@ def test_shadow_prices_match_brute_force_plus_one():
         prices={1: 500_000.0, 9000: 1.0},
         demand_factor=0.0,
     ))
-    brute_f = plan3.total_cost - more_f.total_cost
+    brute_f = plan3.w1_cost - more_f.w1_cost
     assert plan3.formula_shadow_prices.get("r", 0) > 0
     assert plan3.formula_shadow_prices["r"] == pytest.approx(brute_f, rel=0.15, abs=1.0)
+
+
+def test_formula_shadow_is_sum_of_both_window_rows():
+    # Each window needs two jobs (2600 units, fit=13 → 1300/job) but only one
+    # formula exists, so both formula rows bind. Dual = d1 + d2 matches +1.
+    demand_units = 2600.0
+    recipe = _recipe("r", 1, seconds=86400, fee=100.0, formulas=1,
+                     formula_price=None, outputs={1: 100.0}, inputs={9000: 1.0})
+    layer = ReactionLayer(recipes=[recipe])
+    window = _window(
+        {1: demand_units}, slots=2, slots2=2,
+        on_hand={9000: 10_000.0},
+        prices={1: 500_000.0, 9000: 1.0},
+        demand_factor=1.0,
+    )
+    plan = solve(layer, window)
+    more = solve(
+        ReactionLayer(recipes=[_recipe(
+            "r", 1, seconds=86400, fee=100.0, formulas=2, formula_price=None,
+            outputs={1: 100.0}, inputs={9000: 1.0},
+        )]),
+        window,
+    )
+    brute = plan.total_cost - more.total_cost
+    assert plan.formula_shadow_prices.get("r", 0) > 0
+    assert plan.formula_shadow_prices["r"] == pytest.approx(brute, rel=0.15, abs=1.0)
+
+
+def test_w1_cost_keeps_buy1_that_feeds_w2():
+    # Wait: W1 defers the composite; W2 runs it from bought intermediate.
+    # buy1 of the intermediate feeds W2 only — must stay on the W1 buy list
+    # and in w1_cost (not dropped by a W1-only recompute).
+    final = _recipe("f", 20, seconds=86400, fee=10.0, formulas=5,
+                    outputs={20: 100.0}, inputs={10: 100.0})
+    # No recipe for intermediate 10 → must be bought.
+    layer = ReactionLayer(recipes=[final])
+    window = _window(
+        {20: 100.0}, slots=5,
+        on_hand={9000: 10_000.0},
+        prices={10: 50_000.0, 20: 1_000_000.0, 9000: 1.0},
+        chain_choice={20: "wait"},
+        demand_factor=1.0,
+    )
+    plan = solve(layer, window)
+    assert plan.deferred.get(20, 0) >= 100.0 - 1e-6
+    bought_i = plan.buy.get(10, 0.0)
+    assert bought_i >= 100.0 - 1e-6
+    assert plan.w1_cost >= bought_i * 50_000.0 - 1.0
+    assert plan.total_cost == pytest.approx(plan.w1_cost + plan.w2_preview_cost)
+
+
+def test_w1_slot_slack_never_without_manual_build():
+    # Tight slots, no manual build: plan must not use W1 slot slack.
+    recipe = _recipe("r", 1, seconds=86400, fee=100.0, formulas=50,
+                     formula_price=None, outputs={1: 100.0}, inputs={9000: 1.0})
+    layer = ReactionLayer(recipes=[recipe])
+    window = _window(
+        {1: 50_000.0}, slots=3,
+        on_hand={9000: 1_000_000.0},
+        prices={1: 500_000.0, 9000: 1.0},
+        demand_factor=1.0,
+    )
+    plan = solve(layer, window)
+    assert plan.jobs_used <= window.slots
+    assert not any("exceed W1 slot capacity" in w for w in plan.warnings)
 
 
 def test_runtime_guard_sixty_products():
@@ -554,7 +624,7 @@ def test_runtime_guard_sixty_products():
             ))
         demand[pid] = 500.0
         prices[pid] = 100_000.0 + 1000 * i
-        # A few alchemy alternatives.
+        # A few alchemy alternatives (~80 recipes with these).
         if i % 5 == 0:
             recipes.append(_recipe(
                 f"a{i}", pid, seconds=3600 * 5, fee=500.0, formulas=2, fit=2,
@@ -563,8 +633,7 @@ def test_runtime_guard_sixty_products():
             ))
 
     layer = ReactionLayer(recipes=recipes)
-    # Enough slots that W1 intermediates feed W2 (few chaining probes),
-    # matching the post-D13 production shape the <5 s target is for.
+    assert len(recipes) >= 70
     window = _window(demand, slots=200, slots2=200, on_hand=on_hand, prices=prices)
 
     t0 = time.perf_counter()
@@ -572,5 +641,8 @@ def test_runtime_guard_sixty_products():
     elapsed = time.perf_counter() - t0
 
     assert elapsed < 5.0, f"solve took {elapsed:.2f}s (limit 5s)"
+    assert not any("time limit" in w.lower() for w in plan.warnings)
     assert plan.jobs_used >= 0
     assert plan.next_window is not None
+    for comp in plan.chaining:
+        assert comp.isk_saved_by_waiting >= 0

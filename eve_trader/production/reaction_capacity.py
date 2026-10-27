@@ -1,4 +1,4 @@
-"""Reaction-layer capacity solver (docs/REACTION_CAPACITY_PLAN.md phase 1b).
+"""Reaction-layer capacity solver (docs/REACTION_CAPACITY_PLAN.md phase 1c).
 
 Pure mixed-integer program over **two** reaction windows (D13): W1 is the
 next window (executed), W2 is a continuous preview. Intermediates reacted
@@ -7,9 +7,11 @@ in W1 can feed composites in W2. Subject to slots, owned formulas, job size
 matches ``pi/chain_plan.py`` and ``refining/optimizer.py``
 (``scipy.optimize.linprog`` + HiGHS integrality).
 
-Shadow prices come from one LP with integer jobs fixed (duals), not from
-probe MIPs. Window helpers read already-synced industry-job / character-slot
-tables; they never call ESI. No planner wiring here.
+Only ``jobs1`` and ``new_formulas`` are integer; ``jobs2`` stays continuous
+(plan: W2 is a preview). Shadow prices come from LP duals; chaining
+compares continuous LP objectives on the same basis. Window helpers read
+already-synced industry-job / character-slot tables; they never call ESI.
+No planner wiring here.
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ _TOL = 1e-7
 _SHORT_PENALTY = 1e12
 _SLOT_SLACK_PENALTY = 1e15
 _MIP_TIME_LIMIT_SECONDS = 10.0
+_MIP_REL_GAP = 0.005
 
 
 # ------------------------------------------------------------------ inputs
@@ -121,7 +124,7 @@ class NextWindowPreview:
 class ReactionPlan:
     recipes: tuple[RecipeAllocation, ...]
     buy: Mapping[int, float]
-    total_cost: float
+    total_cost: float                   # w1_cost + w2_preview_cost
     slot_shadow_price: float
     formula_shadow_prices: Mapping[str, float]
     warnings: tuple[str, ...]
@@ -131,6 +134,8 @@ class ReactionPlan:
     slots: int = 0
     next_window: Optional[NextWindowPreview] = None
     deferred: Mapping[int, float] = field(default_factory=dict)
+    w1_cost: float = 0.0                # fees + buy1 (incl. W2 feeds) + formulas
+    w2_preview_cost: float = 0.0        # W2 fees + buy2
 
 
 @dataclass(frozen=True)
@@ -291,21 +296,59 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         p for p, choice in window.chain_choice.items() if choice == "wait"
     }
     primary = _solve_mip(layer, window, allow_defer=allow_defer)
-    plan = _finalize(layer, window, primary)
-    chaining = _chaining_comparisons(layer, window, plan)
+    extra_warnings: list[str] = []
+    if primary.mip_time_limit:
+        extra_warnings.append(
+            f"MIP time limit reached ({_MIP_TIME_LIMIT_SECONDS:g}s); "
+            f"result may not be proven optimal (mip_rel_gap={_MIP_REL_GAP})"
+        )
+    elif primary.message and "Optimal" not in primary.message and primary.success:
+        extra_warnings.append(f"Solver: {primary.message}")
+
+    # Hard W1 slots: slack without Manual Build is a solver failure — re-solve
+    # with slack1 fixed at 0 rather than accept an over-capacity plan.
+    if primary.slot_slack1 > _EPS and not _manual_build_uses_slots(layer, window, primary):
+        extra_warnings.append(
+            "W1 slot slack used without Manual Build; re-solving with hard slot cap"
+        )
+        primary = _solve_mip(
+            layer, window, allow_defer=allow_defer, hard_w1_slots=True,
+        )
+        if primary.mip_time_limit:
+            extra_warnings.append(
+                f"Hard-slot MIP time limit reached ({_MIP_TIME_LIMIT_SECONDS:g}s); "
+                f"result may not be proven optimal (mip_rel_gap={_MIP_REL_GAP})"
+            )
+
+    # One continuous LP for shadow prices and chaining buy-now baseline.
+    base_lp = _solve_mip(layer, window, allow_defer=allow_defer, continuous=True)
+    plan = _finalize(layer, window, primary, base_lp=base_lp)
+    chaining = _chaining_comparisons(layer, window, plan, base_lp=base_lp)
+    warnings = tuple(dict.fromkeys([*extra_warnings, *plan.warnings]))
     return ReactionPlan(
         recipes=plan.recipes,
         buy=plan.buy,
         total_cost=plan.total_cost,
         slot_shadow_price=plan.slot_shadow_price,
         formula_shadow_prices=plan.formula_shadow_prices,
-        warnings=plan.warnings,
+        warnings=warnings,
         chaining=chaining,
         unmet_demand=plan.unmet_demand,
         jobs_used=plan.jobs_used,
         slots=plan.slots,
         next_window=plan.next_window,
         deferred=plan.deferred,
+        w1_cost=plan.w1_cost,
+        w2_preview_cost=plan.w2_preview_cost,
+    )
+
+
+def _manual_build_uses_slots(
+    layer: ReactionLayer, window: ReactionWindow, raw: "_RawSolve",
+) -> bool:
+    return any(
+        r.product_type_id in window.manual_build and raw.jobs1.get(r.key, 0) > 0
+        for r in layer.recipes
     )
 
 
@@ -314,7 +357,7 @@ class _RawSolve:
     runs1: dict[str, float]
     runs2: dict[str, float]
     jobs1: dict[str, int]
-    jobs2: dict[str, int]
+    jobs2: dict[str, float]             # continuous preview
     new_formulas: dict[str, int]
     buy1: dict[int, float]
     buy2: dict[int, float]
@@ -330,6 +373,7 @@ class _RawSolve:
     slot1_row: int = -1
     formula_rows: dict[str, tuple[int, int]] = field(default_factory=dict)
     ineq_marginals: Optional[np.ndarray] = None
+    mip_time_limit: bool = False
 
 
 def _material_ids(layer: ReactionLayer, window: ReactionWindow) -> list[int]:
@@ -351,13 +395,15 @@ def _solve_mip(
     allow_defer: set[int] | frozenset[int] = frozenset(),
     force_defer: Optional[Mapping[int, float]] = None,
     slots1_override: Optional[int] = None,
-    fix_jobs: Optional[tuple[Mapping[str, int], Mapping[str, int]]] = None,
+    fix_jobs: Optional[tuple[Mapping[str, int | float], Mapping[str, int | float]]] = None,
     continuous: bool = False,
+    hard_w1_slots: bool = False,
 ) -> _RawSolve:
     """Build and solve the two-window MIP (or its LP relaxation).
 
-    ``force_defer`` sets exact defer values (chaining probe).
-    ``fix_jobs`` + ``continuous=True`` is the shadow-price LP.
+    Integer variables: ``jobs1`` and ``new_formulas`` only; ``jobs2`` is
+    continuous (W2 preview). ``force_defer`` sets exact defer values
+    (chaining probe). ``hard_w1_slots`` fixes the W1 slot slack at 0.
     """
     recipes = list(layer.recipes)
     n_r = len(recipes)
@@ -451,6 +497,8 @@ def _solve_mip(
             j2 = float(jobs2_fix.get(recipe.key, 0))
             bounds[i_jobs1 + i] = (j1, j1)
             bounds[i_jobs2 + i] = (j2, j2)
+    if hard_w1_slots:
+        bounds[i_slack1] = (0.0, 0.0)
 
     a_rows: list[list[float]] = []
     b_rows: list[float] = []
@@ -599,27 +647,38 @@ def _solve_mip(
     if continuous or fix_jobs is not None:
         integrality = None
     else:
+        # W2 jobs stay continuous (preview); only W1 jobs and formula buys
+        # are integer — halves the MIP vs making both windows integer.
         integrality = np.zeros(n_vars, dtype=int)
         for i in range(n_r):
             integrality[i_jobs1 + i] = 1
-            integrality[i_jobs2 + i] = 1
             integrality[i_new + i] = 1
 
     kwargs = dict(c=c, A_ub=a_ub, b_ub=b_ub, bounds=bounds, method="highs")
     if integrality is not None:
         kwargs["integrality"] = integrality
-        kwargs["options"] = {"time_limit": _MIP_TIME_LIMIT_SECONDS}
+        kwargs["options"] = {
+            "time_limit": _MIP_TIME_LIMIT_SECONDS,
+            "mip_rel_gap": _MIP_REL_GAP,
+        }
     result = linprog(**kwargs)
+    msg = result.message.strip() if result.message else ""
+    time_limit = (
+        "time limit" in msg.lower()
+        or "Time limit" in msg
+        or "Status 13" in msg
+    )
 
     empty = _RawSolve(
         runs1={r.key: 0.0 for r in recipes}, runs2={r.key: 0.0 for r in recipes},
-        jobs1={r.key: 0 for r in recipes}, jobs2={r.key: 0 for r in recipes},
+        jobs1={r.key: 0 for r in recipes}, jobs2={r.key: 0.0 for r in recipes},
         new_formulas={r.key: 0 for r in recipes},
         buy1={}, buy2={}, short1={}, short2={}, defer={},
         slot_slack1=0.0, slot_slack2=0.0,
         objective=0.0, success=False,
-        message=result.message.strip() if result.message else "solve failed",
+        message=msg or "solve failed",
         slot1_row=slot1_row, formula_rows=formula_rows,
+        mip_time_limit=time_limit,
     )
     if result.x is None:
         return empty
@@ -645,11 +704,14 @@ def _solve_mip(
     if ineq is not None and getattr(ineq, "marginals", None) is not None:
         marg = np.asarray(ineq.marginals, dtype=float)
 
+    # Accept a feasible incumbent after a time limit as usable (with warning).
+    usable = bool(result.success) or (time_limit and result.x is not None)
+
     return _RawSolve(
         runs1={recipes[i].key: max(0.0, float(x[i_runs1 + i])) for i in range(n_r)},
         runs2={recipes[i].key: max(0.0, float(x[i_runs2 + i])) for i in range(n_r)},
         jobs1={recipes[i].key: max(0, int(round(float(x[i_jobs1 + i])))) for i in range(n_r)},
-        jobs2={recipes[i].key: max(0, int(round(float(x[i_jobs2 + i])))) for i in range(n_r)},
+        jobs2={recipes[i].key: max(0.0, float(x[i_jobs2 + i])) for i in range(n_r)},
         new_formulas={
             recipes[i].key: max(0, int(round(float(x[i_new + i])))) for i in range(n_r)
         },
@@ -661,11 +723,12 @@ def _solve_mip(
         slot_slack1=max(0.0, float(x[i_slack1])),
         slot_slack2=max(0.0, float(x[i_slack2])),
         objective=float(result.fun) if result.x is not None else 0.0,
-        success=bool(result.success),
-        message=result.message.strip() if result.message else "",
+        success=usable,
+        message=msg,
         slot1_row=slot1_row,
         formula_rows=formula_rows,
         ineq_marginals=marg,
+        mip_time_limit=time_limit,
     )
 
 
@@ -711,12 +774,20 @@ def _round_w1(
             dropped = runs - cap_runs
             runs_i[key] = cap_runs
             out_qty = float(recipe.outputs.get(recipe.product_type_id, 0.0)) * dropped
-            if out_qty > _EPS:
+            if out_qty > _EPS and recipe.product_type_id not in window.manual_build:
                 buy[recipe.product_type_id] = buy.get(recipe.product_type_id, 0.0) + out_qty
             warnings.append(
                 f"Rounded W1 runs for {key} exceeded fit x jobs; "
-                f"dropped {dropped} run(s) and bought {out_qty:g} units"
+                f"dropped {dropped} run(s)"
+                + (
+                    f" and bought {out_qty:g} units"
+                    if recipe.product_type_id not in window.manual_build
+                    else " (manual Build: not bought)"
+                )
             )
+    # Manual Build: never buy that product, even if the MIP left a buy1.
+    for m in window.manual_build:
+        buy.pop(m, None)
     return runs_i, jobs_i, buy, warnings
 
 
@@ -801,21 +872,20 @@ def _objective_of(
 
 
 def _shadow_prices(
-    layer: ReactionLayer, window: ReactionWindow, raw: _RawSolve,
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    raw: _RawSolve,
+    base_lp: _RawSolve,
 ) -> tuple[float, dict[str, float]]:
     """Shadow prices from the continuous LP relaxation (plan section 3).
 
-    One LP gives every formula-row dual; a second LP at ``slots1 + 1``
-    gives the slot value as an objective drop (the slot-row dual of an
-    LP with jobs fixed at the MIP solution is zero, because those jobs
-    cannot rise). No per-recipe probe MIP.
-
-    Formula value is the W1 formula-row dual, or the amortised purchase
-    price when the MIP buys that formula (buying was cheaper than the
-    dual of one more owned original).
+    ``base_lp`` is the free continuous solve (also the chaining buy-now
+    baseline). A second LP at ``slots1 + 1`` gives the slot value as an
+    objective drop. Formula value is the sum of both window formula-row
+    duals (one owned formula relaxes both rows), or the amortised purchase
+    price when the MIP buys that formula.
     """
     allow = {p for p, c in window.chain_choice.items() if c == "wait"}
-    base_lp = _solve_mip(layer, window, allow_defer=allow, continuous=True)
     more_lp = _solve_mip(
         layer, window, allow_defer=allow, continuous=True,
         slots1_override=int(window.slots) + 1,
@@ -838,7 +908,7 @@ def _shadow_prices(
         if marg is not None:
             d1 = max(0.0, -float(marg[r1])) if 0 <= r1 < len(marg) else 0.0
             d2 = max(0.0, -float(marg[r2])) if 0 <= r2 < len(marg) else 0.0
-            dual = d1 if d1 >= d2 else d2
+            dual = d1 + d2
         if bought and purchase is not None:
             formula_shadows[key] = purchase
             continue
@@ -850,19 +920,37 @@ def _shadow_prices(
     return slot_shadow, formula_shadows
 
 
+def _merge_buy1(
+    rounded_buy: Mapping[int, float],
+    recomputed: Mapping[int, float],
+) -> dict[int, float]:
+    """Keep MIP buy1 that feeds W2, and any W1 needs after rounding."""
+    out: dict[int, float] = {}
+    for m in set(rounded_buy) | set(recomputed):
+        qty = max(float(rounded_buy.get(m, 0.0)), float(recomputed.get(m, 0.0)))
+        if qty > _EPS:
+            out[m] = qty
+    return out
+
+
 def _postprocess(
     layer: ReactionLayer,
     window: ReactionWindow,
     raw: _RawSolve,
 ) -> tuple[dict[str, int], dict[str, int], dict[int, float], dict[str, int],
            dict[int, float], float, float, list[str]]:
-    """Round W1, rebuild buy1 / new_formulas / unmet; return pieces for cost."""
-    runs1, jobs1, buy1, round_warnings = _round_w1(layer, window, raw)
-    buy1 = _recompute_buy1(layer, window, runs1, raw.defer)
+    """Round W1, merge buy1 / new_formulas / unmet; return pieces for cost."""
+    runs1, jobs1, buy_rounded, round_warnings = _round_w1(layer, window, raw)
+    recomputed = _recompute_buy1(layer, window, runs1, raw.defer)
+    # Preserve MIP purchases that feed W2 inputs (finding 1.5.4).
+    buy1 = _merge_buy1(buy_rounded, recomputed)
     new_f: dict[str, int] = {}
     for recipe in layer.recipes:
+        j2 = float(raw.jobs2.get(recipe.key, 0.0))
         need = max(0, jobs1.get(recipe.key, 0) - recipe.owned_formulas)
-        need = max(need, max(0, raw.jobs2.get(recipe.key, 0) - recipe.owned_formulas))
+        # Formulas for W2 jobs are bought now (D11, 2026-10-27).
+        need = max(need, max(0, int(math.ceil(j2 - _TOL)) - recipe.owned_formulas))
+        need = max(need, int(raw.new_formulas.get(recipe.key, 0)))
         if need > 0 and recipe.formula_price is not None:
             new_f[recipe.key] = need
     jobs_used = sum(jobs1.values())
@@ -885,7 +973,7 @@ def _postprocess(
             if gap > _EPS:
                 unmet[p] = max(unmet.get(p, 0.0), gap)
     warnings = list(round_warnings)
-    if not raw.success and raw.message:
+    if not raw.success and raw.message and not raw.mip_time_limit:
         warnings.append(f"Solver: {raw.message}")
     if slot_slack1 > _EPS or raw.slot_slack1 > _EPS:
         if any(
@@ -894,24 +982,65 @@ def _postprocess(
         ):
             warnings.append("Manual Build exceeds reaction slot capacity in W1")
         else:
+            # Should be rare after hard-slot re-solve; still surface it.
             warnings.append("Reaction jobs exceed W1 slot capacity")
     for p, qty in unmet.items():
         warnings.append(f"Unmet W1 demand for type {p}: {qty:g} units")
     return runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings
 
 
+def _w1_cost_of(
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    runs1: Mapping[str, float],
+    new_formulas: Mapping[str, int],
+    buy1: Mapping[int, float],
+) -> float:
+    """Rounded W1 plan cost: fees, purchases (incl. W2 feeds), formulas."""
+    payback = max(window.formula_payback_cycles, _EPS)
+    by_key = {r.key: r for r in layer.recipes}
+    total = 0.0
+    for key, n in runs1.items():
+        total += by_key[key].fee_per_run * n
+    for key, n_new in new_formulas.items():
+        price = by_key[key].formula_price
+        if price is not None and n_new:
+            total += float(price) * n_new / payback
+    for m, qty in buy1.items():
+        if m in window.prices:
+            total += float(window.prices[m]) * qty
+    return total
+
+
+def _w2_preview_cost_of(
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    runs2: Mapping[str, float],
+    buy2: Mapping[int, float],
+) -> float:
+    by_key = {r.key: r for r in layer.recipes}
+    total = 0.0
+    for key, n in runs2.items():
+        total += by_key[key].fee_per_run * n
+    for m, qty in buy2.items():
+        if m in window.prices:
+            total += float(window.prices[m]) * qty
+    return total
+
+
 def _finalize(
     layer: ReactionLayer,
     window: ReactionWindow,
     raw: _RawSolve,
+    *,
+    base_lp: _RawSolve,
 ) -> ReactionPlan:
     runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings = _postprocess(
         layer, window, raw,
     )
-    total = _objective_of(
-        layer, window, runs1, raw.runs2, new_f, buy1, raw.buy2,
-        unmet, raw.short2, slot_slack1, slot_slack2,
-    )
+    w1_cost = _w1_cost_of(layer, window, runs1, new_f, buy1)
+    w2_cost = _w2_preview_cost_of(layer, window, raw.runs2, raw.buy2)
+    total = w1_cost + w2_cost
 
     allocations = []
     for recipe in layer.recipes:
@@ -934,19 +1063,20 @@ def _finalize(
 
     preview_recipes = []
     for recipe in layer.recipes:
-        n_jobs = raw.jobs2.get(recipe.key, 0)
+        n_jobs_f = float(raw.jobs2.get(recipe.key, 0.0))
         n_runs = float(raw.runs2.get(recipe.key, 0.0))
-        if n_jobs <= 0 and n_runs <= _EPS:
+        if n_jobs_f <= _EPS and n_runs <= _EPS:
             continue
         units = {
             m: float(qty) * n_runs for m, qty in recipe.outputs.items() if n_runs > _EPS
         }
+        n_jobs_disp = int(round(n_jobs_f)) if n_jobs_f > _EPS else 0
         preview_recipes.append(RecipeAllocation(
             recipe_key=recipe.key,
             product_type_id=recipe.product_type_id,
-            jobs=n_jobs,
+            jobs=n_jobs_disp,
             runs=n_runs,
-            runs_per_job=(n_runs / n_jobs) if n_jobs else 0.0,
+            runs_per_job=(n_runs / n_jobs_f) if n_jobs_f > _EPS else 0.0,
             units=units,
             formulas_to_buy=0,
         ))
@@ -956,7 +1086,7 @@ def _finalize(
         jobs_used=float(sum(raw.jobs2.values())),
     )
 
-    slot_shadow, formula_shadows = _shadow_prices(layer, window, raw)
+    slot_shadow, formula_shadows = _shadow_prices(layer, window, raw, base_lp)
 
     return ReactionPlan(
         recipes=tuple(allocations),
@@ -970,6 +1100,8 @@ def _finalize(
         slots=window.slots,
         next_window=next_window,
         deferred=dict(raw.defer),
+        w1_cost=w1_cost,
+        w2_preview_cost=w2_cost,
     )
 
 
@@ -977,11 +1109,15 @@ def _chaining_comparisons(
     layer: ReactionLayer,
     window: ReactionWindow,
     plan: ReactionPlan,
+    *,
+    base_lp: _RawSolve,
 ) -> tuple[ChainingComparison, ...]:
-    """D10: for products whose W1 demand needs bought reaction inputs (or
-    the product itself is bought and it has reaction-layer inputs), compare
-    buy-now against allowing full defer to W2. Leaf products that only take
-    moon goo are skipped - waiting cannot free a chaining decision."""
+    """D10: compare buy-now vs wait on the same continuous LP basis.
+
+    ``buy_now_cost`` is ``base_lp.objective``; wait forces full defer.
+    ``isk_saved_by_waiting = max(0, buy_now - wait)`` — defer only relaxes
+    the model, so waiting cannot cost more on this basis.
+    """
     by_key = {r.key: r for r in layer.recipes}
     bought_reaction = {
         m for m, qty in plan.buy.items()
@@ -1046,12 +1182,9 @@ def _chaining_comparisons(
         if short_inputs:
             affected[product_id] = short_inputs
 
-    buy_now_cost = plan.total_cost
+    buy_now_cost = float(base_lp.objective) if base_lp.success else plan.total_cost
     comparisons: list[ChainingComparison] = []
     for product_id, short_ids in sorted(affected.items()):
-        # Continuous LP probe: same defer bound as a MIP wait solve, ~100x
-        # faster. Needed so a 60-product layer stays under the 5 s target
-        # (one MIP per product would be ~2 s each).
         wait_raw = _solve_mip(
             layer, window,
             allow_defer={product_id},
@@ -1059,6 +1192,7 @@ def _chaining_comparisons(
             continuous=True,
         )
         wait_cost = float(wait_raw.objective) if wait_raw.success else buy_now_cost
+        saved = max(0.0, buy_now_cost - wait_cost)
         units = float(window.demand.get(product_id, 0.0))
         preferred = window.chain_choice.get(product_id, "buy")
         if preferred not in ("buy", "wait"):
@@ -1067,7 +1201,7 @@ def _chaining_comparisons(
             product_type_id=product_id,
             buy_now_cost=buy_now_cost,
             wait_cost=wait_cost,
-            isk_saved_by_waiting=buy_now_cost - wait_cost,
+            isk_saved_by_waiting=saved,
             units_delayed=units,
             preferred=preferred,
             short_input_ids=tuple(sorted(short_ids)),
