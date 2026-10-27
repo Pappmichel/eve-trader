@@ -74,6 +74,7 @@ describe('ReactionCapacitySettingsSection', () => {
       slots_free: 17,
       slots_busy_w2: 0,
       slots_free_w2: 20,
+      window_anchor: null,
       window_next: null,
       cycle_days: 13,
       capacity_slot_days: 221,
@@ -81,15 +82,18 @@ describe('ReactionCapacitySettingsSection', () => {
     })
     renderSection()
     expect(screen.getByText('Reaction capacity')).toBeInTheDocument()
+    expect(screen.getByText('Max job duration (days)')).toBeInTheDocument()
     expect(screen.getByTestId('reaction-capacity-enabled')).toBeInTheDocument()
     expect(await screen.findByTestId('reaction-capacity-status')).toHaveTextContent(/Derived slots: 20/)
     expect(screen.getByTestId('reaction-capacity-status')).toHaveTextContent(/Busy at window: 3/)
+    expect(screen.getByTestId('reaction-capacity-status')).toHaveTextContent(/Effective next/)
   })
 
   it('toggles the enabled switch through set()', async () => {
     vi.mocked(productionApi.reactionCapacityStatus).mockResolvedValue({
       derived_slots: 10, slot_override: null, slots_total: 10, slots_busy: 0,
-      slots_free: 10, slots_busy_w2: 0, slots_free_w2: 10, window_next: null,
+      slots_free: 10, slots_busy_w2: 0, slots_free_w2: 10,
+      window_anchor: null, window_next: null,
       cycle_days: 13, capacity_slot_days: 130, enabled: false,
     })
     const set = vi.fn()

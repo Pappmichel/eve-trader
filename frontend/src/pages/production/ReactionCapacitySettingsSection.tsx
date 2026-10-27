@@ -4,24 +4,7 @@ import { NumberInput, SimpleGrid, Switch, Text, TextInput, Title } from '@mantin
 
 import { productionApi } from '../../api/client'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
-
-/** Convert a stored ISO datetime to the value shape ``datetime-local`` expects. */
-function toLocalInputValue(iso: string | null): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-/** Convert a ``datetime-local`` value back to an ISO string (or null). */
-function fromLocalInputValue(local: string): string | null {
-  const trimmed = local.trim()
-  if (!trimmed) return null
-  const d = new Date(trimmed)
-  if (Number.isNaN(d.getTime())) return null
-  return d.toISOString()
-}
+import { formatEveUtc, fromUtcInputValue, toUtcInputValue } from './reactionWindowTime'
 
 type SetFn = <K extends keyof ProductionSettingsT>(key: K, value: ProductionSettingsT[K]) => void
 
@@ -53,8 +36,10 @@ export function ReactionCapacitySettingsSection({
       free: status.slots_free,
       capacity: status.capacity_slot_days,
       cycle: status.cycle_days,
+      windowAnchor: status.window_anchor ?? form.reaction_window_next,
+      windowNext: status.window_next,
     }
-  }, [status])
+  }, [status, form.reaction_window_next])
 
   return (
     <>
@@ -73,8 +58,8 @@ export function ReactionCapacitySettingsSection({
       />
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput
-          label="Cycle length (days)"
-          description="Runs that fit in one job = floor(cycle days × 86400 / seconds per run)."
+          label="Max job duration (days)"
+          description="Time from the window start until the reaction output must be done (for hauling). Runs per job = floor(duration × 86400 / seconds per run)."
           value={form.reaction_cycle_days}
           min={1}
           max={30}
@@ -92,16 +77,16 @@ export function ReactionCapacitySettingsSection({
           onChange={(v) => set('reaction_slot_override', v === '' ? null : Number(v))}
         />
         <TextInput
-          label="Next window"
-          description="ISO datetime of the next reaction start window. Empty = no date (incoming jobs use the live stock split)."
+          label="Next window (anchor)"
+          description="EVE time (UTC). Stored as an anchor; the effective next window rolls forward by the interval once it has passed."
           type="datetime-local"
-          value={toLocalInputValue(form.reaction_window_next)}
+          value={toUtcInputValue(form.reaction_window_next)}
           data-testid="reaction-window-next"
-          onChange={(e) => set('reaction_window_next', fromLocalInputValue(e.currentTarget.value))}
+          onChange={(e) => set('reaction_window_next', fromUtcInputValue(e.currentTarget.value))}
         />
         <NumberInput
           label="Window interval (days)"
-          description="Gap from this window to the next (W2 preview)."
+          description="Gap from one window to the next (also rolls a past anchor forward)."
           value={form.reaction_window_interval_days}
           min={1}
           step={1}
@@ -132,7 +117,9 @@ export function ReactionCapacitySettingsSection({
           Derived slots: {statusLines.derived}
           {' · '}Busy at window: {statusLines.busy}
           {' · '}Free: {statusLines.free}
-          {' · '}Capacity: {Number(statusLines.capacity).toFixed(1)} slot-days / {statusLines.cycle}-day cycle
+          {' · '}Capacity: {Number(statusLines.capacity).toFixed(1)} slot-days / {statusLines.cycle}-day max job
+          {' · '}Anchor: {formatEveUtc(statusLines.windowAnchor)}
+          {' · '}Effective next: {formatEveUtc(statusLines.windowNext)}
         </Text>
       )}
     </>

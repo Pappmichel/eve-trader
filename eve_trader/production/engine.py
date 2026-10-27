@@ -2812,21 +2812,8 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
 
 def _load_reaction_chain_choices() -> dict[int, str]:
-<<<<<<< HEAD
-    """Per-product buy/wait choices (D10).
-
-    TODO(phase 4): call ``storage.load_reaction_chain_choices()`` directly
-    once that helper lands (no broad except — real DB errors must surface).
-    Until then an absent helper means no stored choices (= default buy).
-    """
-    loader = getattr(storage, "load_reaction_chain_choices", None)
-    if loader is None:
-        return {}
-    return dict(loader())
-=======
     """Per-product buy/wait choices (D10). Missing = buy."""
     return storage.load_reaction_chain_choices()
->>>>>>> a8ddf9f (Add reaction capacity settings, chaining storage, and Build List UI (phase 4))
 
 
 @storage.with_batch_session()

@@ -134,7 +134,7 @@ export default function AssetPlanList() {
             <Text>{row.type_name}</Text>
             {row.recipe_source === 'alchemy' && (
               <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
-                Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
+                ⚗ Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
               </Text>
             )}
             {row.activity === 'Reaction' && (row.formulas_owned != null || row.recipe_source != null) && (

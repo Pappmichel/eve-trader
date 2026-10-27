@@ -1,33 +1,28 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Badge, Collapse, Group, SegmentedControl, Stack, Table, Text, Title, UnstyledButton } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
 import type { ReactionCapacityBlock, ReactionChainingRow } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
+import { formatEveUtc } from './reactionWindowTime'
 
-function formatWindow(iso: string | null): string {
-  if (!iso) return 'not set'
-  try {
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return iso
-    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
-  } catch {
-    return iso
-  }
+function recipeKindLabel(kind: string | undefined, key: string): string {
+  if (kind === 'alchemy' || key.startsWith('alchemy:')) return 'alchemy'
+  return 'normal'
 }
 
-function recipeLabel(key: string): string {
-  return key.startsWith('alchemy:') ? 'alchemy' : 'normal'
+function productLabel(typeName: string | null | undefined, typeId: number): string {
+  return typeName?.trim() ? typeName : String(typeId)
 }
 
 export function ReactionCapacityHeader({ block }: { block: ReactionCapacityBlock }) {
-  const formulas = Object.entries(block.formula_shadow_prices)
+  const formulasCount = block.formulas_to_buy_count ?? 0
+  const formulasIsk = block.formulas_to_buy_isk ?? 0
   return (
     <Stack gap={4}>
       <Text size="sm">
-        Reactions: {block.slots_used} of {block.slots_available} jobs, window {formatWindow(block.window_next)}
+        Reactions: {block.slots_used} of {block.slots_available} jobs, window {formatEveUtc(block.window_next)}
       </Text>
       <Group gap="md">
         <Text size="xs" c="dimmed">
@@ -36,9 +31,9 @@ export function ReactionCapacityHeader({ block }: { block: ReactionCapacityBlock
         <Text size="xs" c="dimmed">
           Component slot-days / cycle: {block.component_slot_days.toFixed(1)}
         </Text>
-        {formulas.length > 0 && (
-          <Text size="xs" c="dimmed">
-            Formulas worth buying: {formulas.length}
+        {formulasCount > 0 && (
+          <Text size="xs" c="dimmed" data-testid="formulas-to-buy">
+            Formulas to buy: {formulasCount} ({isk(formulasIsk)})
           </Text>
         )}
       </Group>
@@ -50,16 +45,6 @@ export function ReactionCapacityHeader({ block }: { block: ReactionCapacityBlock
 }
 
 function ChainingTable({ rows }: { rows: ReactionChainingRow[] }) {
-  const { data: names } = useQuery({
-    queryKey: ['production', 'item-names'],
-    queryFn: productionApi.itemNameOptions,
-    staleTime: Infinity,
-  })
-  const nameById = useMemo(() => {
-    const m = new Map<number, string>()
-    for (const n of names ?? []) m.set(n.type_id, n.type_name)
-    return m
-  }, [names])
   const setChoice = useAction(
     'Reaction chaining choice',
     async ({ typeId, choice }: { typeId: number; choice: 'buy' | 'wait' }) => {
@@ -88,7 +73,7 @@ function ChainingTable({ rows }: { rows: ReactionChainingRow[] }) {
         <Table.Tbody>
           {rows.map((row) => (
             <Table.Tr key={row.product_type_id}>
-              <Table.Td>{nameById.get(row.product_type_id) ?? row.product_type_id}</Table.Td>
+              <Table.Td>{productLabel(row.type_name, row.product_type_id)}</Table.Td>
               <Table.Td>{isk(row.isk_saved_by_waiting)}</Table.Td>
               <Table.Td>{qty(row.units_delayed)}</Table.Td>
               <Table.Td>
@@ -124,13 +109,14 @@ function NextWindowPreview({ block }: { block: ReactionCapacityBlock }) {
       <UnstyledButton onClick={() => setOpen((o) => !o)}>
         <Text size="sm" c="dimmed">{open ? '▾' : '▸'} Next-window preview (forecast)</Text>
       </UnstyledButton>
-      <Collapse in={open}>
+      <Collapse expanded={open}>
         <Text size="xs" c="dimmed" mb="xs">
           W2 jobs used: {nw.jobs_used.toFixed(1)}. Purchases and jobs below are a forecast, not this window&apos;s plan.
         </Text>
         <Table striped withTableBorder>
           <Table.Thead>
             <Table.Tr>
+              <Table.Th>Product</Table.Th>
               <Table.Th>Recipe</Table.Th>
               <Table.Th>Jobs</Table.Th>
               <Table.Th>Runs</Table.Th>
@@ -140,7 +126,8 @@ function NextWindowPreview({ block }: { block: ReactionCapacityBlock }) {
           <Table.Tbody>
             {nw.recipes.map((r) => (
               <Table.Tr key={r.recipe_key}>
-                <Table.Td>{r.recipe_key} ({recipeLabel(r.recipe_key)})</Table.Td>
+                <Table.Td>{productLabel(r.type_name, r.product_type_id)}</Table.Td>
+                <Table.Td>{recipeKindLabel(r.recipe_kind, r.recipe_key)}</Table.Td>
                 <Table.Td>{r.jobs}</Table.Td>
                 <Table.Td>{r.runs.toFixed(1)}</Table.Td>
                 <Table.Td>{r.runs_per_job.toFixed(1)}</Table.Td>

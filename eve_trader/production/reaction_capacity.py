@@ -148,6 +148,8 @@ class ReactionPlan:
     deferred: Mapping[int, float] = field(default_factory=dict)
     w1_cost: float = 0.0                # fees + buy1 (incl. W2 feeds) + formulas
     w2_preview_cost: float = 0.0        # W2 fees + buy2
+    formulas_to_buy_count: int = 0
+    formulas_to_buy_isk: float = 0.0    # purchase price × count (not amortised)
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,56 @@ def _parse_window_dt(value: Optional[str]) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def effective_window_datetime(
+    anchor: Optional[str],
+    interval_days: float,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[datetime]:
+    """First ``anchor + k × interval`` (k >= 0) that is not in the past.
+
+    The stored ``reaction_window_next`` is a one-off anchor; once it has
+    passed, callers must use this effective next window so busy-slot and
+    incoming splits stay correct. ``interval_days <= 0`` returns the anchor
+    unchanged (no roll). ``now`` is injectable for tests (UTC).
+    """
+    dt = _parse_window_dt(anchor)
+    if dt is None:
+        return None
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if dt >= now:
+        return dt
+    if interval_days <= 0:
+        return dt
+    step = timedelta(days=float(interval_days))
+    step_s = step.total_seconds()
+    if step_s <= 0:
+        return dt
+    elapsed_s = (now - dt).total_seconds()
+    k = int(math.ceil(elapsed_s / step_s - _TOL))
+    k = max(0, k)
+    candidate = dt + k * step
+    if candidate < now:
+        candidate = dt + (k + 1) * step
+    return candidate
+
+
+def effective_window_iso(
+    anchor: Optional[str],
+    interval_days: float,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    """ISO form of :func:`effective_window_datetime`, or None."""
+    dt = effective_window_datetime(anchor, interval_days, now=now)
+    if dt is None:
+        return None
+    return dt.isoformat()
 
 
 def reaction_slot_totals(
@@ -223,7 +275,9 @@ def window_state(
     """
     rows = character_rows if character_rows is not None else jobs_mod.character_slot_overview()
     total, _free_now = reaction_slot_totals(cfg, character_rows=rows)
-    window_dt = _parse_window_dt(cfg.reaction_window_next)
+    window_dt = effective_window_datetime(
+        cfg.reaction_window_next, float(cfg.reaction_window_interval_days),
+    )
     if window_dt is None:
         return WindowState(
             total_slots=total, busy_slots=0, free_slots=total,
@@ -352,6 +406,8 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         deferred=plan.deferred,
         w1_cost=plan.w1_cost,
         w2_preview_cost=plan.w2_preview_cost,
+        formulas_to_buy_count=plan.formulas_to_buy_count,
+        formulas_to_buy_isk=plan.formulas_to_buy_isk,
     )
 
 
@@ -1100,6 +1156,14 @@ def _finalize(
 
     slot_shadow, formula_shadows = _shadow_prices(layer, window, raw, base_lp)
 
+    by_key = {r.key: r for r in layer.recipes}
+    formulas_count = sum(int(n) for n in new_f.values() if n)
+    formulas_isk = 0.0
+    for key, n_new in new_f.items():
+        price = by_key[key].formula_price
+        if price is not None and n_new:
+            formulas_isk += float(price) * int(n_new)
+
     return ReactionPlan(
         recipes=tuple(allocations),
         buy=buy1,
@@ -1114,6 +1178,8 @@ def _finalize(
         deferred=dict(raw.defer),
         w1_cost=w1_cost,
         w2_preview_cost=w2_cost,
+        formulas_to_buy_count=formulas_count,
+        formulas_to_buy_isk=formulas_isk,
     )
 
 
@@ -1438,7 +1504,9 @@ def build_window(
     on_hand: dict[int, float] = {}
     incoming1: dict[int, float] = dict(state.incoming1_from_jobs)
     incoming2: dict[int, float] = dict(state.incoming2_from_jobs)
-    window_dt = _parse_window_dt(cfg.reaction_window_next)
+    window_dt = effective_window_datetime(
+        cfg.reaction_window_next, float(cfg.reaction_window_interval_days),
+    )
 
     for mid in material_ids:
         activity, bp = classify_activity(mid)
@@ -1609,6 +1677,22 @@ def apply_plan_to_build_buy(
     return build_runs, buy_totals, capacity_reason, isk_given_up, recipe_by_build_key
 
 
+def _recipe_kind(recipe_key: str) -> str:
+    return "alchemy" if recipe_key.startswith("alchemy:") else "normal"
+
+
+def _type_names(type_ids: Sequence[int]) -> dict[int, str]:
+    """SDE type_id → name for the payload; missing ids omitted."""
+    if not type_ids:
+        return {}
+    rows = storage.get_sde_types_bulk(list(type_ids))
+    out: dict[int, str] = {}
+    for tid, row in rows.items():
+        if row is not None and len(row) > 2 and row[2]:
+            out[int(tid)] = str(row[2])
+    return out
+
+
 def plan_payload(
     plan: ReactionPlan,
     state: WindowState,
@@ -1617,10 +1701,22 @@ def plan_payload(
     component_slot_days: float = 0.0,
 ) -> dict[str, Any]:
     """JSON-friendly ``reaction_capacity`` block for both plan results."""
+    type_ids: set[int] = set()
+    for a in plan.recipes:
+        type_ids.add(a.product_type_id)
+    for c in plan.chaining:
+        type_ids.add(c.product_type_id)
+    if plan.next_window is not None:
+        for a in plan.next_window.recipes:
+            type_ids.add(a.product_type_id)
+    names = _type_names(sorted(type_ids))
+
     by_recipe = [
         {
             "recipe_key": a.recipe_key,
             "product_type_id": a.product_type_id,
+            "type_name": names.get(a.product_type_id),
+            "recipe_kind": _recipe_kind(a.recipe_key),
             "jobs": a.jobs,
             "runs": a.runs,
             "runs_per_job": a.runs_per_job,
@@ -1632,6 +1728,7 @@ def plan_payload(
     chaining = [
         {
             "product_type_id": c.product_type_id,
+            "type_name": names.get(c.product_type_id),
             "buy_now_cost": c.buy_now_cost,
             "wait_cost": c.wait_cost,
             "isk_saved_by_waiting": c.isk_saved_by_waiting,
@@ -1651,6 +1748,8 @@ def plan_payload(
                 {
                     "recipe_key": a.recipe_key,
                     "product_type_id": a.product_type_id,
+                    "type_name": names.get(a.product_type_id),
+                    "recipe_kind": _recipe_kind(a.recipe_key),
                     "jobs": a.jobs,
                     "runs": a.runs,
                     "runs_per_job": a.runs_per_job,
@@ -1659,16 +1758,23 @@ def plan_payload(
                 for a in nw.recipes
             ],
         }
+    window_anchor = cfg.reaction_window_next
+    window_effective = effective_window_iso(
+        window_anchor, float(cfg.reaction_window_interval_days),
+    )
     return {
         "slots_used": plan.jobs_used,
         "slots_available": plan.slots,
         "total_slots": state.total_slots,
         "busy_slots": state.busy_slots,
-        "window_next": cfg.reaction_window_next,
+        "window_anchor": window_anchor,
+        "window_next": window_effective,
         "w1_cost": plan.w1_cost,
         "w2_preview_cost": plan.w2_preview_cost,
         "slot_shadow_price": plan.slot_shadow_price,
         "formula_shadow_prices": dict(plan.formula_shadow_prices),
+        "formulas_to_buy_count": plan.formulas_to_buy_count,
+        "formulas_to_buy_isk": plan.formulas_to_buy_isk,
         "chaining": chaining,
         "warnings": list(plan.warnings),
         "recipes": by_recipe,

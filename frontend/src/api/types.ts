@@ -398,6 +398,7 @@ export interface BuildJobEntry {
 
 export interface ReactionChainingRow {
   product_type_id: number
+  type_name?: string | null
   buy_now_cost: number
   wait_cost: number
   isk_saved_by_waiting: number
@@ -406,39 +407,39 @@ export interface ReactionChainingRow {
   short_input_ids: number[]
 }
 
+export interface ReactionCapacityRecipeRow {
+  recipe_key: string
+  product_type_id: number
+  type_name?: string | null
+  recipe_kind?: 'normal' | 'alchemy' | string
+  jobs: number
+  runs: number
+  runs_per_job: number
+  formulas_to_buy: number
+}
+
 export interface ReactionCapacityBlock {
   slots_used: number
   slots_available: number
   total_slots: number
   busy_slots: number
+  window_anchor?: string | null
   window_next: string | null
   w1_cost: number
   w2_preview_cost: number
   slot_shadow_price: number
   formula_shadow_prices: Record<string, number>
+  formulas_to_buy_count?: number
+  formulas_to_buy_isk?: number
   chaining: ReactionChainingRow[]
   warnings: string[]
-  recipes: Array<{
-    recipe_key: string
-    product_type_id: number
-    jobs: number
-    runs: number
-    runs_per_job: number
-    formulas_to_buy: number
-  }>
+  recipes: ReactionCapacityRecipeRow[]
   buy: Record<string, number>
   deferred: Record<string, number>
   next_window: {
     jobs_used: number
     buy: Record<string, number>
-    recipes: Array<{
-      recipe_key: string
-      product_type_id: number
-      jobs: number
-      runs: number
-      runs_per_job: number
-      formulas_to_buy: number
-    }>
+    recipes: ReactionCapacityRecipeRow[]
   } | null
   component_slot_days: number
   cycle_days: number
@@ -452,6 +453,7 @@ export interface ReactionCapacityStatus {
   slots_free: number
   slots_busy_w2: number
   slots_free_w2: number
+  window_anchor?: string | null
   window_next: string | null
   cycle_days: number
   capacity_slot_days: number

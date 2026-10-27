@@ -34,24 +34,24 @@ from .models import (
     SpecialOrder, UnlistedStockRow,
 )
 
+# Capacity fields whose real change marks cached plans stale (phase 4).
+# Compared against live cfg before save_tenant_config_overrides mutates it —
+# POST /settings dumps every field, so a plain freight edit still carries
+# reaction_* keys.
+_REACTION_CAPACITY_KEYS = (
+    "reaction_capacity_enabled",
+    "reaction_cycle_days",
+    "reaction_slot_override",
+    "reaction_window_next",
+    "reaction_window_interval_days",
+    "reaction_formula_payback_cycles",
+    "reaction_next_window_demand_factor",
+)
+
 
 def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Persists `updates` to tenant_settings and applies them to the live
     PRODUCTION_CONFIG immediately (see Settings tab)."""
-    # Snapshot before save: POST /settings dumps every field, so a plain
-    # freight-cost edit still carries reaction_* keys - only a real change
-    # of a capacity field (docs/REACTION_CAPACITY_PLAN.md phase 4) marks plans
-    # stale. Compare against live cfg before save_tenant_config_overrides
-    # mutates it.
-    _REACTION_CAPACITY_KEYS = (
-        "reaction_capacity_enabled",
-        "reaction_cycle_days",
-        "reaction_slot_override",
-        "reaction_window_next",
-        "reaction_window_interval_days",
-        "reaction_formula_payback_cycles",
-        "reaction_next_window_demand_factor",
-    )
     reaction_capacity_changed = any(
         key in updates and getattr(cfg, key) != updates[key]
         for key in _REACTION_CAPACITY_KEYS
@@ -99,6 +99,10 @@ def do_get_reaction_capacity_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -
     from . import reaction_capacity
     state = reaction_capacity.window_state(cfg)
     total, _free_now = reaction_capacity.reaction_slot_totals(cfg)
+    window_anchor = cfg.reaction_window_next
+    window_effective = reaction_capacity.effective_window_iso(
+        window_anchor, float(cfg.reaction_window_interval_days),
+    )
     return {
         "derived_slots": total if cfg.reaction_slot_override is None else None,
         "slot_override": cfg.reaction_slot_override,
@@ -107,7 +111,8 @@ def do_get_reaction_capacity_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -
         "slots_free": state.free_slots,
         "slots_busy_w2": state.busy_slots_w2,
         "slots_free_w2": state.free_slots_w2,
-        "window_next": cfg.reaction_window_next,
+        "window_anchor": window_anchor,
+        "window_next": window_effective,
         "cycle_days": cfg.reaction_cycle_days,
         "capacity_slot_days": state.free_slots * float(cfg.reaction_cycle_days),
         "enabled": cfg.reaction_capacity_enabled,
