@@ -1,7 +1,9 @@
 # Reaction capacity plan
 
-Status: decisions confirmed and reviewed against production data
-(2026-10-27), not implemented yet.
+Status: phases 0 and 1 implemented in PR #330 (not merged). The phase 2 run
+against production data (section 1.4) found that the single-window model never
+builds intermediates; the model is now two windows (D13, D14, section 3).
+Phase 1b fixes the solver before wiring.
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
@@ -73,6 +75,37 @@ characters, none excluded: 192 manufacturing and 199 reaction slots.
 - The plan is a backlog (183 of 371 targets below target), not a per-cycle
   rate.
 
+### 1.4 Phase 2 prototype run (production, 2026-10-27, PR #330 solver)
+The reactions started on 2026-10-24 (ending 2026-11-03 to 11-07) already cover
+today's shortfall and alchemy has been switched off, so the run used the full
+steady-state demand of the stock targets (`_base_runs`), with the alchemy
+recipes offered anyway: 60 products, 77 recipes (17 alchemy), 199 slots.
+
+| | A: real stock | B: empty reaction stock |
+|---|---|---|
+| One MIP | 1.2 s | 1.3 s |
+| Full `solve` (shadow prices + chaining probes) | 101 s | 144 s |
+| Jobs used | 138 / 199 | 199 / 199 |
+| Bought | 0.8 B | 110 B |
+| Intermediate jobs (Hexite, Ferrofluid, ...) | **0** | **0** |
+| Slot shadow price | 0 | 20.7 M |
+
+Findings:
+1. **Intermediates are never reacted.** With no chaining inside a window,
+   nothing in the single-window model needs an intermediate made now: in A,
+   61 slots stay idle; in B, about 60 B of intermediates are bought (Neo
+   Mercurite 15.9 B, Ferrofluid 11.4 B, ...) while no intermediate job runs.
+   The model would buy every intermediate forever. Fixed by D13.
+2. **"Wait" is not waiting.** Fixing the input buy to 0 makes the solver buy
+   the composite itself, so the comparison always shows "buy". Fixed by D13
+   (wait = run in the next window) and D14.
+3. **Too slow for a plan refresh**: one probe MIP per recipe for the formula
+   shadow prices plus one per chaining comparison.
+4. **Formula shadow prices are always empty**: the base cost uses the trimmed
+   formula purchases, the probes the untrimmed ones, so a probe never looks
+   cheaper.
+5. Busy slots also count jobs of characters excluded from planning.
+
 ### 1.3 Gaps
 1. **No capacity constraint.** The planner builds every reaction whose unit
    cost beats the buy price, however many slot-days that takes.
@@ -105,9 +138,11 @@ characters, none excluded: 192 manufacturing and 199 reaction slots.
 | D7 | Switch | `reaction_capacity_enabled`, default off. Off = exactly today's behaviour. |
 | D8 | Components | Shown, not constrained (564 of about 2,500 slot-days today). The plan reports component slot-days per cycle so a constraint can be added later. |
 | D9 | Overbuild buffer (`component_overbuild`) | Counts as real demand: the buffer on reaction products competes for slot time like any other demand and is bought when it does not fit. |
-| D10 | Chaining (gap 7) | Shown per case: for every reaction whose inputs are short at the window the planner computes both options, "buy the missing inputs now and run it fully" and "run what the stock allows, the rest waits one cycle", with the extra ISK of buying next to the delay. The user picks per product; the default is the cheaper option. |
+| D10 | Chaining (gap 7) | Shown per case: for every product whose demand this window needs bought reaction inputs (or the product itself), the planner shows "buy now" against "wait": the demand moves to the next window and is made there from this window's intermediates. Shown: ISK saved by waiting and the units delayed by one cycle. The user picks per product. **Default is buy (D1)**; revised 2026-10-27, because waiting has no cost of its own and "the cheaper option" would always wait. |
 | D11 | Formulas (gap 5) | Owned originals limit jobs per recipe. The optimizer may also buy formulas at their buy price when that pays back within `reaction_formula_payback_cycles` cycles (setting, default 1). Bought formulas appear on the Buy List. |
 | D12 | Window date (gap 8) | New settings `reaction_window_next` (date and time of the next window) and `reaction_window_interval_days` (default 14). Slots whose reaction jobs end after the window start are not free; output of jobs ending before it counts as on hand. Without a date set, all slots count as free. |
+| D13 | Intermediates for the next window (finding 1.4.1) | The solver plans two windows together: the next one (W1, executed and shown as the plan) and the one after (W2, a preview). Intermediates reacted in W1 can feed composites in W2. Only W1's jobs and purchases are acted on; the next plan run starts again from the stock it finds. |
+| D14 | Demand of the second window | W2 demand = W1 demand x `reaction_next_window_demand_factor` (setting, default 1.0 = the next cycle needs the same again). What is built too much stays in stock and is netted by the next plan. |
 
 ## 3. Model
 
@@ -140,45 +175,72 @@ so the integer part is small.
   `cost_memo`, the planner's best buy-or-build unit cost.
 - `slots`: D2 minus busy slots (D12).
 
-**Variables:** `runs[r] >= 0` (continuous), `jobs[r]` (integer >= 0),
-`new_formulas[r]` (integer >= 0), `buy[m] >= 0`, `short[p] >= 0` (unmet
-demand, penalised; keeps the model feasible).
+**Two windows (D13).** `w = 1` is the next window, `w = 2` the one after.
+`incoming1[m]` is output of running jobs that ends after W1 starts but before
+W2 starts; `incoming2[m]` ends later. `demand1[p]` is `demand[p]`;
+`demand2[p] = demand[p] x reaction_next_window_demand_factor` (D14).
+
+**Variables** per window `w`: `runs[r,w] >= 0` (continuous), `jobs[r,w]`
+(integer >= 0), `buy[m,w] >= 0`; once: `new_formulas[r]` (integer >= 0, owned
+from W1 on); per product `defer[p] >= 0` (W1 demand moved to W2, only for
+products set to "wait", D10) and `short[p,w] >= 0` (penalised, keeps the model
+feasible).
+
+Stock at the start of W2, per material (a linear expression, not a variable):
+`S2[m] = on_hand[m] + buy[m,1] + incoming1[m] + sum_r (out[r,m] - in[r,m]) * runs[r,1]
+- (demand1[m] - defer[m])`.
 
 **Constraints:**
-- Inputs at the window: `sum_r in[r,m] * runs[r] <= on_hand[m] + buy[m]`.
-  Output of this window cannot feed this window (gap 7).
-- Coverage per reaction product `p`:
-  `sum_r out[r,p] * runs[r] + on_hand[p] + incoming[p] + buy[p] + short[p]
-  >= demand[p] + sum_r in[r,p] * runs[r]`.
-  Units consumed by this window come out of `on_hand`; units produced refill
-  stock for the next window and for components.
-- Job size: `runs[r] <= fit[r] * jobs[r]`.
-- Slots: `sum_r jobs[r] <= slots`.
-- Formulas: `jobs[r] <= formulas[r] + new_formulas[r]`.
-- Manual Buy: `jobs[r] = 0` for that product's recipes. Manual Build:
-  `buy[p] = 0`; if the slots cannot cover it, a penalised slack on the slot
+- Inputs at W1: `sum_r in[r,m] * runs[r,1] <= on_hand[m] + buy[m,1]`.
+  Output of a window cannot feed the same window (gap 7).
+- Coverage of W1 demand: `S2[p] + short[p,1] >= 0` for every reaction product,
+  i.e. the W1 demand (minus deferred units) is covered by stock, W1 output,
+  output of jobs ending before W2, and purchases.
+- Inputs at W2: `sum_r in[r,m] * runs[r,2] <= S2[m] + buy[m,2]`. This is
+  where W1 intermediates feed W2 composites.
+- Coverage of W2 demand: `S2[p] + incoming2[p] + buy[p,2] + sum_r (out[r,p]
+  - in[r,p]) * runs[r,2] + short[p,2] >= demand2[p] + defer[p]`.
+- `defer[p] <= demand1[p]`, and `defer[p] = 0` unless the product's choice is
+  "wait" (D10 default buy).
+- Job size: `runs[r,w] <= fit[r] * jobs[r,w]`.
+- Slots: `sum_r jobs[r,1] <= slots1`, `sum_r jobs[r,2] <= slots2`
+  (`slots2` = all slots of non-excluded characters minus jobs still running
+  at W2 start, or the override).
+- Formulas: `jobs[r,w] <= formulas[r] + new_formulas[r]` for both windows.
+- Manual Buy: `jobs[r,w] = 0` for that product's recipes. Manual Build:
+  `buy[p,w] = 0`; if the slots cannot cover it, a penalised slack on the slot
   row keeps the model feasible and the result carries a warning.
-- No price: `buy[m] = 0`.
+- No price: `buy[m,w] = 0`.
 
-**Objective:** minimise `sum_m price[m] * buy[m] + sum_r fee[r] * runs[r] +
+**Objective:** minimise, over both windows,
+`sum_{m,w} price[m] * buy[m,w] + sum_{r,w} fee[r] * runs[r,w] +
 sum_r price[formula r] * new_formulas[r] / reaction_formula_payback_cycles +
-penalty * sum_p short[p]`.
+penalty * sum short`. W2 is costed in full: W1 runs whose output only pays off
+in W2 (intermediates) compete fairly with buying in W2.
 
 With spare slots the solver fills them with alchemy where alchemy is cheaper
 per unit, so the per-product split falls out of the solve (D5). Runs are
-rounded up per recipe afterwards; if that breaks a job's `fit`, the job count
-grows by one only when a slot is free, otherwise the run is dropped and the
-unit bought.
+rounded up per recipe for W1 only (W2 stays a continuous preview); if that
+breaks a job's `fit`, the job count grows by one only when a slot is free,
+otherwise the run is dropped and the unit bought.
 
-**Chaining comparison (D10).** For every reaction whose input constraint is
-binding, a second solve fixes `buy[m] = 0` for its short reaction inputs
-("wait"). The result shows both totals; the user's choice per product is
-stored (`reaction_chain_choice`, per tenant and type, `buy` / `wait`, missing
-= the cheaper one) and fed back as that fixed bound.
+**Chaining comparison (D10).** For each product whose W1 demand needs bought
+reaction inputs or a bought product, a second solve allows `defer[p] =
+demand1[p]` for that product. The difference in total cost is the ISK saved by
+waiting; the deferred units are the delay. The user's choice per product is
+stored (`reaction_chain_choice`, per tenant and type, `buy` / `wait`, missing =
+buy) and sets the `defer` bound in the main solve.
 
-**Output:** per recipe the jobs, runs per job, units and formulas to buy;
-per product the units bought; plus the slot and formula shadow prices (ISK
-one more slot or one more formula of that kind would save per window).
+**Shadow prices** come from the duals of the LP relaxation with the integer
+jobs fixed at their solved values (one extra LP solve, not one probe per
+recipe): the slot row gives the value of one more slot, each formula row the
+value of one more formula of that kind (zero when buying one is cheaper, then
+the formula price / payback). Runtime target: the whole `solve` under 5 s on
+the production layer.
+
+**Output:** W1 per recipe the jobs, runs per job, units and formulas to buy;
+per product the units bought now; the W2 preview (jobs per recipe, purchases);
+the slot and formula shadow prices; the chaining table.
 
 ## 4. Integration
 
@@ -213,7 +275,8 @@ matters.
 
 - Production Settings: `reaction_capacity_enabled`, `reaction_cycle_days`,
   `reaction_slot_override`, `reaction_window_next`,
-  `reaction_window_interval_days`, `reaction_formula_payback_cycles`; next to
+  `reaction_window_interval_days`, `reaction_formula_payback_cycles`,
+  `reaction_next_window_demand_factor`; next to
   them the derived slots, the slots busy at the window and the resulting
   capacity.
 - Build List header: "Reactions: 197 of 199 jobs, window 2026-11-03 18:00",
@@ -222,17 +285,19 @@ matters.
   formulas owned / needed.
 - Buy List rows that exist only because of the capacity get a "capacity" badge
   with the ISK given up; formula purchases get their own badge.
-- Chaining table (D10): per affected reaction the two options with ISK and
-  delay, and the choice.
+- Chaining table (D10): per affected product "buy now" vs "wait", the ISK
+  waiting saves, the units delayed by one cycle, and the choice (default buy).
+- Next-window preview (D13): the W2 jobs and purchases, marked as a forecast.
 - Component slot-days per cycle shown next to the reaction figure (D8).
 
 ## 6. Phases
 
 | Phase | Content | Done when |
 |---|---|---|
-| 0 | Fix gap 4: alchemy rows get their unit cost (per "Unrefined X" unit, from `_alchemy_unit_cost`) and margin. Independent of the switch. | Build List shows cost for alchemy rows; test. |
-| 1 | `reaction_capacity.py`: formula counting, window inputs and the pure solver (`solve(layer, window) -> plan`), no planner wiring. Unit tests on small synthetic layers: spare slots -> all built, alchemy added; tight slots -> weakest per slot-day bought first; formula limit and formula purchase; job size `fit`; no chaining inside a window; byproduct credit; manual overrides; busy slots; infeasible -> warning. | Tests green. |
-| 2 | Solver prototype run on the server against the real layer (read-only script) before wiring, to check runtime and that the result is plausible (jobs, purchases, shadow prices). | Numbers reported to the user. |
+| 0 | Fix gap 4: alchemy rows get their unit cost (per "Unrefined X" unit, from `_alchemy_unit_cost`) and margin. Independent of the switch. | Build List shows cost for alchemy rows; test. **Done (PR #330).** |
+| 1 | `reaction_capacity.py`: formula counting, window inputs and the pure solver (`solve(layer, window) -> plan`), no planner wiring. Unit tests on small synthetic layers: spare slots -> all built, alchemy added; tight slots -> weakest per slot-day bought first; formula limit and formula purchase; job size `fit`; no chaining inside a window; byproduct credit; manual overrides; busy slots; infeasible -> warning. | Tests green. **Done (PR #330), single-window model.** |
+| 2 | Solver prototype run on the server against the real layer (read-only script) before wiring, to check runtime and that the result is plausible (jobs, purchases, shadow prices). | **Done 2026-10-27, section 1.4.** |
+| 1b | Rework the solver to the two-window model (D13, D14) and the revised D10; shadow prices from LP duals; formula shadow fix; busy slots skip excluded characters; `reaction_next_window_demand_factor` setting. Tests: an intermediate with spare W1 slots is reacted for W2 composites; "wait" runs the composite in W2 instead of buying; default buy; shadow prices non-empty and match a brute-force probe on a small layer; runtime guard on a 60-product synthetic layer. Then re-run the phase 2 script. | Tests green; production re-run shows intermediate jobs and `solve` under 5 s. |
 | 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. |
 | 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check. |
 | 5 | Test server with a copy of the production stock targets: compare jobs, purchases and total cost with today's plan; then enable on production. | Numbers reported to the user. |
