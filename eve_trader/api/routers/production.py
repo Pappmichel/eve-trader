@@ -968,6 +968,7 @@ def refresh_production():
         "invention_list": plan["invention_list"],
         "adjusted_prices_available": plan["adjusted_prices_available"],
         "order_progress": plan.get("order_progress", []),
+        "reaction_capacity": plan.get("reaction_capacity"),
         "stale": False,
     }
     return {
