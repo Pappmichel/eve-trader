@@ -6111,6 +6111,81 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int,
     return (best_me, best_te)
 
 
+def load_reaction_chain_choices() -> dict[int, str]:
+    """Per-product buy/wait choices for the reaction capacity solver (D10).
+    Missing type_id = buy (the default)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, choice FROM reaction_chain_choice").fetchall()
+    return {int(r[0]): str(r[1]) for r in rows}
+
+
+def upsert_reaction_chain_choice(type_id: int, choice: str) -> None:
+    """Set a product's chaining choice to ``buy`` or ``wait``."""
+    if choice not in ("buy", "wait"):
+        raise ValueError(f"choice must be 'buy' or 'wait', got {choice!r}")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO reaction_chain_choice (type_id, choice, updated_at) "
+            "VALUES (?, ?, now()) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET "
+            "choice=excluded.choice, updated_at=excluded.updated_at",
+            (int(type_id), choice),
+        )
+
+
+def delete_reaction_chain_choice(type_id: int) -> None:
+    """Remove a stored choice (back to the default buy)."""
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM reaction_chain_choice WHERE type_id = ?",
+            (int(type_id),),
+        )
+
+
+def count_owned_formula_originals(
+    type_ids: Optional[list[int]] = None,
+    owner_character_ids: Optional[list[int]] = None,
+    owner_corporation_ids: Optional[list[int]] = None,
+) -> dict[int, int]:
+    """Owned Reaction Formula *originals* per blueprint type_id, across
+    character_blueprints + corp_blueprints (docs/REACTION_CAPACITY_PLAN.md
+    D11). ESI's quantity field: -1 = one original, a positive value = that
+    many stacked unresearched originals, -2 = a copy (never counts). Copies
+    cannot start a reaction job; only originals can.
+
+    `type_ids` None (or empty) returns every type that has at least one
+    original; otherwise only the requested ids (missing ones are omitted,
+    not zeroed - callers that need a zero default do `counts.get(id, 0)`).
+    Owner filters: see `_owner_id_clause`, both None is unfiltered."""
+    counts: dict[int, int] = {}
+    id_filter = ""
+    id_filter_params: tuple = ()
+    if type_ids:
+        placeholders = ",".join("?" * len(type_ids))
+        id_filter = f" AND type_id IN ({placeholders})"
+        id_filter_params = tuple(int(t) for t in type_ids)
+    with connect() as conn:
+        for table in ("character_blueprints", "corp_blueprints"):
+            owner_clause, owner_params = _owner_id_clause(
+                table, owner_character_ids, owner_corporation_ids)
+            # Parentheses required: AND binds tighter than OR, so without
+            # them `quantity = -1 OR quantity > 0 AND type_id IN (...)`
+            # would keep every -1 original regardless of the type filter.
+            rows = conn.execute(
+                f"SELECT type_id, quantity FROM {table} "
+                f"WHERE (quantity = -1 OR quantity > 0)"
+                f"{id_filter}{owner_clause}",
+                (*id_filter_params, *owner_params),
+            ).fetchall()
+            for type_id, quantity in rows:
+                qty = int(quantity)
+                add = 1 if qty == -1 else qty
+                tid = int(type_id)
+                counts[tid] = counts.get(tid, 0) + add
+    return counts
+
+
 def available_blueprint_copies(type_id: int, location_id: Optional[int],
                                 tables: tuple[str, str] = ("character_blueprints", "corp_blueprints"),
                                 owner_character_ids: Optional[list[int]] = None,

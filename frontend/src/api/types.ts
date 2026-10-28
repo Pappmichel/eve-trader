@@ -369,6 +369,9 @@ export interface BuyListEntry {
   hub_name?: string | null
   category: string | null
   special_order_quantity?: number
+  /** Reaction capacity solver: "capacity" | "formula" | null */
+  capacity_reason?: string | null
+  isk_given_up?: number | null
 }
 
 export interface BuildJobEntry {
@@ -387,6 +390,74 @@ export interface BuildJobEntry {
   margin: number | null
   recipe_source: string | null
   special_order_quantity?: number
+  reaction_jobs?: number | null
+  reaction_runs_per_job?: number | null
+  formulas_owned?: number | null
+  formulas_needed?: number | null
+}
+
+export interface ReactionChainingRow {
+  product_type_id: number
+  type_name?: string | null
+  buy_now_cost: number
+  wait_cost: number
+  isk_saved_by_waiting: number
+  units_delayed: number
+  preferred: 'buy' | 'wait'
+  short_input_ids: number[]
+}
+
+export interface ReactionCapacityRecipeRow {
+  recipe_key: string
+  product_type_id: number
+  type_name?: string | null
+  recipe_kind?: 'normal' | 'alchemy' | string
+  jobs: number
+  runs: number
+  runs_per_job: number
+  formulas_to_buy: number
+}
+
+export interface ReactionCapacityBlock {
+  slots_used: number
+  slots_available: number
+  total_slots: number
+  busy_slots: number
+  window_anchor?: string | null
+  window_next: string | null
+  w1_cost: number
+  w2_preview_cost: number
+  slot_shadow_price: number
+  formula_shadow_prices: Record<string, number>
+  formulas_to_buy_count?: number
+  formulas_to_buy_isk?: number
+  chaining: ReactionChainingRow[]
+  warnings: string[]
+  recipes: ReactionCapacityRecipeRow[]
+  buy: Record<string, number>
+  deferred: Record<string, number>
+  next_window: {
+    jobs_used: number
+    buy: Record<string, number>
+    recipes: ReactionCapacityRecipeRow[]
+  } | null
+  component_slot_days: number
+  cycle_days: number
+}
+
+export interface ReactionCapacityStatus {
+  derived_slots: number | null
+  slot_override: number | null
+  slots_total: number
+  slots_busy: number
+  slots_free: number
+  slots_busy_w2: number
+  slots_free_w2: number
+  window_anchor?: string | null
+  window_next: string | null
+  cycle_days: number
+  capacity_slot_days: number
+  enabled: boolean
 }
 
 // Which plan the Logistics material tables read: the whole Build List, or
@@ -499,6 +570,8 @@ export interface AssetPlanJob {
   special_order_ids?: string[]
   // Aligned with special_order_ids; "" for an order without a note.
   special_order_notes?: string[]
+  formulas_owned?: number | null
+  formulas_needed?: number | null
 }
 
 export interface AssetPlan {
@@ -507,6 +580,7 @@ export interface AssetPlan {
   // True once an integrated special order changed after this plan was
   // computed (still shown, with a recompute hint).
   stale?: boolean
+  reaction_capacity?: ReactionCapacityBlock
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -862,6 +936,7 @@ export interface ProductionPlan {
   order_progress?: OrderProgressRow[]
   // See AssetPlan.stale.
   stale?: boolean
+  reaction_capacity?: ReactionCapacityBlock
 }
 
 export interface OrderProgressRow {
@@ -906,6 +981,13 @@ export interface ProductionSettings {
   manufacturing_cost_index_override: number | null
   asset_plan_slot_days_target: number | null
   alchemy_reactions_enabled: boolean
+  reaction_capacity_enabled: boolean
+  reaction_cycle_days: number
+  reaction_slot_override: number | null
+  reaction_window_next: string | null
+  reaction_window_interval_days: number
+  reaction_formula_payback_cycles: number
+  reaction_next_window_demand_factor: number
 }
 
 export interface ProducerCharacter {

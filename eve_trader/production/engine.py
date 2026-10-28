@@ -136,7 +136,7 @@ from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
-from . import dynamic_targets, invention, pricing
+from . import dynamic_targets, invention, pricing, reaction_capacity
 from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -1576,6 +1576,8 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                  cost_indices: Optional[CostIndices] = None,
                  alchemy_memo: Optional[dict[int, bool]] = None,
                  byproduct_stock: Optional[dict[int, float]] = None,
+                 stop_at_reactions: bool = False,
+                 reaction_demand: Optional[dict[int, float]] = None,
                  ) -> tuple[dict[int, float], dict[tuple[int, int, int], int]]:
     """Resolves every stock target's `seed_missing` quantity into buy_totals
     ({type_id: qty}) and build_runs ({(blueprint_id, activity_id, product_type_id): runs}),
@@ -1692,7 +1694,17 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
     provisional first pass established this plan will produce (see
     plan_production's two-pass call). Unlike `_current_stock` it is *not*
     suppressed by `ignore_current_stock`: it isn't stock sitting in a hangar
-    today, it's output this very plan generates."""
+    today, it's output this very plan generates.
+
+    `stop_at_reactions` (docs/REACTION_CAPACITY_PLAN.md phase 3): when True,
+    Reaction products are not expanded. Their **gross** pooled target
+    (overbuild-buffered, *before* stock netting) is accumulated into
+    `reaction_demand` at the next_level netting step — the capacity solver
+    owns all on_hand/incoming netting for reaction products (live bug:
+    netting here and again in ``build_window`` zeroed demand). A manual Buy
+    still nets and goes to buy_totals (D6). Stock netting above the boundary
+    is unchanged. Default False preserves today's behaviour exactly when
+    `reaction_capacity_enabled` is off."""
     effective_overbuild = cfg.component_overbuild if component_overbuild is None else component_overbuild
     cost_indices = cost_indices or {}
     alchemy_memo = alchemy_memo or {}
@@ -1708,6 +1720,16 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
 
         for type_id, quantity in jobs_this_level.items():
             activity, bp = classify_activity(type_id)
+            # Capacity solver owns every Reaction product except a manual Buy
+            # (D6 / D7). Non-manual "Buy because cheaper" still goes to the
+            # solver so it can trade slot time against purchase cost (D4).
+            if stop_at_reactions and activity == "Reaction" and bp is not None:
+                if manual_overrides.get(type_id) == "Buy":
+                    buy_totals[type_id] = buy_totals.get(type_id, 0) + quantity
+                elif reaction_demand is not None:
+                    reaction_demand[type_id] = reaction_demand.get(type_id, 0.0) + quantity
+                continue
+
             decision = _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth)
             if decision == "Buy" or bp is None:
                 buy_totals[type_id] = buy_totals.get(type_id, 0) + quantity
@@ -1749,7 +1771,14 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                 continue
             if gross_demand is not None:
                 gross_demand[material_id] = gross_demand.get(material_id, 0.0) + target
-            _, m_bp = classify_activity(material_id)
+            m_activity, m_bp = classify_activity(material_id)
+            # Capacity boundary: solver nets reaction stock once. Pass the
+            # gross target and do not touch stock_used (except manual Buy).
+            if (stop_at_reactions and reaction_demand is not None
+                    and m_activity == "Reaction" and m_bp is not None
+                    and manual_overrides.get(material_id) != "Buy"):
+                reaction_demand[material_id] = reaction_demand.get(material_id, 0.0) + target
+                continue
             on_hand = 0.0 if ignore_current_stock else _current_stock(material_id, manual_stock, cfg, m_bp)
             available = max(0.0, on_hand + byproduct_stock.get(material_id, 0.0) - stock_used.get(material_id, 0.0))
             consumed = min(target, available)
@@ -2007,6 +2036,25 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
         exclude_intake_at_location_id=cfg.home_location_id)
 
 
+def _reaction_capacity_gross_demand(
+    type_id: int, backup_stock: float, home_market_stock: Optional[float],
+    jita_market_stock: Optional[float], missing: float, cfg: ProductionConfig,
+) -> float:
+    """Demand the capacity solver should see for a top-level Reaction stock
+    target: the shortfall *before* physical stock netting.
+
+    ``missing`` already netted hangar + incoming jobs via ``_total_missing``;
+    ``build_window`` nets ``on_hand`` / ``incoming`` again. Passing ``missing``
+    therefore double-counts stock and can wipe the layer (live production
+    finding, phase 3). Recompute with ``current_stock=0`` so the solver nets
+    once. Listing coverage (home/Jita sell orders) stays inside
+    ``_total_missing`` either way. Returns 0 when ``missing`` is already 0
+    (nothing to build or buy)."""
+    if missing <= 0:
+        return 0.0
+    return _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, 0.0, cfg)
+
+
 def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optional[float],
                     jita_market_stock: Optional[float], current_stock: float, cfg: ProductionConfig) -> float:
     """Total shortfall to build/buy for a stock target: backup_stock (an
@@ -2211,10 +2259,15 @@ class _PlanContext:
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
             self.adjusted_prices_available = False
+        # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
+        self._reaction_solve_cache = None
 
 
 def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float],
-                     cfg: ProductionConfig, home: dict, jita: dict) -> list[BuyListEntry]:
+                     cfg: ProductionConfig, home: dict, jita: dict,
+                     capacity_reason: Optional[dict[int, str]] = None,
+                     isk_given_up: Optional[dict[int, Optional[float]]] = None,
+                     ) -> list[BuyListEntry]:
     """Turns buy_totals into BuyListEntry rows, sorted by total price desc.
     plan_production's buy_totals are _expand_all's manufacturing and reaction
     leaves plus the invention inputs merged afterwards; plan_special_order
@@ -2250,6 +2303,8 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
             total_price=(unit_price * quantity) if unit_price is not None else None,
             buy_from=buy_from,
             category=job_category(type_id) or category_names.get(storage.get_type_category(type_id)),
+            capacity_reason=(capacity_reason or {}).get(type_id),
+            isk_given_up=(isk_given_up or {}).get(type_id),
         ))
     buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
     return buy_list
@@ -2258,7 +2313,9 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
 def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: dict[int, Optional[float]],
                        t2_memo: dict[int, tuple[float, float, Optional[str]]],
                        cfg: ProductionConfig, home: dict,
-                       cost_indices: CostIndices, adjusted_prices: dict[int, float]) -> list[BuildJobEntry]:
+                       cost_indices: CostIndices, adjusted_prices: dict[int, float],
+                       reaction_meta: Optional[dict[tuple[int, int, int], dict]] = None,
+                       ) -> list[BuildJobEntry]:
     """Turns _expand_all's build_runs into BuildJobEntry rows, sorted by job
     time desc - factored out of plan_production, same reasoning as
     _build_buy_list above.
@@ -2272,8 +2329,13 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
 
     An alchemy-sourced row (recipe_source "alchemy", see BuildJobEntry) is
     already keyed by the "Unrefined X" intermediate and its own formula
-    blueprint - that's the job actually queued in EVE - so every field below
-    reads off the intermediate, not the target item it reprocesses into."""
+    blueprint - that's the job actually queued in EVE - so most fields below
+    read off the intermediate. unit_build_cost is the exception: cost_memo
+    only holds the *target* Reaction product (the id _unit_cost priced), so
+    an alchemy row derives its per-Unrefined-X unit cost from that target's
+    alchemy unit cost times the reprocess yield of one Unrefined batch
+    (docs/REACTION_CAPACITY_PLAN.md gap 4). Margin still uses the row's own
+    type_id against that unit cost, same as every other row."""
     alchemy_keys = _alchemy_build_run_keys(cost_indices) if cfg.alchemy_reactions_enabled else {}
     build_list = []
     for (blueprint_id, activity_id, product_type_id), runs in build_runs.items():
@@ -2291,17 +2353,35 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
         job_time = base_time * time_mult * runs
-        unit_cost = cost_memo.get(product_type_id)
+        alchemy_entry = alchemy_keys.get((blueprint_id, activity_id, product_type_id))
+        if alchemy_entry is not None:
+            # Per Unrefined X: alchemy's per-target-unit cost x how many
+            # target units one Unrefined batch recovers, divided by how many
+            # Unrefined X one run produces (almost always 1).
+            target_type_id, reprocessed = alchemy_entry
+            target_unit_cost = cost_memo.get(target_type_id)
+            target_yield = reprocessed.get(target_type_id, 0)
+            if target_unit_cost is not None and target_yield > 0 and product_qty:
+                unit_cost = target_unit_cost * target_yield / product_qty
+            else:
+                unit_cost = None
+        else:
+            unit_cost = cost_memo.get(product_type_id)
         materials = storage.get_blueprint_materials(blueprint_id, activity_id)
         eiv = sum(base_qty * adjusted_prices.get(material_id, 0.0) for material_id, base_qty in materials)
         job_cost = (eiv * job_cost_rate) / product_qty if product_qty else None
+        meta = (reaction_meta or {}).get((blueprint_id, activity_id, product_type_id)) or {}
         build_list.append(BuildJobEntry(
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
             job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
             tech_level=product_activity,
+            reaction_jobs=meta.get("reaction_jobs"),
+            reaction_runs_per_job=meta.get("reaction_runs_per_job"),
+            formulas_owned=meta.get("formulas_owned"),
+            formulas_needed=meta.get("formulas_needed"),
             job_category=job_category(product_type_id), job_cost=job_cost,
-            recipe_source="alchemy" if (blueprint_id, activity_id, product_type_id) in alchemy_keys else None,
+            recipe_source="alchemy" if alchemy_entry is not None else None,
             # GitHub issue #38: margin_home, not margin_jita - Production
             # sells only at C-J, never Jita (see CLAUDE.md), so the
             # Bauliste's own margin must be the real C-J one, not the
@@ -2554,7 +2634,13 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     skip_due_to_margin = True
 
             if not skip_due_to_margin:
-                target_seed[type_id] = missing
+                # Capacity mode: Reaction stock targets seed the pre-stock
+                # shortfall so the solver nets on_hand/incoming once.
+                if cfg.reaction_capacity_enabled and activity == "Reaction":
+                    target_seed[type_id] = _reaction_capacity_gross_demand(
+                        type_id, backup_stock, home_market_stock, jita_market_stock, missing, cfg)
+                else:
+                    target_seed[type_id] = missing
                 gross_demand[type_id] = gross_demand.get(type_id, 0.0) + (
                     backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0))
 
@@ -2588,31 +2674,98 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # (the overlay can only shrink demand, so a second round would at most
     # shave a little more off). Runs on the combined order + stock-target
     # seed.
+    #
+    # When reaction_capacity_enabled (docs/REACTION_CAPACITY_PLAN.md phase 3)
+    # the overlay comes from the solver's alchemy runs instead - the
+    # provisional expand would still build every reaction without a slot cap.
+    capacity_on = bool(cfg.reaction_capacity_enabled)
     byproduct_stock: dict[int, float] = {}
-    if any(alchemy_memo.values()):
-        combined_seed = dict(target_seed)
-        for type_id, qty in order_seed.items():
-            combined_seed[type_id] = combined_seed.get(type_id, 0.0) + qty
-        _, provisional_runs = _expand_all(combined_seed, cfg, home, jita, manual_overrides, cost_memo,
-                                           selected_decryptors, t2_memo, manual_stock, dict(stock_used), base_runs,
-                                           cost_indices=cost_indices, alchemy_memo=alchemy_memo)
-        byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
+    reaction_demand: dict[int, float] = {}
+    capacity_reason: dict[int, str] = {}
+    isk_given_up: dict[int, Optional[float]] = {}
+    reaction_meta: dict[tuple[int, int, int], dict] = {}
+    reaction_block: Optional[dict] = None
 
-    # Two passes over one stock ledger (D4): orders first with an empty
-    # base_runs, so nothing below order demand gets an overbuild buffer, then
-    # the stock targets with today's buffer against whatever stock is left.
-    order_buy, order_runs = _expand_all(order_seed, cfg, home, jita, manual_overrides, cost_memo,
-                                        selected_decryptors, t2_memo, manual_stock, stock_used, {},
-                                        gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
-                                        byproduct_stock=byproduct_stock)
-    buy_totals, build_runs = _expand_all(target_seed, cfg, home, jita, manual_overrides, cost_memo,
-                                          selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
-                                          gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
-                                          byproduct_stock=byproduct_stock)
-    for type_id, qty in order_buy.items():
-        buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
-    for key, runs in order_runs.items():
-        build_runs[key] = build_runs.get(key, 0) + runs
+    if capacity_on:
+        # Collect demand at the reaction boundary (stock netting above it
+        # unchanged). Solve once; byproduct overlay from the solution feeds
+        # the input walk so fuel/moon materials still plan as manufacturing.
+        order_buy, order_runs = _expand_all(
+            order_seed, cfg, home, jita, manual_overrides, cost_memo,
+            selected_decryptors, t2_memo, manual_stock, stock_used, {},
+            gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+            stop_at_reactions=True, reaction_demand=reaction_demand)
+        buy_totals, build_runs = _expand_all(
+            target_seed, cfg, home, jita, manual_overrides, cost_memo,
+            selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
+            gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+            stop_at_reactions=True, reaction_demand=reaction_demand)
+        for type_id, qty in order_buy.items():
+            buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
+        for key, runs in order_runs.items():
+            build_runs[key] = build_runs.get(key, 0) + runs
+
+        chain_choice = _load_reaction_chain_choices()
+        layer, _window, state, rplan = reaction_capacity.solve_cached(
+            ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice)
+        byproduct_stock = _alchemy_byproduct_stock(
+            reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
+
+        r_builds, r_buys, capacity_reason, isk_given_up, recipe_by_key = (
+            reaction_capacity.apply_plan_to_build_buy(
+                layer, rplan, cost_memo=cost_memo, home=home, jita=jita, cfg=cfg))
+        for key, runs in r_builds.items():
+            build_runs[key] = build_runs.get(key, 0) + runs
+            recipe = recipe_by_key.get(key)
+            if recipe is None:
+                continue
+            alloc = next((a for a in rplan.recipes if a.recipe_key == recipe.key), None)
+            reaction_meta[key] = {
+                "reaction_jobs": alloc.jobs if alloc else None,
+                "reaction_runs_per_job": alloc.runs_per_job if alloc else None,
+                "formulas_owned": recipe.owned_formulas,
+                "formulas_needed": (alloc.jobs if alloc else None),
+            }
+        for type_id, qty in r_buys.items():
+            buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
+
+        # Moon materials / fuel blocks consumed by W1 runs → normal walk.
+        input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
+        if input_seed:
+            input_buy, input_runs = _expand_all(
+                input_seed, cfg, home, jita, manual_overrides, cost_memo,
+                selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
+                gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+                byproduct_stock=byproduct_stock)
+            for type_id, qty in input_buy.items():
+                buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
+            for key, runs in input_runs.items():
+                build_runs[key] = build_runs.get(key, 0) + runs
+    else:
+        if any(alchemy_memo.values()):
+            combined_seed = dict(target_seed)
+            for type_id, qty in order_seed.items():
+                combined_seed[type_id] = combined_seed.get(type_id, 0.0) + qty
+            _, provisional_runs = _expand_all(combined_seed, cfg, home, jita, manual_overrides, cost_memo,
+                                               selected_decryptors, t2_memo, manual_stock, dict(stock_used), base_runs,
+                                               cost_indices=cost_indices, alchemy_memo=alchemy_memo)
+            byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
+
+        # Two passes over one stock ledger (D4): orders first with an empty
+        # base_runs, so nothing below order demand gets an overbuild buffer, then
+        # the stock targets with today's buffer against whatever stock is left.
+        order_buy, order_runs = _expand_all(order_seed, cfg, home, jita, manual_overrides, cost_memo,
+                                            selected_decryptors, t2_memo, manual_stock, stock_used, {},
+                                            gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+                                            byproduct_stock=byproduct_stock)
+        buy_totals, build_runs = _expand_all(target_seed, cfg, home, jita, manual_overrides, cost_memo,
+                                              selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
+                                              gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+                                              byproduct_stock=byproduct_stock)
+        for type_id, qty in order_buy.items():
+            buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
+        for key, runs in order_runs.items():
+            build_runs[key] = build_runs.get(key, 0) + runs
 
     # After _expand_all so stock_used already records manufacturing
     # consumption, and before _build_buy_list so Sorting's persisted pot
@@ -2622,9 +2775,23 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     _merge_invention_inputs_into_buy_totals(
         invention_list, buy_totals, gross_demand, stock_used, manual_stock, cfg)
 
-    buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
-    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
+    buy_list = _build_buy_list(
+        buy_totals, gross_demand, cfg, home, jita,
+        capacity_reason=capacity_reason or None,
+        isk_given_up=isk_given_up or None)
+    build_list = _build_build_list(
+        build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices,
+        reaction_meta=reaction_meta or None)
     _annotate_special_order_quantities(buy_list, build_list, order_buy, order_runs)
+
+    if capacity_on and reaction_block is None:
+        component_slot_days = sum(
+            (e.job_time_seconds / 86400.0)
+            for e in build_list
+            if e.job_category in ("Advanced Components", "Capital Components")
+        )
+        reaction_block = reaction_capacity.plan_payload(
+            rplan, state, cfg, component_slot_days=component_slot_days)
 
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
@@ -2636,9 +2803,17 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # Sorting tool means is specifically plan_production / do_refresh_production.
     storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
 
-    return {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
-            "adjusted_prices_available": ctx.adjusted_prices_available,
-            "order_progress": order_progress}
+    result = {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
+              "adjusted_prices_available": ctx.adjusted_prices_available,
+              "order_progress": order_progress}
+    if reaction_block is not None:
+        result["reaction_capacity"] = reaction_block
+    return result
+
+
+def _load_reaction_chain_choices() -> dict[int, str]:
+    """Per-product buy/wait choices (D10). Missing = buy."""
+    return storage.load_reaction_chain_choices()
 
 
 @storage.with_batch_session()
@@ -3306,12 +3481,18 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # makes for a top-level seed. Coverage = claimed / ordered.
     order_seed_jobs: dict[int, float] = {}
     for type_id, quantity in order_seed.items():
-        _, bp = classify_activity(type_id)
+        activity, bp = classify_activity(type_id)
         if bp is None:
             continue
         _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
                     adjusted_prices, 0, alchemy_memo)
-        if _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, bp) != "Build":
+        capacity_reaction = (
+            bool(cfg.reaction_capacity_enabled)
+            and activity == "Reaction"
+            and manual_overrides.get(type_id) != "Buy"
+        )
+        if not capacity_reaction and _buy_or_build_decision(
+                type_id, cfg, home, jita, manual_overrides, cost_memo, bp) != "Build":
             continue
         order_seed_jobs[type_id] = quantity
         ordered = ordered_by_type.get(type_id, 0.0)
@@ -3368,11 +3549,27 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
         if type_id in margin_excluded:
             continue
-        if _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, bp) != "Build":
+        # Capacity mode: Reaction stock targets go to the solver even when
+        # unit-cost buy would win (D4); only a manual Buy stays out.
+        capacity_reaction = (
+            bool(cfg.reaction_capacity_enabled)
+            and activity == "Reaction"
+            and manual_overrides.get(type_id) != "Buy"
+        )
+        if not capacity_reaction and _buy_or_build_decision(
+                type_id, cfg, home, jita, manual_overrides, cost_memo, bp) != "Build":
             continue
-        seed_jobs[type_id] = seed_jobs.get(type_id, 0.0) + missing
+        seed_qty = (
+            _reaction_capacity_gross_demand(
+                type_id, backup_stock, home_market_stock, jita_market_stock, missing, cfg)
+            if capacity_reaction else missing
+        )
+        seed_jobs[type_id] = seed_jobs.get(type_id, 0.0) + seed_qty
         total_target = backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0)
         seed_stock_coverage[type_id] = max(0.0, 1.0 - missing / total_target) if total_target > 0 else None
+
+    capacity_on = bool(cfg.reaction_capacity_enabled)
+    reaction_demand: dict[int, float] = {}
 
     def _run_rounds(
         seed: dict[int, float], pass_base_runs: dict[int, float], excluded: set[int],
@@ -3429,6 +3626,12 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             for type_id, quantity in jobs_this_level.items():
                 activity, bp = classify_activity(type_id)
                 if bp is None:
+                    continue
+                # Capacity solver owns Reaction products (same rule as
+                # _expand_all's stop_at_reactions); pool demand and skip.
+                if capacity_on and activity == "Reaction":
+                    if manual_overrides.get(type_id) != "Buy":
+                        reaction_demand[type_id] = reaction_demand.get(type_id, 0.0) + quantity
                     continue
                 # Same recipe substitution _expand_all makes (see its
                 # alchemy_memo docstring): classify_activity always returns the
@@ -3514,6 +3717,22 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         ))
 
                 buffered_total = buffered_demand.get(material_id, 0.0)
+                m_activity = classify_activity(material_id)[0]
+                # Capacity boundary: pass the gross buffered target to the
+                # solver and skip stock_used (solver nets on_hand/incoming).
+                if (capacity_on and m_activity == "Reaction" and m_bp is not None
+                        and manual_overrides.get(material_id) != "Buy"):
+                    if material_id not in excluded and buffered_total > 0:
+                        reaction_demand[material_id] = (
+                            reaction_demand.get(material_id, 0.0) + buffered_total)
+                        if material_id not in stock_coverage_by_id:
+                            stock_coverage_by_id[material_id] = (
+                                available / buffered_total if buffered_total > 0 else None)
+                        if origins is not None:
+                            for parent_type_id, _qty in claims:
+                                if parent_type_id in origins:
+                                    origins.setdefault(material_id, set()).update(origins[parent_type_id])
+                    continue
                 consumed = min(buffered_total, available)
                 stock_used[material_id] = stock_used.get(material_id, 0.0) + consumed
                 shortfall = buffered_total - consumed
@@ -3609,8 +3828,55 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # comparison - these rounds are not cheap (one stock read per material),
     # and an ordinary plan must still walk them exactly once. The
     # provisional run covers both the order and the stock-target pass.
+    #
+    # Capacity mode: byproducts come from the solver's alchemy runs instead
+    # (docs/REACTION_CAPACITY_PLAN.md phase 3) - the provisional walk would
+    # still queue uncapped reaction jobs.
     byproduct_stock: dict[int, float] = {}
-    if any(alchemy_memo.values()):
+    reaction_block: Optional[dict] = None
+
+    if capacity_on:
+        # Collect reaction demand the same way plan_production does so both
+        # lists share one solve (jobs + purchases agree).
+        collect_demand: dict[int, float] = {}
+        collect_used = dict(reserved)
+        for type_id, qty in target_reserved.items():
+            collect_used[type_id] = collect_used.get(type_id, 0.0) + qty
+        # All post-margin missing qty (not only Build decisions) - matches
+        # plan_production's target_seed so the solver sees the same demand.
+        target_seed_collect: dict[int, float] = {}
+        for type_id, _n, backup_stock, home_market_stock, jita_market_stock in ctx.stock_targets:
+            activity, bp = classify_activity(type_id)
+            if bp is None or type_id in margin_excluded:
+                continue
+            current_stock = max(0.0, _current_stock(type_id, manual_stock, cfg, bp) - reserved.get(type_id, 0.0))
+            missing = _total_missing(
+                type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
+            if missing <= 0:
+                continue
+            if activity == "Reaction" and manual_overrides.get(type_id) != "Buy":
+                target_seed_collect[type_id] = _reaction_capacity_gross_demand(
+                    type_id, backup_stock, home_market_stock, jita_market_stock, missing, cfg)
+            else:
+                target_seed_collect[type_id] = missing
+        _expand_all(
+            order_seed, cfg, home, jita, manual_overrides, cost_memo,
+            selected_decryptors, t2_memo, manual_stock, collect_used, {},
+            cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+            stop_at_reactions=True, reaction_demand=collect_demand)
+        _expand_all(
+            target_seed_collect, cfg, home, jita, manual_overrides, cost_memo,
+            selected_decryptors, t2_memo, manual_stock, collect_used, base_runs,
+            cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+            stop_at_reactions=True, reaction_demand=collect_demand)
+        reaction_demand.clear()
+        reaction_demand.update(collect_demand)
+        chain_choice = _load_reaction_chain_choices()
+        layer, _window, state, rplan = reaction_capacity.solve_cached(
+            ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice)
+        byproduct_stock = _alchemy_byproduct_stock(
+            reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
+    elif any(alchemy_memo.values()):
         provisional_jobs, _ = _plan_passes({})
         # _alchemy_byproduct_stock takes _expand_all's own build_runs shape;
         # rebuild it from the provisional AssetPlanJobs rather than teaching
@@ -3624,6 +3890,119 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
 
     jobs, order_top_level = _plan_passes(byproduct_stock)
+
+    if capacity_on:
+        # Inject W1 reaction jobs from the solution; readiness stays as today
+        # (inputs not on hand / not bought are blockers).
+        by_key = {r.key: r for r in layer.recipes}
+        input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
+        for alloc in rplan.recipes:
+            recipe = by_key.get(alloc.recipe_key)
+            if recipe is None or alloc.runs <= 1e-9:
+                continue
+            runs = int(math.ceil(alloc.runs - 1e-7))
+            if runs <= 0:
+                continue
+            job_key = recipe.queued_product_type_id
+            sde_type = storage.get_sde_type(job_key)
+            name = sde_type[2] if sde_type else str(job_key)
+            base_time = storage.get_blueprint_time(recipe.blueprint_type_id, ACTIVITY_REACTION) or 0
+            _, time_mult, _ = _activity_mods(
+                "Reaction", job_key, cfg, cost_indices, recipe.blueprint_type_id)
+            job_time = base_time * time_mult * runs
+            # Readiness: fraction of inputs on hand right now.
+            min_frac = 1.0
+            blockers: list[AssetPlanBlocker] = []
+            for mid, per_run in recipe.inputs.items():
+                needed = float(per_run) * runs
+                if needed <= 0:
+                    continue
+                on_hand = _stock_on_hand(mid, manual_stock, cfg)
+                covered = min(needed, on_hand)
+                frac = covered / needed if needed > 0 else 1.0
+                if frac < min_frac:
+                    min_frac = frac
+                if covered + 1e-9 < needed:
+                    sde_m = storage.get_sde_type(mid)
+                    blockers.append(AssetPlanBlocker(
+                        type_id=mid,
+                        type_name=sde_m[2] if sde_m else str(mid),
+                        needed=needed, covered=covered,
+                    ))
+            ready = int(math.floor(runs * min_frac))
+            out_qty = float(recipe.outputs.get(recipe.product_type_id, 0.0)) or 1.0
+            runs_per_job = max(1, int(round(alloc.runs_per_job))) if alloc.runs_per_job > 0 else 1
+            # Recommend only as many jobs as can start now; formulas_needed
+            # stays the full solved job count (owned originals for the plan).
+            def _ready_slots(ready_runs: int) -> int:
+                if ready_runs <= 0 or runs_per_job <= 0:
+                    return 0
+                return int(math.ceil(ready_runs / runs_per_job))
+            existing = jobs.get(job_key)
+            if existing is None:
+                jobs[job_key] = AssetPlanJob(
+                    type_id=job_key, type_name=name,
+                    blueprint_type_id=recipe.blueprint_type_id,
+                    activity="Reaction", quantity=runs * out_qty, job_runs=runs,
+                    runs_ready_now=ready, job_time_seconds=job_time,
+                    unit_build_cost=cost_memo.get(recipe.product_type_id),
+                    tech_level=classify_activity(job_key)[0],
+                    job_category="Reactions",
+                    stock_coverage=seed_stock_coverage.get(recipe.product_type_id),
+                    margin=margin_home(recipe.product_type_id, cost_memo.get(recipe.product_type_id), home, cfg),
+                    recipe_source="alchemy" if alloc.recipe_key.startswith("alchemy:") else None,
+                    blockers=blockers,
+                    formulas_owned=recipe.owned_formulas,
+                    formulas_needed=alloc.jobs,
+                    recommended_slots=_ready_slots(ready),
+                    runs_per_slot=runs_per_job if ready > 0 else None,
+                    days_to_complete_at_recommended_slots=(
+                        (runs_per_job * (base_time * time_mult) / 86400)
+                        if _ready_slots(ready) > 0 else None),
+                )
+            else:
+                existing.job_runs += runs
+                existing.quantity += runs * out_qty
+                existing.runs_ready_now += ready
+                existing.job_time_seconds += job_time
+                existing.blockers = _merge_asset_plan_blockers(existing.blockers, blockers)
+                existing.formulas_owned = recipe.owned_formulas
+                existing.formulas_needed = alloc.jobs
+                existing.recommended_slots = _ready_slots(existing.runs_ready_now)
+                existing.runs_per_slot = runs_per_job if existing.runs_ready_now > 0 else None
+                existing.days_to_complete_at_recommended_slots = (
+                    (runs_per_job * (base_time * time_mult) / 86400)
+                    if existing.recommended_slots else None)
+
+        if input_seed:
+            # Manufacture / buy non-reaction inputs (fuel blocks, moon mats).
+            stock_used = dict(reserved)
+            for type_id, qty in target_reserved.items():
+                stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
+            stock_used_on_hand = dict(reserved_on_hand)
+            stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
+            input_jobs, _ = _run_rounds(
+                input_seed, base_runs, margin_excluded, byproduct_stock,
+                stock_used, stock_used_on_hand, stock_coverage_by_id)
+            for job_key, job in input_jobs.items():
+                if job_key in jobs:
+                    existing = jobs[job_key]
+                    existing.job_runs += job.job_runs
+                    existing.quantity += job.quantity
+                    existing.runs_ready_now += job.runs_ready_now
+                    existing.job_time_seconds += job.job_time_seconds
+                    existing.blockers = _merge_asset_plan_blockers(existing.blockers, job.blockers)
+                else:
+                    jobs[job_key] = job
+
+        component_slot_days = sum(
+            (j.job_time_seconds / 86400.0)
+            for j in jobs.values()
+            if j.job_category in ("Advanced Components", "Capital Components")
+        )
+        reaction_block = reaction_capacity.plan_payload(
+            rplan, state, cfg, component_slot_days=component_slot_days)
+
     for job in jobs.values():
         ids = sorted(job.special_order_ids, key=lambda order_id: order_rank.get(order_id, len(order_rank)))
         job.special_order_ids = ids
@@ -3636,6 +4015,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     eligible_by_pool: dict[str, list[AssetPlanJob]] = {}
     for job in jobs.values():
         if job.job_category not in _SLOT_RECOMMENDATION_CATEGORIES or job.runs_ready_now <= 0:
+            continue
+        # Capacity mode already set recommended_slots on reaction jobs.
+        if capacity_on and job.activity == "Reaction" and job.recommended_slots is not None:
             continue
         pool_label = "Reactions" if job.activity == "Reaction" else "Manufacturing"
         eligible_by_pool.setdefault(pool_label, []).append(job)
@@ -3661,8 +4043,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             j.days_to_complete_at_recommended_slots = (
                 j.runs_per_slot * (j.job_time_seconds / j.job_runs) / 86400)
 
-    return {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True),
-            "order_progress": _asset_plan_order_progress(order_claims, order_top_level)}
+    result = {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True),
+              "order_progress": _asset_plan_order_progress(order_claims, order_top_level)}
+    if reaction_block is not None:
+        result["reaction_capacity"] = reaction_block
+    return result
 
 
 def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatusRow]:
