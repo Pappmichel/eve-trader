@@ -2036,6 +2036,33 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
         exclude_intake_at_location_id=cfg.home_location_id)
 
 
+def _net_seed_against_stock(seed: dict[int, float], manual_stock: dict[int, float], cfg: ProductionConfig,
+                            stock_used: dict[int, float], byproduct_stock: Optional[dict[int, float]] = None,
+                            gross_demand: Optional[dict[int, float]] = None) -> dict[int, float]:
+    """Nets a gross material seed against stock the same way _expand_all nets
+    every deeper level (stock minus what this plan already claimed in
+    `stock_used`, plus the alchemy byproduct overlay), and records the claim.
+    Used for the reaction capacity solver's non-reaction inputs (fuel blocks,
+    moon materials): they enter the walk as a seed, and _expand_all never nets
+    its seed. `gross_demand`, if given, gets the gross quantity for the Buy
+    List's on-hand column."""
+    byproduct_stock = byproduct_stock or {}
+    net: dict[int, float] = {}
+    for type_id, qty in seed.items():
+        if qty <= 0:
+            continue
+        if gross_demand is not None:
+            gross_demand[type_id] = gross_demand.get(type_id, 0.0) + qty
+        _, bp = classify_activity(type_id)
+        on_hand = _current_stock(type_id, manual_stock, cfg, bp)
+        available = max(0.0, on_hand + byproduct_stock.get(type_id, 0.0) - stock_used.get(type_id, 0.0))
+        consumed = min(qty, available)
+        stock_used[type_id] = stock_used.get(type_id, 0.0) + consumed
+        if qty - consumed > 0:
+            net[type_id] = qty - consumed
+    return net
+
+
 def _reaction_capacity_gross_demand(
     type_id: int, backup_stock: float, home_market_stock: Optional[float],
     jita_market_stock: Optional[float], missing: float, cfg: ProductionConfig,
@@ -2730,7 +2757,11 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
 
         # Moon materials / fuel blocks consumed by W1 runs → normal walk.
-        input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
+        # _expand_all never nets its seed against stock (stock-target seeds
+        # arrive pre-netted), so net the consumption here first.
+        input_seed = _net_seed_against_stock(
+            reaction_capacity.input_demand_from_plan(layer, rplan),
+            manual_stock, cfg, stock_used, byproduct_stock, gross_demand)
         if input_seed:
             input_buy, input_runs = _expand_all(
                 input_seed, cfg, home, jita, manual_overrides, cost_memo,
@@ -3981,6 +4012,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
             stock_used_on_hand = dict(reserved_on_hand)
             stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
+            # Same as plan_production: round-0 seeds are not netted inside.
+            input_seed = _net_seed_against_stock(
+                input_seed, manual_stock, cfg, stock_used, byproduct_stock)
             input_jobs, _ = _run_rounds(
                 input_seed, base_runs, margin_excluded, byproduct_stock,
                 stock_used, stock_used_on_hand, stock_coverage_by_id)
