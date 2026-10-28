@@ -494,3 +494,43 @@ def test_asset_plan_recommends_only_startable_jobs(monkeypatch, reaction_bom, te
             assert job.runs_per_slot and job.runs_per_slot > 0
             assert job.recommended_slots == math.ceil(job.runs_ready_now / job.runs_per_slot)
             assert job.recommended_slots <= job.formulas_needed
+
+
+@pg_helpers.postgres_required()
+def test_reaction_inputs_in_stock_are_not_bought_or_built(monkeypatch, reaction_bom, tenant):
+    # Fuel blocks and moon materials the W1 reactions consume enter the walk as
+    # a seed; they must be netted against stock like every deeper level (live
+    # bug: 165k Nitrogen Fuel Blocks in stock, 21k still bought at 0% on hand).
+    stock = {20: 1000.0, 30: 10_000.0}
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 10, 0, 0)]))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    prod = engine.plan_production(cfg)
+    asset = engine.plan_asset_optimized(cfg)
+
+    assert any(e.activity == "Reaction" for e in prod["build_list"])
+    assert not [e for e in prod["buy_list"] if e.type_id in (20, 30, 40)]
+    assert not [e for e in prod["build_list"] if e.type_id == 20]
+    assert not [j for j in asset["jobs"] if j.type_id == 20]
+
+
+@pg_helpers.postgres_required()
+def test_partly_stocked_reaction_input_reports_on_hand_share(monkeypatch, reaction_bom, tenant):
+    stock = {30: 50.0}  # one reaction run needs 100 moon materials
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 10, 0, 0)]))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    prod = engine.plan_production(cfg)
+
+    moon = next(e for e in prod["buy_list"] if e.type_id == 30)
+    runs = sum(e.job_runs for e in prod["build_list"] if e.activity == "Reaction")
+    assert moon.quantity == pytest.approx(100.0 * runs - 50.0)
+    assert moon.on_hand_pct == pytest.approx(50.0 / (100.0 * runs) * 100)
