@@ -21,6 +21,14 @@ HULL_B = 2000
 MODULE = 100
 
 
+@pytest.fixture(autouse=True)
+def _no_candidates_by_default(monkeypatch):
+    """fitting_status/stockpile now pool contracts via load_match_candidates
+    (shared contract pool). These storage-free unit tests default it to empty;
+    tests that need a candidate set override it afterwards."""
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
+
+
 class _FakeTokens:
     def has_token(self, role):
         return False  # no seller token in these lightweight tests - C-J leg stays unverified
@@ -146,8 +154,9 @@ def test_stockpile_rows_for_doctrine_uses_bulk_lookups_not_per_fitting(monkeypat
     engine.stockpile_rows_for_doctrine(cfg=DoctrineConfig())
 
     assert len(contract_calls) == 1
-    assert contract_calls[0][0] is None
-    assert set(contract_calls[0][1]) == {"f1", "f2"}
+    # Shared contract pool: one unfiltered read of all contracts (not per
+    # fitting, not scoped to this doctrine's fitting_ids).
+    assert contract_calls[0] == (None, None)
     assert len(stock_calls) == 1
     assert len(sde_calls) == 1
 
@@ -202,6 +211,8 @@ def test_fitting_status_excludes_expired_contracts_from_valid_count(monkeypatch)
     ])
     monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: "2026-01-01T00:00:00Z")
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Some Hull", 100.0, 1, 1, 0, None))
+    monkeypatch.setattr(engine, "load_match_candidates",
+                        lambda: [_Candidate(fitting=_fitting(contract_target=2), exact_soll={}, consume_soll={}, items=[])])
 
     status = engine.fitting_status(_fitting(contract_target=2), stockpile_rows=[], assets_available=True)
 
@@ -215,6 +226,8 @@ def test_fitting_status_excludes_expired_contracts_from_tolerable_count(monkeypa
     ])
     monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: "2026-01-01T00:00:00Z")
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Some Hull", 100.0, 1, 1, 0, None))
+    monkeypatch.setattr(engine, "load_match_candidates",
+                        lambda: [_Candidate(fitting=_fitting(contract_target=2), exact_soll={}, consume_soll={}, items=[])])
 
     status = engine.fitting_status(_fitting(contract_target=2), stockpile_rows=[], assets_available=True)
 
@@ -595,3 +608,30 @@ def test_shopping_list_rows_all_hubs_picks_cheapest_landed_hub_and_never_queries
     assert rows[0].hub_region_id == 10000043 and rows[0].hub_name == "Amarr"
     assert rows[0].jita_landed_price == pytest.approx(110.0 * (1 + fee) + 10.0 * 5.0)
     assert rows[0].recommended_source == "Jita"
+
+
+def test_pooled_contract_counts_shares_contract_across_identical_fits(monkeypatch):
+    # Shared contract pool (confirmed with the user 2026-10-28): one contract
+    # of an identical fit counts for every doctrine that fields it.
+    from eve_trader.doctrine.validation import build_contract_soll
+    items = [FittingItem("f1", 1, "low", MODULE, 1)]
+    ex, co = build_contract_soll(items)
+
+    def _cand(fid, did, hull=HULL_A):
+        f = Fitting(fitting_id=fid, doctrine_id=did, name=fid, hull_type_id=hull, raw_eft="",
+                    contract_target=1, stockpile_target=0)
+        return _Candidate(fitting=f, exact_soll=ex, consume_soll=co, items=items)
+
+    # f1 (d1) and f2 (d2) are the same fit; f3 (d3) is a different hull.
+    monkeypatch.setattr(engine, "load_match_candidates",
+                        lambda: [_cand("f1", "d1"), _cand("f2", "d2"), _cand("f3", "d3", hull=HULL_B)])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_row(contract_id=1, matched_fitting_id="f1", validation_status="valid", status="outstanding"),
+        _contract_row(contract_id=2, matched_fitting_id="f1", validation_status="tolerable", status="expired"),
+    ])
+
+    pooled = engine.pooled_contract_counts()
+
+    assert pooled["f1"] == (1, 0)
+    assert pooled["f2"] == (1, 0)   # same contract counts for the identical fit in d2
+    assert pooled["f3"] == (0, 0)   # different fit, not shared

@@ -6,6 +6,7 @@ pure scoring/deviation functions.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -131,6 +132,45 @@ def load_match_candidates() -> list[_Candidate]:
     return candidates
 
 
+def _fit_identity(candidate: "_Candidate") -> tuple:
+    """The fit a candidate represents, independent of which doctrine it sits
+    in or how its EFT text was formatted: hull plus the exact/consume Soll
+    multisets. Two fittings with the same identity are "the same fit"."""
+    return (candidate.fitting.hull_type_id,
+            frozenset(candidate.exact_soll.items()),
+            frozenset(candidate.consume_soll.items()))
+
+
+def pooled_contract_counts(candidates: Optional[list["_Candidate"]] = None
+                            ) -> dict[str, tuple[int, int]]:
+    """Active contracts as one shared pool across doctrines (confirmed with
+    the user 2026-10-28): a valid/tolerable contract matched to a fit counts
+    toward *every* fitting with the same identity, not only the single
+    fitting matching picked. Returns {fitting_id: (valid, tolerable)}.
+
+    A contract is still matched to one fitting at sync time; this only pools
+    the *counting* so a shared support ship contracted once is seen by every
+    doctrine that fields it. `status == "expired"` never counts (same rule as
+    fitting_status/stockpile)."""
+    if candidates is None:
+        candidates = load_match_candidates()
+    identity_by_fitting = {c.fitting.fitting_id: _fit_identity(c) for c in candidates}
+    valid_by_identity: dict[tuple, int] = defaultdict(int)
+    tolerable_by_identity: dict[tuple, int] = defaultdict(int)
+    for ct in contract_rows_from_db(storage.list_doctrine_contracts()):
+        if ct.status == "expired" or not ct.matched_fitting_id:
+            continue
+        key = identity_by_fitting.get(str(ct.matched_fitting_id))
+        if key is None:
+            continue
+        if ct.validation_status == "valid":
+            valid_by_identity[key] += 1
+        elif ct.validation_status == "tolerable":
+            tolerable_by_identity[key] += 1
+    return {fid: (valid_by_identity[key], tolerable_by_identity[key])
+            for fid, key in identity_by_fitting.items()}
+
+
 #: Status sentinel, never added to constants.VALIDATION_STATUSES. Matching
 #: stores it (score 0.0) so the contract is not re-matched on every read,
 #: and actions.do_list_contracts leaves such rows out of the contract list.
@@ -191,7 +231,9 @@ def _slot_of(type_id: int) -> Optional[str]:
 
 # ---------------------------------------------------------------- stockpile
 def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
-                                 cfg: DoctrineConfig = DOCTRINE_CONFIG) -> tuple[list[StockpileRow], bool]:
+                                 cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                                 pooled_contracts: Optional[dict[str, tuple[int, int]]] = None,
+                                 ) -> tuple[list[StockpileRow], bool]:
     """Phase 3 spec C - returns (rows, assets_available). Only ever computed
     live (never persisted, Phase 2 B.2's own note on StockpileRow).
     Asset Ist is the rows `read_esi("assets", "doctrine")` returns, filtered
@@ -203,6 +245,10 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
     location_id = cfg.effective_stockpile_location_id
 
     candidates = load_match_candidates()
+    # Pool active contracts across all fittings (tenant-wide) before the
+    # doctrine filter, so a shared fit's contracts count for this doctrine too.
+    if pooled_contracts is None:
+        pooled_contracts = pooled_contract_counts(candidates)
     if doctrine_id is not None:
         candidates = [c for c in candidates if c.fitting.doctrine_id == doctrine_id]
     if not candidates or not assets_available:
@@ -214,21 +260,13 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
     doctrine_name_by_id = {str(row[0]): row[1] for row in storage.list_doctrines()}
 
     ordered_soll: list[tuple[str, dict[int, tuple[float, str]]]] = []
-    fitting_ids = [c.fitting.fitting_id for c in candidates]
-    contracts_by_fitting: dict[str, list] = {fid: [] for fid in fitting_ids}
-    for row in storage.list_doctrine_contracts(fitting_ids=fitting_ids):
-        matched_id = row[9]  # matched_fitting_id, see storage._CONTRACT_COLUMNS
-        if matched_id in contracts_by_fitting:
-            contracts_by_fitting[matched_id].append(row)
-        elif matched_id is not None and str(matched_id) in contracts_by_fitting:
-            contracts_by_fitting[str(matched_id)].append(row)
     for c in candidates:
         # GitHub issue #36: same valid-contract count fitting_status computes
         # (contract_ampel's own "valid" count) - a fitting still short of its
         # contract_target needs the materials for those extra contracts too,
-        # not just its separate stockpile_target buffer.
-        contracts = contract_rows_from_db(contracts_by_fitting.get(c.fitting.fitting_id, []))
-        valid_contracts = sum(1 for ct in contracts if ct.validation_status == "valid" and ct.status != "expired")
+        # not just its separate stockpile_target buffer. Pooled across
+        # identical fits (shared contract pool), same as the contract ampel.
+        valid_contracts = pooled_contracts.get(c.fitting.fitting_id, (0, 0))[0]
         soll = validation.build_stockpile_soll(c.items, c.fitting.hull_type_id, c.fitting.stockpile_target,
                                                 contract_target=c.fitting.contract_target,
                                                 valid_contracts=valid_contracts)
@@ -455,22 +493,23 @@ def contract_rows_from_db(rows: list[tuple]) -> list[ContractRow]:
 
 def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                     stockpile_rows: Optional[list[StockpileRow]] = None,
-                    assets_available: bool = True, home: Optional[dict] = None) -> FittingStatus:
+                    assets_available: bool = True, home: Optional[dict] = None,
+                    pooled_contracts: Optional[dict[str, tuple[int, int]]] = None) -> FittingStatus:
     """`home` (Goonmetrics current-price dict, production_pricing.home_prices'
     own return shape) is an optional passthrough for multibuy_cost, same
     "compute once in doctrine_status' loop, don't refetch per fitting"
     reasoning as `stockpile_rows` above - None (the default, e.g. a lone
-    do_get_fitting_detail call) just means multibuy_cost comes back None."""
-    contracts = contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting.fitting_id))
+    do_get_fitting_detail call) just means multibuy_cost comes back None.
+
+    `pooled_contracts` ({fitting_id: (valid, tolerable)}, pooled_contract_counts)
+    is the shared active-contract pool: a contract of a shared fit counts for
+    every doctrine that fields it. None computes it on demand (standalone
+    callers); doctrine_status passes one computed once for the whole pass.
+    Expired contracts never count (handled inside pooled_contract_counts)."""
+    if pooled_contracts is None:
+        pooled_contracts = pooled_contract_counts()
     last_synced_at = storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",))
-    # status == "expired" (the raw ESI contract status, separate from
-    # validation_status) is excluded here even though SYNCABLE_CONTRACT_
-    # STATUSES now lets expired contracts stay synced/visible (see that
-    # constant's own comment) - an expired contract must stop counting
-    # toward a fitting's target ampel the moment it expires, it just
-    # doesn't disappear from the Contracts page without explanation anymore.
-    valid = sum(1 for c in contracts if c.validation_status == "valid" and c.status != "expired")
-    tolerable = sum(1 for c in contracts if c.validation_status == "tolerable" and c.status != "expired")
+    valid, tolerable = pooled_contracts.get(fitting.fitting_id, (0, 0))
     contract_ampel = validation.contract_ampel(last_synced_at, fitting.contract_target, valid, tolerable)
 
     if stockpile_rows is None:
@@ -527,7 +566,10 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
 def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> DoctrineStatus:
     doctrine = doctrine_from_row(doctrine_row)
     fitting_rows = storage.list_fittings_for_doctrine(doctrine.doctrine_id)
-    stockpile_rows, assets_available = stockpile_rows_for_doctrine(doctrine.doctrine_id, cfg)
+    # Shared active-contract pool, computed once tenant-wide for this pass.
+    pooled_contracts = pooled_contract_counts()
+    stockpile_rows, assets_available = stockpile_rows_for_doctrine(
+        doctrine.doctrine_id, cfg, pooled_contracts=pooled_contracts)
 
     # Fetched once for every fitting's multibuy_cost below, not per-fitting -
     # matches this function's existing stockpile_rows-computed-once
@@ -553,7 +595,7 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
             continue
         own_rows = [r for r in stockpile_rows if r.fitting_id == fitting.fitting_id]
         statuses.append(fitting_status(fitting, cfg, stockpile_rows=own_rows, assets_available=assets_available,
-                                        home=home))
+                                        home=home, pooled_contracts=pooled_contracts))
 
     contract_rollup = validation.worst_ampel([s.contract_status for s in statuses]) if statuses else AMPEL_GRAY
     stockpile_rollup = validation.worst_ampel([s.stockpile_status for s in statuses]) if statuses else AMPEL_GRAY
