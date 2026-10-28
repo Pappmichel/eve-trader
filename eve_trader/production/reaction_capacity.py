@@ -988,17 +988,23 @@ def _shadow_prices(
     return slot_shadow, formula_shadows
 
 
-def _merge_buy1(
+def _split_buy1(
     rounded_buy: Mapping[int, float],
     recomputed: Mapping[int, float],
-) -> dict[int, float]:
-    """Keep MIP buy1 that feeds W2, and any W1 needs after rounding."""
-    out: dict[int, float] = {}
-    for m in set(rounded_buy) | set(recomputed):
-        qty = max(float(rounded_buy.get(m, 0.0)), float(recomputed.get(m, 0.0)))
-        if qty > _EPS:
-            out[m] = qty
-    return out
+) -> tuple[dict[int, float], dict[int, float]]:
+    """(buy now, buy later) from the MIP's W1 purchases.
+
+    Buying for W2 in W1 or in W2 costs the same, so the MIP may put a purchase
+    that only W2 needs into ``buy1``. Only what W1 itself needs after rounding
+    (``recomputed``) is bought now; the rest moves to the W2 preview, so the
+    Buy List never asks for something two weeks before it is needed."""
+    now = {m: float(q) for m, q in recomputed.items() if q > _EPS}
+    later: dict[int, float] = {}
+    for m, qty in rounded_buy.items():
+        extra = float(qty) - now.get(m, 0.0)
+        if extra > _EPS:
+            later[m] = extra
+    return now, later
 
 
 def _postprocess(
@@ -1006,12 +1012,12 @@ def _postprocess(
     window: ReactionWindow,
     raw: _RawSolve,
 ) -> tuple[dict[str, int], dict[str, int], dict[int, float], dict[str, int],
-           dict[int, float], float, float, list[str]]:
-    """Round W1, merge buy1 / new_formulas / unmet; return pieces for cost."""
+           dict[int, float], float, float, list[str], dict[int, float]]:
+    """Round W1, split buy1 into now / later, new_formulas, unmet; return
+    pieces for cost."""
     runs1, jobs1, buy_rounded, round_warnings = _round_w1(layer, window, raw)
     recomputed = _recompute_buy1(layer, window, runs1, raw.defer)
-    # Preserve MIP purchases that feed W2 inputs (finding 1.5.4).
-    buy1 = _merge_buy1(buy_rounded, recomputed)
+    buy1, buy_later = _split_buy1(buy_rounded, recomputed)
     new_f: dict[str, int] = {}
     for recipe in layer.recipes:
         j2 = float(raw.jobs2.get(recipe.key, 0.0))
@@ -1054,7 +1060,7 @@ def _postprocess(
             warnings.append("Reaction jobs exceed W1 slot capacity")
     for p, qty in unmet.items():
         warnings.append(f"Unmet W1 demand for type {p}: {qty:g} units")
-    return runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings
+    return runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings, buy_later
 
 
 def _w1_cost_of(
@@ -1103,11 +1109,14 @@ def _finalize(
     *,
     base_lp: _RawSolve,
 ) -> ReactionPlan:
-    runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings = _postprocess(
+    runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings, buy_later = _postprocess(
         layer, window, raw,
     )
+    buy2 = dict(raw.buy2)
+    for m, qty in buy_later.items():
+        buy2[m] = buy2.get(m, 0.0) + qty
     w1_cost = _w1_cost_of(layer, window, runs1, new_f, buy1)
-    w2_cost = _w2_preview_cost_of(layer, window, raw.runs2, raw.buy2)
+    w2_cost = _w2_preview_cost_of(layer, window, raw.runs2, buy2)
     total = w1_cost + w2_cost
 
     allocations = []
@@ -1150,7 +1159,7 @@ def _finalize(
         ))
     next_window = NextWindowPreview(
         recipes=tuple(preview_recipes),
-        buy=dict(raw.buy2),
+        buy=buy2,
         jobs_used=float(sum(raw.jobs2.values())),
     )
 

@@ -143,6 +143,10 @@ Findings (fixed in phase 1c):
 4. **`total_cost` dropped W2-feeding purchases** — `_recompute_buy1` rebuilt
    W1 needs only. Report `w1_cost` (fees, buy1 incl. W2 feeds, formulas) and
    `w2_preview_cost`; MIP `buy1` that feeds W2 stays on the W1 buy list.
+   *Superseded 2026-10-28:* buying in W1 or W2 costs the same, so the MIP put
+   purchases only W2 needs onto today's Buy List (test server: 0 % on hand
+   for Photonic Metamaterials). Only W1's own needs are bought now; the rest
+   moves to the W2 preview purchases and `w2_preview_cost`.
 5. **Formula dual** — an extra owned formula relaxes both window rows, so
    the dual is `d1 + d2`, not `max(d1, d2)`.
 
