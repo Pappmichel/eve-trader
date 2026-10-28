@@ -900,7 +900,8 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
     refresh_resp = client.post("/api/production/asset-plan/refresh")
     assert refresh_resp.status_code == 200
-    assert client.get("/api/production/asset-plan").json() == {"jobs": [], "order_progress": [], "stale": False}
+    assert client.get("/api/production/asset-plan").json() == {
+        "jobs": [], "order_progress": [], "stale": False, "reaction_capacity": None}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
@@ -1027,6 +1028,50 @@ def test_plan_serializes_special_order_fields(monkeypatch):
     assert plan["buy_list"][0]["special_order_quantity"] == 20.0
     assert plan["build_list"][0]["special_order_quantity"] == 1.0
     assert plan["order_progress"] == progress
+
+
+def test_plans_serialize_reaction_capacity_block_and_row_fields(monkeypatch):
+    # docs/REACTION_CAPACITY_PLAN.md phase 4: the block and the new row fields
+    # must survive the router cache and the response models (live bug
+    # 2026-10-28: both were dropped, so the Reaction capacity panel never
+    # showed although the engine returned the block).
+    from eve_trader.production.models import AssetPlanJob, BuildJobEntry, BuyListEntry
+    block = {"slots_used": 3, "slots_available": 199, "window_next": "2026-10-24T21:00:00Z",
+             "next_window": {"jobs_used": 2.0, "buy": {}, "recipes": []}, "chaining": [], "warnings": []}
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {
+            "inventory": [],
+            "buy_list": [BuyListEntry(type_id=34, type_name="Hexite", quantity=5, unit_price=None,
+                                      total_price=None, capacity_reason="inputs", isk_given_up=1.5)],
+            "build_list": [BuildJobEntry(type_id=10, type_name="Ferrogel", blueprint_type_id=110,
+                                         activity="Reaction", quantity=4, job_runs=4, job_time_seconds=1.0,
+                                         unit_build_cost=None, reaction_jobs=2, reaction_runs_per_job=2.0,
+                                         formulas_owned=1, formulas_needed=2)],
+            "invention_list": [], "adjusted_prices_available": True, "order_progress": [],
+            "reaction_capacity": block,
+        },
+        "stock_targets": 1, "missing_types": 1, "buy_entries": 1, "build_jobs": 1,
+    })
+    job = AssetPlanJob(type_id=10, type_name="Ferrogel", blueprint_type_id=110, activity="Reaction",
+                       quantity=4, job_runs=4, runs_ready_now=4, job_time_seconds=1.0, unit_build_cost=None,
+                       formulas_owned=1, formulas_needed=2)
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 1, "plan": {"jobs": [job], "order_progress": [],
+                                                     "reaction_capacity": block}})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-reaction-capacity")
+
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    plan = client.get("/api/production/plan").json()
+    assert plan["reaction_capacity"] == block
+    assert (plan["buy_list"][0]["capacity_reason"], plan["buy_list"][0]["isk_given_up"]) == ("inputs", 1.5)
+    row = plan["build_list"][0]
+    assert (row["reaction_jobs"], row["reaction_runs_per_job"], row["formulas_owned"], row["formulas_needed"]) \
+        == (2, 2.0, 1, 2)
+
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+    asset = client.get("/api/production/asset-plan").json()
+    assert asset["reaction_capacity"] == block
+    assert (asset["jobs"][0]["formulas_owned"], asset["jobs"][0]["formulas_needed"]) == (1, 2)
 
 
 def test_integrated_order_change_marks_cached_plans_stale_but_keeps_them(monkeypatch):

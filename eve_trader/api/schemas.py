@@ -191,6 +191,10 @@ class BuyListEntry(_Base):
     hub_name: Optional[str] = None
     category: Optional[str] = None
     special_order_quantity: float = 0.0
+    # Reaction capacity solver (docs/REACTION_CAPACITY_PLAN.md): why the row
+    # exists ("capacity" / "inputs" / "formula") and the ISK given up.
+    capacity_reason: Optional[str] = None
+    isk_given_up: Optional[float] = None
 
 
 class BuildJobEntry(_Base):
@@ -209,6 +213,11 @@ class BuildJobEntry(_Base):
     margin: Optional[float] = None
     recipe_source: Optional[str] = None
     special_order_quantity: float = 0.0
+    # Reaction capacity solver: W1 jobs x runs per job and formulas.
+    reaction_jobs: Optional[int] = None
+    reaction_runs_per_job: Optional[float] = None
+    formulas_owned: Optional[int] = None
+    formulas_needed: Optional[int] = None
 
 
 class LogisticsRow(_Base):
@@ -314,6 +323,9 @@ class AssetPlanJob(_Base):
     special_order_ready_runs: int = 0
     special_order_ids: list[str] = []
     special_order_notes: list[str] = []
+    # Reaction capacity solver: owned / needed formula originals.
+    formulas_owned: Optional[int] = None
+    formulas_needed: Optional[int] = None
 
 
 class InventionNeedRow(_Base):
@@ -1013,6 +1025,10 @@ class ProductionPlan(BaseModel):
     # Per integrated special-order line item: units claimed from stock and
     # what is left to plan (SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D16).
     order_progress: list[OrderProgressRow] = []
+    # Reaction capacity block (reaction_capacity.plan_payload), only when the
+    # switch is on. Free-form dict: its shape is defined by plan_payload and
+    # mirrored in frontend/src/api/types.ts (ReactionCapacityBlock).
+    reaction_capacity: Optional[dict] = None
     # True once integrated special-order demand changed after this plan was
     # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
     # recompute hint.
@@ -1024,6 +1040,8 @@ class AssetPlan(BaseModel):
     # Per integrated special-order line item: hangar / running-job split of
     # the D3 claim, runs ready now and what is still missing (D16).
     order_progress: list[AssetPlanOrderProgressRow] = []
+    # Reaction capacity block, see ProductionPlan.reaction_capacity.
+    reaction_capacity: Optional[dict] = None
     # True once integrated special-order demand changed after this plan was
     # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
     # recompute hint.
