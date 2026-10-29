@@ -4760,7 +4760,15 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
     relics. They are not blueprint materials, so without this they were
     never priced and invention.estimate() saw all of them as unpriced
     (confirmed live 2026-10-12: Loki invention showed 0 ISK for datacores,
-    decryptors and relics and no cost per run)."""
+    decryptors and relics and no cost per run).
+
+    A Reaction product also pulls in its formula blueprint and, when an
+    Unrefined alchemy pair exists, that formula plus its inputs and
+    reprocess yields. Those type ids are not materials of the normal
+    recipe. Without them the capacity solver sees no formula price and no
+    price on alchemy inputs, so it can neither buy a missing formula nor
+    run alchemy, and free reaction slots stay empty (live Default tenant,
+    2026-10-28: all 17 alchemy formulas unpriced, 0 alchemy jobs)."""
     visited: set[int] = set()
     frontier: set[int] = set(seed_type_ids)
     depth = 0
@@ -4777,6 +4785,19 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
                     next_frontier.add(material_id)
             if activity == "Tech II":
                 visited |= _invention_input_type_ids(blueprint_id)
+            elif activity == "Reaction":
+                visited.add(int(blueprint_id))
+                alt = find_alchemy_alternative(type_id)
+                if alt is None:
+                    continue
+                alchemy_recipe, unrefined_type_id, reprocess = alt
+                visited.add(int(alchemy_recipe[0]))
+                visited.add(int(unrefined_type_id))
+                visited.update(int(material_id) for material_id, _qty in reprocess)
+                for material_id, _base_qty in storage.get_blueprint_materials(
+                        int(alchemy_recipe[0]), int(alchemy_recipe[1])):
+                    if material_id not in visited:
+                        next_frontier.add(material_id)
         frontier = next_frontier
         depth += 1
     return visited

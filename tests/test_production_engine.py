@@ -1190,6 +1190,34 @@ def test_structural_material_closure_includes_invention_inputs(monkeypatch):
     assert {100, 200, 500, 501, 600, 601} | decryptor_ids <= result
 
 
+def test_structural_material_closure_includes_reaction_formula_and_alchemy(monkeypatch):
+    # The normal formula and the Unrefined alchemy formula are not blueprint
+    # materials. The capacity solver buys a missing formula and prices
+    # alchemy inputs from this set; leaving them out forces both to zero.
+    def _classify(type_id):
+        if type_id == 100:
+            return ("Reaction", (1000, 11, 200.0))
+        if type_id == 300:
+            return ("Reaction", (3000, 11, 1.0))
+        return ("Buy", None)
+
+    materials = {
+        (1000, 11): [(200, 100.0)],
+        (1001, 11): [(300, 50.0)],
+        (3000, 11): [(400, 1.0)],
+    }
+    monkeypatch.setattr(engine, "classify_activity", _classify)
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                        lambda bp_id, activity_id: materials.get((bp_id, activity_id), []))
+    monkeypatch.setattr(engine, "find_alchemy_alternative", lambda type_id: (
+        (1001, 11, 1.0), 500, [(100, 19.0), (600, 5.0)]
+    ) if type_id == 100 else None)
+
+    result = _structural_material_closure([100])
+
+    assert {100, 200, 1000, 1001, 300, 400, 500, 600} <= result
+
+
 def test_structural_material_closure_capped_at_max_depth(monkeypatch):
     # A chain deeper than MAX_DEPTH (10) - the walk must stop instead of
     # recursing forever (a real EVE BOM never legitimately goes this deep;
