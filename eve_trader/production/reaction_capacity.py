@@ -43,6 +43,9 @@ _MIP_TIME_LIMIT_SECONDS = 10.0
 # slack is repeated with those fixed and priced at 0 (``solve``).
 _MIP_REL_GAP = 1e-4
 _MIP_ABS_GAP = 100_000.0
+# Carry value per unit as a share of the buy price. Below 1 so buying a
+# unit only to hold it never ties with leaving it out of the plan.
+_CARRY_VALUE_SHARE = 0.99
 
 
 # ------------------------------------------------------------------ inputs
@@ -100,8 +103,8 @@ class ReactionWindow:
     # product_type_id -> "buy" | "wait"; missing = buy (D10)
     chain_choice: Mapping[int, str] = field(default_factory=dict)
     formula_payback_cycles: float = 1.0
-    # Stock carry value (docs/REACTION_SLOT_PROFIT_PLAN.md): units the next
-    # cycle would need again, per material. Owned stock left at the end of
+    # Stock carry value (docs/REACTION_SLOT_PROFIT_PLAN.md): units of a raw
+    # input the next cycle would need again. Owned stock left at the end of
     # W2 is credited at its buy price up to this quantity, so using it costs
     # the replacement price; stock above it is worth 0. Empty = stock is
     # free to use (the model before the carry value).
@@ -621,7 +624,7 @@ def _solve_mip(
         cap = min(float(window.carry_need.get(m, 0.0)), owned[m])
         if price is not None and price > 0 and cap > _EPS:
             keep_cap[m] = cap
-            c[i_keep + mat_index[m]] = -float(price)
+            c[i_keep + mat_index[m]] = -float(price) * _CARRY_VALUE_SHARE
 
     bounds: list[tuple[Optional[float], Optional[float]]] = [(0.0, None)] * n_vars
     for i, recipe in enumerate(recipes):
@@ -1581,13 +1584,15 @@ def carry_need_from_layer(
     demand: Mapping[int, float],
     factor: float = 1.0,
 ) -> dict[int, float]:
-    """Units of every material one more cycle would use (carry value cap).
+    """Units of every raw input one more cycle would use (carry value cap).
 
     The next cycle's product demand (``demand x factor``, as W2) expanded
     through the normal recipes down to raw inputs, pooled per material.
     Alchemy is left out: the normal recipe is the reference for what a
-    cycle consumes. Inputs: moon materials and fuel blocks as well as
-    intermediates (Hexite inside Ferrogel)."""
+    cycle consumes. Reaction products of the layer (Hexite) get no entry:
+    crediting them would make the solver react extra units only to refill
+    the stock, which the slot rule values at 0 (production run on Server 1,
+    2026-10-30: 78 -> 168 jobs, W1 cost 6.3 -> 15.7 B)."""
     normal = {
         r.product_type_id: r for r in layer.recipes if not r.key.startswith("alchemy:")
     }
@@ -1608,7 +1613,7 @@ def carry_need_from_layer(
         runs = qty / out
         for mid, per_run in recipe.inputs.items():
             queue.append((int(mid), float(per_run) * runs, depth + 1))
-    return need
+    return {m: q for m, q in need.items() if m not in layer.product_ids}
 
 
 def build_window(

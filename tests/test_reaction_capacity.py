@@ -843,7 +843,7 @@ def test_stock_free_to_use_without_carry_need():
 
 
 def test_stock_the_next_cycle_needs_is_charged_at_buy_price():
-    # Using 1000 A costs 15,000 to replace; buying 1000 P costs 10,000.
+    # Using 1000 A costs 14,850 (99 % of 15,000); buying 1000 P costs 10,000.
     plan = solve(_carry_layer(), _carry_window({50: 1000.0}))
     assert sum(r.jobs for r in plan.recipes) == 0
     assert plan.buy.get(1, 0.0) == pytest.approx(1000.0)
@@ -875,7 +875,8 @@ def test_carry_need_expands_demand_through_normal_recipes():
 
     need = carry_need_from_layer(layer, {3: 10.0}, factor=2.0)
 
-    assert need == pytest.approx({3: 20.0, 2: 40.0, 50: 120.0})
+    # Reaction products (3, 2) are left out: only raw inputs carry value.
+    assert need == pytest.approx({50: 120.0})
 
 
 def test_build_window_counts_non_reaction_incoming_with_a_window_date(monkeypatch):
