@@ -593,7 +593,7 @@ export const doctrineApi = {
       `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,
     ),
   shoppingList: (doctrineId?: string) =>
-    get<{ rows: T.ShoppingListRow[] }>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
+    get<T.ShoppingListResponse>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
 
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
   removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),
@@ -608,6 +608,7 @@ export const doctrineApi = {
   hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
     '/api/doctrine/settings/hangar-division-options',
   ),
+  buyerCharacterOptions: () => get<T.DoctrineBuyerOption[]>('/api/doctrine/settings/buyer-character-options'),
   realizedSummary: (periodQuery: string) =>
     get<T.DoctrineRealizedSummary>(`/api/doctrine/realized/summary?${periodQuery}`),
   realizedFittings: (periodQuery: string) =>

@@ -278,3 +278,28 @@ def test_update_settings_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert "cargo_tolerance_pct" in resp.json()["detail"]
+
+
+def test_settings_round_trip_buyer_character_ids(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(doctrine_actions, "do_update_settings", lambda updates: seen.update(updates) or {})
+
+    resp = client.post("/api/doctrine/settings", json={
+        "cargo_tolerance_pct": 0.9, "strict_extras": False, "import_cost_per_m3": 900.0,
+        "buyer_character_ids": [91],
+    })
+
+    assert resp.status_code == 200
+    assert list(seen["buyer_character_ids"]) == [91]
+    assert "buyer_character_ids" in client.get("/api/doctrine/settings").json()
+
+
+def test_buyer_character_options(monkeypatch):
+    options = [{"character_id": 91, "character_name": "Jason Andven",
+                "assets_shared": True, "market_orders_shared": False}]
+    monkeypatch.setattr(doctrine_actions, "do_list_buyer_character_options", lambda: options)
+
+    resp = client.get("/api/doctrine/settings/buyer-character-options")
+
+    assert resp.status_code == 200
+    assert resp.json() == options

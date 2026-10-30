@@ -136,7 +136,11 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # "portfolio" values open sell orders in Total Wealth
         # (docs/PORTFOLIO_OVERVIEW_PLAN.md P4). Sharing with Trading does
         # not expose those orders to Portfolio.
-        consuming_tools=("trading", "production", "station_trading", "portfolio", "asset_manager"),
+        # "doctrine" reads the buyer characters' open Jita buy orders live
+        # (doctrine/buyer_sources.py); it is not a realized-profit tool for
+        # this kind (realized.access.KIND_TOOLS).
+        consuming_tools=("trading", "production", "station_trading", "portfolio", "asset_manager",
+                         "doctrine"),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(

@@ -1383,6 +1383,23 @@ export interface ShoppingListRow {
   hub_name: string | null
   required_total: number
   available: number
+  // Covered by the buyer characters' Jita 4-4 hangar / open Jita 4-4 buy orders.
+  jita_hangar: number
+  on_order: number
+  to_buy: number
+}
+
+export interface ShoppingListResponse {
+  rows: ShoppingListRow[]
+  warnings: string[]
+  buyers_configured: boolean
+}
+
+export interface DoctrineBuyerOption {
+  character_id: number
+  character_name: string
+  assets_shared: boolean
+  market_orders_shared: boolean
 }
 
 export interface FittingStatus {
@@ -1437,6 +1454,7 @@ export interface DoctrineSettings {
   import_cost_per_m3: number
   hub_region_id: number
   stockpile_hangar_flags: string[]
+  buyer_character_ids: number[]
 }
 
 export interface DoctrineCharacter {

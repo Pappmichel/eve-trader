@@ -466,7 +466,9 @@ def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
 
 def do_get_shopping_list(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     match_pending_contracts(cfg)
-    return {"rows": [asdict(r) for r in engine.shopping_list_rows(doctrine_id, cfg)]}
+    rows, warnings = engine.shopping_list(doctrine_id, cfg)
+    return {"rows": [asdict(r) for r in rows], "warnings": warnings,
+            "buyers_configured": bool(cfg.buyer_character_ids)}
 
 
 def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:
@@ -541,7 +543,30 @@ def do_get_esi_sync_time() -> dict:
 
 
 # ------------------------------------------------------------------ settings
+def do_list_buyer_character_options() -> list[dict]:
+    """Every character holding a token in this tenant, with whether it
+    already shares what the Shopping List's buyer sources read
+    (buyer_sources.py) with Doctrine. Token-store listing, no live ESI."""
+    from ..esi_data.access import is_shared
+
+    names: dict[int, str] = {}
+    for rec in TokenManager(OAUTH_CONFIG).list_records():
+        if rec.character_name or rec.character_id not in names:
+            names[rec.character_id] = rec.character_name or str(rec.character_id)
+    return [
+        {"character_id": cid, "character_name": name,
+         "assets_shared": is_shared("assets", "doctrine", "character", cid),
+         "market_orders_shared": is_shared("market_orders", "doctrine", "character", cid)}
+        for cid, name in sorted(names.items(), key=lambda kv: kv[1].lower())
+    ]
+
+
 def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    if updates.get("buyer_character_ids"):
+        known = {o["character_id"] for o in do_list_buyer_character_options()}
+        unknown = [c for c in updates["buyer_character_ids"] if c not in known]
+        if unknown:
+            raise ActionError(f"buyer_character_ids: {unknown} are not characters of this tenant.")
     try:
         validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)

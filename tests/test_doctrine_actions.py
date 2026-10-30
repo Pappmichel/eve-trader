@@ -11,6 +11,7 @@ from eve_trader import storage
 from eve_trader.actions import ActionError
 from eve_trader.auth import TokenManager, TokenRecord
 from eve_trader.doctrine import actions, engine, esi_sync
+from eve_trader.doctrine.config import DoctrineConfig
 from eve_trader.doctrine.models import ParsedFitting
 
 
@@ -208,10 +209,10 @@ def test_do_get_shopping_list_wraps_engine_result(monkeypatch):
     from eve_trader.doctrine.models import ShoppingListRow
 
     monkeypatch.setattr(actions, "match_pending_contracts", lambda cfg=None: 0)
-    monkeypatch.setattr(engine, "shopping_list_rows", lambda doctrine_id, cfg: [
+    monkeypatch.setattr(engine, "shopping_list", lambda doctrine_id, cfg: ([
         ShoppingListRow(type_id=100, type_name="Widget", shortfall=5.0, build_cost=10.0, cj_price=12.0,
                          jita_landed_price=15.0, recommended_source="Build", total_cost=50.0),
-    ])
+    ], ["a warning"]))
 
     result = actions.do_get_shopping_list()
 
@@ -219,7 +220,21 @@ def test_do_get_shopping_list_wraps_engine_result(monkeypatch):
         "type_id": 100, "type_name": "Widget", "shortfall": 5.0, "build_cost": 10.0, "cj_price": 12.0,
         "jita_landed_price": 15.0, "recommended_source": "Build", "total_cost": 50.0,
         "hub_region_id": None, "hub_name": None, "required_total": 0.0, "available": 0.0,
+        "jita_hangar": 0.0, "on_order": 0.0, "to_buy": 5.0,
     }]
+    assert result["warnings"] == ["a warning"]
+    assert result["buyers_configured"] is False
+
+
+def test_update_settings_rejects_unknown_buyer_character(monkeypatch):
+    monkeypatch.setattr(actions, "do_list_buyer_character_options", lambda: [
+        {"character_id": 1, "character_name": "Jason", "assets_shared": True, "market_orders_shared": True}])
+    monkeypatch.setattr(actions, "save_tenant_config_overrides", lambda *a, **k: None)
+
+    with pytest.raises(ActionError, match="not characters of this tenant"):
+        actions.do_update_settings({"buyer_character_ids": [1, 2]}, cfg=DoctrineConfig())
+    assert actions.do_update_settings({"buyer_character_ids": [1]}, cfg=DoctrineConfig()) == {
+        "updated": ["buyer_character_ids"]}
 
 
 @contextmanager
@@ -437,7 +452,7 @@ def test_doctrine_reads_match_pending_contracts_first(monkeypatch):
     monkeypatch.setattr(actions, "match_pending_contracts", lambda cfg=None: calls.append("match") or 0)
     monkeypatch.setattr(storage, "list_doctrines", lambda: [])
     monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id: ([], False))
-    monkeypatch.setattr(engine, "shopping_list_rows", lambda doctrine_id, cfg: [])
+    monkeypatch.setattr(engine, "shopping_list", lambda doctrine_id, cfg: ([], []))
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
     monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})

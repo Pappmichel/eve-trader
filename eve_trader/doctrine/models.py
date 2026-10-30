@@ -212,11 +212,18 @@ class ShoppingListRow:
     cj_price: Optional[float]           # per unit
     jita_landed_price: Optional[float]  # per unit, includes DoctrineConfig.import_cost_per_m3
     recommended_source: Optional[str]   # "Build" | "C-J" | "Jita" | None (no price data at all)
-    total_cost: Optional[float]         # recommended price * shortfall
+    total_cost: Optional[float]         # recommended price * to_buy
     hub_region_id: Optional[int] = None  # hub behind jita_landed_price (#222)
     hub_name: Optional[str] = None
     required_total: float = 0.0          # combined target across every fitting
     available: float = 0.0               # combined stock counted against it
+    jita_hangar: float = 0.0             # shortfall covered by the buyers' Jita 4-4 hangar
+    on_order: float = 0.0                # covered by their open Jita 4-4 buy orders
+    to_buy: Optional[float] = None       # shortfall - jita_hangar - on_order
+
+    def __post_init__(self):
+        if self.to_buy is None:
+            self.to_buy = self.shortfall
 
 
 # --------------------------------------------------------------- status / ampel
