@@ -36,7 +36,7 @@ export default function ShoppingList() {
     },
     { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()), meta: buyers ? undefined : { exportRole: 'qty' } },
     ...(buyers ? [
-      { header: 'Jita 4-4', accessorKey: 'jita_hangar', size: 100, cell: (i: any) => (i.getValue() > 0 ? qty(i.getValue()) : '–') },
+      { header: allHubs ? 'Hub hangars' : `${hub} region hangars`, accessorKey: 'hub_hangar', size: 100, cell: (i: any) => (i.getValue() > 0 ? qty(i.getValue()) : '–') },
       { header: 'On order', accessorKey: 'on_order', size: 100, cell: (i: any) => (i.getValue() > 0 ? qty(i.getValue()) : '–') },
       {
         header: 'To buy', accessorKey: 'to_buy', size: 110, meta: { exportRole: 'qty' as const },
@@ -71,7 +71,7 @@ export default function ShoppingList() {
       <Text size="sm" c="dimmed">
         Everything currently short across every doctrine (same combined shortfall as the Stockpile tab), with
         whichever of Build / buy at C-J / buy at {allHubs ? 'the best hub' : hub} (landed, including freight) is cheapest right now.
-        {buyers && " The buyer characters' Jita 4-4 hangar and open Jita 4-4 buy orders cover the shortfall first; Total Cost prices only what is left to buy."}
+        {buyers && ` The buyer characters' hangars and open buy orders in the ${allHubs ? 'hub regions' : `${hub} region`} cover the shortfall first; Total Cost prices only what is left to buy.`}
       </Text>
       {warnings.length > 0 && (
         <Alert color="warn" variant="light" title="Buyer sources incomplete">

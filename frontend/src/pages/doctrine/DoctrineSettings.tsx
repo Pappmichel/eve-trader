@@ -83,7 +83,7 @@ export default function DoctrineSettings() {
         than raw production materials.
       </Text>
       <MultiSelect label="Buyer characters" searchable clearable placeholder="None"
-        description="Their Jita 4-4 hangar and open Jita 4-4 buy orders reduce what the Shopping List still asks to buy"
+        description="Their hangars and open buy orders anywhere in the market hub's region reduce what the Shopping List still asks to buy"
         data={(buyerOptions ?? []).map((o) => ({ value: String(o.character_id), label: o.character_name }))}
         value={form.buyer_character_ids.map(String)}
         onChange={(v) => set('buyer_character_ids', v.map(Number))} />

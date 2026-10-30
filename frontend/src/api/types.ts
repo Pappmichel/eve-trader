@@ -1383,8 +1383,8 @@ export interface ShoppingListRow {
   hub_name: string | null
   required_total: number
   available: number
-  // Covered by the buyer characters' Jita 4-4 hangar / open Jita 4-4 buy orders.
-  jita_hangar: number
+  // Covered by the buyer characters' hangars / open buy orders in the hub region.
+  hub_hangar: number
   on_order: number
   to_buy: number
 }

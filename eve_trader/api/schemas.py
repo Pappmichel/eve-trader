@@ -792,7 +792,7 @@ class ShoppingListRow(_Base):
     hub_name: Optional[str] = None
     required_total: float = 0.0
     available: float = 0.0
-    jita_hangar: float = 0.0
+    hub_hangar: float = 0.0
     on_order: float = 0.0
     to_buy: float = 0.0
 
