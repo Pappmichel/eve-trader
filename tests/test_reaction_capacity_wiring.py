@@ -42,26 +42,32 @@ def _stub_shared_production_owner_ids(monkeypatch):
 #   R (Reaction, 100/run) <- 5x Fuel (20) + 100x Moon (30)
 #   Fuel (20, Tech I, 40/run) <- 1x Trit (40, buy-only)
 #   Moon (30) buy-only
+#   Component2 (2, Tech I) <- 10x ReactionProd2 (11), which shares Moon with R
 _BP = {
     1: (101, ACTIVITY_MANUFACTURING, 1.0),
+    2: (102, ACTIVITY_MANUFACTURING, 1.0),
     10: (1010, ACTIVITY_REACTION, 100.0),
+    11: (1011, ACTIVITY_REACTION, 100.0),
     20: (1020, ACTIVITY_MANUFACTURING, 40.0),
 }
 _MATERIALS = {
     101: [(10, 10)],
+    102: [(11, 10)],
     1010: [(20, 5), (30, 100)],
+    1011: [(20, 5), (30, 100)],
     1020: [(40, 1)],
 }
 _NAMES = {
-    1: "Component", 10: "ReactionProd", 20: "FuelBlock", 30: "MoonMat", 40: "Tritanium",
-    1010: "Reaction Formula", 1020: "Fuel Blueprint",
+    1: "Component", 2: "Component2", 10: "ReactionProd", 11: "ReactionProd2",
+    20: "FuelBlock", 30: "MoonMat", 40: "Tritanium",
+    1010: "Reaction Formula", 1011: "Reaction Formula 2", 1020: "Fuel Blueprint",
 }
 
 
 def _activity(type_id):
-    if type_id == 10:
-        return "Reaction", _BP[10]
-    if type_id in (1, 20):
+    if type_id in (10, 11):
+        return "Reaction", _BP[type_id]
+    if type_id in (1, 2, 20):
         return "Tech I", _BP[type_id]
     return "Input", None
 
@@ -94,7 +100,7 @@ def reaction_bom(monkeypatch, tenant):
     monkeypatch.setattr(storage, "get_sde_type",
                         lambda type_id: (type_id, 1, _NAMES.get(type_id, str(type_id)), 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "count_owned_formula_originals",
-                        lambda type_ids=None, **k: {1010: 50})
+                        lambda type_ids=None, **k: {1010: 50, 1011: 50})
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {})
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
     monkeypatch.setattr(storage, "list_integrated_special_order_items", lambda: [])
@@ -112,13 +118,14 @@ def reaction_bom(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
     monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 1.0)
     monkeypatch.setattr(engine, "job_category",
-                        lambda type_id: "Reactions" if type_id == 10 else (
-                            "Advanced Components" if type_id == 1 else None))
+                        lambda type_id: "Reactions" if type_id in (10, 11) else (
+                            "Advanced Components" if type_id in (1, 2) else None))
     monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.5)
     monkeypatch.setattr(engine, "_free_slots_by_category", lambda: {"Reactions": 10, "Manufacturing": 10})
     monkeypatch.setattr(engine.pricing, "buy_price",
                         lambda type_id, *a, **k: {
-                            10: 80_000.0, 20: 50_000.0, 30: 1000.0, 40: 5.0, 1010: 10_000_000.0,
+                            10: 80_000.0, 11: 80_000.0, 20: 50_000.0, 30: 1000.0, 40: 5.0,
+                            1010: 10_000_000.0, 1011: 10_000_000.0,
                         }.get(type_id, 1000.0))
     monkeypatch.setattr(engine.pricing, "buy_source", lambda *a, **k: "Jita")
     monkeypatch.setattr(engine.pricing, "quote_hub", lambda *a, **k: (None, None))
@@ -534,3 +541,22 @@ def test_partly_stocked_reaction_input_reports_on_hand_share(monkeypatch, reacti
     runs = sum(e.job_runs for e in prod["build_list"] if e.activity == "Reaction")
     assert moon.quantity == pytest.approx(100.0 * runs - 50.0)
     assert moon.on_hand_pct == pytest.approx(50.0 / (100.0 * runs) * 100)
+
+
+@pg_helpers.postgres_required()
+def test_asset_plan_readiness_does_not_double_claim_a_shared_input(monkeypatch, reaction_bom, tenant):
+    # Both reactions need 100 Moon per run; only 100 Moon is on hand, so
+    # exactly one run can be ready, not one per recipe.
+    stock_targets = [(1, "Component", 10, 0, 0), (2, "Component2", 10, 0, 0)]
+    on_hand = {30: 100.0, 20: 1000.0}
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda t, *a, **k: on_hand.get(t, 0.0))
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    asset = engine.plan_asset_optimized(cfg)
+
+    rx = [j for j in asset["jobs"] if j.activity == "Reaction"]
+    assert {j.type_id for j in rx} == {10, 11}
+    assert sum(j.runs_ready_now for j in rx) == 1

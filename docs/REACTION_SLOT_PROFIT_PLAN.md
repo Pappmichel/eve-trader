@@ -1,10 +1,11 @@
 # Reaction slot profit
 
-Status: proposal, not implemented (2026-10-29). Measurements below are
+Status: implemented 2026-10-30, see section 8 (carry value, solver gap).
+Sections 1-7 are the 2026-10-29 analysis, unchanged. Measurements below are
 read-only runs against the Default tenant
 (`00000000-0000-0000-0000-000000000001`). Nothing was written to the buy
 list or to dynamic stock targets. This note sits beside
-`docs/REACTION_CAPACITY_PLAN.md` and does not change that model.
+`docs/REACTION_CAPACITY_PLAN.md`.
 
 Question: a slot is awarded by minimising purchases over two windows, and
 on-hand inputs cost 0 in that sum. Is a job's profit better read as
@@ -346,3 +347,62 @@ the shadow and give the slot away.
   only window 2 needs. That split is independent of the stock price.
 - This document does not retune `mip_rel_gap` and does not implement the
   three input prices.
+
+## 8. Implementation (2026-10-30)
+
+### 8.1 Stock carry value
+The rule in section 6 asks whether an input "would be repurchased" or
+"would sit". That depends on the solution, so it is not decided before the
+solve. The solver prices it inside the model instead, as a value for stock
+left at the end of window 2:
+
+- `carry_need[m]` is what one more cycle would use of every material: the
+  next cycle's product demand (`demand x reaction_next_window_demand_factor`,
+  the same as window 2) expanded through the normal recipes down to raw
+  inputs (`reaction_capacity.carry_need_from_layer`). Alchemy is not used
+  for this figure.
+- A variable `keep[m]` credits owned stock still there after window 2 at the
+  buy price, up to `min(carry_need[m], on_hand + incoming)`. Owned means
+  stock and job output, never purchases and never units this plan reacts:
+  extra output stays worth 0 (section 6, rule 1). Shorts never count.
+- Using owned stock that the next cycle needs therefore costs its buy price
+  (platinum in section 2.1); stock above that need stays free (fuel,
+  chromium). Purchases stay charged once (rule 3), and shared inputs stay
+  inside the one solve (rule 4).
+- Resale is not modelled: the third price in rule 2 is 0. Production does
+  not sell raw reaction inputs, and no sell price for them exists in the
+  planner today.
+- `reaction_stock_carry_value` (Production Settings, default on) switches
+  it; off reproduces the model before this change.
+- The figures `w1_cost` and `w2_preview_cost` stay purchase costs; the
+  credit only steers the solve.
+
+### 8.2 Solver gap and penalties (rule 5)
+- `mip_rel_gap` 0.005 -> 1e-4 plus `mip_abs_gap` 100,000 ISK.
+- The gap counted the penalties too: one unmet unit (1e12) let a 0.5 %
+  gap accept a slot mix about 1 % worse in a synthetic test. A solve with
+  unmet demand or slot slack is now repeated with those quantities fixed
+  and priced at 0, so the gap measures ISK only.
+- A W1 demand that cannot be covered (a manual Build without a usable
+  formula, an unpriced product) made the whole model infeasible, and every
+  other product was then bought. The W2 input row now includes the W1
+  short.
+- A time-limited incumbent can be far from optimal: a synthetic layer of
+  production size (77 recipes, 199 slots) kept one at five times the LP
+  bound. When the MIP stops early, the LP is rounded to whole jobs (floor,
+  then the free slots to the largest remainders within formulas), the rest
+  re-solved with those jobs fixed, and the cheaper plan is kept with a
+  warning.
+- On six synthetic production-sized layers the solve takes 1.4-3 s and fills
+  199 of 199 slots; one hard layer hits the 10 s limit and is rescued by the
+  rounding (297 B instead of 2,136 B).
+
+### 8.3 Open: demand of window 2
+Window 2 demand is `demand1 x factor`, and `demand1` is the whole backlog
+of the stock targets, not one cycle's use. After window 1 the backlog is
+bought (D1), so window 2 only needs what one cycle consumes. With a large
+backlog, window 2 (and `carry_need`) is too high, and window 1 reacts
+intermediates for demand that may not come; the Hexite jobs in section 2.1
+exist only for window 2. Until this is decided, lower
+`reaction_next_window_demand_factor` when the backlog is well above one
+cycle's use.

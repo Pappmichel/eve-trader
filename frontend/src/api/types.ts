@@ -988,6 +988,7 @@ export interface ProductionSettings {
   reaction_window_interval_days: number
   reaction_formula_payback_cycles: number
   reaction_next_window_demand_factor: number
+  reaction_stock_carry_value: boolean
 }
 
 export interface ProducerCharacter {

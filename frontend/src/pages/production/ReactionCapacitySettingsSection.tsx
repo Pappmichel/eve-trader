@@ -56,6 +56,14 @@ export function ReactionCapacitySettingsSection({
         onChange={(e) => set('reaction_capacity_enabled', e.currentTarget.checked)}
         mb="sm"
       />
+      <Switch
+        label="Charge inputs taken from stock"
+        description="A reaction that uses stock the next cycle needs again pays its buy price for it. Stock above that need stays free. Off = all stock is free to use."
+        checked={form.reaction_stock_carry_value}
+        data-testid="reaction-stock-carry-value"
+        onChange={(e) => set('reaction_stock_carry_value', e.currentTarget.checked)}
+        mb="sm"
+      />
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput
           label="Max job duration (days)"

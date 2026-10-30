@@ -3927,6 +3927,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # (inputs not on hand / not bought are blockers).
         by_key = {r.key: r for r in layer.recipes}
         input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
+        # On-hand units already counted as ready for an earlier recipe: two
+        # recipes sharing an input (platinum) must not both claim the pile.
+        ready_claimed: dict[int, float] = {}
         for alloc in rplan.recipes:
             recipe = by_key.get(alloc.recipe_key)
             if recipe is None or alloc.runs <= 1e-9:
@@ -3948,7 +3951,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 needed = float(per_run) * runs
                 if needed <= 0:
                     continue
-                on_hand = _stock_on_hand(mid, manual_stock, cfg)
+                on_hand = max(0.0, _stock_on_hand(mid, manual_stock, cfg)
+                              - ready_claimed.get(mid, 0.0))
                 covered = min(needed, on_hand)
                 frac = covered / needed if needed > 0 else 1.0
                 if frac < min_frac:
@@ -3961,6 +3965,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         needed=needed, covered=covered,
                     ))
             ready = int(math.floor(runs * min_frac))
+            for mid, per_run in recipe.inputs.items():
+                ready_claimed[mid] = ready_claimed.get(mid, 0.0) + float(per_run) * ready
             out_qty = float(recipe.outputs.get(recipe.product_type_id, 0.0)) or 1.0
             runs_per_job = max(1, int(round(alloc.runs_per_job))) if alloc.runs_per_job > 0 else 1
             # Recommend only as many jobs as can start now; formulas_needed

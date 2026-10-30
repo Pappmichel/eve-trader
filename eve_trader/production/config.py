@@ -212,6 +212,10 @@ class ProductionConfig:
     reaction_formula_payback_cycles: float = 1.0
     # D14: W2 demand = W1 demand x this factor (1.0 = same again next cycle).
     reaction_next_window_demand_factor: float = 1.0
+    # Charge reaction inputs taken from stock at their buy price, up to what
+    # the next cycle needs again (docs/REACTION_SLOT_PROFIT_PLAN.md). Off =
+    # owned stock is free to use.
+    reaction_stock_carry_value: bool = True
 
     # -- Manual tracking (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) --
     # Default Tenant only - do_resolve_structure_name reads this under
