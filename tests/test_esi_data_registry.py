@@ -176,6 +176,8 @@ def test_every_consuming_tool_key_is_in_all_tool_keys():
     assert "portfolio" in consuming_tool_keys()
     by_key = {k.key: k for k in OWNED_DATA_KINDS}
     assert "portfolio" in by_key["market_orders"].consuming_tools
+    # Doctrine reads the buyers' open Jita buy orders (doctrine/buyer_sources.py).
+    assert "doctrine" in by_key["market_orders"].consuming_tools
     assert "portfolio" in by_key["contracts"].consuming_tools
     assert "portfolio" not in by_key["wallet"].consuming_tools
 

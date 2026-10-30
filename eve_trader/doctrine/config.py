@@ -64,6 +64,12 @@ class DoctrineConfig:
     # Empty tuple (the default) = no filter, today's whole-hangar-counts
     # behaviour, unchanged.
     stockpile_hangar_flags: tuple[str, ...] = ()
+    # Buyer characters whose Jita 4-4 hangar and open Jita 4-4 buy orders
+    # reduce what the Shopping List still asks to buy (buyer_sources.py).
+    # Only the Shopping List reads them; stockpile status stays on the real
+    # stockpile location. Each one must share Assets / Market Orders with
+    # Doctrine on the Characters page. Empty = off.
+    buyer_character_ids: tuple[int, ...] = ()
 
     @property
     def effective_structure_id(self) -> Optional[int]:
