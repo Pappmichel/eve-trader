@@ -216,6 +216,7 @@ Same layer and scenarios as 1.5.
 | D13 | Intermediates for the next window (finding 1.4.1) | The solver plans two windows together: the next one (W1, executed and shown as the plan) and the one after (W2, a preview). Intermediates reacted in W1 can feed composites in W2. Only W1's jobs and purchases are acted on; the next plan run starts again from the stock it finds. |
 | D14 | Demand of the second window | W2 demand = W1 demand x `reaction_next_window_demand_factor` (setting, default 1.0 = the next cycle needs the same again). What is built too much stays in stock and is netted by the next plan. |
 | D15 | Cost of using owned stock (2026-10-30, `docs/REACTION_SLOT_PROFIT_PLAN.md`) | Owned raw inputs (moon materials, fuel blocks) left after W2 are credited at 99 % of their buy price up to what one more cycle needs (`carry_need`), so using stock the next cycle needs costs its replacement price; stock above that need is free. Reaction products get no credit (refilling them would earn credit for output the slot rule values at 0). Setting `reaction_stock_carry_value`, default on. |
+| D16 | Base of W2 demand (2026-10-30, replaces D14's "W1 demand" base) | One cycle's use, not the backlog again: every stock target that clears the margin gate sells own market sales per day (`dynamic_targets.compute_own_sales`, home location, the dynamic targets window) x `reaction_window_interval_days`, expanded to the reaction boundary with no stock and no overbuild (`engine._reaction_cycle_demand`). A target without own sales in that window (not sold yet, or delivered by contract) keeps its W1 seed. Special orders are one-off and not repeated. Without a usable sales ledger, or with `reaction_w2_from_sales` off, W2 uses W1 demand as before. `reaction_next_window_demand_factor` scales either base; `carry_need` (D15) uses the same base. The Build List header names the source. |
 
 ## 3. Model
 
@@ -390,14 +391,12 @@ matters.
 | 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. **Done.** |
 | 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check; frontend CI green. **Done.** |
 | 4b | Review fixes (2026-10-30): W1 short in the W2 input row; gap 1e-4 + abs 100k ISK and penalty-free repeat; LP-rounding fallback; carry value D15; non-reaction incoming counted with a window date; asset-plan readiness claims shared inputs once. | Tests green. **Done.** |
+| 4c | D16: W2 demand from own sales, setting `reaction_w2_from_sales`, source shown in the Build List header. | Tests green; Server 1 comparison. **Done.** |
 | 5 | Test server with a copy of the production stock targets: compare jobs, purchases and total cost with today's plan; then enable on production. | Numbers reported to the user. |
 
 ## 7. Notes
-- **Open: W2 demand is the backlog again.** `demand1` is the whole
-  stock-target shortfall, not one cycle's use; after W1 the backlog is bought
-  (D1), so W2 should only carry one cycle's consumption. With a large backlog
-  W2 and `carry_need` are too high (see `docs/REACTION_SLOT_PROFIT_PLAN.md`
-  8.3). Lower `reaction_next_window_demand_factor` until this is decided.
+- W2 demand used to be the backlog again (`demand1` is the whole
+  stock-target shortfall); D16 replaced it with one cycle of own sales.
 - Reaction skills: most characters have 10 slots, the maximum is 11 (Mass
   Reactions V + Advanced Mass Reactions V). That is up to 32 more slots. It does
   not affect the plan; the slot shadow price from section 3 shows what those

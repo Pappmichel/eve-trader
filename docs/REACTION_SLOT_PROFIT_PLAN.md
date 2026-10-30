@@ -409,12 +409,11 @@ left at the end of window 2:
   199 of 199 slots; one hard layer hits the 10 s limit and is rescued by the
   rounding (297 B instead of 2,136 B).
 
-### 8.3 Open: demand of window 2
+### 8.3 Demand of window 2 (resolved by D16)
 Window 2 demand is `demand1 x factor`, and `demand1` is the whole backlog
 of the stock targets, not one cycle's use. After window 1 the backlog is
 bought (D1), so window 2 only needs what one cycle consumes. With a large
 backlog, window 2 (and `carry_need`) is too high, and window 1 reacts
 intermediates for demand that may not come; the Hexite jobs in section 2.1
-exist only for window 2. Until this is decided, lower
-`reaction_next_window_demand_factor` when the backlog is well above one
-cycle's use.
+exist only for window 2. Decision D16 in `docs/REACTION_CAPACITY_PLAN.md`
+replaces that base with one cycle of own sales.
