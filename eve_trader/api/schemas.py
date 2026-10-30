@@ -790,6 +790,11 @@ class ShoppingListRow(_Base):
     total_cost: Optional[float] = None
     hub_region_id: Optional[int] = None
     hub_name: Optional[str] = None
+    required_total: float = 0.0
+    available: float = 0.0
+    jita_hangar: float = 0.0
+    on_order: float = 0.0
+    to_buy: float = 0.0
 
 
 class FittingStatus(_Base):

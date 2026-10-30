@@ -213,6 +213,7 @@ class DoctrineSettings(BaseModel):
     import_cost_per_m3: float
     hub_region_id: int = 10000002
     stockpile_hangar_flags: tuple[str, ...] = ()
+    buyer_character_ids: tuple[int, ...] = ()
 
 
 @router.get("/settings", response_model=DoctrineSettings)
@@ -223,6 +224,11 @@ def get_settings():
 @router.post("/settings")
 def update_settings(updates: DoctrineSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
+
+
+@router.get("/settings/buyer-character-options")
+def get_buyer_character_options():
+    return _wrap(actions.do_list_buyer_character_options)
 
 
 @router.get("/settings/hangar-division-options")

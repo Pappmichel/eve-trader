@@ -15,7 +15,7 @@ from .. import hubs, storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
-from . import parser, validation
+from . import buyer_sources, parser, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
@@ -411,17 +411,27 @@ def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[floa
 
 
 def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> list[ShoppingListRow]:
-    """Every item with a real stockpile shortfall (across every doctrine,
+    return shopping_list(doctrine_id, cfg)[0]
+
+
+def shopping_list(doctrine_id: Optional[str] = None,
+                  cfg: DoctrineConfig = DOCTRINE_CONFIG) -> tuple[list[ShoppingListRow], list[str]]:
+    """(rows, warnings). Every item with a real stockpile shortfall (across every doctrine,
     same aggregation as the Stockpile page's own combined view - GitHub
     issue #1's aggregate_stockpile_rows), each with a Build-vs-Buy-C-J-vs-
     Buy-Jita comparison. Build cost reuses Production's real cost engine
     directly (_PlanContext/unit_cost_detail) - see this module's own import
     comment for why - so it reflects the user's actual owned-BPO/ME/TE/
-    structure config, not a second, possibly-divergent estimate."""
+    structure config, not a second, possibly-divergent estimate.
+
+    With buyer characters configured (DoctrineConfig.buyer_character_ids),
+    their Jita 4-4 hangar and then their open Jita 4-4 buy orders cover the
+    shortfall first (buyer_sources.py); `to_buy` is what is left and prices
+    `total_cost`. A fully covered row stays in the list with to_buy 0."""
     rows, _ = stockpile_rows_for_doctrine(doctrine_id, cfg)
     aggregated = [r for r in aggregate_stockpile_rows(rows) if r.shortfall > 0]
     if not aggregated:
-        return []
+        return [], []
 
     # extra_type_ids: _PlanContext's own priced universe is otherwise scoped
     # to Production's stock_targets material closure (see its docstring) -
@@ -431,6 +441,7 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     # Same mechanism plan_special_order already relies on for its own
     # never-a-stock-target line items.
     type_ids = [row.type_id for row in aggregated]
+    buyer = buyer_sources.collect(type_ids, cfg)
     all_hubs = cfg.hub_region_id == hubs.ALL_HUBS
     # Build-cost material quotes need one real region; ALL_HUBS must never
     # reach an ESI region call as 0 (the per-item best hub comes from
@@ -500,7 +511,12 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
         candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
         priced = {k: v for k, v in candidates.items() if v is not None}
         recommended_source = min(priced, key=priced.get) if priced else None
-        total_cost = priced[recommended_source] * row.shortfall if recommended_source else None
+        jita_hangar = on_order = 0.0
+        if buyer is not None:
+            jita_hangar = min(row.shortfall, buyer.jita_hangar.get(row.type_id, 0.0))
+            on_order = min(row.shortfall - jita_hangar, buyer.on_order.get(row.type_id, 0.0))
+        to_buy = row.shortfall - jita_hangar - on_order
+        total_cost = priced[recommended_source] * to_buy if recommended_source else None
 
         result.append(ShoppingListRow(
             type_id=row.type_id, type_name=row.type_name, shortfall=row.shortfall,
@@ -508,8 +524,9 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
             recommended_source=recommended_source, total_cost=total_cost,
             hub_region_id=hub_id, hub_name=hubs.hub_name(hub_id) if hub_id is not None else None,
             required_total=row.required_total, available=row.available,
+            jita_hangar=jita_hangar, on_order=on_order, to_buy=to_buy,
         ))
-    return result
+    return result, (buyer.warnings if buyer is not None else [])
 
 
 # ---------------------------------------------------------------- status / ampel

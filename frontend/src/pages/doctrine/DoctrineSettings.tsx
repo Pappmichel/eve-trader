@@ -15,6 +15,9 @@ export default function DoctrineSettings() {
   const { data: hangarOptions } = useQuery({
     queryKey: ['doctrine', 'hangar-division-options'], queryFn: doctrineApi.hangarDivisionOptions,
   })
+  const { data: buyerOptions } = useQuery({
+    queryKey: ['doctrine', 'buyer-character-options'], queryFn: doctrineApi.buyerCharacterOptions,
+  })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<DoctrineSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
@@ -22,6 +25,13 @@ export default function DoctrineSettings() {
   const save = useAction('Save Settings', doctrineApi.updateSettings, [['doctrine', 'settings']])
 
   if (!form) return <Center h={200}><Loader color="accent" /></Center>
+
+  const missingShares = (buyerOptions ?? [])
+    .filter((o) => form.buyer_character_ids.includes(o.character_id))
+    .flatMap((o) => [
+      ...(o.assets_shared ? [] : [`${o.character_name}: Assets`]),
+      ...(o.market_orders_shared ? [] : [`${o.character_name}: Market Orders`]),
+    ])
 
   const set = <K extends keyof DoctrineSettingsT>(key: K, value: DoctrineSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
@@ -72,6 +82,16 @@ export default function DoctrineSettings() {
         cost, seeded from the same 900 ISK/m³ default) - fitted modules/ships plausibly have different logistics
         than raw production materials.
       </Text>
+      <MultiSelect label="Buyer characters" searchable clearable placeholder="None"
+        description="Their Jita 4-4 hangar and open Jita 4-4 buy orders reduce what the Shopping List still asks to buy"
+        data={(buyerOptions ?? []).map((o) => ({ value: String(o.character_id), label: o.character_name }))}
+        value={form.buyer_character_ids.map(String)}
+        onChange={(v) => set('buyer_character_ids', v.map(Number))} />
+      {missingShares.length > 0 && (
+        <Text size="xs" c="warn">
+          Not shared with Doctrine yet (Characters page): {missingShares.join(', ')}.
+        </Text>
+      )}
 
       <Button mt="md" w={200} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings
