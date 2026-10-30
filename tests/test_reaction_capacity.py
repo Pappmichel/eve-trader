@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from eve_trader import storage
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.models import CharacterSlotRow
 from datetime import datetime, timezone
@@ -773,3 +774,197 @@ def test_buy_reason_separates_missing_inputs_from_capacity(monkeypatch, jobs_use
     assert buys[20] == 100.0
     assert reason[20] == expected
     assert given_up[20] == pytest.approx(60_000.0)
+
+
+# ------------------------------------------------------------------ review fixes
+def test_uncoverable_w1_demand_does_not_make_the_model_infeasible():
+    # Product 2 is a manual Build without any formula: W1 cannot cover it.
+    # Before the fix the W2 input row had no short1, the model was infeasible
+    # and product 1 was bought in full although it fits the slots.
+    a = _recipe("normal:1", 1, fee=10.0, inputs={11: 100.0}, outputs={1: 200.0},
+                fit=100, formulas=5, formula_price=None)
+    b = _recipe("normal:2", 2, fee=10.0, inputs={12: 100.0}, outputs={2: 200.0},
+                fit=100, formulas=0, formula_price=None)
+    window = _window(
+        {1: 40_000.0, 2: 1_000.0}, slots=10,
+        prices={1: 1000.0, 2: 1000.0, 11: 100.0, 12: 100.0},
+        manual_build=frozenset({2}),
+    )
+
+    plan = solve(ReactionLayer(recipes=[a, b]), window)
+
+    jobs = {r.recipe_key: r.jobs for r in plan.recipes}
+    assert jobs.get("normal:1", 0) >= 2
+    assert plan.buy.get(1, 0.0) < 1e-6
+    assert plan.unmet_demand.get(2, 0.0) > 0
+    assert not any("infeasible" in w.lower() for w in plan.warnings)
+
+
+def test_unmet_demand_penalty_does_not_loosen_the_slot_choice():
+    # The relative MIP gap used to include the 1e12 short penalty, so one
+    # unrelated unmet unit let the solver keep a far worse slot mix.
+    recipes, prices, demand = [], {}, {}
+    for i in range(40):
+        pid, inp = 1000 + i, 5000 + i
+        recipes.append(_recipe(f"normal:{pid}", pid, fee=1000.0, inputs={inp: 100.0},
+                               outputs={pid: 200.0}, fit=100, formulas=50, formula_price=None))
+        prices[pid] = 1000.0 + 37 * i
+        prices[inp] = 500.0
+        demand[pid] = 30_000.0
+    layer = ReactionLayer(recipes=recipes)
+    base = solve(layer, _window(dict(demand), slots=30, prices=prices))
+    with_short = solve(layer, _window({**demand, 999: 10.0}, slots=30, prices=prices))
+
+    def chosen(plan):
+        return sorted(r.recipe_key for r in plan.recipes if r.jobs)
+
+    assert chosen(with_short) == chosen(base)
+    assert with_short.total_cost == pytest.approx(base.total_cost, abs=1e6)
+
+
+def _carry_layer():
+    # 100 A -> 100 P, no fee: building P uses A and nothing else.
+    recipe = _recipe("normal:1", 1, fee=0.0, inputs={50: 100.0}, outputs={1: 100.0},
+                     fit=100, formulas=5, formula_price=None)
+    return ReactionLayer(recipes=[recipe])
+
+
+def _carry_window(carry_need):
+    return ReactionWindow(
+        slots=5, on_hand={50: 1000.0}, demand={1: 1000.0},
+        prices={1: 10.0, 50: 15.0}, demand_factor=0.0, carry_need=carry_need,
+    )
+
+
+def test_stock_free_to_use_without_carry_need():
+    plan = solve(_carry_layer(), _carry_window({}))
+    assert sum(r.jobs for r in plan.recipes) > 0
+    assert plan.buy.get(1, 0.0) < 1e-6
+
+
+def test_stock_the_next_cycle_needs_is_charged_at_buy_price():
+    # Using 1000 A costs 14,850 (99 % of 15,000); buying 1000 P costs 10,000.
+    plan = solve(_carry_layer(), _carry_window({50: 1000.0}))
+    assert sum(r.jobs for r in plan.recipes) == 0
+    assert plan.buy.get(1, 0.0) == pytest.approx(1000.0)
+
+
+def test_stock_above_the_next_cycle_need_stays_free():
+    # Owned 1000, next cycle needs 0 of it beyond this window: still free.
+    window = ReactionWindow(
+        slots=5, on_hand={50: 2000.0}, demand={1: 1000.0},
+        prices={1: 10.0, 50: 15.0}, demand_factor=0.0, carry_need={50: 1000.0},
+    )
+    plan = solve(_carry_layer(), window)
+    assert sum(r.jobs for r in plan.recipes) > 0
+    assert plan.buy.get(1, 0.0) < 1e-6
+
+
+def test_bought_units_earn_no_carry_credit_on_todays_buy_list():
+    # A purchase made only to keep stock must never reach today's Buy List.
+    plan = solve(_carry_layer(), _carry_window({50: 1000.0}))
+    assert plan.buy.get(50, 0.0) < 1e-6
+
+
+def test_carry_need_expands_demand_through_normal_recipes():
+    from eve_trader.production.reaction_capacity import carry_need_from_layer
+    composite = _recipe("normal:3", 3, inputs={2: 2.0}, outputs={3: 1.0})
+    intermediate = _recipe("normal:2", 2, inputs={50: 3.0}, outputs={2: 1.0})
+    alchemy = _recipe("alchemy:2", 2, inputs={60: 99.0}, outputs={2: 1.0}, blueprint=7000)
+    layer = ReactionLayer(recipes=[composite, intermediate, alchemy])
+
+    need = carry_need_from_layer(layer, {3: 10.0}, factor=2.0)
+
+    # Reaction products (3, 2) are left out: only raw inputs carry value.
+    assert need == pytest.approx({50: 120.0})
+
+
+def test_build_window_counts_non_reaction_incoming_with_a_window_date(monkeypatch):
+    # With a window date, window_state splits reaction jobs only. Fuel block
+    # jobs and manual incoming used to be dropped; they belong in incoming1.
+    from eve_trader.production import engine
+    from eve_trader.production import reaction_capacity as rc
+
+    fuel, reaction_product = 4051, 1
+    hangar = {fuel: 100.0, reaction_product: 10.0}
+    current = {fuel: 160.0, reaction_product: 999.0}  # 999 includes reaction jobs
+    monkeypatch.setattr(engine, "classify_activity", lambda t: (
+        ("Reaction", (91, 11, 100)) if t == reaction_product else ("Manufacturing", (92, 1, 40))))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda t, *a, **k: hangar.get(t, 0.0))
+    monkeypatch.setattr(engine, "_current_stock", lambda t, *a, **k: current.get(t, 0.0))
+    monkeypatch.setattr(engine, "_haul_volume", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine.pricing, "buy_price", lambda *a, **k: 10.0)
+    monkeypatch.setattr(storage, "manual_incoming_qty",
+                        lambda t: 7.0 if t == reaction_product else 0.0)
+    cfg = ProductionConfig(reaction_window_next="2999-01-01T00:00:00+00:00")
+    layer = ReactionLayer(recipes=[_recipe(
+        "normal:1", reaction_product, inputs={fuel: 5.0}, outputs={reaction_product: 100.0})])
+
+    window, _state = rc.build_window(
+        cfg, {reaction_product: 500.0}, layer, home={}, jita={}, cost_memo={},
+        manual_overrides={}, manual_stock={}, character_rows=[], industry_jobs=[],
+    )
+
+    assert window.incoming1[fuel] == pytest.approx(60.0)
+    assert window.incoming1[reaction_product] == pytest.approx(7.0)
+    assert window.on_hand[fuel] == pytest.approx(100.0)
+    assert window.carry_need[fuel] == pytest.approx(25.0)
+
+
+def test_lp_rounding_replaces_a_poor_time_limited_incumbent(monkeypatch):
+    from eve_trader.production import reaction_capacity as rc
+
+    recipes, prices, demand = [], {9000: 1.0}, {}
+    for i in range(30):
+        pid = 1000 + i
+        recipes.append(_recipe(f"normal:{pid}", pid, fee=100.0, fit=10, formulas=3,
+                               outputs={pid: 100.0}, inputs={9000: 1.0},
+                               formula_price=5_000_000.0))
+        demand[pid] = 5000.0
+        prices[pid] = 100_000.0 + 1000 * i
+    layer = ReactionLayer(recipes=recipes)
+    window = _window(demand, slots=50, on_hand={9000: 1e6}, prices=prices)
+    reference = solve(layer, window)
+
+    monkeypatch.setattr(rc, "_MIP_TIME_LIMIT_SECONDS", 1e-6)
+    plan = solve(layer, window)
+
+    assert any("rounded to whole jobs" in w for w in plan.warnings)
+    assert plan.jobs_used <= 50
+    assert plan.jobs_used >= 45
+    assert plan.total_cost <= reference.total_cost * 1.02
+
+
+def test_cycle_demand_replaces_the_backlog_in_w2():
+    # W1 backlog 10,000 units; one cycle only sells 1,000. W2 used to need
+    # the backlog again, so both windows together made 20,000.
+    recipe = _recipe("normal:1", 1, fee=10.0, inputs={9000: 1.0}, outputs={1: 100.0},
+                     fit=100, formulas=10, formula_price=None)
+    layer = ReactionLayer(recipes=[recipe])
+    base = dict(slots=10, on_hand={9000: 1e6}, prices={1: 1000.0, 9000: 1.0})
+
+    def made(plan):
+        w1 = sum(r.units.get(1, 0.0) for r in plan.recipes)
+        w2 = sum(r.units.get(1, 0.0) for r in plan.next_window.recipes)
+        return w1 + w2
+
+    backlog = solve(layer, ReactionWindow(demand={1: 10_000.0}, **base))
+    cycle = solve(layer, ReactionWindow(demand={1: 10_000.0}, cycle_demand={1: 1_000.0}, **base))
+
+    assert made(backlog) == pytest.approx(20_000.0, abs=100.0)
+    assert made(cycle) == pytest.approx(11_000.0, abs=100.0)
+
+
+def test_cycle_demand_may_name_a_product_without_w1_demand():
+    a = _recipe("normal:1", 1, inputs={9000: 1.0}, outputs={1: 100.0}, fit=100, formula_price=None)
+    b = _recipe("normal:2", 2, inputs={9000: 1.0}, outputs={2: 100.0}, fit=100, formula_price=None)
+    window = ReactionWindow(
+        slots=10, on_hand={9000: 1e6}, demand={1: 500.0}, cycle_demand={2: 700.0},
+        prices={1: 1000.0, 2: 1000.0, 9000: 1.0},
+    )
+
+    plan = solve(ReactionLayer(recipes=[a, b]), window)
+
+    w2_units = {r.product_type_id: r.units.get(r.product_type_id, 0.0) for r in plan.next_window.recipes}
+    assert w2_units.get(2, 0.0) + plan.next_window.buy.get(2, 0.0) >= 700.0 - 1e-6
+    assert w2_units.get(1, 0.0) + plan.next_window.buy.get(1, 0.0) < 1e-6

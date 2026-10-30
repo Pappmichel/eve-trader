@@ -51,6 +51,8 @@ const BASE: ProductionSettings = {
   reaction_window_interval_days: 14,
   reaction_formula_payback_cycles: 1,
   reaction_next_window_demand_factor: 1,
+  reaction_stock_carry_value: true,
+  reaction_w2_from_sales: true,
 }
 
 function renderSection(form: ProductionSettings = BASE, set = vi.fn()) {

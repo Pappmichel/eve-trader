@@ -7,7 +7,12 @@ Phase 1b reworked the solver; the two-window re-run (section 1.5) surfaced five
 fixes done in phase 1c; the final re-run (section 1.6) passed. Phase 3 wired
 the solver into both Build Lists behind `reaction_capacity_enabled`. Phase 4
 added settings, chaining-choice storage, API fields and the Build/Buy List UI.
-Next: phase 5 (test-server comparison and production enablement — operator).
+Phase 4b (2026-10-30, review) fixed an infeasible model on uncoverable W1
+demand, tightened the MIP gap, added an LP-rounding fallback and the stock
+carry value (D15, `docs/REACTION_SLOT_PROFIT_PLAN.md` section 8).
+W2 demand now comes from own sales instead of the backlog (D16).
+`reaction_capacity_enabled` is already on for the Default tenant; phase 5
+(comparison numbers for the user) is still open.
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
@@ -210,6 +215,8 @@ Same layer and scenarios as 1.5.
 | D12 | Window date (gap 8) | New settings `reaction_window_next` (date and time of the next window) and `reaction_window_interval_days` (default 14). Slots whose reaction jobs end after the window start are not free; output of jobs ending before it counts as on hand. Without a date set, all slots count as free. |
 | D13 | Intermediates for the next window (finding 1.4.1) | The solver plans two windows together: the next one (W1, executed and shown as the plan) and the one after (W2, a preview). Intermediates reacted in W1 can feed composites in W2. Only W1's jobs and purchases are acted on; the next plan run starts again from the stock it finds. |
 | D14 | Demand of the second window | W2 demand = W1 demand x `reaction_next_window_demand_factor` (setting, default 1.0 = the next cycle needs the same again). What is built too much stays in stock and is netted by the next plan. |
+| D15 | Cost of using owned stock (2026-10-30, `docs/REACTION_SLOT_PROFIT_PLAN.md`) | Owned raw inputs (moon materials, fuel blocks) left after W2 are credited at 99 % of their buy price up to what one more cycle needs (`carry_need`), so using stock the next cycle needs costs its replacement price; stock above that need is free. Reaction products get no credit (refilling them would earn credit for output the slot rule values at 0). Setting `reaction_stock_carry_value`, default on. |
+| D16 | Base of W2 demand (2026-10-30, replaces D14's "W1 demand" base) | One cycle's use, not the backlog again: every stock target that clears the margin gate sells own market sales per day (`dynamic_targets.compute_own_sales`, home location, the dynamic targets window) x `reaction_window_interval_days`, expanded to the reaction boundary with no stock and no overbuild (`engine._reaction_cycle_demand`). A target without own sales in that window (not sold yet, or delivered by contract) keeps its W1 seed. Special orders are one-off and not repeated. Without a usable sales ledger, or with `reaction_w2_from_sales` off, W2 uses W1 demand as before. `reaction_next_window_demand_factor` scales either base; `carry_need` (D15) uses the same base. The Build List header names the source. |
 
 ## 3. Model
 
@@ -234,6 +241,8 @@ so the integer part is small.
   ME), outputs per run (normal: product quantity; alchemy: the reprocessed
   yield from `_alchemy_yield`, target plus byproducts),
   `fit[r] = floor(reaction_cycle_days x 86400 / seconds[r])` runs per job.
+- `carry_need[m]` (D15): one more cycle's use of every raw input, the W2
+  product demand expanded through the normal recipes.
 - `formulas[r]`: owned originals of the recipe's formula (`character_blueprints`
   + `corp_blueprints`, `quantity = -1` rows plus the stack size of rows with a
   positive quantity; copies, `-2`, never count).
@@ -279,11 +288,15 @@ Stock at the start of W2, per material (a linear expression, not a variable):
   `buy[p,w] = 0`; if the slots cannot cover it, a penalised slack on the slot
   row keeps the model feasible and the result carries a warning.
 - No price: `buy[m,w] = 0`.
+- Carry value (D15): `keep[m] <= min(carry_need[m], on_hand + incoming1 +
+  incoming2)` and `keep[m] <=` stock left after W2 without shorts.
+- The W2 input row includes `short[p,1]` (S2 contains it); without it an
+  uncoverable W1 demand made the model infeasible.
 
 **Objective:** minimise, over both windows,
 `sum_{m,w} price[m] * buy[m,w] + sum_{r,w} fee[r] * runs[r,w] +
 sum_r price[formula r] * new_formulas[r] / reaction_formula_payback_cycles +
-penalty * sum short`. W2 is costed in full: W1 runs whose output only pays off
+penalty * sum short - 0.99 * sum_m price[m] * keep[m]`. W2 is costed in full: W1 runs whose output only pays off
 in W2 (intermediates) compete fairly with buying in W2.
 
 With spare slots the solver fills them with alchemy where alchemy is cheaper
@@ -305,7 +318,11 @@ probe MIP per recipe): the slot value is the objective drop at `slots1 + 1`;
 each formula's value is the sum of its W1 and W2 formula-row duals (one owned
 formula relaxes both), or the formula price / payback when buying is cheaper.
 Runtime target: the whole `solve` under 5 s on the production layer
-(`mip_rel_gap` 0.005, time limit 10 s; time-limit status is reported).
+(`mip_rel_gap` 1e-4 and `mip_abs_gap` 100,000 ISK since 2026-10-30, time
+limit 10 s; time-limit status is reported). A solve with shorts or slot
+slack is repeated with those fixed and priced at 0, so penalties do not
+widen the gap. When the MIP stops early, the LP rounded to whole jobs
+replaces the incumbent if it is cheaper.
 
 **Output:** W1 per recipe the jobs, runs per job, units and formulas to buy;
 per product the units bought now (including purchases that feed W2);
@@ -372,10 +389,14 @@ matters.
 | 1b | Rework the solver to the two-window model (D13, D14) and the revised D10; shadow prices from LP duals; formula shadow fix; busy slots skip excluded characters; `reaction_next_window_demand_factor` setting. Tests: an intermediate with spare W1 slots is reacted for W2 composites; "wait" runs the composite in W2 instead of buying; default buy; shadow prices non-empty and match a brute-force probe on a small layer; runtime guard on a 60-product synthetic layer. Then re-run the phase 2 script. | **Tests green (PR #330).** Two-window production re-run done (section 1.5). |
 | 1c | Fixes from section 1.5: W2 continuous (no `jobs2` integrality) + `mip_rel_gap`; hard W1 slots; like-for-like LP chaining with `isk_saved >= 0`; `w1_cost` / `w2_preview_cost` keeping W2-feeding `buy1`; formula dual = `d1 + d2`; D11 W2 formulas bought now. | **Done; production re-run passed (section 1.6).** |
 | 3 | Wire the solution into `_expand_all` and `plan_asset_optimized` behind `reaction_capacity_enabled`. Tests: both lists agree; switch off reproduces today's plans exactly. | Tests green; switch off unchanged. **Done.** |
-| 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check; frontend CI green. |
+| 4 | Settings, chaining choice storage (schema), API fields, Build/Buy List UI from section 5. | Browser check; frontend CI green. **Done.** |
+| 4b | Review fixes (2026-10-30): W1 short in the W2 input row; gap 1e-4 + abs 100k ISK and penalty-free repeat; LP-rounding fallback; carry value D15; non-reaction incoming counted with a window date; asset-plan readiness claims shared inputs once. | Tests green. **Done.** |
+| 4c | D16: W2 demand from own sales, setting `reaction_w2_from_sales`, source shown in the Build List header. | Tests green; Server 1 comparison. **Done.** |
 | 5 | Test server with a copy of the production stock targets: compare jobs, purchases and total cost with today's plan; then enable on production. | Numbers reported to the user. |
 
 ## 7. Notes
+- W2 demand used to be the backlog again (`demand1` is the whole
+  stock-target shortfall); D16 replaced it with one cycle of own sales.
 - Reaction skills: most characters have 10 slots, the maximum is 11 (Mass
   Reactions V + Advanced Mass Reactions V). That is up to 32 more slots. It does
   not affect the plan; the slot shadow price from section 3 shows what those

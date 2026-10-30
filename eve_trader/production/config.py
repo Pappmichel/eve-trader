@@ -212,6 +212,14 @@ class ProductionConfig:
     reaction_formula_payback_cycles: float = 1.0
     # D14: W2 demand = W1 demand x this factor (1.0 = same again next cycle).
     reaction_next_window_demand_factor: float = 1.0
+    # Charge raw reaction inputs (moon materials, fuel blocks) taken from
+    # stock at their buy price, up to what the next cycle needs again
+    # (docs/REACTION_SLOT_PROFIT_PLAN.md section 8). Off = owned stock is free.
+    reaction_stock_carry_value: bool = True
+    # D16: W2 demand = one cycle's own sales (x reaction_window_interval_days)
+    # expanded to reaction products; targets without sales keep their W1
+    # seed. Off, or without a usable sales ledger = W1 demand (the backlog).
+    reaction_w2_from_sales: bool = True
 
     # -- Manual tracking (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) --
     # Default Tenant only - do_resolve_structure_name reads this under

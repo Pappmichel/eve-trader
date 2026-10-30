@@ -46,6 +46,8 @@ _REACTION_CAPACITY_KEYS = (
     "reaction_window_interval_days",
     "reaction_formula_payback_cycles",
     "reaction_next_window_demand_factor",
+    "reaction_stock_carry_value",
+    "reaction_w2_from_sales",
 )
 
 
