@@ -39,7 +39,7 @@ export default function ShoppingList() {
       { header: 'Jita 4-4', accessorKey: 'jita_hangar', size: 100, cell: (i: any) => (i.getValue() > 0 ? qty(i.getValue()) : '–') },
       { header: 'On order', accessorKey: 'on_order', size: 100, cell: (i: any) => (i.getValue() > 0 ? qty(i.getValue()) : '–') },
       {
-        header: 'To buy', accessorKey: 'to_buy', size: 110, meta: { exportRole: 'qty' },
+        header: 'To buy', accessorKey: 'to_buy', size: 110, meta: { exportRole: 'qty' as const },
         cell: (i: any) => (i.getValue() > 0
           ? qty(i.getValue())
           : <Badge size="sm" color="dimmed" variant="light">covered</Badge>),
