@@ -356,19 +356,27 @@ The rule in section 6 asks whether an input "would be repurchased" or
 solve. The solver prices it inside the model instead, as a value for stock
 left at the end of window 2:
 
-- `carry_need[m]` is what one more cycle would use of every material: the
-  next cycle's product demand (`demand x reaction_next_window_demand_factor`,
-  the same as window 2) expanded through the normal recipes down to raw
-  inputs (`reaction_capacity.carry_need_from_layer`). Alchemy is not used
-  for this figure.
-- A variable `keep[m]` credits owned stock still there after window 2 at the
-  buy price, up to `min(carry_need[m], on_hand + incoming)`. Owned means
-  stock and job output, never purchases and never units this plan reacts:
-  extra output stays worth 0 (section 6, rule 1). Shorts never count.
-- Using owned stock that the next cycle needs therefore costs its buy price
-  (platinum in section 2.1); stock above that need stays free (fuel,
-  chromium). Purchases stay charged once (rule 3), and shared inputs stay
-  inside the one solve (rule 4).
+- `carry_need[m]` is what one more cycle would use of every raw input
+  (moon materials, fuel blocks): the next cycle's product demand
+  (`demand x reaction_next_window_demand_factor`, the same as window 2)
+  expanded through the normal recipes (`reaction_capacity.carry_need_from_layer`).
+  Alchemy is not used for this figure.
+- A variable `keep[m]` credits owned stock still there after window 2 at
+  99 % of the buy price, up to `min(carry_need[m], on_hand + incoming)`.
+  Shorts never count. Below 100 % so buying a unit only to hold it is never
+  a tie.
+- Using owned stock that the next cycle needs therefore costs its
+  replacement price (platinum in section 2.1); stock above that need stays
+  free (fuel, chromium). Purchases stay charged once (rule 3), and shared
+  inputs stay inside the one solve (rule 4).
+- **Reaction products of the layer (Hexite) get no carry value.** Stock is
+  fungible: crediting an intermediate at its buy price makes reacting a new
+  unit to refill the pile worth `buy - cost`, so the solver reacts stock for
+  the cycle after window 2 - output the slot rule values at 0 (rule 1). The
+  first version did this on Server 1 (2026-10-30, Default tenant data):
+  78 -> 168 of 168 jobs, window-1 cost 6.3 -> 15.7 B, preview 4.9 -> 32.1 B.
+  Intermediate stock stays free to use, as before; the next plan nets what
+  is left.
 - Resale is not modelled: the third price in rule 2 is 0. Production does
   not sell raw reaction inputs, and no sell price for them exists in the
   planner today.
@@ -393,6 +401,10 @@ left at the end of window 2:
   then the free slots to the largest remainders within formulas), the rest
   re-solved with those jobs fixed, and the cheaper plan is kept with a
   warning.
+- Server 1, Default tenant, with the final rule (carry off -> on): 69 -> 61
+  of 168 jobs, window-1 cost 7.0 -> 6.7 B, 5 -> 6 reaction products bought,
+  preview 9.6 -> 12.9 B, solve 1.2 s. Slots were not binding on that data
+  (shadow price 0).
 - On six synthetic production-sized layers the solve takes 1.4-3 s and fills
   199 of 199 slots; one hard layer hits the 10 s limit and is rescued by the
   rounding (297 B instead of 2,136 B).

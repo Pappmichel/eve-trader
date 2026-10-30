@@ -215,7 +215,7 @@ Same layer and scenarios as 1.5.
 | D12 | Window date (gap 8) | New settings `reaction_window_next` (date and time of the next window) and `reaction_window_interval_days` (default 14). Slots whose reaction jobs end after the window start are not free; output of jobs ending before it counts as on hand. Without a date set, all slots count as free. |
 | D13 | Intermediates for the next window (finding 1.4.1) | The solver plans two windows together: the next one (W1, executed and shown as the plan) and the one after (W2, a preview). Intermediates reacted in W1 can feed composites in W2. Only W1's jobs and purchases are acted on; the next plan run starts again from the stock it finds. |
 | D14 | Demand of the second window | W2 demand = W1 demand x `reaction_next_window_demand_factor` (setting, default 1.0 = the next cycle needs the same again). What is built too much stays in stock and is netted by the next plan. |
-| D15 | Cost of using owned stock (2026-10-30, `docs/REACTION_SLOT_PROFIT_PLAN.md`) | Owned stock left after W2 is credited at its buy price up to what one more cycle needs (`carry_need`), so using stock the next cycle needs costs its replacement price; stock above that need is free. Purchases and reacted output earn no credit. Setting `reaction_stock_carry_value`, default on. |
+| D15 | Cost of using owned stock (2026-10-30, `docs/REACTION_SLOT_PROFIT_PLAN.md`) | Owned raw inputs (moon materials, fuel blocks) left after W2 are credited at 99 % of their buy price up to what one more cycle needs (`carry_need`), so using stock the next cycle needs costs its replacement price; stock above that need is free. Reaction products get no credit (refilling them would earn credit for output the slot rule values at 0). Setting `reaction_stock_carry_value`, default on. |
 
 ## 3. Model
 
@@ -240,7 +240,7 @@ so the integer part is small.
   ME), outputs per run (normal: product quantity; alchemy: the reprocessed
   yield from `_alchemy_yield`, target plus byproducts),
   `fit[r] = floor(reaction_cycle_days x 86400 / seconds[r])` runs per job.
-- `carry_need[m]` (D15): one more cycle's use of every material, the W2
+- `carry_need[m]` (D15): one more cycle's use of every raw input, the W2
   product demand expanded through the normal recipes.
 - `formulas[r]`: owned originals of the recipe's formula (`character_blueprints`
   + `corp_blueprints`, `quantity = -1` rows plus the stack size of rows with a
@@ -295,7 +295,7 @@ Stock at the start of W2, per material (a linear expression, not a variable):
 **Objective:** minimise, over both windows,
 `sum_{m,w} price[m] * buy[m,w] + sum_{r,w} fee[r] * runs[r,w] +
 sum_r price[formula r] * new_formulas[r] / reaction_formula_payback_cycles +
-penalty * sum short - sum_m price[m] * keep[m]`. W2 is costed in full: W1 runs whose output only pays off
+penalty * sum short - 0.99 * sum_m price[m] * keep[m]`. W2 is costed in full: W1 runs whose output only pays off
 in W2 (intermediates) compete fairly with buying in W2.
 
 With spare slots the solver fills them with alchemy where alchemy is cheaper
