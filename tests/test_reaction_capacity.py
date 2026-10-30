@@ -933,3 +933,38 @@ def test_lp_rounding_replaces_a_poor_time_limited_incumbent(monkeypatch):
     assert plan.jobs_used <= 50
     assert plan.jobs_used >= 45
     assert plan.total_cost <= reference.total_cost * 1.02
+
+
+def test_cycle_demand_replaces_the_backlog_in_w2():
+    # W1 backlog 10,000 units; one cycle only sells 1,000. W2 used to need
+    # the backlog again, so both windows together made 20,000.
+    recipe = _recipe("normal:1", 1, fee=10.0, inputs={9000: 1.0}, outputs={1: 100.0},
+                     fit=100, formulas=10, formula_price=None)
+    layer = ReactionLayer(recipes=[recipe])
+    base = dict(slots=10, on_hand={9000: 1e6}, prices={1: 1000.0, 9000: 1.0})
+
+    def made(plan):
+        w1 = sum(r.units.get(1, 0.0) for r in plan.recipes)
+        w2 = sum(r.units.get(1, 0.0) for r in plan.next_window.recipes)
+        return w1 + w2
+
+    backlog = solve(layer, ReactionWindow(demand={1: 10_000.0}, **base))
+    cycle = solve(layer, ReactionWindow(demand={1: 10_000.0}, cycle_demand={1: 1_000.0}, **base))
+
+    assert made(backlog) == pytest.approx(20_000.0, abs=100.0)
+    assert made(cycle) == pytest.approx(11_000.0, abs=100.0)
+
+
+def test_cycle_demand_may_name_a_product_without_w1_demand():
+    a = _recipe("normal:1", 1, inputs={9000: 1.0}, outputs={1: 100.0}, fit=100, formula_price=None)
+    b = _recipe("normal:2", 2, inputs={9000: 1.0}, outputs={2: 100.0}, fit=100, formula_price=None)
+    window = ReactionWindow(
+        slots=10, on_hand={9000: 1e6}, demand={1: 500.0}, cycle_demand={2: 700.0},
+        prices={1: 1000.0, 2: 1000.0, 9000: 1.0},
+    )
+
+    plan = solve(ReactionLayer(recipes=[a, b]), window)
+
+    w2_units = {r.product_type_id: r.units.get(r.product_type_id, 0.0) for r in plan.next_window.recipes}
+    assert w2_units.get(2, 0.0) + plan.next_window.buy.get(2, 0.0) >= 700.0 - 1e-6
+    assert w2_units.get(1, 0.0) + plan.next_window.buy.get(1, 0.0) < 1e-6

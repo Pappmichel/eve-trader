@@ -560,3 +560,63 @@ def test_asset_plan_readiness_does_not_double_claim_a_shared_input(monkeypatch, 
     rx = [j for j in asset["jobs"] if j.activity == "Reaction"]
     assert {j.type_id for j in rx} == {10, 11}
     assert sum(j.runs_ready_now for j in rx) == 1
+
+
+@pg_helpers.postgres_required()
+def test_w2_demand_comes_from_own_sales_with_backlog_fallback(monkeypatch, reaction_bom, tenant):
+    from eve_trader.production import dynamic_targets
+    from eve_trader.production.dynamic_targets import OwnRow, OwnSales
+
+    # Component sells 2/day; Component2 has no sales row (contracts) and
+    # keeps its backlog seed.
+    monkeypatch.setattr(dynamic_targets, "compute_own_sales", lambda cfg, **k: OwnSales(
+        True, None, 30.0, {1: OwnRow(velocity=2.0, units=60.0, max_day_share=0.1, realized_margin=0.2)}))
+    stock_targets = [(1, "Component", 500, 0, 0), (2, "Component2", 30, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    captured = {}
+    real = reaction_capacity.solve
+
+    def capture(layer, window):
+        captured["window"] = window
+        return real(layer, window)
+
+    monkeypatch.setattr(reaction_capacity, "solve", capture)
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+        reaction_window_interval_days=14.0,
+    )
+
+    prod = engine.plan_production(cfg)
+
+    window = captured["window"]
+    assert window.demand[10] == pytest.approx(5000.0)      # W1: whole backlog, 500 x 10
+    assert window.cycle_demand[10] == pytest.approx(280.0)  # 2/day x 14 days x 10
+    assert window.cycle_demand[11] == pytest.approx(300.0)  # no sales: backlog 30 x 10
+    assert prod["reaction_capacity"]["w2_demand"] == {
+        "source": "sales", "sales_types": 1, "fallback_types": 1, "reason": None}
+
+
+@pg_helpers.postgres_required()
+def test_w2_demand_falls_back_to_backlog_without_a_sales_ledger(monkeypatch, reaction_bom, tenant):
+    from eve_trader.production import dynamic_targets
+    from eve_trader.production.dynamic_targets import OwnSales
+
+    monkeypatch.setattr(dynamic_targets, "compute_own_sales",
+                        lambda cfg, **k: OwnSales(False, "no_ledger_run", 0.0, {}))
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 500, 0, 0)]))
+    captured = {}
+    real = reaction_capacity.solve
+
+    def capture(layer, window):
+        captured["window"] = window
+        return real(layer, window)
+
+    monkeypatch.setattr(reaction_capacity, "solve", capture)
+    cfg = ProductionConfig(component_overbuild=0.0, reaction_capacity_enabled=True,
+                           reaction_slot_override=5)
+
+    prod = engine.plan_production(cfg)
+
+    assert captured["window"].cycle_demand is None
+    assert prod["reaction_capacity"]["w2_demand"]["source"] == "backlog"
+    assert prod["reaction_capacity"]["w2_demand"]["reason"] == "no_ledger_run"

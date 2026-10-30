@@ -97,7 +97,10 @@ class ReactionWindow:
     incoming1: Mapping[int, float] = field(default_factory=dict)
     incoming2: Mapping[int, float] = field(default_factory=dict)
     slots2: Optional[int] = None        # None = same as slots
-    demand_factor: float = 1.0          # D14: demand2 = demand1 * factor
+    demand_factor: float = 1.0          # D14: demand2 = base2 * factor
+    # One cycle's use for W2 (own sales, docs/REACTION_CAPACITY_PLAN.md D16);
+    # None = W1 demand, the pre-D16 model.
+    cycle_demand: Optional[Mapping[int, float]] = None
     manual_buy: frozenset[int] = frozenset()
     manual_build: frozenset[int] = frozenset()
     # product_type_id -> "buy" | "wait"; missing = buy (D10)
@@ -113,6 +116,11 @@ class ReactionWindow:
     @property
     def slots_w2(self) -> int:
         return int(self.slots if self.slots2 is None else self.slots2)
+
+    def demand2(self, product_id: int) -> float:
+        """W2 demand of one product (D14/D16)."""
+        base = self.demand if self.cycle_demand is None else self.cycle_demand
+        return float(base.get(product_id, 0.0)) * max(0.0, float(self.demand_factor))
 
 
 # ------------------------------------------------------------------ output
@@ -530,7 +538,8 @@ class _RawSolve:
 
 def _material_ids(layer: ReactionLayer, window: ReactionWindow) -> list[int]:
     ids: set[int] = (
-        set(window.demand) | set(window.on_hand) | set(window.prices)
+        set(window.demand) | set(window.cycle_demand or {})
+        | set(window.on_hand) | set(window.prices)
         | set(window.incoming1) | set(window.incoming2)
     )
     for recipe in layer.recipes:
@@ -563,7 +572,8 @@ def _solve_mip(
     recipes = list(layer.recipes)
     n_r = len(recipes)
     materials = _material_ids(layer, window)
-    products = sorted(set(window.demand) | set(layer.product_ids))
+    products = sorted(
+        set(window.demand) | set(window.cycle_demand or {}) | set(layer.product_ids))
     n_m = len(materials)
     n_p = len(products)
     mat_index = {m: i for i, m in enumerate(materials)}
@@ -591,7 +601,6 @@ def _solve_mip(
     slots1 = int(slots1_override) if slots1_override is not None else int(window.slots)
     slots2 = int(window.slots_w2)
     payback = max(window.formula_payback_cycles, _EPS)
-    factor = max(0.0, float(window.demand_factor))
 
     c = np.zeros(n_vars, dtype=float)
     for i, recipe in enumerate(recipes):
@@ -770,7 +779,7 @@ def _solve_mip(
         row[i_buy2 + mat_index[p]] = -1.0
         row[i_short2 + prod_index[p]] = -1.0
         demand1 = float(window.demand.get(p, 0.0))
-        demand2 = demand1 * factor
+        demand2 = window.demand2(p)
         a_rows.append(row)
         b_rows.append(
             float(window.on_hand.get(p, 0.0))
@@ -794,7 +803,7 @@ def _solve_mip(
         row[i_buy2 + mat_index[m]] = -1.0
         demand1 = float(window.demand.get(m, 0.0))
         a_rows.append(row)
-        b_rows.append(owned[m] - demand1 - demand1 * factor)
+        b_rows.append(owned[m] - demand1 - window.demand2(m))
 
     # Job size both windows
     for i, recipe in enumerate(recipes):
@@ -1629,6 +1638,7 @@ def build_window(
     chain_choice: Optional[Mapping[int, str]] = None,
     character_rows: Optional[list] = None,
     industry_jobs: Optional[list[tuple]] = None,
+    cycle_demand: Optional[Mapping[int, float]] = None,
 ) -> tuple[ReactionWindow, WindowState]:
     """Capacities, stocks, prices and demand for ``solve`` (plan section 3/4).
 
@@ -1648,7 +1658,9 @@ def build_window(
     state = window_state(
         cfg, character_rows=character_rows, industry_jobs=industry_jobs)
 
-    material_ids: set[int] = set(int(p) for p in demand) | set(layer.product_ids)
+    material_ids: set[int] = (
+        set(int(p) for p in demand) | set(int(p) for p in (cycle_demand or {}))
+        | set(layer.product_ids))
     for recipe in layer.recipes:
         material_ids.update(int(m) for m in recipe.inputs)
         material_ids.update(int(m) for m in recipe.outputs)
@@ -1708,9 +1720,14 @@ def build_window(
         chain_choice=dict(chain_choice or {}),
         formula_payback_cycles=float(cfg.reaction_formula_payback_cycles),
         demand_factor=float(cfg.reaction_next_window_demand_factor),
+        cycle_demand=(
+            None if cycle_demand is None
+            else {int(k): float(v) for k, v in cycle_demand.items() if v > _EPS}
+        ),
         carry_need=(
             carry_need_from_layer(
-                layer, demand, float(cfg.reaction_next_window_demand_factor))
+                layer, demand if cycle_demand is None else cycle_demand,
+                float(cfg.reaction_next_window_demand_factor))
             if cfg.reaction_stock_carry_value else {}
         ),
     )
@@ -1867,8 +1884,12 @@ def plan_payload(
     cfg: ProductionConfig,
     *,
     component_slot_days: float = 0.0,
+    w2_demand: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """JSON-friendly ``reaction_capacity`` block for both plan results."""
+    """JSON-friendly ``reaction_capacity`` block for both plan results.
+
+    ``w2_demand`` says where W2 demand came from (D16): ``source`` "sales"
+    or "backlog", type counts and the reason sales were not used."""
     type_ids: set[int] = set()
     for a in plan.recipes:
         type_ids.add(a.product_type_id)
@@ -1951,6 +1972,7 @@ def plan_payload(
         "next_window": next_window,
         "component_slot_days": component_slot_days,
         "cycle_days": cfg.reaction_cycle_days,
+        "w2_demand": dict(w2_demand) if w2_demand is not None else None,
     }
 
 
@@ -1961,16 +1983,24 @@ def solve_cached(
     cost_memo: Mapping[int, Optional[float]],
     *,
     chain_choice: Optional[Mapping[int, str]] = None,
+    cycle_demand: Optional[Mapping[int, float]] = None,
 ) -> tuple[ReactionLayer, ReactionWindow, WindowState, ReactionPlan]:
     """Solve once per plan context; reuse when demand fingerprint matches.
 
     ``ctx`` is a ``_PlanContext`` (duck-typed): needs ``home``, ``jita``,
     ``cost_indices``, ``adjusted_prices``, ``manual_stock``,
     ``manual_overrides``, and optional ``_reaction_solve_cache``.
+    ``cycle_demand`` is W2's base demand (D16); None = ``demand``.
     """
+    def _key(values: Optional[Mapping[int, float]]):
+        if values is None:
+            return None
+        return tuple(sorted((int(k), round(float(v), 6)) for k, v in values.items() if v > _EPS))
+
     demand_key = (
-        tuple(sorted((int(k), round(float(v), 6)) for k, v in demand.items() if v > _EPS)),
+        _key(demand),
         tuple(sorted((int(k), str(v)) for k, v in (chain_choice or {}).items())),
+        _key(cycle_demand),
     )
     cache = getattr(ctx, "_reaction_solve_cache", None)
     if cache is not None and cache[0] == demand_key:
@@ -1978,8 +2008,12 @@ def solve_cached(
 
     from .engine import shared_production_owner_ids
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    # W2 may need products W1 does not (D16): recipes for both.
+    layer_demand = dict(demand)
+    for tid, qty in (cycle_demand or {}).items():
+        layer_demand[tid] = max(layer_demand.get(tid, 0.0), float(qty))
     layer = build_layer(
-        cfg, demand,
+        cfg, layer_demand,
         home=ctx.home, jita=ctx.jita,
         cost_indices=ctx.cost_indices,
         adjusted_prices=ctx.adjusted_prices,
@@ -1994,6 +2028,7 @@ def solve_cached(
         manual_overrides=ctx.manual_overrides,
         manual_stock=ctx.manual_stock,
         chain_choice=chain_choice,
+        cycle_demand=cycle_demand,
     )
     plan = solve(layer, window) if layer.recipes else ReactionPlan(
         recipes=(), buy={}, total_cost=0.0, slot_shadow_price=0.0,

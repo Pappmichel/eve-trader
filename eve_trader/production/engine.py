@@ -2082,6 +2082,59 @@ def _reaction_capacity_gross_demand(
     return _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, 0.0, cfg)
 
 
+def _reaction_cycle_demand(
+    cfg: ProductionConfig, stock_targets: list[tuple], fallback_seed: dict[int, float],
+    home: dict, jita: dict, manual_overrides: dict[int, str], cost_memo: dict[int, Optional[float]],
+    selected_decryptors: dict[int, str], t2_memo: dict, manual_stock: dict[int, float],
+    cost_indices: CostIndices, adjusted_prices: dict[int, float], alchemy_memo: dict[int, bool],
+) -> tuple[Optional[dict[int, float]], dict]:
+    """W2 base demand of the reaction solver: one cycle's use (D16).
+
+    Every stock target that clears the margin gate sells
+    ``own sales per day x reaction_window_interval_days`` per cycle; that is
+    expanded down to the reaction boundary with no stock and no overbuild
+    (consumption, not a stock level). A target without own market sales in
+    the window (not sold yet, or used through contracts) keeps its W1 seed
+    from ``fallback_seed``. Special orders are one-off and stay out.
+    Returns ``(None, info)`` when the switch is off or the sales ledger is
+    not usable; the solver then uses W1 demand as before."""
+    info: dict = {"source": "backlog", "sales_types": 0, "fallback_types": 0, "reason": None}
+    if not cfg.reaction_w2_from_sales:
+        info["reason"] = "switched_off"
+        return None, info
+    own = dynamic_targets.compute_own_sales(cfg)
+    if not own.available:
+        info["reason"] = own.reason
+        return None, info
+    days = float(cfg.reaction_window_interval_days)
+    seed: dict[int, float] = {}
+    for type_id, _name, _backup, _home_qty, jita_market_stock in stock_targets:
+        activity, bp = classify_activity(type_id)
+        if bp is None:
+            continue
+        if type_id not in manual_overrides:
+            _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
+                       adjusted_prices, 0, alchemy_memo)
+            margin = _build_margin(type_id, cost_memo.get(type_id), jita_market_stock, home, jita, cfg)
+            if margin is not None and margin < cfg.min_margin:
+                continue
+        row = own.per_type.get(type_id)
+        if row is not None and row.velocity > 0:
+            seed[type_id] = seed.get(type_id, 0.0) + row.velocity * days
+            info["sales_types"] += 1
+        elif fallback_seed.get(type_id, 0.0) > 0:
+            seed[type_id] = seed.get(type_id, 0.0) + fallback_seed[type_id]
+            info["fallback_types"] += 1
+    demand: dict[int, float] = {}
+    _expand_all(
+        seed, cfg, home, jita, manual_overrides, cost_memo, selected_decryptors, t2_memo,
+        manual_stock, {}, {}, ignore_current_stock=True, component_overbuild=0.0,
+        cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+        stop_at_reactions=True, reaction_demand=demand)
+    info["source"] = "sales"
+    return demand, info
+
+
 def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optional[float],
                     jita_market_stock: Optional[float], current_stock: float, cfg: ProductionConfig) -> float:
     """Total shortfall to build/buy for a stock target: backup_stock (an
@@ -2733,8 +2786,12 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             build_runs[key] = build_runs.get(key, 0) + runs
 
         chain_choice = _load_reaction_chain_choices()
+        cycle_demand, cycle_info = _reaction_cycle_demand(
+            cfg, stock_targets, target_seed, home, jita, manual_overrides, cost_memo,
+            selected_decryptors, t2_memo, manual_stock, cost_indices, adjusted_prices, alchemy_memo)
         layer, _window, state, rplan = reaction_capacity.solve_cached(
-            ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice)
+            ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
+            cycle_demand=cycle_demand)
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
 
@@ -2822,7 +2879,8 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             if e.job_category in ("Advanced Components", "Capital Components")
         )
         reaction_block = reaction_capacity.plan_payload(
-            rplan, state, cfg, component_slot_days=component_slot_days)
+            rplan, state, cfg, component_slot_days=component_slot_days,
+            w2_demand=cycle_info)
 
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
@@ -3903,8 +3961,12 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         reaction_demand.clear()
         reaction_demand.update(collect_demand)
         chain_choice = _load_reaction_chain_choices()
+        cycle_demand, cycle_info = _reaction_cycle_demand(
+            cfg, ctx.stock_targets, target_seed_collect, home, jita, manual_overrides, cost_memo,
+            selected_decryptors, t2_memo, manual_stock, cost_indices, adjusted_prices, alchemy_memo)
         layer, _window, state, rplan = reaction_capacity.solve_cached(
-            ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice)
+            ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
+            cycle_demand=cycle_demand)
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
     elif any(alchemy_memo.values()):
@@ -4041,7 +4103,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             if j.job_category in ("Advanced Components", "Capital Components")
         )
         reaction_block = reaction_capacity.plan_payload(
-            rplan, state, cfg, component_slot_days=component_slot_days)
+            rplan, state, cfg, component_slot_days=component_slot_days,
+            w2_demand=cycle_info)
 
     for job in jobs.values():
         ids = sorted(job.special_order_ids, key=lambda order_id: order_rank.get(order_id, len(order_rank)))

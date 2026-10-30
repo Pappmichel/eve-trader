@@ -10,9 +10,9 @@ added settings, chaining-choice storage, API fields and the Build/Buy List UI.
 Phase 4b (2026-10-30, review) fixed an infeasible model on uncoverable W1
 demand, tightened the MIP gap, added an LP-rounding fallback and the stock
 carry value (D15, `docs/REACTION_SLOT_PROFIT_PLAN.md` section 8).
+W2 demand now comes from own sales instead of the backlog (D16).
 `reaction_capacity_enabled` is already on for the Default tenant; phase 5
-(comparison numbers for the user) is still open, and so is the demand of W2
-(section 7).
+(comparison numbers for the user) is still open.
 
 Trigger: the user starts reactions (and T2/capital components) once every 14
 days, when the component system's cost index is very low (0.14 %). Reactions
