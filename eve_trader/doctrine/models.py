@@ -217,9 +217,9 @@ class ShoppingListRow:
     hub_name: Optional[str] = None
     required_total: float = 0.0          # combined target across every fitting
     available: float = 0.0               # combined stock counted against it
-    jita_hangar: float = 0.0             # shortfall covered by the buyers' Jita 4-4 hangar
-    on_order: float = 0.0                # covered by their open Jita 4-4 buy orders
-    to_buy: Optional[float] = None       # shortfall - jita_hangar - on_order
+    hub_hangar: float = 0.0              # shortfall covered by the buyers' hangars in the hub region
+    on_order: float = 0.0                # covered by their open buy orders in the hub region
+    to_buy: Optional[float] = None       # shortfall - hub_hangar - on_order
 
     def __post_init__(self):
         if self.to_buy is None:

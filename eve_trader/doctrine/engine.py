@@ -425,7 +425,7 @@ def shopping_list(doctrine_id: Optional[str] = None,
     structure config, not a second, possibly-divergent estimate.
 
     With buyer characters configured (DoctrineConfig.buyer_character_ids),
-    their Jita 4-4 hangar and then their open Jita 4-4 buy orders cover the
+    their hangars and then their open buy orders in the hub region cover the
     shortfall first (buyer_sources.py); `to_buy` is what is left and prices
     `total_cost`. A fully covered row stays in the list with to_buy 0."""
     rows, _ = stockpile_rows_for_doctrine(doctrine_id, cfg)
@@ -511,11 +511,11 @@ def shopping_list(doctrine_id: Optional[str] = None,
         candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
         priced = {k: v for k, v in candidates.items() if v is not None}
         recommended_source = min(priced, key=priced.get) if priced else None
-        jita_hangar = on_order = 0.0
+        hub_hangar = on_order = 0.0
         if buyer is not None:
-            jita_hangar = min(row.shortfall, buyer.jita_hangar.get(row.type_id, 0.0))
-            on_order = min(row.shortfall - jita_hangar, buyer.on_order.get(row.type_id, 0.0))
-        to_buy = row.shortfall - jita_hangar - on_order
+            hub_hangar = min(row.shortfall, buyer.hub_hangar.get(row.type_id, 0.0))
+            on_order = min(row.shortfall - hub_hangar, buyer.on_order.get(row.type_id, 0.0))
+        to_buy = row.shortfall - hub_hangar - on_order
         total_cost = priced[recommended_source] * to_buy if recommended_source else None
 
         result.append(ShoppingListRow(
@@ -524,7 +524,7 @@ def shopping_list(doctrine_id: Optional[str] = None,
             recommended_source=recommended_source, total_cost=total_cost,
             hub_region_id=hub_id, hub_name=hubs.hub_name(hub_id) if hub_id is not None else None,
             required_total=row.required_total, available=row.available,
-            jita_hangar=jita_hangar, on_order=on_order, to_buy=to_buy,
+            hub_hangar=hub_hangar, on_order=on_order, to_buy=to_buy,
         ))
     return result, (buyer.warnings if buyer is not None else [])
 
