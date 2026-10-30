@@ -5,6 +5,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { tradingApi } from '../../api/client'
 import type { UnlistedStockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { ItemWithNeeds } from '../../components/NeedBadges'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { pct, qty } from '../../format'
@@ -15,7 +16,13 @@ export default function UnlistedStock() {
   const data = check.data
 
   const columns = useMemo<ColumnDef<UnlistedStockRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },
+    {
+      header: 'Item', accessorKey: 'item', size: 400, meta: { copyable: true },
+      cell: (i) => (
+        <ItemWithNeeds name={i.getValue()} shortfall={i.row.original.doctrine_shortfall}
+          doctrines={i.row.original.doctrine_names} productionNeeded={i.row.original.production_needed} />
+      ),
+    },
     { header: 'Stock on Hand', accessorKey: 'asset_quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
@@ -25,7 +32,9 @@ export default function UnlistedStock() {
     <Stack>
       <HintCard>
         Shows shortlist items (including hidden ones - you can still sell what you already have) that the seller
-        physically has at the structure but for which <b>no</b> sell order currently exists.
+        physically has at the structure but for which <b>no</b> sell order currently exists. A <b>Doctrine needs</b>
+        badge marks items the doctrine stockpile is currently short of, a <b>Production needs</b> badge items on the
+        last Build List's buy list.
       </HintCard>
 
       <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>

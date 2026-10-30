@@ -357,6 +357,12 @@ class AssetPlanJob:
     # in the same order ("" for an order without a note).
     special_order_ids: list[str] = field(default_factory=list)
     special_order_notes: list[str] = field(default_factory=list)
+    # Share of job_runs / runs_ready_now from stock targets that are part of
+    # an active doctrine fitting (hull or fitted item - engine.plan_asset_
+    # optimized's doctrine pass, user request 2026-10-30). Those runs get
+    # readiness and slots after special orders, before every other target.
+    doctrine_runs: int = 0
+    doctrine_ready_runs: int = 0
     # docs/REACTION_CAPACITY_PLAN.md: owned / needed formula originals when
     # the capacity solver sized this reaction job (None when switch off).
     formulas_owned: Optional[int] = None
@@ -584,6 +590,14 @@ class UnlistedStockRow:
     stock_quantity: float
     sell_volume: Optional[float] = None
     margin: Optional[float] = None
+    # Units the doctrine stockpile is currently short of, and the doctrines
+    # short of it (doctrine.engine.doctrine_needs_by_type) - a warning badge
+    # so stock a doctrine needs is not listed. None / [] when not needed.
+    doctrine_shortfall: Optional[float] = None
+    doctrine_names: list[str] = field(default_factory=list)
+    # Units Production still has to buy (last Build List's buy list,
+    # production.engine.production_needs_by_type) - a second warning badge.
+    production_needed: Optional[float] = None
 
 
 @dataclass

@@ -506,6 +506,38 @@ def test_aggregate_stockpile_rows_sums_across_fittings_for_same_type():
     assert row.fitting_count == 2
 
 
+def test_doctrine_needs_by_type_sums_shortfall_and_names_each_doctrine_once(monkeypatch):
+    from eve_trader import tenant_eligibility
+    rows = [
+        _stockpile_row(fitting_id="f1", shortfall=3.0),
+        _stockpile_row(fitting_id="f2", shortfall=2.0),
+        _stockpile_row(fitting_id="f3", doctrine_name="Doctrine 2", shortfall=1.0),
+        _stockpile_row(fitting_id="f1", type_id=HULL_B, shortfall=0.0, severity=None),
+    ]
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda: (rows, True))
+    monkeypatch.setattr(tenant_eligibility, "granted_tools", lambda tenant_id: None)
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "t1")
+
+    assert engine.doctrine_needs_by_type() == {
+        MODULE: {"shortfall": 6.0, "doctrines": ["Doctrine 1", "Doctrine 2"]},
+    }
+
+    # No doctrine grant: nothing is read.
+    monkeypatch.setattr(tenant_eligibility, "granted_tools", lambda tenant_id: {"trading"})
+    assert engine.doctrine_needs_by_type() == {}
+
+
+def test_doctrine_needs_by_type_never_raises(monkeypatch):
+    from eve_trader import tenant_eligibility
+
+    def _boom():
+        raise RuntimeError("no assets")
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", _boom)
+    monkeypatch.setattr(tenant_eligibility, "granted_tools", lambda tenant_id: None)
+
+    assert engine.doctrine_needs_by_type() == {}
+
+
 def test_aggregate_stockpile_rows_keeps_different_types_separate():
     rows = [_stockpile_row(type_id=MODULE), _stockpile_row(type_id=MODULE + 1, type_name="Other")]
 
