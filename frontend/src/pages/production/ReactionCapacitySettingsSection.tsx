@@ -57,8 +57,8 @@ export function ReactionCapacitySettingsSection({
         mb="sm"
       />
       <Switch
-        label="Charge inputs taken from stock"
-        description="A reaction that uses stock the next cycle needs again pays its buy price for it. Stock above that need stays free. Off = all stock is free to use."
+        label="Charge raw inputs taken from stock"
+        description="A reaction that uses moon materials or fuel blocks the next cycle needs again pays their buy price. Stock above that need, and intermediates, stay free. Off = all stock is free to use."
         checked={form.reaction_stock_carry_value}
         data-testid="reaction-stock-carry-value"
         onChange={(e) => set('reaction_stock_carry_value', e.currentTarget.checked)}
