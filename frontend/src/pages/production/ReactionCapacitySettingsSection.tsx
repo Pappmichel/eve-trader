@@ -56,6 +56,22 @@ export function ReactionCapacitySettingsSection({
         onChange={(e) => set('reaction_capacity_enabled', e.currentTarget.checked)}
         mb="sm"
       />
+      <Switch
+        label="Charge raw inputs taken from stock"
+        description="A reaction that uses moon materials or fuel blocks the next cycle needs again pays their buy price. Stock above that need, and intermediates, stay free. Off = all stock is free to use."
+        checked={form.reaction_stock_carry_value}
+        data-testid="reaction-stock-carry-value"
+        onChange={(e) => set('reaction_stock_carry_value', e.currentTarget.checked)}
+        mb="sm"
+      />
+      <Switch
+        label="Next-window demand from own sales"
+        description="The next window plans for one cycle of own market sales (sales per day × window interval), not the whole backlog again. Items without sales keep the backlog. Without a usable sales ledger the backlog is used."
+        checked={form.reaction_w2_from_sales}
+        data-testid="reaction-w2-from-sales"
+        onChange={(e) => set('reaction_w2_from_sales', e.currentTarget.checked)}
+        mb="sm"
+      />
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput
           label="Max job duration (days)"
@@ -104,7 +120,7 @@ export function ReactionCapacitySettingsSection({
         />
         <NumberInput
           label="Next-window demand factor"
-          description="Scale factor for W2 demand (1.0 = same as this window)."
+          description="Scale factor for the next window's demand (1.0 = one cycle of sales, or the backlog without sales)."
           value={form.reaction_next_window_demand_factor}
           min={0}
           step={0.1}

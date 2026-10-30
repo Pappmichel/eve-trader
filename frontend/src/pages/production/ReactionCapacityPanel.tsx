@@ -31,6 +31,13 @@ export function ReactionCapacityHeader({ block }: { block: ReactionCapacityBlock
         <Text size="xs" c="dimmed">
           Component slot-days / cycle: {block.component_slot_days.toFixed(1)}
         </Text>
+        {block.w2_demand && (
+          <Text size="xs" c="dimmed" data-testid="w2-demand-source">
+            Next window demand: {block.w2_demand.source === 'sales'
+              ? `own sales (${block.w2_demand.sales_types} items, ${block.w2_demand.fallback_types} without sales use the backlog)`
+              : `backlog${block.w2_demand.reason ? ` (${block.w2_demand.reason.replace(/_/g, ' ')})` : ''}`}
+          </Text>
+        )}
         {formulasCount > 0 && (
           <Text size="xs" c="dimmed" data-testid="formulas-to-buy">
             Formulas to buy: {formulasCount} ({isk(formulasIsk)})

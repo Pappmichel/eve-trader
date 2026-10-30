@@ -464,6 +464,8 @@ class ProductionSettings(BaseModel):
     reaction_window_interval_days: float = 14.0
     reaction_formula_payback_cycles: float = 1.0
     reaction_next_window_demand_factor: float = 1.0
+    reaction_stock_carry_value: bool = True
+    reaction_w2_from_sales: bool = True
 
 
 @router.get("/settings", response_model=ProductionSettings)

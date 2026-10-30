@@ -104,6 +104,23 @@ describe('ReactionCapacityPanel', () => {
     expect(screen.getByText('normal')).toBeInTheDocument()
     expect(screen.queryByText(/normal:16670/)).not.toBeInTheDocument()
   })
+
+  it('says where the next window demand comes from', () => {
+    renderPanel({
+      ...BLOCK,
+      w2_demand: { source: 'sales', sales_types: 40, fallback_types: 3, reason: null },
+    })
+    expect(screen.getByTestId('w2-demand-source')).toHaveTextContent(
+      /own sales \(40 items, 3 without sales use the backlog\)/)
+  })
+
+  it('names the reason when the next window uses the backlog', () => {
+    renderPanel({
+      ...BLOCK,
+      w2_demand: { source: 'backlog', sales_types: 0, fallback_types: 0, reason: 'history_too_short' },
+    })
+    expect(screen.getByTestId('w2-demand-source')).toHaveTextContent(/backlog \(history too short\)/)
+  })
 })
 
 describe('CapacityReasonBadge', () => {

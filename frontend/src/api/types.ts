@@ -443,6 +443,12 @@ export interface ReactionCapacityBlock {
   } | null
   component_slot_days: number
   cycle_days: number
+  w2_demand?: {
+    source: 'sales' | 'backlog'
+    sales_types: number
+    fallback_types: number
+    reason: string | null
+  } | null
 }
 
 export interface ReactionCapacityStatus {
@@ -988,6 +994,8 @@ export interface ProductionSettings {
   reaction_window_interval_days: number
   reaction_formula_payback_cycles: number
   reaction_next_window_demand_factor: number
+  reaction_stock_carry_value: boolean
+  reaction_w2_from_sales: boolean
 }
 
 export interface ProducerCharacter {
