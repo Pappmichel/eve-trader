@@ -5,7 +5,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { productionApi } from '../../api/client'
 import type { ProductionUnlistedStockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
-import { ItemWithDoctrineNeed } from '../../components/DoctrineNeedBadge'
+import { ItemWithNeeds } from '../../components/NeedBadges'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { pct, qty } from '../../format'
@@ -17,10 +17,10 @@ export default function UnlistedStock() {
 
   const columns = useMemo<ColumnDef<ProductionUnlistedStockRow, any>[]>(() => [
     {
-      header: 'Item', accessorKey: 'type_name', size: 300, meta: { copyable: true },
+      header: 'Item', accessorKey: 'type_name', size: 400, meta: { copyable: true },
       cell: (i) => (
-        <ItemWithDoctrineNeed name={i.getValue()} shortfall={i.row.original.doctrine_shortfall}
-          doctrines={i.row.original.doctrine_names} />
+        <ItemWithNeeds name={i.getValue()} shortfall={i.row.original.doctrine_shortfall}
+          doctrines={i.row.original.doctrine_names} productionNeeded={i.row.original.production_needed} />
       ),
     },
     { header: 'Stock in C-J Hangar', accessorKey: 'stock_quantity', size: 170, cell: (i) => qty(i.getValue()) },
@@ -34,7 +34,8 @@ export default function UnlistedStock() {
         Live-checks stock targets at the configured location (Settings) that have no sell order yet - personal
         <b>and</b> corp orders/hangars. Corp orders need the Accountant or Trader role on at least one registered
         character. Only targets with a <b>Home</b> or <b>Jita Market Target</b> are considered. A <b>Doctrine needs</b>
-        badge marks items the doctrine stockpile is currently short of.
+        badge marks items the doctrine stockpile is currently short of, a <b>Production needs</b> badge items on the
+        last Build List's buy list.
       </HintCard>
 
       <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>

@@ -949,7 +949,9 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
 
     # Lazy: doctrine.engine imports production.engine, which imports this module.
     from .doctrine.engine import doctrine_needs_by_type
+    from .production.engine import production_needs_by_type
     doctrine_needs = doctrine_needs_by_type() if unlisted else {}
+    production_needs = production_needs_by_type() if unlisted else {}
     rows = []
     for entry in unlisted:
         type_id = entry["type_id"]
@@ -977,6 +979,7 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
             sell_volume=sell_volume, margin=margin,
             doctrine_shortfall=need["shortfall"] if need else None,
             doctrine_names=need["doctrines"] if need else [],
+            production_needed=production_needs.get(type_id),
         ))
     rows.sort(key=lambda r: r.unlisted_quantity, reverse=True)
     return {"rows": rows}

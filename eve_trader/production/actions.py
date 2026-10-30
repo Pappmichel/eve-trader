@@ -27,7 +27,7 @@ from .engine import (
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
-    plan_production, plan_special_order, shared_production_owner_ids, stock_value,
+    plan_production, plan_special_order, production_needs_by_type, shared_production_owner_ids, stock_value,
 )
 from .models import (
     BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
@@ -1504,6 +1504,7 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # Lazy: doctrine.engine imports production.engine.
     from ..doctrine.engine import doctrine_needs_by_type
     doctrine_needs = doctrine_needs_by_type() if unlisted else {}
+    production_needs = production_needs_by_type() if unlisted else {}
     rows = []
     for type_id, name, qty in unlisted:
         need = doctrine_needs.get(type_id)
@@ -1527,7 +1528,8 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty,
                                       sell_volume=sell_volume, margin=margin,
                                       doctrine_shortfall=need["shortfall"] if need else None,
-                                      doctrine_names=need["doctrines"] if need else []))
+                                      doctrine_names=need["doctrines"] if need else [],
+                                      production_needed=production_needs.get(type_id)))
     rows.sort(key=lambda r: r.stock_quantity, reverse=True)
     return {"rows": rows}
 

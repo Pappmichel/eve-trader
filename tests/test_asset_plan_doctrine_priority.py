@@ -111,3 +111,12 @@ def test_doctrine_type_ids_needs_the_doctrine_grant(monkeypatch, tenant):
 
     monkeypatch.setattr(tenant_eligibility, "granted_tools", lambda tenant_id: {"production"})
     assert engine._doctrine_type_ids() == set()
+
+
+def test_production_needs_by_type_reads_the_saved_buy_list_with_the_production_grant(monkeypatch, tenant):
+    monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {SHIP: 4.0})
+    monkeypatch.setattr(tenant_eligibility, "granted_tools", lambda tenant_id: {"trading", "production"})
+    assert engine.production_needs_by_type() == {SHIP: 4.0}
+
+    monkeypatch.setattr(tenant_eligibility, "granted_tools", lambda tenant_id: {"trading"})
+    assert engine.production_needs_by_type() == {}

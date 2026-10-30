@@ -134,6 +134,7 @@ class UnlistedStockRow(_Base):
     margin: Optional[float] = None
     doctrine_shortfall: Optional[float] = None
     doctrine_names: list[str] = []
+    production_needed: Optional[float] = None
 
 
 class UndercutRow(_Base):
@@ -426,6 +427,7 @@ class ProductionUnlistedStockRow(_Base):
     margin: Optional[float] = None
     doctrine_shortfall: Optional[float] = None
     doctrine_names: list[str] = []
+    production_needed: Optional[float] = None
 
 
 class AlchemyComparison(_Base):

@@ -1456,6 +1456,7 @@ def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch
         "type_id": 205, "item": "Nova Cruise Missile", "asset_quantity": 50.0,
         "sell_order_remaining": 0.0, "unlisted_quantity": 50.0,
         "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": 3.0, "doctrine_names": ["Ishtars"],
+        "production_needed": None,
     }]
 
 
@@ -1464,13 +1465,14 @@ def test_production_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
     from eve_trader.production.models import UnlistedStockRow as ProductionUnlistedStockRow
     monkeypatch.setattr(production_actions, "do_unlisted_stock", lambda: {"rows": [
         ProductionUnlistedStockRow(type_id=205, type_name="Nova Cruise Missile", stock_quantity=50.0,
-                                    sell_volume=12.0, margin=0.25),
+                                    sell_volume=12.0, margin=0.25, production_needed=7.0),
     ]})
     resp = client.post("/api/production/unlisted-stock/check")
     assert resp.status_code == 200
     assert resp.json() == [{
         "type_id": 205, "type_name": "Nova Cruise Missile", "stock_quantity": 50.0,
         "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": None, "doctrine_names": [],
+        "production_needed": 7.0,
     }]
 
 

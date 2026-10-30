@@ -3378,6 +3378,26 @@ def _merge_asset_plan_passes(order_jobs: dict[int, AssetPlanJob],
     return jobs
 
 
+def production_needs_by_type() -> dict[int, float]:
+    """{type_id: units} Production still has to buy, from the last saved
+    Build List's buy list (storage.load_latest_buy_list - the same "wanted
+    by Production" signal Sorting uses, no plan is recomputed). The Trading
+    and Production Unlisted Stock checks badge these so stock Production
+    needs is not listed for sale (user request 2026-10-30). Empty while the
+    tenant does not hold the `production` grant or never refreshed a plan,
+    and on any failure - the badge is a hint and must never break the
+    caller's check."""
+    try:
+        tenant_id = storage.get_current_tenant()
+        if tenant_id is not None and not tenant_eligibility.may_use(
+                "production", tenant_eligibility.granted_tools(str(tenant_id))):
+            return {}
+        return storage.load_latest_buy_list()
+    except Exception:
+        log.warning("buy list for the unlisted-stock badge failed", exc_info=True)
+        return {}
+
+
 def _doctrine_type_ids() -> set[int]:
     """Hull and every fitted item (all EFT sections, fuel and ship maintenance
     bays included) of each active fitting in an active doctrine - the items

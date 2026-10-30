@@ -97,6 +97,8 @@ export interface UnlistedStockRow {
   // Doctrine stockpile shortfall for this item (warning badge), null if none.
   doctrine_shortfall?: number | null
   doctrine_names?: string[]
+  // Units Production still has to buy (last Build List), null if none.
+  production_needed?: number | null
 }
 
 export interface UndercutRow {
@@ -800,6 +802,8 @@ export interface ProductionUnlistedStockRow {
   // Doctrine stockpile shortfall for this item (warning badge), null if none.
   doctrine_shortfall?: number | null
   doctrine_names?: string[]
+  // Units Production still has to buy (last Build List), null if none.
+  production_needed?: number | null
 }
 
 export interface WealthDelta {
