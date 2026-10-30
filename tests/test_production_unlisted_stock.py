@@ -102,11 +102,16 @@ def test_live_fetches_assets_and_orders_and_flags_unlisted_stock(monkeypatch, te
                          lambda self, structure_id, type_ids, auth_role: {})
     _stub_unlisted_margin(monkeypatch)
 
+    from eve_trader.doctrine import engine as doctrine_engine
+    monkeypatch.setattr(doctrine_engine, "doctrine_needs_by_type",
+                        lambda: {1: {"shortfall": 4.0, "doctrines": ["Ishtars"]}})
+
     result = actions.do_unlisted_stock(cfg)
 
     assert len(result["rows"]) == 1
     assert result["rows"][0].type_id == 1
     assert result["rows"][0].stock_quantity == 100.0
+    assert (result["rows"][0].doctrine_shortfall, result["rows"][0].doctrine_names) == (4.0, ["Ishtars"])
 
 
 @pg_helpers.postgres_required()

@@ -131,7 +131,7 @@ import time
 from dataclasses import replace
 from typing import Callable, Iterable, Optional
 
-from .. import hubs, storage
+from .. import hubs, storage, tenant_eligibility
 from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
@@ -3180,10 +3180,16 @@ def _allocate_slots_min_makespan(
     (AssetPlanJob.special_order_ready_runs, SPECIAL_ORDERS_INTEGRATION_PLAN.md
     D7). A job with order runs is an "order job".
 
-    1. Every job gets one slot, order jobs first. If the pool is smaller
-       than the job count, only the first `available` jobs in priority order
-       start now (one slot each) and the rest wait for a slot to free up.
-       Priority: order jobs before all others, then unlock_time_seconds
+    doctrine_ready_runs (optional seventh element, default 0) is the share
+    that serves stock targets in an active doctrine fitting
+    (AssetPlanJob.doctrine_ready_runs). A job with doctrine runs and no
+    order runs is a "doctrine job".
+
+    1. Every job gets one slot, order jobs first, then doctrine jobs. If the
+       pool is smaller than the job count, only the first `available` jobs
+       in priority order start now (one slot each) and the rest wait for a
+       slot to free up. Priority: order jobs, then doctrine jobs, then all
+       others; within each group unlock_time_seconds
        descending (see _unlock_time_by_type - what unblocks downstream work
        starts first), then ready_seconds descending (longest first - the
        classic makespan heuristic), then stock_coverage ascending (None
@@ -3193,8 +3199,10 @@ def _allocate_slots_min_makespan(
        first slot - to the slots it needs to queue all of its order runs
        within the target (ceil(order_ready_runs / runs that fit one slot)).
        The runs over the cap that have to wait are then always stock-target
-       runs, never order runs (as far as the pool allows). Without a target
-       this step is skipped.
+       runs, never order runs (as far as the pool allows). Doctrine jobs
+       then get their first slot and the same top-up for their order +
+       doctrine runs, before any other job gets its first slot. Without a
+       target the top-ups are skipped.
     3. Each remaining slot goes to the started job with the longest
        per-slot time (ready_seconds / slots), never past its own
        runs_ready_now (one run per slot at most). Greedily shortening the
@@ -3216,19 +3224,34 @@ def _allocate_slots_min_makespan(
     def _order_runs(claim: tuple) -> int:
         return min(claim[5], claim[2]) if len(claim) > 5 else 0
 
+    def _doctrine_runs(claim: tuple) -> int:
+        return min(claim[6], claim[2]) if len(claim) > 6 else 0
+
+    def _tier(claim: tuple) -> int:
+        if _order_runs(claim) > 0:
+            return 0
+        return 1 if _doctrine_runs(claim) > 0 else 2
+
     order = sorted(
         claims,
-        key=lambda c: (_order_runs(c) <= 0, -c[3], -c[1], c[4] is None, c[4] if c[4] is not None else 0.0),
+        key=lambda c: (_tier(c), -c[3], -c[1], c[4] is None, c[4] if c[4] is not None else 0.0),
     )
-    order_jobs = [c for c in order if _order_runs(c) > 0]
-    other_jobs = [c for c in order if _order_runs(c) <= 0]
     remaining = available
     started: list[tuple] = []
-    for claim in order_jobs[:remaining]:
-        allocated[claim[0]] = 1
-        started.append(claim)
-    remaining -= len(started)
-    if target_seconds > 0:
+    # Priority runs per tier are cumulative: the doctrine top-up also covers
+    # the doctrine runs of a job that already started as an order job.
+    tier_runs = (
+        _order_runs,
+        lambda c: min(c[2], _order_runs(c) + _doctrine_runs(c)),
+    )
+    for tier, priority_runs in enumerate(tier_runs):
+        tier_jobs = [c for c in order if _tier(c) == tier][:remaining]
+        for claim in tier_jobs:
+            allocated[claim[0]] = 1
+            started.append(claim)
+        remaining -= len(tier_jobs)
+        if target_seconds <= 0:
+            continue
         for claim in list(started):
             if remaining <= 0:
                 break
@@ -3237,12 +3260,12 @@ def _allocate_slots_min_makespan(
             # larger than the one _runs_per_slot later applies.
             seconds_per_run = ready_seconds / runs * (1 + 1e-9)
             fits = max(1, int(target_seconds // seconds_per_run)) if seconds_per_run > 0 else runs
-            needed = min(runs, math.ceil(_order_runs(claim) / fits))
+            needed = min(runs, math.ceil(priority_runs(claim) / fits))
             extra = min(remaining, needed - allocated[type_id])
             if extra > 0:
                 allocated[type_id] += extra
                 remaining -= extra
-    others_started = other_jobs[:remaining]
+    others_started = [c for c in order if _tier(c) == 2][:remaining]
     for claim in others_started:
         allocated[claim[0]] = 1
     remaining -= len(others_started)
@@ -3323,27 +3346,56 @@ def _split_order_claims_on_hand(claim_rows: list[dict], manual_stock: dict[int, 
 
 
 def _merge_asset_plan_passes(order_jobs: dict[int, AssetPlanJob],
-                             target_jobs: dict[int, AssetPlanJob]) -> dict[int, AssetPlanJob]:
-    """Merges plan_asset_optimized's order-pass and stock-target-pass jobs by
-    job key (D4): runs, quantity, ready runs, job time and blockers add up;
-    special_order_runs / special_order_ready_runs keep the order pass's
-    share. Mutates and returns the order pass's job objects."""
+                             target_jobs: dict[int, AssetPlanJob],
+                             doctrine_jobs: Optional[dict[int, AssetPlanJob]] = None,
+                             ) -> dict[int, AssetPlanJob]:
+    """Merges plan_asset_optimized's order-pass, doctrine-pass and
+    stock-target-pass jobs by job key (D4): runs, quantity, ready runs, job
+    time and blockers add up; special_order_runs / special_order_ready_runs
+    keep the order pass's share and doctrine_runs / doctrine_ready_runs the
+    doctrine pass's. Mutates and returns the passes' job objects."""
     jobs: dict[int, AssetPlanJob] = {}
     for key, job in order_jobs.items():
         job.special_order_runs = job.job_runs
         job.special_order_ready_runs = job.runs_ready_now
         jobs[key] = job
-    for key, job in target_jobs.items():
-        existing = jobs.get(key)
-        if existing is None:
-            jobs[key] = job
-            continue
-        existing.job_runs += job.job_runs
-        existing.quantity += job.quantity
-        existing.runs_ready_now += job.runs_ready_now
-        existing.job_time_seconds += job.job_time_seconds
-        existing.blockers = _merge_asset_plan_blockers(existing.blockers, job.blockers)
+    for job in (doctrine_jobs or {}).values():
+        job.doctrine_runs = job.job_runs
+        job.doctrine_ready_runs = job.runs_ready_now
+    for source in (doctrine_jobs or {}, target_jobs):
+        for key, job in source.items():
+            existing = jobs.get(key)
+            if existing is None:
+                jobs[key] = job
+                continue
+            existing.job_runs += job.job_runs
+            existing.quantity += job.quantity
+            existing.runs_ready_now += job.runs_ready_now
+            existing.job_time_seconds += job.job_time_seconds
+            existing.blockers = _merge_asset_plan_blockers(existing.blockers, job.blockers)
+            existing.doctrine_runs += job.doctrine_runs
+            existing.doctrine_ready_runs += job.doctrine_ready_runs
     return jobs
+
+
+def _doctrine_type_ids() -> set[int]:
+    """Hull and every fitted item (all EFT sections, fuel and ship maintenance
+    bays included) of each active fitting in an active doctrine - the items
+    plan_asset_optimized's doctrine pass puts ahead of the other stock
+    targets (user request 2026-10-30). Read through storage, never the
+    doctrine package; empty while the tenant does not hold the `doctrine`
+    grant (same cross-tool rule as the Doctrine skill check)."""
+    tenant_id = storage.get_current_tenant()
+    if tenant_id is not None and not tenant_eligibility.may_use(
+            "doctrine", tenant_eligibility.granted_tools(str(tenant_id))):
+        return set()
+    type_ids: set[int] = set()
+    for fitting in storage.list_active_fittings():
+        type_ids.add(int(fitting[4]))
+        for _line_no, _section, type_id, _qty, _offline in storage.load_fitting_items(fitting[0]):
+            if type_id:
+                type_ids.add(int(type_id))
+    return type_ids
 
 
 def _asset_plan_order_progress(claim_rows: list[dict],
@@ -3502,6 +3554,13 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     - Slots: order jobs start first, and with a days target their order
       runs are fully queued before stock-target runs (see
       _allocate_slots_min_makespan).
+    - Doctrine pass (user request 2026-10-30): stock targets that are the
+      hull or a fitted item of an active doctrine fitting (_doctrine_type_ids)
+      run as a third pass between the order pass and the other targets, on
+      the same ledgers and with one shared overbuild-buffer set, so their
+      whole tree gets stock and readiness before the rest; their jobs then
+      start right after order jobs (doctrine_runs / doctrine_ready_runs).
+      Without such a target this pass is empty.
     - 'order_progress' (see _asset_plan_order_progress) reports per line
       item what is in the hangar, in running jobs, ready to start and still
       missing.
@@ -3657,6 +3716,14 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         total_target = backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0)
         seed_stock_coverage[type_id] = max(0.0, 1.0 - missing / total_target) if total_target > 0 else None
 
+    # Stock targets that are part of an active doctrine fitting get their own
+    # pass right after the orders: their whole tree claims stock and
+    # readiness before every other target (user request 2026-10-30 - the
+    # smallest-claim-first rule had left a doctrine hull blocked).
+    doctrine_ids = _doctrine_type_ids() if seed_jobs else set()
+    doctrine_seed_jobs = {t: q for t, q in seed_jobs.items() if t in doctrine_ids}
+    other_seed_jobs = {t: q for t, q in seed_jobs.items() if t not in doctrine_ids}
+
     capacity_on = bool(cfg.reaction_capacity_enabled)
     reaction_demand: dict[int, float] = {}
 
@@ -3665,6 +3732,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         byproduct_stock: dict[int, float], stock_used: dict[int, float],
         stock_used_on_hand: dict[int, float], stock_coverage_by_id: dict[int, Optional[float]],
         origins: Optional[dict[int, set[str]]] = None,
+        buffered_parents: Optional[set[int]] = None,
     ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]]]:
         """The whole breadth-first Phase A/B/C walk for one pass, from `seed`
         down to MAX_DEPTH. _plan_passes below runs it once for the order pass
@@ -3680,8 +3748,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         consumption separately from stock_used's incoming-inclusive planning
         consumption, so the same physical unit can't be double-claimed as
         "ready" by two different jobs across rounds or passes), and
-        stock_coverage_by_id. Per pass: jobs, buffered_parents, the overbuild
-        baseline (pass_base_runs) and the margin-excluded set (excluded).
+        stock_coverage_by_id. Per pass: jobs, buffered_parents (unless the
+        caller shares one set - the doctrine and stock-target passes split
+        one demand, so a parent is buffered once across both), the
+        overbuild baseline (pass_base_runs) and the margin-excluded set
+        (excluded).
 
         `origins` ({demand type_id: order ids}, order pass only) is spread
         to every material a parent's demand reaches, and recorded on each
@@ -3690,7 +3761,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         Returns (jobs, top_level): top_level is {seed type_id: (runs,
         ready runs, units of type_id per run)} for round 0."""
         jobs: dict[int, AssetPlanJob] = {}
-        buffered_parents: set[int] = set()
+        if buffered_parents is None:
+            buffered_parents = set()
         top_level: dict[int, tuple[int, int, float]] = {}
         units_per_run: dict[int, float] = {}
         jobs_this_level: dict[int, float] = {t: q for t, q in seed.items() if q > 0}
@@ -3890,10 +3962,10 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     def _plan_passes(byproduct_stock: dict[int, float]
                      ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]]]:
-        """Order pass, then stock-target pass, over one fresh set of ledgers
-        started from the order claims (D3/D4), merged by job key (see
-        _merge_asset_plan_passes). Returns (jobs, the order pass's
-        top_level)."""
+        """Order pass, then doctrine pass, then the remaining stock-target
+        pass, over one fresh set of ledgers started from the order claims
+        (D3/D4), merged by job key (see _merge_asset_plan_passes). Returns
+        (jobs, the order pass's top_level)."""
         stock_used = dict(reserved)
         for type_id, qty in target_reserved.items():
             stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
@@ -3903,10 +3975,14 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         order_jobs, order_top_level = _run_rounds(
             order_seed_jobs, {}, set(), byproduct_stock, stock_used, stock_used_on_hand,
             stock_coverage_by_id, origins)
+        target_buffered: set[int] = set()
+        doctrine_jobs, _ = _run_rounds(
+            doctrine_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
+            stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
         target_jobs, _ = _run_rounds(
-            seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used, stock_used_on_hand,
-            stock_coverage_by_id)
-        return _merge_asset_plan_passes(order_jobs, target_jobs), order_top_level
+            other_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
+            stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
+        return _merge_asset_plan_passes(order_jobs, target_jobs, doctrine_jobs), order_top_level
 
     # Byproduct discovery pass, same shape and same reasoning as
     # plan_production's own two-pass _expand_all call (see the comment
@@ -4133,7 +4209,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # for how the pool is split.
         claims = [
             (j.type_id, j.runs_ready_now * (j.job_time_seconds / j.job_runs), j.runs_ready_now,
-             j.unlock_time_seconds, j.stock_coverage, j.special_order_ready_runs)
+             j.unlock_time_seconds, j.stock_coverage, j.special_order_ready_runs, j.doctrine_ready_runs)
             for j in pool_jobs
         ]
         allocation = _allocate_slots_min_makespan(claims, free_slots.get(pool_label, 0), target_seconds)

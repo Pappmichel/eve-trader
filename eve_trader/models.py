@@ -107,6 +107,11 @@ class UnlistedStockRow:
     unlisted_quantity: float
     sell_volume: Optional[float] = None
     margin: Optional[float] = None
+    # Units the doctrine stockpile is currently short of, and the doctrines
+    # short of it (doctrine.engine.doctrine_needs_by_type) - a warning badge
+    # so stock a doctrine needs is not listed. None / [] when not needed.
+    doctrine_shortfall: Optional[float] = None
+    doctrine_names: list[str] = field(default_factory=list)
 
 
 @dataclass

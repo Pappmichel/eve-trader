@@ -94,6 +94,9 @@ export interface UnlistedStockRow {
   unlisted_quantity: number
   sell_volume: number | null
   margin: number | null
+  // Doctrine stockpile shortfall for this item (warning badge), null if none.
+  doctrine_shortfall?: number | null
+  doctrine_names?: string[]
 }
 
 export interface UndercutRow {
@@ -576,6 +579,9 @@ export interface AssetPlanJob {
   special_order_ids?: string[]
   // Aligned with special_order_ids; "" for an order without a note.
   special_order_notes?: string[]
+  // Runs from stock targets that are part of an active doctrine fitting.
+  doctrine_runs?: number
+  doctrine_ready_runs?: number
   formulas_owned?: number | null
   formulas_needed?: number | null
 }
@@ -791,6 +797,9 @@ export interface ProductionUnlistedStockRow {
   stock_quantity: number
   sell_volume: number | null
   margin: number | null
+  // Doctrine stockpile shortfall for this item (warning badge), null if none.
+  doctrine_shortfall?: number | null
+  doctrine_names?: string[]
 }
 
 export interface WealthDelta {

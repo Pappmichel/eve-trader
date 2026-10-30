@@ -6,6 +6,7 @@ pure scoring/deviation functions.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
@@ -22,6 +23,8 @@ from .models import (
     FittingItem, FittingStatus, ParsedFitting, ParsedIssue, ParsedItem, ParseIssue, ShoppingListRow, StockpileRow,
 )
 from .parser import FittingParseError, ResolvedType
+
+log = logging.getLogger("eve_trader.doctrine.engine")
 
 # Deliberate, confirmed exception to constants.py's own "no imports from
 # eve_trader.production" policy (see that module's docstring) - the
@@ -330,6 +333,39 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
     ]
     aggregated.sort(key=lambda r: r.shortfall, reverse=True)
     return aggregated
+
+
+def doctrine_needs_by_type() -> dict[int, dict]:
+    """{type_id: {"shortfall": units, "doctrines": [names]}} for every item
+    the doctrine stockpile is currently short of (the Stockpile page's own
+    shortfall, summed over fittings) - the Trading and Production
+    Unlisted Stock checks badge these so stock a doctrine needs is not
+    listed for sale (user request 2026-10-30).
+
+    Empty while the tenant does not hold the `doctrine` grant (cross-tool
+    read, same rule as the Doctrine skill check), when no doctrine assets
+    are shared, and on any failure - the badge is a hint and must never
+    break the caller's check."""
+    from .. import tenant_eligibility
+
+    tenant_id = storage.get_current_tenant()
+    if tenant_id is not None and not tenant_eligibility.may_use(
+            "doctrine", tenant_eligibility.granted_tools(str(tenant_id))):
+        return {}
+    try:
+        rows, _assets_available = stockpile_rows_for_doctrine()
+    except Exception:
+        log.warning("doctrine stockpile for the unlisted-stock badge failed", exc_info=True)
+        return {}
+    needs: dict[int, dict] = {}
+    for row in rows:
+        if row.shortfall <= 0:
+            continue
+        need = needs.setdefault(row.type_id, {"shortfall": 0.0, "doctrines": []})
+        need["shortfall"] += row.shortfall
+        if row.doctrine_name not in need["doctrines"]:
+            need["doctrines"].append(row.doctrine_name)
+    return needs
 
 
 # ------------------------------------------------------------- shopping list

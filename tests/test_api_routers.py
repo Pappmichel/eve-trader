@@ -1448,14 +1448,14 @@ def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch
     monkeypatch.setattr(actions, "do_check_seller_unlisted_stock", lambda: {"rows": [
         UnlistedStockRow(type_id=205, item="Nova Cruise Missile", asset_quantity=50.0,
                           sell_order_remaining=0.0, unlisted_quantity=50.0,
-                          sell_volume=12.0, margin=0.25),
+                          sell_volume=12.0, margin=0.25, doctrine_shortfall=3.0, doctrine_names=["Ishtars"]),
     ]})
     resp = client.post("/api/trading/seller/unlisted-stock")
     assert resp.status_code == 200
     assert resp.json() == [{
         "type_id": 205, "item": "Nova Cruise Missile", "asset_quantity": 50.0,
         "sell_order_remaining": 0.0, "unlisted_quantity": 50.0,
-        "sell_volume": 12.0, "margin": 0.25,
+        "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": 3.0, "doctrine_names": ["Ishtars"],
     }]
 
 
@@ -1470,7 +1470,7 @@ def test_production_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == [{
         "type_id": 205, "type_name": "Nova Cruise Missile", "stock_quantity": 50.0,
-        "sell_volume": 12.0, "margin": 0.25,
+        "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": None, "doctrine_names": [],
     }]
 
 

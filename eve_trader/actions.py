@@ -947,9 +947,13 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
         except ESIError as e:
             raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
 
+    # Lazy: doctrine.engine imports production.engine, which imports this module.
+    from .doctrine.engine import doctrine_needs_by_type
+    doctrine_needs = doctrine_needs_by_type() if unlisted else {}
     rows = []
     for entry in unlisted:
         type_id = entry["type_id"]
+        need = doctrine_needs.get(type_id)
         sde_type = storage.get_sde_type(type_id)
         name = sde_type[2] if sde_type else str(type_id)
         volume_m3 = sde_type[3] if sde_type and sde_type[3] else None
@@ -971,6 +975,8 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
             type_id=type_id, item=name, asset_quantity=entry["asset_quantity"],
             sell_order_remaining=entry["sell_order_remaining"], unlisted_quantity=entry["unlisted_quantity"],
             sell_volume=sell_volume, margin=margin,
+            doctrine_shortfall=need["shortfall"] if need else None,
+            doctrine_names=need["doctrines"] if need else [],
         ))
     rows.sort(key=lambda r: r.unlisted_quantity, reverse=True)
     return {"rows": rows}

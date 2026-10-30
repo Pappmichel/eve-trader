@@ -132,6 +132,8 @@ class UnlistedStockRow(_Base):
     # frontend. Keep in sync with models.UnlistedStockRow.
     sell_volume: Optional[float] = None
     margin: Optional[float] = None
+    doctrine_shortfall: Optional[float] = None
+    doctrine_names: list[str] = []
 
 
 class UndercutRow(_Base):
@@ -323,6 +325,8 @@ class AssetPlanJob(_Base):
     special_order_ready_runs: int = 0
     special_order_ids: list[str] = []
     special_order_notes: list[str] = []
+    doctrine_runs: int = 0
+    doctrine_ready_runs: int = 0
     # Reaction capacity solver: owned / needed formula originals.
     formulas_owned: Optional[int] = None
     formulas_needed: Optional[int] = None
@@ -420,6 +424,8 @@ class ProductionUnlistedStockRow(_Base):
     # GitHub issue #56 - see the Trading UnlistedStockRow's own comment above.
     sell_volume: Optional[float] = None
     margin: Optional[float] = None
+    doctrine_shortfall: Optional[float] = None
+    doctrine_names: list[str] = []
 
 
 class AlchemyComparison(_Base):

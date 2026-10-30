@@ -5,6 +5,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { productionApi } from '../../api/client'
 import type { ProductionUnlistedStockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { ItemWithDoctrineNeed } from '../../components/DoctrineNeedBadge'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { pct, qty } from '../../format'
@@ -15,7 +16,13 @@ export default function UnlistedStock() {
   const data = check.data
 
   const columns = useMemo<ColumnDef<ProductionUnlistedStockRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
+    {
+      header: 'Item', accessorKey: 'type_name', size: 300, meta: { copyable: true },
+      cell: (i) => (
+        <ItemWithDoctrineNeed name={i.getValue()} shortfall={i.row.original.doctrine_shortfall}
+          doctrines={i.row.original.doctrine_names} />
+      ),
+    },
     { header: 'Stock in C-J Hangar', accessorKey: 'stock_quantity', size: 170, cell: (i) => qty(i.getValue()) },
     { header: 'Listed Qty (C-J)', accessorKey: 'sell_volume', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Margin (Home)', accessorKey: 'margin', size: 110, cell: (i) => pct(i.getValue()) },
@@ -26,7 +33,8 @@ export default function UnlistedStock() {
       <HintCard>
         Live-checks stock targets at the configured location (Settings) that have no sell order yet - personal
         <b>and</b> corp orders/hangars. Corp orders need the Accountant or Trader role on at least one registered
-        character. Only targets with a <b>Home</b> or <b>Jita Market Target</b> are considered.
+        character. Only targets with a <b>Home</b> or <b>Jita Market Target</b> are considered. A <b>Doctrine needs</b>
+        badge marks items the doctrine stockpile is currently short of.
       </HintCard>
 
       <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>
