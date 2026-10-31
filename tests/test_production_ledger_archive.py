@@ -540,3 +540,23 @@ def test_buy_order_escrow_survives_a_later_history_row_without_it(tenant):
     unknown.pop("escrow")
     ledger_ingest.archive_market_orders(owner_type="character", owner_id=ALICE, orders=[unknown])
     assert ledger_db.open_buy_escrow_by_owner([("character", ALICE)]) is None
+
+
+def test_open_buy_order_volume_counts_open_buys_in_the_region_only(tenant):
+    base = {"type_id": TYPE_ID, "location_id": LOCATION_ID, "region_id": 10000002, "is_buy_order": True,
+            "price": 5.0, "volume_total": 10, "issued": DATE1}
+    ledger_ingest.archive_market_orders(owner_type="character", owner_id=ALICE, orders=[
+        {**base, "order_id": 1, "volume_remain": 4, "state": "open"},
+        {**base, "order_id": 2, "volume_remain": 3, "state": "open"},
+        {**base, "order_id": 3, "volume_remain": 9, "state": "open", "region_id": 10000043},
+        {**base, "order_id": 4, "volume_remain": 5, "state": "open", "is_buy_order": False},
+        {**base, "order_id": 5, "volume_remain": 6, "state": "cancelled"},
+        {**base, "order_id": 6, "volume_remain": 1, "state": "open", "type_id": 35},
+    ])
+    ledger_ingest.archive_market_orders(owner_type="character", owner_id=BOB, orders=[
+        {**base, "order_id": 7, "volume_remain": 8, "state": "open"},
+    ])
+    owners = [("character", ALICE)]
+    assert ledger_db.open_buy_order_volume(owners, {10000002}) == {TYPE_ID: 7.0, 35: 1.0}
+    assert ledger_db.open_buy_order_volume(owners, {10000002, 10000043}) == {TYPE_ID: 16.0, 35: 1.0}
+    assert ledger_db.open_buy_order_volume([], {10000002}) == {}

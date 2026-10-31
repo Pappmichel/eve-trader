@@ -81,6 +81,15 @@ class BuyListEntry:
     # ISK given up by buying instead of building (capacity rows) or the
     # formula purchase cost (formula rows); None when unknown.
     isk_given_up: Optional[float] = None
+    # Share of `quantity` already covered by open buy orders in the hub region
+    # (engine._annotate_open_buy_orders); `to_buy` is what is left and is
+    # what total_price prices. None = quantity (not annotated).
+    on_order: float = 0.0
+    to_buy: Optional[float] = None
+
+    def __post_init__(self):
+        if self.to_buy is None:
+            self.to_buy = self.quantity
 
 
 @dataclass

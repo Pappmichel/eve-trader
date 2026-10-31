@@ -198,6 +198,9 @@ class BuyListEntry(_Base):
     # exists ("capacity" / "inputs" / "formula") and the ISK given up.
     capacity_reason: Optional[str] = None
     isk_given_up: Optional[float] = None
+    # Open buy orders in the hub region (engine._annotate_open_buy_orders).
+    on_order: float = 0.0
+    to_buy: Optional[float] = None
 
 
 class BuildJobEntry(_Base):

@@ -3530,6 +3530,50 @@ def test_build_buy_list_prefers_job_category_over_commodity_sde_category(monkeyp
     assert by_id[34] == "Material"  # no job_category -> SDE category fallback
 
 
+def test_open_buy_orders_in_the_hub_region_reduce_to_buy(monkeypatch):
+    from eve_trader.production.models import BuyListEntry
+    from eve_trader.realized import access as ledger_access
+    from eve_trader.realized import db as ledger_db
+
+    seen = {}
+    monkeypatch.setattr(ledger_access, "shared_owners_for",
+                        lambda kind, tool: seen.setdefault("owners", (kind, tool)) and [("character", 1)])
+
+    def volume(owners, regions):
+        seen["regions"] = regions
+        return {34: 40.0, 35: 500.0}
+    monkeypatch.setattr(ledger_db, "open_buy_order_volume", volume)
+    rows = [
+        BuyListEntry(34, "Tritanium", 100.0, 2.0, 200.0),
+        BuyListEntry(35, "Pyerite", 50.0, 3.0, 150.0),
+        BuyListEntry(36, "Mexallon", 10.0, None, None),
+    ]
+    engine._annotate_open_buy_orders(rows, ProductionConfig(hub_region_id=10000002))
+
+    by_id = {r.type_id: r for r in rows}
+    assert seen == {"owners": ("market_orders", "production"), "regions": {10000002}}
+    assert (by_id[34].on_order, by_id[34].to_buy, by_id[34].total_price) == (40.0, 60.0, 120.0)
+    assert (by_id[35].on_order, by_id[35].to_buy, by_id[35].total_price) == (50.0, 0.0, 0.0)
+    assert (by_id[36].on_order, by_id[36].to_buy, by_id[36].total_price) == (0.0, 10.0, None)
+    assert by_id[34].quantity == 100.0  # full demand stays for Sorting / PI
+    assert [r.type_id for r in rows][0] == 34  # re-sorted by what is left to pay
+
+
+def test_open_buy_orders_use_every_trade_hub_for_all_hubs(monkeypatch):
+    from eve_trader import hubs
+    from eve_trader.production.models import BuyListEntry
+    from eve_trader.realized import access as ledger_access
+    from eve_trader.realized import db as ledger_db
+
+    seen = {}
+    monkeypatch.setattr(ledger_access, "shared_owners_for", lambda kind, tool: [])
+    monkeypatch.setattr(ledger_db, "open_buy_order_volume",
+                        lambda owners, regions: seen.setdefault("regions", regions) and {})
+    engine._annotate_open_buy_orders([BuyListEntry(34, "Tritanium", 1.0, 1.0, 1.0)],
+                                     ProductionConfig(hub_region_id=hubs.ALL_HUBS))
+    assert seen["regions"] == set(hubs.TRADE_HUBS)
+
+
 @pg_helpers.postgres_required()
 def test_plan_production_drops_demand_entirely_when_build_margin_fails_min_margin(monkeypatch, tenant):
     # Real bug reported live: Ishtar/Golem (build margin 2.5%/10.7%, both

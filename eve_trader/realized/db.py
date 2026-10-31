@@ -878,6 +878,23 @@ def open_buy_escrow_by_owner(owners: list[tuple[str, int]]) -> Optional[list[tup
     return [(owner_type, owner_id, amount) for (owner_type, owner_id), amount in sorted(totals.items())]
 
 
+def open_buy_order_volume(owners: list[tuple[str, int]], region_ids: set[int]) -> dict[int, float]:
+    """{type_id: volume_remain} summed over open buy orders in `region_ids`."""
+    if not owners or not region_ids:
+        return {}
+    where, params = _owner_in_clause(owners)
+    regions = sorted(int(r) for r in region_ids)
+    marks = ",".join("?" * len(regions))
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, SUM(volume_remain) FROM ledger_market_orders "
+            f"WHERE {where} AND is_buy_order AND {_OPEN_ORDER} "
+            f"AND COALESCE(volume_remain, 0) > 0 AND region_id IN ({marks}) GROUP BY type_id",
+            tuple(params) + tuple(regions),
+        ).fetchall()
+    return {int(type_id): float(qty) for type_id, qty in rows}
+
+
 def open_sell_order_lines(owners: list[tuple[str, int]]) -> list[tuple]:
     """(type_id, volume_remain, price) for open sell orders. One row per order."""
     if not owners:
