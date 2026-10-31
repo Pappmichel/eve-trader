@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ShoppingList from './ShoppingList'
 import { doctrineApi } from '../../api/client'
+import { pct } from '../../format'
 
 vi.mock('../../api/client', () => ({ doctrineApi: { shoppingList: vi.fn(), settings: vi.fn() } }))
 
@@ -43,6 +44,17 @@ describe('Doctrine ShoppingList best hub column', () => {
     expect(screen.getByText('Jita region hangars')).toBeTruthy()
     expect(screen.getByText('On order')).toBeTruthy()
     expect(screen.getByText(/Market Orders are not shared/)).toBeTruthy()
+  })
+
+  it('counts hangars and buy orders in Stock %', async () => {
+    vi.mocked(doctrineApi.shoppingList).mockResolvedValue({
+      rows: [{ ...ROW, required_total: 10, available: 4, shortfall: 6, hub_hangar: 1, on_order: 3, to_buy: 2 }],
+      buyers_configured: true,
+    } as never)
+    vi.mocked(doctrineApi.settings).mockResolvedValue({ hub_region_id: 10000002 } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MantineProvider><ShoppingList /></MantineProvider></QueryClientProvider>)
+    expect(await screen.findByText(pct(0.8))).toBeTruthy()
   })
 
   it('has no hub column for a single hub', async () => {

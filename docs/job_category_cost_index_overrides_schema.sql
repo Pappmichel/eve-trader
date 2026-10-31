@@ -38,3 +38,29 @@ CREATE POLICY tenant_isolation ON job_category_cost_index_overrides
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON job_category_cost_index_overrides TO eve_trader_app;
+
+-- 2026-10-31: the "Drones & Ammunition" job category was split into
+-- "Drones & Fighters" and "Ammunition" (production/constants.py
+-- JOB_CATEGORIES). The structure, structure history and cost index override
+-- a tenant had set for the old bucket move to "Drones & Fighters";
+-- "Ammunition" starts unset. Lives here rather than in phase1_schema.sql
+-- because this file runs after phase1 and owns the third table involved.
+-- Idempotent: once no "Drones & Ammunition" rows are left, every statement
+-- is a no-op.
+INSERT INTO job_category_locations (tenant_id, category, location_id)
+    SELECT tenant_id, 'Drones & Fighters', location_id
+    FROM job_category_locations WHERE category = 'Drones & Ammunition'
+    ON CONFLICT (tenant_id, category) DO NOTHING;
+DELETE FROM job_category_locations WHERE category = 'Drones & Ammunition';
+
+INSERT INTO category_location_options (tenant_id, category, location_id)
+    SELECT tenant_id, 'Drones & Fighters', location_id
+    FROM category_location_options WHERE category = 'Drones & Ammunition'
+    ON CONFLICT (tenant_id, category, location_id) DO NOTHING;
+DELETE FROM category_location_options WHERE category = 'Drones & Ammunition';
+
+INSERT INTO job_category_cost_index_overrides (tenant_id, category, cost_index_override)
+    SELECT tenant_id, 'Drones & Fighters', cost_index_override
+    FROM job_category_cost_index_overrides WHERE category = 'Drones & Ammunition'
+    ON CONFLICT (tenant_id, category) DO NOTHING;
+DELETE FROM job_category_cost_index_overrides WHERE category = 'Drones & Ammunition';
