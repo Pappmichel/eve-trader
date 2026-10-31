@@ -520,7 +520,7 @@ def _is_supercapital(type_id: int) -> bool:
 def job_category(type_id: int) -> Optional[str]:
     """Which of the "where do I start this job" buckets `type_id` belongs to
     - Reactions / Advanced Components / Capital Components / Equipment /
-    Drones & Ammunition / Small|Medium|Large Ships / Capital Ship - purely a
+    Drones & Fighters / Ammunition / Small|Medium|Large Ships / Capital Ship - purely a
     Bauliste display grouping (see constants.py's "job category" section);
     doesn't feed ME/TE/job-cost, which stays the existing 3-way reaction/
     component/manufacturing split (_structure_profile). None for anything
@@ -543,8 +543,10 @@ def job_category(type_id: int) -> Optional[str]:
         if group_id in group_ids:
             return size
     category_id = storage.get_type_category(type_id)
-    if category_id in (CHARGE_CATEGORY_ID, DRONE_CATEGORY_ID, FIGHTER_CATEGORY_ID):
-        return "Drones & Ammunition"
+    if category_id in (DRONE_CATEGORY_ID, FIGHTER_CATEGORY_ID):
+        return "Drones & Fighters"
+    if category_id == CHARGE_CATEGORY_ID:
+        return "Ammunition"
     if category_id == MODULE_CATEGORY_ID:
         return "Equipment"
     return None

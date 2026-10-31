@@ -394,7 +394,8 @@ JOB_CATEGORIES: tuple[str, ...] = (
     "Advanced Components",
     "Capital Components",
     "Equipment",
-    "Drones & Ammunition",
+    "Drones & Fighters",
+    "Ammunition",
     "Small Ships",
     "Medium Ships",
     "Large Ships",
@@ -482,7 +483,9 @@ SHIP_SIZE_GROUP_IDS: dict[str, frozenset] = {
     }),
 }
 
-# SDE category_ids for the "Drones & Ammunition" and "Equipment" buckets.
+# SDE category_ids for the "Drones & Fighters", "Ammunition" and "Equipment"
+# buckets. Drones/Fighters and Ammunition were one bucket until 2026-10-31;
+# split so each can be assigned its own structure.
 CHARGE_CATEGORY_ID = 8
 DRONE_CATEGORY_ID = 18
 FIGHTER_CATEGORY_ID = 87
