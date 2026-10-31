@@ -59,6 +59,17 @@ export default function BuyList() {
     ...(showHub ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     {
+      header: 'On order', accessorKey: 'on_order', size: 100,
+      cell: (i) => ((i.getValue() as number | undefined) ? qty(i.getValue()) : '–'),
+    },
+    {
+      header: 'To buy', id: 'to_buy', size: 110, meta: { exportRole: 'qty' as const },
+      accessorFn: (r) => r.to_buy ?? r.quantity,
+      cell: (i) => (i.getValue() > 0
+        ? qty(i.getValue())
+        : <Badge size="sm" color="dimmed" variant="light">covered</Badge>),
+    },
+    {
       header: 'Special order', accessorKey: 'special_order_quantity', size: 130,
       cell: (i) => ((i.getValue() as number | undefined) ? qty(i.getValue()) : '–'),
     },
@@ -117,7 +128,10 @@ export default function BuyList() {
           </Button>
         </Tooltip>
       </Group>
-      <Text size="xs" c="dimmed">{filtered.length} of {buyList.length} items</Text>
+      <Text size="xs" c="dimmed">
+        {filtered.length} of {buyList.length} items. Open buy orders in the hub region (characters and corporations
+        sharing Market Orders with Production) count as On order; Total Price covers only what is left to buy.
+      </Text>
       {filtered.length === 0 ? (
         <HintCard>No items in the selected categories.</HintCard>
       ) : (

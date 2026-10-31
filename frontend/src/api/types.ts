@@ -377,6 +377,9 @@ export interface BuyListEntry {
   /** Reaction capacity solver: "capacity" | "formula" | null */
   capacity_reason?: string | null
   isk_given_up?: number | null
+  /** Covered by open buy orders in the hub region; to_buy is what is left. */
+  on_order?: number
+  to_buy?: number | null
 }
 
 export interface BuildJobEntry {

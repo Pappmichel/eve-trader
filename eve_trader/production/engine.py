@@ -2524,6 +2524,31 @@ def _claim_integrated_order_demand(
     return order_seed, type_names, reserved, claim_rows
 
 
+def _annotate_open_buy_orders(buy_list: list[BuyListEntry], cfg: ProductionConfig) -> None:
+    """Sets on_order/to_buy on Buy List rows: what the tenant already has on
+    open buy orders in Production's hub region (every trade hub region for
+    All hubs) does not have to be bought again. Read from the realized-profit
+    order archive (ledger_market_orders), limited to owners that share Market
+    Orders with Production - the market_orders snapshot only keeps sell
+    orders. total_price then prices to_buy. `quantity` stays the full demand,
+    so Sorting's pot and the PI demand view are unchanged."""
+    from ..realized import access as ledger_access
+    from ..realized import db as ledger_db
+
+    if not buy_list:
+        return
+    regions = set(hubs.TRADE_HUBS) if cfg.hub_region_id == hubs.ALL_HUBS else {cfg.hub_region_id}
+    owners = ledger_access.shared_owners_for("market_orders", "production")
+    volume = ledger_db.open_buy_order_volume(owners, regions)
+    for entry in buy_list:
+        on_order = min(entry.quantity, volume.get(entry.type_id, 0.0))
+        entry.on_order = on_order
+        entry.to_buy = entry.quantity - on_order
+        if entry.unit_price is not None:
+            entry.total_price = entry.unit_price * entry.to_buy
+    buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
+
+
 def _annotate_special_order_quantities(buy_list: list[BuyListEntry], build_list: list[BuildJobEntry],
                                         order_buy: dict[int, float],
                                         order_runs: dict[tuple[int, int, int], int]) -> None:
@@ -2869,6 +2894,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         buy_totals, gross_demand, cfg, home, jita,
         capacity_reason=capacity_reason or None,
         isk_given_up=isk_given_up or None)
+    _annotate_open_buy_orders(buy_list, cfg)
     build_list = _build_build_list(
         build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices,
         reaction_meta=reaction_meta or None)
