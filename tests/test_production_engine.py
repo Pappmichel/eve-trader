@@ -850,6 +850,19 @@ def test_job_category_keeps_regular_capital_ships_as_capital_ship(monkeypatch):
     assert engine.job_category(19720) == "Capital Ship"
 
 
+def test_job_category_splits_drones_and_fighters_from_ammunition(monkeypatch):
+    # Split 2026-10-31 so each can be assigned its own structure.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "x", 1.0, 1, 1884, None, None))
+    categories = {2488: 18, 40362: 87, 230: 8}  # Warrior I (drone), fighter, Antimatter Charge S
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: categories[type_id])
+
+    assert engine.job_category(2488) == "Drones & Fighters"
+    assert engine.job_category(40362) == "Drones & Fighters"
+    assert engine.job_category(230) == "Ammunition"
+
+
 def test_structure_profile_uses_supercapital_for_titan_and_supercarrier(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 30, "Leviathan", 100.0, 1, 1884, None, None))
     assert engine._structure_profile("Tech I", 3764) == "supercapital"

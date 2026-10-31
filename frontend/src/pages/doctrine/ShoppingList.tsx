@@ -30,8 +30,12 @@ export default function ShoppingList() {
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     {
+      // Counts what the buyers' hangars and open buy orders already cover
+      // (#354): not in stock yet, but nothing left to buy for it.
       header: 'Stock %', id: 'stock_pct', size: 90,
-      accessorFn: (r) => (r.required_total > 0 ? r.available / r.required_total : null),
+      accessorFn: (r) => (r.required_total > 0
+        ? (r.available + r.hub_hangar + r.on_order) / r.required_total
+        : null),
       cell: (i) => pct(i.getValue()),
     },
     { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()), meta: buyers ? undefined : { exportRole: 'qty' } },
