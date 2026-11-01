@@ -2900,6 +2900,12 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             }
         for type_id, qty in r_buys.items():
             buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
+        # The walk records only the direct demand of a reaction product; what
+        # W1 reaction jobs consume of it as an input (Ferrofluid in Ferrogel)
+        # belongs to its gross need too, or the Buy List's on-hand column
+        # reads 0 % although most of it is in the hangar.
+        for type_id, qty in reaction_capacity.layer_input_demand_from_plan(layer, rplan).items():
+            gross_demand[type_id] = gross_demand.get(type_id, 0.0) + qty
 
         # Moon materials / fuel blocks consumed by W1 runs → normal walk.
         # _expand_all never nets its seed against stock (stock-target seeds
