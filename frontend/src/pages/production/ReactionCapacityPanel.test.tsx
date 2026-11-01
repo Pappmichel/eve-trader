@@ -108,10 +108,22 @@ describe('ReactionCapacityPanel', () => {
   it('says where the next window demand comes from', () => {
     renderPanel({
       ...BLOCK,
-      w2_demand: { source: 'sales', sales_types: 40, fallback_types: 3, reason: null },
+      w2_demand: {
+        source: 'sales', sales_types: 40, contract_types: 2, market_types: 5, no_sales_types: 4,
+        fallback_types: 0, reason: null,
+      },
     })
     expect(screen.getByTestId('w2-demand-source')).toHaveTextContent(
-      /own sales \(40 items, 3 without sales use the backlog\)/)
+      'own sales (40 items, 2 with contract sales, 5 from market volume, 4 without any sales left out)')
+  })
+
+  it('still names a backlog fallback when market history was unavailable', () => {
+    renderPanel({
+      ...BLOCK,
+      w2_demand: { source: 'sales', sales_types: 40, fallback_types: 3, reason: 'market_unavailable' },
+    })
+    expect(screen.getByTestId('w2-demand-source')).toHaveTextContent(
+      'own sales (40 items, 3 without sales use the backlog)')
   })
 
   it('names the reason when the next window uses the backlog', () => {

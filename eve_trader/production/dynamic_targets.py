@@ -207,6 +207,28 @@ class OwnSales:
 UNAVAILABLE_OWN = OwnSales(False, "not_loaded", 0.0, {})
 
 
+def _ledger_window(cfg: ProductionConfig, now: Optional[datetime]
+                   ) -> tuple[Optional[tuple[datetime, datetime, float]], Optional[str]]:
+    """((start, end, covered_days), None) for the realized-ledger window the
+    sales signals read, or (None, reason) when the ledger is not usable."""
+    from .realized import report
+
+    run, t0, sharing_changed = report.run_state()
+    if run is None:
+        return None, "no_ledger_run"
+    if sharing_changed:
+        return None, "sharing_changed"
+    if t0 is None or run[1] is None:
+        return None, "no_cutover"
+    now = _as_utc(now) if now is not None else _utcnow()
+    end = min(now, _as_utc(run[1]))  # the derived rows only reach the last rebuild (E-03)
+    start = max(end - timedelta(days=cfg.dynamic_target_window_days), _as_utc(t0))
+    covered = (end - start).total_seconds() / 86400.0
+    if covered <= 0:
+        return None, "no_history"
+    return (start, end, covered), None
+
+
 def compute_own_sales(cfg: ProductionConfig, *, now: Optional[datetime] = None) -> OwnSales:
     """Section 5.1: units/day per type from the realized ledger, market sales
     at the home location only, in Production's channel/owner scope. The run
@@ -218,20 +240,10 @@ def compute_own_sales(cfg: ProductionConfig, *, now: Optional[datetime] = None) 
 
     if cfg.home_location_id is None:
         return OwnSales(False, "no_home_location", 0.0, {})
-    run, t0, sharing_changed = report.run_state()
-    if run is None:
-        return OwnSales(False, "no_ledger_run", 0.0, {})
-    if sharing_changed:
-        return OwnSales(False, "sharing_changed", 0.0, {})
-    if t0 is None or run[1] is None:
-        return OwnSales(False, "no_cutover", 0.0, {})
-
-    now = _as_utc(now) if now is not None else _utcnow()
-    end = min(now, _as_utc(run[1]))  # the derived rows only reach the last rebuild (E-03)
-    start = max(end - timedelta(days=cfg.dynamic_target_window_days), _as_utc(t0))
-    covered = (end - start).total_seconds() / 86400.0
-    if covered <= 0:
-        return OwnSales(False, "no_history", 0.0, {})
+    window, reason = _ledger_window(cfg, now)
+    if window is None:
+        return OwnSales(False, reason, 0.0, {})
+    start, end, covered = window
     rows = realized_db.market_units_sold_daily(start, end, cfg.home_location_id, **report.production_scope())
 
     by_type: dict[int, list[tuple[float, Optional[float], Optional[float]]]] = {}
@@ -255,6 +267,27 @@ def compute_own_sales(cfg: ProductionConfig, *, now: Optional[datetime] = None) 
     if covered < cfg.dynamic_target_min_history_days:
         return OwnSales(False, "history_too_short", covered, per_type)
     return OwnSales(True, None, covered, per_type)
+
+
+def compute_contract_velocity(cfg: ProductionConfig, *, now: Optional[datetime] = None) -> dict[int, float]:
+    """Units/day per type delivered through item-exchange contracts, over the
+    same ledger window as `compute_own_sales`, at any location and in any
+    channel (a Doctrine fit contract uses up Production's hull), from
+    contract owners shared with Production. Empty when
+    the ledger is not usable. Only the reaction solver's next-window demand
+    reads this (docs/REACTION_CAPACITY_PLAN.md D17); the dynamic targets
+    themselves stay market-only."""
+    from ..realized import db as realized_db
+    from .realized import report
+
+    window, _reason = _ledger_window(cfg, now)
+    if window is None:
+        return {}
+    start, end, covered = window
+    units = realized_db.contract_units_sold(
+        start, end, contract_owners=report.production_scope().get("contract_owners"))
+    divisor = max(covered, 1.0)
+    return {t: q / divisor for t, q in units.items() if q > 0}
 
 
 def compute_market_velocity(cfg: ProductionConfig, type_ids: Iterable[int], *, today: Optional[date] = None,

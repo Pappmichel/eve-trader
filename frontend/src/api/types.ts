@@ -454,6 +454,9 @@ export interface ReactionCapacityBlock {
   w2_demand?: {
     source: 'sales' | 'backlog'
     sales_types: number
+    contract_types?: number
+    market_types?: number
+    no_sales_types?: number
     fallback_types: number
     reason: string | null
   } | null

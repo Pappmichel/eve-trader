@@ -310,6 +310,29 @@ def test_own_sales_unavailable_reasons(monkeypatch, kwargs, home, reason):
     assert not own.available and own.reason == reason and own.per_type == {}
 
 
+def test_contract_velocity_uses_the_own_sales_window(monkeypatch):
+    from eve_trader.realized import db as realized_db
+    t0 = NOW - timedelta(days=20)
+    _patch_ledger(monkeypatch, t0=t0, rows=[])
+    calls = []
+
+    def fake_contracts(start, end, *, contract_owners):
+        calls.append((start, end, contract_owners))
+        return {7: 4.0}
+    monkeypatch.setattr(realized_db, "contract_units_sold", fake_contracts)
+
+    out = dt.compute_contract_velocity(_cfg(home_location_id=1), now=NOW)
+
+    assert out == {7: pytest.approx(4.0 / 20.0)}
+    start, end, owners = calls[0]
+    assert start == t0 and end == NOW and owners == []
+
+
+def test_contract_velocity_is_empty_without_a_ledger(monkeypatch):
+    _patch_ledger(monkeypatch, rows=[], run=None, t0=None)
+    assert dt.compute_contract_velocity(_cfg(home_location_id=1), now=NOW) == {}
+
+
 # ------------------------------------------------------------ resolve_specs
 def _spec(type_id=5, home=20.0, mode="dynamic", dmin=None, dmax=None):
     return dt.RowSpec(type_id, f"Item{type_id}", 1.0, home, 0.0, mode, dmin, dmax)
