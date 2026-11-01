@@ -1299,6 +1299,37 @@ def count_realized_results(
     return int(row[0]) if row else 0
 
 
+def contract_units_sold(
+    start: datetime,
+    end: datetime,
+    *,
+    contract_owners: Optional[list] = None,
+) -> dict[int, float]:
+    """{type_id: units} delivered through item-exchange contracts
+    (`source = 'contract'`) between `start` (inclusive) and `end`
+    (exclusive), at any location and in **every channel**: a Doctrine
+    contract that hands over a hull still uses up that hull's stock. Rows
+    count only when the contract owner is one of `contract_owners` (the
+    owners whose contracts are shared with the caller's tool); None means
+    no owner filter, an empty list matches nothing. Used for the reaction
+    solver's next-window demand (docs/REACTION_CAPACITY_PLAN.md D17);
+    dynamic stock targets keep counting market sales only."""
+    if contract_owners is not None and not contract_owners:
+        return {}
+    owner_sql, owner_params = ("", [])
+    if contract_owners:
+        match, owner_params = _owner_match_sql(contract_owners, "")
+        owner_sql = " AND " + match
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, COALESCE(SUM(quantity), 0) FROM prod_realized_results "
+            "WHERE source = 'contract' AND sale_date >= ? AND sale_date < ?" + owner_sql +
+            " GROUP BY type_id",
+            [start, end] + owner_params,
+        ).fetchall()
+    return {int(t): float(q) for t, q in rows if q and float(q) > 0}
+
+
 def market_units_sold_daily(
     start: datetime,
     end: datetime,

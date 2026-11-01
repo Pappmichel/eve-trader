@@ -1830,11 +1830,15 @@ def apply_plan_to_build_buy(
                     float(recipe.formula_price) * float(alloc.formulas_to_buy)
                 )
 
-    # A product bought while W1 slots are still free was not short of slots:
-    # its reaction inputs were not on hand at the window (gap 7, D10), so it
-    # is labelled "inputs" instead of "capacity".
+    # A reaction product bought while W1 slots are still free was not short
+    # of slots: either its own reaction inputs were not on hand at the window
+    # (the chained product itself), or a W1 job needs it as an input now and
+    # W1 output cannot feed W1 (gap 7, D10). Both are labelled "inputs"
+    # instead of "capacity".
     slots_binding = plan.jobs_used >= plan.slots
     input_short = {c.product_type_id for c in plan.chaining}
+    for comparison in plan.chaining:
+        input_short.update(comparison.short_input_ids)
 
     for mid, qty in plan.buy.items():
         if qty <= _EPS:

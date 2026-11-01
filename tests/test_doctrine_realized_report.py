@@ -256,3 +256,31 @@ def test_matcher_fills_a_doctrine_fitting_when_history_has_none(tenant, _doctrin
         ).fetchone()
     assert row[0] == "22222222-2222-2222-2222-222222222222"
     assert "unmatched_doctrine" not in (row[1] or [])
+
+
+def test_contract_units_sold_counts_every_channel_of_shared_owners(tenant):
+    # D17 (docs/REACTION_CAPACITY_PLAN.md): a Doctrine fit contract uses up a
+    # hull Production keeps stock of, so contract units count across
+    # channels; only owners whose contracts are shared with the caller count.
+    rows = [
+        ("c:1", HULL, 1.0, "contract", "doctrine", "corporation", 98000001, T_SALE),
+        ("c:2", HULL, 2.0, "contract", "production", "character", ALICE, T_SALE),
+        ("c:3", HULL, 5.0, "contract", "doctrine", "corporation", 98000002, T_SALE),  # not shared
+        ("m:1", HULL, 7.0, "market", "production", "character", ALICE, T_SALE),      # not a contract
+        ("c:4", MODULE, 3.0, "contract", "doctrine", "corporation", 98000001, T0),    # before the window
+    ]
+    with storage.connect() as conn:
+        for ref, type_id, qty, source, channel, owner_type, owner_id, when in rows:
+            conn.execute(
+                "INSERT INTO prod_realized_results (sale_ref, type_id, quantity, revenue, cost, profit, "
+                "coverage_share, sale_date, source, channel, owner_type, owner_id) "
+                "VALUES (?, ?, ?, 0, 0, 0, 1, ?, ?, ?, ?, ?)",
+                (ref, type_id, qty, when, source, channel, owner_type, owner_id),
+            )
+    owners = [("corporation", 98000001), ("character", ALICE)]
+
+    got = ledger_db.contract_units_sold(T_JOB, T_SALE.replace(hour=13), contract_owners=owners)
+
+    assert got == {HULL: 3.0}
+    assert ledger_db.contract_units_sold(T_JOB, T_SALE.replace(hour=13), contract_owners=[]) == {}
+    assert ledger_db.contract_units_sold(T_JOB, T_SALE.replace(hour=13), contract_owners=None) == {HULL: 8.0}

@@ -37,6 +37,18 @@ def _noop_save_latest_buy_list(monkeypatch):
 def _stub_shared_production_owner_ids(monkeypatch):
     monkeypatch.setattr(engine, "shared_production_owner_ids", lambda data_kind: (None, None))
 
+
+@pytest.fixture(autouse=True)
+def _stub_w2_sales_signals(monkeypatch):
+    """No contract sales and no market history unless a test sets them; the
+    market velocity cache is per process, so reset it around every test."""
+    from eve_trader.production import dynamic_targets
+    monkeypatch.setattr(dynamic_targets, "compute_contract_velocity", lambda cfg, **k: {})
+    monkeypatch.setattr(dynamic_targets, "compute_market_velocity", lambda cfg, ids, **k: {})
+    engine.clear_w2_market_velocity_cache()
+    yield
+    engine.clear_w2_market_velocity_cache()
+
 # BOM:
 #   Component (1, Tech I) <- 10x Reaction product R (10)
 #   R (Reaction, 100/run) <- 5x Fuel (20) + 100x Moon (30)
@@ -593,7 +605,76 @@ def test_w2_demand_comes_from_own_sales_with_backlog_fallback(monkeypatch, react
     assert window.cycle_demand[10] == pytest.approx(280.0)  # 2/day x 14 days x 10
     assert window.cycle_demand[11] == pytest.approx(300.0)  # no sales: backlog 30 x 10
     assert prod["reaction_capacity"]["w2_demand"] == {
-        "source": "sales", "sales_types": 1, "fallback_types": 1, "reason": None}
+        "source": "sales", "sales_types": 1, "contract_types": 0, "market_types": 0,
+        "no_sales_types": 0, "fallback_types": 1, "reason": "market_unavailable"}
+
+
+def _capture_w2(monkeypatch, stock_targets, *, market, contract=None, own_rows=None):
+    from eve_trader.production import dynamic_targets
+    from eve_trader.production.dynamic_targets import OwnSales
+
+    monkeypatch.setattr(dynamic_targets, "compute_own_sales",
+                        lambda cfg, **k: OwnSales(True, None, 30.0, dict(own_rows or {})))
+    monkeypatch.setattr(dynamic_targets, "compute_contract_velocity", lambda cfg, **k: dict(contract or {}))
+    calls = []
+
+    def fake_market(cfg, ids, **k):
+        calls.append(sorted(ids))
+        return {t: v for t, v in market.items() if t in ids}
+
+    monkeypatch.setattr(dynamic_targets, "compute_market_velocity", fake_market)
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(stock_targets))
+    captured = {}
+    real = reaction_capacity.solve
+
+    def capture(layer, window):
+        captured["window"] = window
+        return real(layer, window)
+
+    monkeypatch.setattr(reaction_capacity, "solve", capture)
+    cfg = ProductionConfig(component_overbuild=0.0, reaction_capacity_enabled=True,
+                           reaction_slot_override=5, reaction_window_interval_days=14.0)
+    prod = engine.plan_production(cfg)
+    return captured["window"], prod["reaction_capacity"]["w2_demand"], calls
+
+
+@pg_helpers.postgres_required()
+def test_w2_demand_counts_contract_deliveries_as_sales(monkeypatch, reaction_bom, tenant):
+    # Live case 2026-11-01: Zirnitra sold only by contract kept its whole
+    # backlog in W2. Contract deliveries are sales of the target (D17).
+    window, info, calls = _capture_w2(
+        monkeypatch, [(1, "Component", 500, 0, 0)], market={1: 50.0}, contract={1: 0.5})
+
+    assert window.cycle_demand[10] == pytest.approx(70.0)   # 0.5/day x 14 x 10
+    assert info["sales_types"] == 1 and info["contract_types"] == 1
+    assert info["fallback_types"] == 0 and info["reason"] is None
+    assert calls == []                                      # sold: market not asked
+
+
+@pg_helpers.postgres_required()
+def test_w2_demand_uses_market_estimate_for_targets_without_sales(monkeypatch, reaction_bom, tenant):
+    # Component sells nothing itself: the market estimate replaces the
+    # backlog (500). Component2 is not traded at all: no W2 demand, its
+    # backlog stays in W1 only.
+    window, info, calls = _capture_w2(
+        monkeypatch, [(1, "Component", 500, 0, 0), (2, "Component2", 30, 0, 0)], market={1: 1.5})
+
+    assert window.demand[10] == pytest.approx(5000.0)       # W1 still the whole backlog
+    assert window.cycle_demand[10] == pytest.approx(210.0)  # 1.5/day x 14 x 10
+    assert window.cycle_demand.get(11, 0.0) == pytest.approx(0.0)
+    assert window.demand[11] == pytest.approx(300.0)
+    assert info == {"source": "sales", "sales_types": 0, "contract_types": 0, "market_types": 1,
+                    "no_sales_types": 1, "fallback_types": 0, "reason": None}
+    assert calls == [[1, 2]]
+
+
+@pg_helpers.postgres_required()
+def test_w2_demand_keeps_backlog_when_market_history_is_unavailable(monkeypatch, reaction_bom, tenant):
+    window, info, _calls = _capture_w2(
+        monkeypatch, [(1, "Component", 500, 0, 0)], market={})
+
+    assert window.cycle_demand[10] == pytest.approx(5000.0)
+    assert info["fallback_types"] == 1 and info["reason"] == "market_unavailable"
 
 
 @pg_helpers.postgres_required()
