@@ -179,7 +179,7 @@ export function CapacityReasonBadge({ reason, iskGivenUp }: { reason?: string | 
     return (
       <Badge
         color="yellow" variant="light"
-        title={`Reaction inputs not on hand at the window${iskGivenUp != null ? ` - ISK given up ${isk(iskGivenUp)}` : ''}`}
+        title={`Cannot be reacted in time: its inputs are not on hand at the window, or a job needs it at the window${iskGivenUp != null ? ` - ISK given up ${isk(iskGivenUp)}` : ''}`}
       >
         inputs{iskGivenUp != null ? ` (−${isk(iskGivenUp)})` : ''}
       </Badge>

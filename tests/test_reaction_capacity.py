@@ -776,6 +776,36 @@ def test_buy_reason_separates_missing_inputs_from_capacity(monkeypatch, jobs_use
     assert given_up[20] == pytest.approx(60_000.0)
 
 
+@pytest.mark.parametrize("jobs_used, slots, expected", [
+    (2, 10, "inputs"),     # slots free: bought only because W1 output cannot feed W1
+    (10, 10, "capacity"),  # slots full: capacity wins
+])
+def test_buy_reason_for_a_short_reaction_input(monkeypatch, jobs_used, slots, expected):
+    # Live finding 2026-11-01: Rolled Tungsten Alloy, bought because the W1
+    # Tungsten Carbide jobs need it at the window, showed "capacity" while 44
+    # slots were free. The bought item is the chained product's input.
+    from eve_trader.production import engine, pricing
+    monkeypatch.setattr(pricing, "buy_price", lambda *a, **k: 1000.0)
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 0.0)
+    layer = ReactionLayer(recipes=[
+        _recipe("normal:20", 20, inputs={10: 1.0}),
+        _recipe("normal:10", 10, inputs={9000: 1.0}),
+    ])
+    chaining = (ChainingComparison(
+        product_type_id=20, buy_now_cost=1.0, wait_cost=1.0, isk_saved_by_waiting=0.0,
+        units_delayed=100.0, preferred="buy", short_input_ids=(10,)),)
+    plan = ReactionPlan(
+        recipes=(), buy={10: 100.0}, total_cost=0.0, slot_shadow_price=0.0,
+        formula_shadow_prices={}, warnings=(), chaining=chaining,
+        jobs_used=jobs_used, slots=slots)
+
+    _runs, buys, reason, _given_up, _keys = apply_plan_to_build_buy(
+        layer, plan, cost_memo={10: 400.0, 20: 400.0}, home={}, jita={}, cfg=ProductionConfig())
+
+    assert buys[10] == 100.0
+    assert reason[10] == expected
+
+
 # ------------------------------------------------------------------ review fixes
 def test_uncoverable_w1_demand_does_not_make_the_model_infeasible():
     # Product 2 is a manual Build without any formula: W1 cannot cover it.

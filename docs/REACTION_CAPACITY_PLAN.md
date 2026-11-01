@@ -373,7 +373,9 @@ matters.
 - Buy List rows that exist only because of the capacity get a "capacity" badge
   with the ISK given up; formula purchases get their own badge. A reaction
   product bought while W1 slots are still free gets "inputs" instead: its
-  reaction inputs were not on hand at the window (D10), not the slots.
+  reaction inputs were not on hand at the window, or a W1 job needs it as an
+  input at the window (D10), not the slots. (Until 2026-11-01 only the first
+  case was checked, so a bought input showed "capacity".)
 - Chaining table (D10): per affected product "buy now" vs "wait", the ISK
   waiting saves, the units delayed by one cycle, and the choice (default buy).
 - Next-window preview (D13): the W2 jobs and purchases, marked as a forecast.
