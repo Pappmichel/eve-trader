@@ -16,6 +16,18 @@ function productLabel(typeName: string | null | undefined, typeId: number): stri
   return typeName?.trim() ? typeName : String(typeId)
 }
 
+type W2Demand = NonNullable<ReactionCapacityBlock['w2_demand']>
+
+/** Parts of the "own sales (...)" note: where each target's next-window
+ * demand came from (docs/REACTION_CAPACITY_PLAN.md D16, D17). */
+function w2DemandParts(w2: W2Demand): string[] {
+  const parts = [`${w2.sales_types} items${w2.contract_types ? `, ${w2.contract_types} with contract sales` : ''}`]
+  if (w2.market_types) parts.push(`${w2.market_types} from market volume`)
+  if (w2.no_sales_types) parts.push(`${w2.no_sales_types} without any sales left out`)
+  if (w2.fallback_types) parts.push(`${w2.fallback_types} without sales use the backlog`)
+  return parts
+}
+
 export function ReactionCapacityHeader({ block }: { block: ReactionCapacityBlock }) {
   const formulasCount = block.formulas_to_buy_count ?? 0
   const formulasIsk = block.formulas_to_buy_isk ?? 0
@@ -34,7 +46,7 @@ export function ReactionCapacityHeader({ block }: { block: ReactionCapacityBlock
         {block.w2_demand && (
           <Text size="xs" c="dimmed" data-testid="w2-demand-source">
             Next window demand: {block.w2_demand.source === 'sales'
-              ? `own sales (${block.w2_demand.sales_types} items, ${block.w2_demand.fallback_types} without sales use the backlog)`
+              ? `own sales (${w2DemandParts(block.w2_demand).join(', ')})`
               : `backlog${block.w2_demand.reason ? ` (${block.w2_demand.reason.replace(/_/g, ' ')})` : ''}`}
           </Text>
         )}

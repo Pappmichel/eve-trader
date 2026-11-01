@@ -2084,23 +2084,66 @@ def _reaction_capacity_gross_demand(
     return _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, 0.0, cfg)
 
 
+# Market velocity of next-window fallback types (D17): one Goonmetrics
+# history call per plan otherwise. Market history is daily, so a result is
+# reused for the rest of the UTC day; key includes everything it depends on.
+_w2_market_cache: dict[tuple, dict[int, float]] = {}
+_w2_market_lock = threading.Lock()
+
+
+def clear_w2_market_velocity_cache() -> None:
+    with _w2_market_lock:
+        _w2_market_cache.clear()
+
+
+def _w2_market_velocity(cfg: ProductionConfig, type_ids: list[int]) -> Optional[dict[int, float]]:
+    """Units/day the market would take of each type (dynamic targets' market
+    estimate: region turnover x dynamic_target_market_share). ``None`` when
+    no type got a value at all. The history client swallows failed requests,
+    so an outage and "none of these trade" look the same; the caller then
+    keeps the backlog (the pre-D17 rule) rather than read an outage as
+    "nothing sells". Not cached, so the next plan asks again."""
+    ids = sorted({int(t) for t in type_ids})
+    if not ids:
+        return {}
+    region_id = TRADING_CONFIG.reference_region_id
+    key = (region_id, dynamic_targets._today().isoformat(), int(cfg.dynamic_target_window_days),
+           float(cfg.dynamic_target_market_share), tuple(ids))
+    with _w2_market_lock:
+        cached = _w2_market_cache.get(key)
+        if cached is not None:
+            return dict(cached)
+        found = dynamic_targets.compute_market_velocity(cfg, ids, region_id=region_id)
+        if not found:
+            return None
+        _w2_market_cache.clear()  # one key per tenant config and day is enough
+        _w2_market_cache[key] = dict(found)
+        return dict(found)
+
+
 def _reaction_cycle_demand(
     cfg: ProductionConfig, stock_targets: list[tuple], fallback_seed: dict[int, float],
     home: dict, jita: dict, manual_overrides: dict[int, str], cost_memo: dict[int, Optional[float]],
     selected_decryptors: dict[int, str], t2_memo: dict, manual_stock: dict[int, float],
     cost_indices: CostIndices, adjusted_prices: dict[int, float], alchemy_memo: dict[int, bool],
 ) -> tuple[Optional[dict[int, float]], dict]:
-    """W2 base demand of the reaction solver: one cycle's use (D16).
+    """W2 base demand of the reaction solver: one cycle's use (D16, D17).
 
-    Every stock target that clears the margin gate sells
-    ``own sales per day x reaction_window_interval_days`` per cycle; that is
-    expanded down to the reaction boundary with no stock and no overbuild
-    (consumption, not a stock level). A target without own market sales in
-    the window (not sold yet, or used through contracts) keeps its W1 seed
-    from ``fallback_seed``. Special orders are one-off and stay out.
-    Returns ``(None, info)`` when the switch is off or the sales ledger is
-    not usable; the solver then uses W1 demand as before."""
-    info: dict = {"source": "backlog", "sales_types": 0, "fallback_types": 0, "reason": None}
+    Every stock target that clears the margin gate needs
+    ``units per day x reaction_window_interval_days`` per cycle, expanded
+    down to the reaction boundary with no stock and no overbuild
+    (consumption, not a stock level). Units per day are the target's own
+    sales: market sales at home plus item-exchange contract deliveries
+    (D17). A target with neither uses the market estimate the dynamic
+    targets use (region turnover x ``dynamic_target_market_share``); one the
+    market does not trade either gets no W2 demand. Its own backlog is still
+    covered in W1. Only when the market history is unavailable does such a
+    target keep its W1 seed (``fallback_seed``), as before D17. Special
+    orders are one-off and stay out. Returns ``(None, info)`` when the
+    switch is off or the sales ledger is not usable; the solver then uses
+    W1 demand as before."""
+    info: dict = {"source": "backlog", "sales_types": 0, "contract_types": 0, "market_types": 0,
+                  "no_sales_types": 0, "fallback_types": 0, "reason": None}
     if not cfg.reaction_w2_from_sales:
         info["reason"] = "switched_off"
         return None, info
@@ -2108,8 +2151,10 @@ def _reaction_cycle_demand(
     if not own.available:
         info["reason"] = own.reason
         return None, info
+    contract = dynamic_targets.compute_contract_velocity(cfg)
     days = float(cfg.reaction_window_interval_days)
     seed: dict[int, float] = {}
+    unsold: list[int] = []
     for type_id, _name, _backup, _home_qty, jita_market_stock in stock_targets:
         activity, bp = classify_activity(type_id)
         if bp is None:
@@ -2121,12 +2166,28 @@ def _reaction_cycle_demand(
             if margin is not None and margin < cfg.min_margin:
                 continue
         row = own.per_type.get(type_id)
-        if row is not None and row.velocity > 0:
-            seed[type_id] = seed.get(type_id, 0.0) + row.velocity * days
+        market_sales = row.velocity if row is not None else 0.0
+        contract_sales = contract.get(type_id, 0.0)
+        if market_sales + contract_sales > 0:
+            seed[type_id] = seed.get(type_id, 0.0) + (market_sales + contract_sales) * days
             info["sales_types"] += 1
+            if contract_sales > 0:
+                info["contract_types"] += 1
         elif fallback_seed.get(type_id, 0.0) > 0:
-            seed[type_id] = seed.get(type_id, 0.0) + fallback_seed[type_id]
-            info["fallback_types"] += 1
+            unsold.append(type_id)
+    if unsold:
+        market = _w2_market_velocity(cfg, unsold)
+        for type_id in unsold:
+            if market is None:
+                seed[type_id] = seed.get(type_id, 0.0) + fallback_seed[type_id]
+                info["fallback_types"] += 1
+            elif market.get(type_id, 0.0) > 0:
+                seed[type_id] = seed.get(type_id, 0.0) + market[type_id] * days
+                info["market_types"] += 1
+            else:
+                info["no_sales_types"] += 1
+        if market is None:
+            info["reason"] = "market_unavailable"
     demand: dict[int, float] = {}
     _expand_all(
         seed, cfg, home, jita, manual_overrides, cost_memo, selected_decryptors, t2_memo,

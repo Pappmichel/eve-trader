@@ -10,7 +10,8 @@ added settings, chaining-choice storage, API fields and the Build/Buy List UI.
 Phase 4b (2026-10-30, review) fixed an infeasible model on uncoverable W1
 demand, tightened the MIP gap, added an LP-rounding fallback and the stock
 carry value (D15, `docs/REACTION_SLOT_PROFIT_PLAN.md` section 8).
-W2 demand now comes from own sales instead of the backlog (D16).
+W2 demand now comes from own sales instead of the backlog (D16); targets without
+own sales use contract deliveries or the market estimate (D17).
 `reaction_capacity_enabled` is already on for the Default tenant; phase 5
 (comparison numbers for the user) is still open.
 
@@ -217,6 +218,7 @@ Same layer and scenarios as 1.5.
 | D14 | Demand of the second window | W2 demand = W1 demand x `reaction_next_window_demand_factor` (setting, default 1.0 = the next cycle needs the same again). What is built too much stays in stock and is netted by the next plan. |
 | D15 | Cost of using owned stock (2026-10-30, `docs/REACTION_SLOT_PROFIT_PLAN.md`) | Owned raw inputs (moon materials, fuel blocks) left after W2 are credited at 99 % of their buy price up to what one more cycle needs (`carry_need`), so using stock the next cycle needs costs its replacement price; stock above that need is free. Reaction products get no credit (refilling them would earn credit for output the slot rule values at 0). Setting `reaction_stock_carry_value`, default on. |
 | D16 | Base of W2 demand (2026-10-30, replaces D14's "W1 demand" base) | One cycle's use, not the backlog again: every stock target that clears the margin gate sells own market sales per day (`dynamic_targets.compute_own_sales`, home location, the dynamic targets window) x `reaction_window_interval_days`, expanded to the reaction boundary with no stock and no overbuild (`engine._reaction_cycle_demand`). A target without own sales in that window (not sold yet, or delivered by contract) keeps its W1 seed. Special orders are one-off and not repeated. Without a usable sales ledger, or with `reaction_w2_from_sales` off, W2 uses W1 demand as before. `reaction_next_window_demand_factor` scales either base; `carry_need` (D15) uses the same base. The Build List header names the source. |
+| D17 | Targets without own market sales in W2 (2026-11-01, replaces D16's backlog fallback) | Item-exchange contract deliveries count as the target's own sales (`dynamic_targets.compute_contract_velocity`, same ledger window, any location); the dynamic targets themselves stay market-only. A target with neither market nor contract sales uses the dynamic targets' market estimate (region turnover x `dynamic_target_market_share`, `engine._w2_market_velocity`, cached per day); one the market does not trade gets no W2 demand, its backlog is still covered in W1. Only when no type gets a market value at all (history outage; the client cannot tell it from "nothing trades") does a target keep its W1 seed, reason `market_unavailable`. Why: on production 35 targets without own sales repeated their whole backlog every cycle, 29.3 of 50.4 B W2 reaction demand (Ark, Rhea, Zirnitra, Apostle ...); in 90 days only Zirnitra sold (2 by contract). That doubled W1 jobs (44 -> 82; with alchemy on, every alchemy job existed only for it). |
 
 ## 3. Model
 
