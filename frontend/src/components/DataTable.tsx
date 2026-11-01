@@ -528,18 +528,30 @@ export function DataTable<T>({
     overscan: 12,
   })
 
+  // The row height is measured once (the smallest mounted row), never again
+  // while scrolling. Feeding a scroll-dependent height back into the
+  // virtualizer moves the rows, which mounts a different set, which measures
+  // a different height: first a flicker (taller cells), later React error
+  // #185 (maximum update depth) when the value kept flipping between two
+  // heights. Measured again only when something that sets the height changes.
+  const rowLayoutKey = `${tableId}|${rowHeight}|${JSON.stringify(columnVisibility)}|${JSON.stringify(columnSizing)}`
+  const measuredRowLayoutKey = useRef<string | null>(null)
+
   useLayoutEffect(() => {
     const vp = scrollRef.current
     if (!vp) return
-    // The smallest mounted row, not the first one: a cell that still ends up
-    // taller than one line made the first row's height depend on the scroll
-    // position, and feeding that back into the virtualizer moved the rows, so
-    // the measurement flipped between two values on every frame (flicker).
-    const rowEls = vp.querySelectorAll<HTMLElement>('tbody tr[data-dt-row]')
-    const rowHeights = Array.from(rowEls, (el) => el.offsetHeight).filter((h) => h > 0)
+    let row = measured.row
+    if (measuredRowLayoutKey.current !== rowLayoutKey) {
+      const rowEls = vp.querySelectorAll<HTMLElement>('tbody tr[data-dt-row]')
+      const rowHeights = Array.from(rowEls, (el) => el.offsetHeight).filter((h) => h > 0)
+      if (rowHeights.length > 0) {
+        row = Math.min(...rowHeights)
+        measuredRowLayoutKey.current = rowLayoutKey
+      }
+    }
     const head = vp.querySelector<HTMLElement>('thead')
     const next = {
-      row: rowHeights.length > 0 ? Math.min(...rowHeights) : measured.row,
+      row,
       head: head ? head.offsetHeight : measured.head,
       hScroll: vp.scrollWidth > vp.clientWidth + 1,
     }
