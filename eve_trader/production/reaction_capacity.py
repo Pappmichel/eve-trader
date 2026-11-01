@@ -1756,6 +1756,25 @@ def input_demand_from_plan(
     return {m: q for m, q in consumed.items() if q > _EPS}
 
 
+def layer_input_demand_from_plan(
+    layer: ReactionLayer,
+    plan: ReactionPlan,
+) -> dict[int, float]:
+    """Reaction products of the layer consumed as inputs by W1 runs
+    (intermediates such as Ferrofluid in Ferrogel); the counterpart of
+    ``input_demand_from_plan`` for the products it leaves out."""
+    by_key = {r.key: r for r in layer.recipes}
+    consumed: dict[int, float] = {}
+    for alloc in plan.recipes:
+        recipe = by_key.get(alloc.recipe_key)
+        if recipe is None or alloc.runs <= _EPS:
+            continue
+        for mid, qty in recipe.inputs.items():
+            if mid in layer.product_ids:
+                consumed[mid] = consumed.get(mid, 0.0) + float(qty) * float(alloc.runs)
+    return {m: q for m, q in consumed.items() if q > _EPS}
+
+
 def alchemy_build_runs_from_plan(
     layer: ReactionLayer,
     plan: ReactionPlan,
@@ -1830,15 +1849,18 @@ def apply_plan_to_build_buy(
                     float(recipe.formula_price) * float(alloc.formulas_to_buy)
                 )
 
-    # A reaction product bought while W1 slots are still free was not short
-    # of slots: either its own reaction inputs were not on hand at the window
-    # (the chained product itself), or a W1 job needs it as an input now and
-    # W1 output cannot feed W1 (gap 7, D10). Both are labelled "inputs"
-    # instead of "capacity".
+    # "inputs" instead of "capacity" when a limit other than slots forced
+    # the buy (gap 7, D10):
+    # - a W1 job needs it as an input at the window and W1 output cannot
+    #   feed W1, so no slot count would have avoided it ("inputs" always);
+    # - the chained product itself, bought while slots are still free
+    #   because its own reaction inputs were not on hand. With full slots
+    #   that product could also be short of slots, so it stays "capacity".
     slots_binding = plan.jobs_used >= plan.slots
-    input_short = {c.product_type_id for c in plan.chaining}
+    short_inputs: set[int] = set()
     for comparison in plan.chaining:
-        input_short.update(comparison.short_input_ids)
+        short_inputs.update(comparison.short_input_ids)
+    chained_products = {c.product_type_id for c in plan.chaining}
 
     for mid, qty in plan.buy.items():
         if qty <= _EPS:
@@ -1855,8 +1877,9 @@ def apply_plan_to_build_buy(
         if build_cost is not None and buy_px is not None:
             given_up = (float(buy_px) - float(build_cost)) * float(qty)
             if given_up > _EPS:
-                capacity_reason[mid] = (
-                    "inputs" if not slots_binding and mid in input_short else "capacity")
+                inputs_limited = mid in short_inputs or (
+                    not slots_binding and mid in chained_products)
+                capacity_reason[mid] = "inputs" if inputs_limited else "capacity"
                 isk_given_up[mid] = given_up
             else:
                 isk_given_up[mid] = None

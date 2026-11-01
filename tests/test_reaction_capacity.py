@@ -778,12 +778,13 @@ def test_buy_reason_separates_missing_inputs_from_capacity(monkeypatch, jobs_use
 
 @pytest.mark.parametrize("jobs_used, slots, expected", [
     (2, 10, "inputs"),     # slots free: bought only because W1 output cannot feed W1
-    (10, 10, "capacity"),  # slots full: capacity wins
+    (10, 10, "inputs"),    # slots full: more slots would not have made it in time either
 ])
 def test_buy_reason_for_a_short_reaction_input(monkeypatch, jobs_used, slots, expected):
-    # Live finding 2026-11-01: Rolled Tungsten Alloy, bought because the W1
-    # Tungsten Carbide jobs need it at the window, showed "capacity" while 44
-    # slots were free. The bought item is the chained product's input.
+    # Live findings 2026-11-01: Rolled Tungsten Alloy (slots free) and
+    # Ferrofluid (slots full), bought because W1 Tungsten Carbide / Ferrogel
+    # jobs need them at the window, showed "capacity". The bought item is
+    # the chained product's input.
     from eve_trader.production import engine, pricing
     monkeypatch.setattr(pricing, "buy_price", lambda *a, **k: 1000.0)
     monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 0.0)
@@ -998,3 +999,17 @@ def test_cycle_demand_may_name_a_product_without_w1_demand():
     w2_units = {r.product_type_id: r.units.get(r.product_type_id, 0.0) for r in plan.next_window.recipes}
     assert w2_units.get(2, 0.0) + plan.next_window.buy.get(2, 0.0) >= 700.0 - 1e-6
     assert w2_units.get(1, 0.0) + plan.next_window.buy.get(1, 0.0) < 1e-6
+
+
+def test_layer_input_demand_counts_reaction_products_consumed_by_w1_runs():
+    from eve_trader.production.reaction_capacity import RecipeAllocation, layer_input_demand_from_plan
+    layer = ReactionLayer(recipes=[
+        _recipe("normal:20", 20, inputs={10: 2.0, 9000: 1.0}),
+        _recipe("normal:10", 10, inputs={9000: 1.0}),
+    ])
+    plan = ReactionPlan(
+        recipes=(RecipeAllocation("normal:20", 20, 1, 50.0, 50.0, {20: 5000.0}, 0),),
+        buy={10: 30.0}, total_cost=0.0, slot_shadow_price=0.0, formula_shadow_prices={}, warnings=(),
+        jobs_used=1, slots=10)
+
+    assert layer_input_demand_from_plan(layer, plan) == {10: 100.0}   # moon material 9000 left out
