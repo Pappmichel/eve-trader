@@ -68,6 +68,51 @@ def test_message_lists_type_title_value_items_and_place():
     ]
 
 
+def test_message_names_the_buyer_and_sold_out_fittings():
+    events = [
+        (10, "finished", _contract(10, "finished", title="GSF - Typhoon", price=295_000_000.0, acceptor_id=91)),
+        (11, "finished", _contract(11, "finished", type="courier", reward=4_000_000.0, acceptor_id=92)),
+        (12, "expired", _contract(12, acceptor_id=91)),
+    ]
+
+    text = logic.contract_message(events, "Alice", acceptors={91: "Bob", 92: "Hauler Corp"},
+                                  sold_out=["Typhoon DPS"])
+
+    assert text.splitlines()[1:] == [
+        '- Finished: Item exchange "GSF - Typhoon", 295.0M ISK, bought by Bob',
+        "- Finished: Courier, 4.0M ISK, delivered by Hauler Corp",
+        "- Expired: Item exchange",
+        '- Sold out: fitting "Typhoon DPS" has no contract left',
+    ]
+
+
+def _doctrine_row(contract_id, fitting_id, status="outstanding", validation="valid", expires_in_h=24.0):
+    return (contract_id, "esi:1", False, ALICE, 1, status, "", 1.0, NOW + timedelta(hours=expires_in_h),
+            fitting_id, 1.0, validation, NOW)
+
+
+def test_sold_out_only_when_a_sale_empties_a_fit(monkeypatch):
+    from types import SimpleNamespace
+    from eve_trader.doctrine import engine
+
+    def cand(fid, name, hull):
+        return SimpleNamespace(fitting=SimpleNamespace(fitting_id=fid, name=name, hull_type_id=hull),
+                               exact_soll={1: 1.0}, consume_soll={})
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [
+        cand("f1", "Typhoon DPS", 100), cand("f1b", "Typhoon DPS (other doctrine)", 100),
+        cand("f2", "Ferox", 200), cand("f3", "Scimitar", 300), cand("f4", "Empty", 400)])
+    monkeypatch.setattr(engine.storage, "list_doctrine_contracts", lambda: [
+        _doctrine_row(1, "f1"),                          # sold, and its pooled twin is gone too
+        _doctrine_row(2, "f1b", expires_in_h=-1),        # past expiry: not available
+        _doctrine_row(3, "f2"), _doctrine_row(4, "f2"),  # one Ferox left
+        _doctrine_row(5, "f3"), _doctrine_row(6, "f3"),  # the other one finished in the live list
+        _doctrine_row(7, "f4", validation="invalid"),    # never counted: not "previously available"
+    ])
+
+    sold = {1, 3, 5, 7}
+    assert engine.sold_out_fittings(sold, sold | {6}, NOW) == ["Typhoon DPS", "Scimitar"]
+
+
 def test_long_lists_are_cut():
     events = [(i, "finished", _contract(i, "finished")) for i in range(logic.MAX_CONTRACTS_LISTED + 3)]
     assert logic.contract_message(events, "Alice").splitlines()[-1] == "... and 3 more"
@@ -85,6 +130,9 @@ class FakeClient:
         if self.error:
             raise ESIError("HTTP 500")
         return self.contracts
+
+    def resolve_names_cached(self, ids):
+        return {i: f"Buyer {i}" for i in ids}
 
     def character_contract_items(self, cid, contract_id, auth_role):
         self.calls.append(f"items{contract_id}")
@@ -153,6 +201,30 @@ def test_a_failed_send_or_poll_keeps_the_contract_for_later(env, monkeypatch):
     fake.error = False
     _run(fake, NOW + timedelta(minutes=60))
     assert len(env) == 1 and storage.seen_contract_alerts(ALICE) == {(2, "finished")}
+
+
+@pg_helpers.postgres_required()
+def test_a_sale_names_the_buyer_and_reports_sold_out_fittings_with_the_doctrine_grant(env, monkeypatch):
+    from eve_trader.doctrine import engine
+    calls = []
+    monkeypatch.setattr(engine, "sold_out_fittings", lambda sold, unavailable, now: calls.append(
+        (sold, unavailable)) or ["Typhoon DPS"])
+    monkeypatch.setattr(runner.tenant_eligibility, "granted_tools", lambda tid: {"char_alerts", "doctrine"})
+    aa.do_set_subscription(ALICE, "contract_status", True)
+    fake = FakeClient([_contract(9, "outstanding", expires_in_h=-1)])
+    _run(fake)
+    fake.contracts += [_contract(2, "finished", title="GSF - Typhoon", acceptor_id=91), _contract(3, "deleted")]
+
+    _run(fake, NOW + timedelta(minutes=20))
+
+    assert calls == [({2}, {2, 3, 9})]
+    assert "bought by Buyer 91" in env[0]
+    assert env[0].splitlines()[-1] == '- Sold out: fitting "Typhoon DPS" has no contract left'
+
+    monkeypatch.setattr(runner.tenant_eligibility, "granted_tools", lambda tid: {"char_alerts"})
+    fake.contracts.append(_contract(4, "finished", acceptor_id=91))
+    _run(fake, NOW + timedelta(minutes=40))
+    assert len(calls) == 1 and "Sold out" not in env[1]
 
 
 @pg_helpers.postgres_required()

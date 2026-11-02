@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from .. import hubs, storage
@@ -172,6 +173,37 @@ def pooled_contract_counts(candidates: Optional[list["_Candidate"]] = None
             tolerable_by_identity[key] += 1
     return {fid: (valid_by_identity[key], tolerable_by_identity[key])
             for fid, key in identity_by_fitting.items()}
+
+
+def sold_out_fittings(sold: set[int], unavailable: set[int], now: datetime) -> list[str]:
+    """Names of the fittings a sale just emptied (Discord contract alert).
+    `sold`: contract ids that just finished; `unavailable`: every contract id
+    a live ESI read shows as no longer buyable (finished, deleted, or past its
+    expiry), a superset of `sold`. A fitting counts as sold out only when one
+    of the sold contracts was a valid/tolerable match for it and no other
+    contract of the same fit (the pooled identity of pooled_contract_counts)
+    is still available - a fitting that already had no contract never counts.
+    The snapshot can lag behind ESI; `unavailable` covers what the live read
+    already knows."""
+    candidates = load_match_candidates()
+    by_id = {c.fitting.fitting_id: c for c in candidates}
+    identity_by_fitting = {fid: _fit_identity(c) for fid, c in by_id.items()}
+    available: dict[tuple, int] = defaultdict(int)
+    sold_fittings: dict[tuple, str] = {}
+    for ct in contract_rows_from_db(storage.list_doctrine_contracts()):
+        key = identity_by_fitting.get(str(ct.matched_fitting_id)) if ct.matched_fitting_id else None
+        if key is None or ct.validation_status not in ("valid", "tolerable"):
+            continue
+        if ct.contract_id in sold:
+            sold_fittings.setdefault(key, by_id[str(ct.matched_fitting_id)].fitting.name)
+            continue
+        expires = datetime.fromisoformat(ct.date_expired) if ct.date_expired else None
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if ct.status == "expired" or ct.contract_id in unavailable or (expires is not None and expires <= now):
+            continue
+        available[key] += 1
+    return [name for key, name in sold_fittings.items() if not available[key]]
 
 
 #: Status sentinel, never added to constants.VALIDATION_STATUSES. Matching
