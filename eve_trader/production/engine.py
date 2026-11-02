@@ -1580,6 +1580,7 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                  byproduct_stock: Optional[dict[int, float]] = None,
                  stop_at_reactions: bool = False,
                  reaction_demand: Optional[dict[int, float]] = None,
+                 reaction_buffer: Optional[dict[int, float]] = None,
                  ) -> tuple[dict[int, float], dict[tuple[int, int, int], int]]:
     """Resolves every stock target's `seed_missing` quantity into buy_totals
     ({type_id: qty}) and build_runs ({(blueprint_id, activity_id, product_type_id): runs}),
@@ -1706,7 +1707,12 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
     netting here and again in ``build_window`` zeroed demand). A manual Buy
     still nets and goes to buy_totals (D6). Stock netting above the boundary
     is unchanged. Default False preserves today's behaviour exactly when
-    `reaction_capacity_enabled` is off."""
+    `reaction_capacity_enabled` is off.
+
+    `reaction_buffer`, if given, receives the overbuild-buffer share of each
+    `reaction_demand` entry (D9 revised 2026-11-02): the capacity solver fills
+    that share only with its own jobs and never buys a reaction product for
+    it."""
     effective_overbuild = cfg.component_overbuild if component_overbuild is None else component_overbuild
     cost_indices = cost_indices or {}
     alchemy_memo = alchemy_memo or {}
@@ -1719,6 +1725,7 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
     depth = 0
     while jobs_this_level and depth < MAX_DEPTH:
         next_level: dict[int, float] = {}
+        next_level_buffer: dict[int, float] = {}
 
         for type_id, quantity in jobs_this_level.items():
             activity, bp = classify_activity(type_id)
@@ -1766,6 +1773,8 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                 overbuild = 0.0 if material_id in manual_overrides else effective_overbuild
                 buffer = overbuild * base_qty * material_mult * parent_base_runs
                 next_level[material_id] = next_level.get(material_id, 0.0) + gross_needed + buffer
+                if buffer > 0:
+                    next_level_buffer[material_id] = next_level_buffer.get(material_id, 0.0) + buffer
 
         jobs_this_level = {}
         for material_id, target in next_level.items():
@@ -1780,6 +1789,9 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                     and m_activity == "Reaction" and m_bp is not None
                     and manual_overrides.get(material_id) != "Buy"):
                 reaction_demand[material_id] = reaction_demand.get(material_id, 0.0) + target
+                buffered = next_level_buffer.get(material_id, 0.0)
+                if reaction_buffer is not None and buffered > 0:
+                    reaction_buffer[material_id] = reaction_buffer.get(material_id, 0.0) + buffered
                 continue
             on_hand = 0.0 if ignore_current_stock else _current_stock(material_id, manual_stock, cfg, m_bp)
             available = max(0.0, on_hand + byproduct_stock.get(material_id, 0.0) - stock_used.get(material_id, 0.0))
@@ -2863,11 +2875,13 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             selected_decryptors, t2_memo, manual_stock, stock_used, {},
             gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
             stop_at_reactions=True, reaction_demand=reaction_demand)
+        reaction_buffer: dict[int, float] = {}
         buy_totals, build_runs = _expand_all(
             target_seed, cfg, home, jita, manual_overrides, cost_memo,
             selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
             gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
-            stop_at_reactions=True, reaction_demand=reaction_demand)
+            stop_at_reactions=True, reaction_demand=reaction_demand,
+            reaction_buffer=reaction_buffer)
         for type_id, qty in order_buy.items():
             buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
         for key, runs in order_runs.items():
@@ -2879,7 +2893,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             selected_decryptors, t2_memo, manual_stock, cost_indices, adjusted_prices, alchemy_memo)
         layer, _window, state, rplan = reaction_capacity.solve_cached(
             ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
-            cycle_demand=cycle_demand)
+            cycle_demand=cycle_demand, buffer=reaction_buffer)
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
 
@@ -4144,11 +4158,13 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             selected_decryptors, t2_memo, manual_stock, collect_used, {},
             cost_indices=cost_indices, alchemy_memo=alchemy_memo,
             stop_at_reactions=True, reaction_demand=collect_demand)
+        collect_buffer: dict[int, float] = {}
         _expand_all(
             target_seed_collect, cfg, home, jita, manual_overrides, cost_memo,
             selected_decryptors, t2_memo, manual_stock, collect_used, base_runs,
             cost_indices=cost_indices, alchemy_memo=alchemy_memo,
-            stop_at_reactions=True, reaction_demand=collect_demand)
+            stop_at_reactions=True, reaction_demand=collect_demand,
+            reaction_buffer=collect_buffer)
         reaction_demand.clear()
         reaction_demand.update(collect_demand)
         chain_choice = _load_reaction_chain_choices()
@@ -4157,7 +4173,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             selected_decryptors, t2_memo, manual_stock, cost_indices, adjusted_prices, alchemy_memo)
         layer, _window, state, rplan = reaction_capacity.solve_cached(
             ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
-            cycle_demand=cycle_demand)
+            cycle_demand=cycle_demand, buffer=collect_buffer)
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
     elif any(alchemy_memo.values()):

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Badge, Collapse, Group, SegmentedControl, Stack, Table, Text, Title, UnstyledButton } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
-import type { ReactionCapacityBlock, ReactionChainingRow } from '../../api/types'
+import type { ReactionBufferRow, ReactionCapacityBlock, ReactionChainingRow } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
 import { formatEveUtc } from './reactionWindowTime'
@@ -159,13 +159,57 @@ function NextWindowPreview({ block }: { block: ReactionCapacityBlock }) {
   )
 }
 
-/** Header + chaining + next-window preview for Build / Asset plan pages. */
+/** Overbuild buffer of reaction products (D9 revised): filled with spare slots only. */
+export function BufferTable({ rows }: { rows: ReactionBufferRow[] | undefined }) {
+  const [open, setOpen] = useState(false)
+  if (!rows || rows.length === 0) return null
+  const openCount = rows.filter((r) => r.open > 0.5).length
+  return (
+    <Stack gap={4} mt="sm">
+      <UnstyledButton onClick={() => setOpen((o) => !o)}>
+        <Text size="sm" c="dimmed" data-testid="reaction-buffer-toggle">
+          {open ? '▾' : '▸'} Buffer: {rows.length - openCount} of {rows.length} products filled
+          {openCount > 0 ? `, ${openCount} open` : ''}
+        </Text>
+      </UnstyledButton>
+      <Collapse expanded={open}>
+        <Text size="xs" c="dimmed" mb="xs">
+          The overbuild buffer on reaction products is reacted only with spare slots and is never bought.
+          An open buffer stays open until a later window has room for it.
+        </Text>
+        <Table striped withTableBorder>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Product</Table.Th>
+              <Table.Th>Buffer</Table.Th>
+              <Table.Th>Filled this window</Table.Th>
+              <Table.Th>Open</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {rows.map((r) => (
+              <Table.Tr key={r.product_type_id}>
+                <Table.Td>{productLabel(r.type_name, r.product_type_id)}</Table.Td>
+                <Table.Td>{qty(r.target)}</Table.Td>
+                <Table.Td>{qty(r.filled)}</Table.Td>
+                <Table.Td>{r.open > 0.5 ? qty(r.open) : '–'}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Collapse>
+    </Stack>
+  )
+}
+
+/** Header + chaining + buffer + next-window preview for Build / Asset plan pages. */
 export default function ReactionCapacityPanel({ block }: { block: ReactionCapacityBlock | undefined }) {
   if (!block) return null
   return (
     <Stack gap="xs" mb="sm">
       <ReactionCapacityHeader block={block} />
       <ChainingTable rows={block.chaining} />
+      <BufferTable rows={block.buffer} />
       <NextWindowPreview block={block} />
     </Stack>
   )
