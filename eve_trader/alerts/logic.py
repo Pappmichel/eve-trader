@@ -143,11 +143,17 @@ def _isk(value: float) -> str:
     return f"{value:.0f} ISK"
 
 
+CONTRACT_ACCEPTOR_VERBS = {"item_exchange": "bought by", "auction": "bought by", "courier": "delivered by"}
+
+
 def contract_message(events: Sequence[tuple[int, str, dict]], character_name: str,
-                     items: Optional[dict[int, str]] = None, places: Optional[dict[int, str]] = None) -> str:
+                     items: Optional[dict[int, str]] = None, places: Optional[dict[int, str]] = None,
+                     acceptors: Optional[dict[int, str]] = None, sold_out: Sequence[str] = ()) -> str:
     """One message for the given new events. `items` maps a contract id to a
     short item summary (used when the contract has no title), `places` a
-    location id to its name; both are optional."""
+    location id to its name, `acceptors` an acceptor id (character or
+    corporation) to its name; all are optional. `sold_out` names Doctrine
+    fittings these sales left without any contract."""
     finished = sum(1 for _i, e, _c in events if e == CONTRACT_FINISHED)
     expired = len(events) - finished
     parts = [f"{n} contract{'s' if n != 1 else ''} {what}"
@@ -160,9 +166,14 @@ def contract_message(events: Sequence[tuple[int, str, dict]], character_name: st
         place = (places or {}).get(int(c.get("start_location_id") or 0))
         line = f"- {event.capitalize()}: {kind}" + (f" \"{what}\"" if what else "")
         line += (f", {_isk(value)}" if value else "") + (f" at {place}" if place else "")
+        acceptor = (acceptors or {}).get(int(c.get("acceptor_id") or 0)) if event == CONTRACT_FINISHED else None
+        if acceptor:
+            line += f", {CONTRACT_ACCEPTOR_VERBS.get(c.get('type'), 'accepted by')} {acceptor[:MAX_SUBJECT_CHARS]}"
         lines.append(line)
     if len(events) > MAX_CONTRACTS_LISTED:
         lines.append(f"... and {len(events) - MAX_CONTRACTS_LISTED} more")
+    for name in sold_out:
+        lines.append(f"- Sold out: fitting \"{str(name)[:MAX_SUBJECT_CHARS]}\" has no contract left")
     return f"{character_name}: " + ", ".join(parts) + ".\n" + "\n".join(lines)
 
 

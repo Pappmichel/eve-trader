@@ -15,6 +15,8 @@ after an opt-in stores a baseline and sends nothing.
 Contracts: the character's contract list is polled live too (the snapshot only
 refreshes every few hours); each finished or expired contract it issued is
 announced once (`contract_alert_state`), again after a first-poll baseline.
+A finished contract names its acceptor; a sale that leaves a Doctrine fitting
+without any available contract adds a "sold out" line (doctrine grant only).
 
 A failed attempt (ESI or Discord) records `last_attempt_at` and leaves the
 dedupe cursor alone, so nothing is lost or duplicated and a broken destination
@@ -28,7 +30,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from .. import storage
+from .. import storage, tenant_eligibility
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, SCHEDULER_OPERATOR_CONFIG
 from ..esi_client import ESIClient, ESIError
@@ -317,8 +319,26 @@ def _contract_items(client: ESIClient, cid: int, role: str, contract_ids: list[i
     return out
 
 
+def _sold_out_fittings(contracts: list[dict], fresh: list[tuple[int, str, dict]], now: datetime,
+                       tenant_id: str) -> list[str]:
+    """Doctrine fittings the fresh sales emptied. Reads another tool's data,
+    so only for a tenant holding the `doctrine` grant (same rule as the
+    Doctrine skill check). A failure only drops the extra line."""
+    sold = {i for i, e, c in fresh if e == logic.CONTRACT_FINISHED and c.get("type") == "item_exchange"}
+    if not sold or not tenant_eligibility.may_use("doctrine", tenant_eligibility.granted_tools(tenant_id)):
+        return []
+    unavailable = {int(c["contract_id"]) for c in contracts if "contract_id" in c and (
+        c.get("status") != "outstanding" or (logic.parse_iso(c.get("date_expired")) or now) <= now)}
+    try:
+        from ..doctrine.engine import sold_out_fittings
+        return sold_out_fittings(sold, unavailable | sold, now)
+    except Exception as e:  # noqa: BLE001 - the contract alert itself must still go out
+        log.warning("Doctrine sold-out check failed: %s", e)
+        return []
+
+
 def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, client: ESIClient,
-                   tokens: TokenManager) -> None:
+                   tokens: TokenManager, tenant_id: Optional[str] = None) -> None:
     """Contracts the character issued that finished or expired since the
     opt-in, each announced once. Polled live like mail: the contracts snapshot
     refreshes only every few hours. The first poll stores a baseline."""
@@ -351,7 +371,11 @@ def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, clie
     untitled = [i for i, _e, c in listed if not str(c.get("title") or "").strip() and c.get("type") != "courier"]
     items = _contract_items(client, cid, role, untitled)
     places = storage.get_location_names({int(c["start_location_id"]) for _i, _e, c in listed if c.get("start_location_id")})
-    message = logic.contract_message(fresh, name, items, {k: v for k, v in places.items() if v})
+    acceptors = _sender_names(client, [int(c["acceptor_id"]) for _i, e, c in listed
+                                       if e == logic.CONTRACT_FINISHED and c.get("acceptor_id")])
+    sold_out = _sold_out_fittings(contracts, fresh, now, tenant_id) if tenant_id else []
+    message = logic.contract_message(fresh, name, items, {k: v for k, v in places.items() if v},
+                                     acceptors, sold_out)
     decision = logic.Decision(f"contracts:{max(i for i, _e, _c in fresh)}", message)
     if _send(cid, logic.CONTRACT_STATUS, decision, now, tokens=tokens):
         storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in fresh], at=now)
@@ -402,7 +426,7 @@ def run_for_tenant(
                     _run_pi(cid, alert_type, lead_hours, name, now, client, tokens, freshness, tenant_id)
                 elif alert_type == logic.CONTRACT_STATUS:
                     _run_contracts(cid, name, now, SCHEDULER_OPERATOR_CONFIG.alerts_contract_poll_minutes,
-                                   client, tokens)
+                                   client, tokens, tenant_id)
             except Exception as e:  # noqa: BLE001 - one character's failure must not skip the others
                 log.warning("Alert %s for character %s failed: %s", alert_type, cid, e)
         return {"subscriptions": len(subs), "ran": True}
