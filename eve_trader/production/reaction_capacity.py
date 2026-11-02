@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
@@ -112,6 +112,14 @@ class ReactionWindow:
     # the replacement price; stock above it is worth 0. Empty = stock is
     # free to use (the model before the carry value).
     carry_need: Mapping[int, float] = field(default_factory=dict)
+    # Overbuild buffer (D9, revised 2026-11-02): the part of ``demand`` that is
+    # a stock cushion, not a need. Filled only by own jobs; a unit left open
+    # costs the product's buy price, so free slots go to the buffer worth most
+    # per slot. Never bought: ``solve`` caps reaction-product purchases at
+    # what the demand without buffer needs (``buffer_buy_cap``, set
+    # internally). Raw inputs for buffer jobs may be bought.
+    buffer: Mapping[int, float] = field(default_factory=dict)
+    buffer_buy_cap: Optional[Mapping[int, float]] = None
 
     @property
     def slots_w2(self) -> int:
@@ -119,8 +127,29 @@ class ReactionWindow:
 
     def demand2(self, product_id: int) -> float:
         """W2 demand of one product (D14/D16)."""
-        base = self.demand if self.cycle_demand is None else self.cycle_demand
-        return float(base.get(product_id, 0.0)) * max(0.0, float(self.demand_factor))
+        if self.cycle_demand is None:
+            # W1 demand without its buffer: the buffer is a stock level, not
+            # a use that repeats every cycle.
+            base = float(self.demand.get(product_id, 0.0)) - self.buffer_of(product_id)
+        else:
+            base = float(self.cycle_demand.get(product_id, 0.0))
+        return max(0.0, base) * max(0.0, float(self.demand_factor))
+
+    def buffer_of(self, product_id: int) -> float:
+        """Buffer share of ``demand1`` for one product (never above demand1)."""
+        buf = float(self.buffer.get(product_id, 0.0))
+        if buf <= _EPS:
+            return 0.0
+        return min(buf, float(self.demand.get(product_id, 0.0)))
+
+    def hard_demand(self) -> dict[int, float]:
+        """``demand1`` without the buffer: what must be covered (or bought)."""
+        out: dict[int, float] = {}
+        for p, qty in self.demand.items():
+            hard = float(qty) - self.buffer_of(p)
+            if hard > _EPS:
+                out[p] = hard
+        return out
 
 
 # ------------------------------------------------------------------ output
@@ -173,6 +202,10 @@ class ReactionPlan:
     w2_preview_cost: float = 0.0        # W2 fees + buy2
     formulas_to_buy_count: int = 0
     formulas_to_buy_isk: float = 0.0    # purchase price × count (not amortised)
+    # Overbuild buffer per product (D9 revised): target units and the units
+    # W1 leaves unfilled (no slot or formula was worth spending on them).
+    buffer_target: Mapping[int, float] = field(default_factory=dict)
+    buffer_open: Mapping[int, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -373,7 +406,61 @@ def fit_runs(seconds_per_run: float, cycle_days: float) -> int:
 
 # ------------------------------------------------------------------ solver
 def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
-    """Minimise two-window reaction-layer cost. See plan section 3."""
+    """Minimise two-window reaction-layer cost. See plan section 3.
+
+    With an overbuild buffer (D9 revised 2026-11-02) this solves twice:
+    first the demand without buffer, which fixes what has to be bought; then
+    demand plus buffer, with reaction-product purchases capped at the first
+    solve's, so slots left over go to the buffer and the buffer itself is
+    never bought (raw inputs for buffer jobs may be)."""
+    buffer = {
+        p: window.buffer_of(p) for p in window.buffer if window.buffer_of(p) > _EPS
+    }
+    if not buffer or not layer.recipes:
+        return _solve_core(layer, replace(window, buffer={}, buffer_buy_cap=None))
+
+    hard = window.hard_demand()
+    hard_window = replace(window, demand=hard, buffer={}, buffer_buy_cap=None)
+    base = _solve_core(layer, hard_window)
+    # Demand stage 1 could not cover stays uncovered; the buffer goes on top.
+    stage2_demand = {
+        p: max(0.0, q - float(base.unmet_demand.get(p, 0.0))) for p, q in hard.items()
+    }
+    for p, buf in buffer.items():
+        stage2_demand[p] = stage2_demand.get(p, 0.0) + buf
+    cap = {
+        p: float(base.buy.get(p, 0.0)) for p in layer.product_ids
+    }
+    soft_window = replace(
+        window, demand=stage2_demand, buffer=buffer, buffer_buy_cap=cap)
+    soft = _solve_core(layer, soft_window)
+    worse = any(
+        qty > float(base.unmet_demand.get(p, 0.0)) * (1 + 1e-6) + 1.0
+        for p, qty in soft.unmet_demand.items()
+    )
+    if worse:
+        # The buffer solve left need uncovered that the first solve covered
+        # (solver failure): keep the plan without buffer.
+        return replace(
+            base,
+            warnings=tuple(dict.fromkeys(
+                [*base.warnings, "Buffer solve failed; buffer left open"])),
+            buffer_target=buffer,
+            buffer_open=dict(buffer),
+        )
+    unmet = dict(base.unmet_demand)
+    for p, qty in soft.unmet_demand.items():
+        unmet[p] = max(unmet.get(p, 0.0), qty)
+    return replace(
+        soft,
+        unmet_demand=unmet,
+        warnings=tuple(dict.fromkeys([*base.warnings, *soft.warnings])),
+        buffer_target=buffer,
+    )
+
+
+def _solve_core(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
+    """One solve of the two-window model (soft buffer handled in the MIP)."""
     if not layer.recipes:
         return ReactionPlan(
             recipes=(), buy={}, total_cost=0.0, slot_shadow_price=0.0,
@@ -409,8 +496,11 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
                 f"result may not be proven optimal (mip_abs_gap={_MIP_ABS_GAP:g} ISK)"
             )
 
+    # An open buffer unit is a priced choice, not a penalty: no repeat for it.
+    hard_short1 = any(
+        qty > _EPS for p, qty in primary.short1.items() if p not in window.buffer)
     if primary.success and (
-        primary.short1 or primary.short2
+        hard_short1 or primary.short2
         or primary.slot_slack1 > _EPS or primary.slot_slack2 > _EPS
     ):
         repeat = _solve_mip(
@@ -419,7 +509,7 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         if repeat.success:
             # Add the fixed penalties back so later comparisons (LP
             # rounding) stay on the penalised basis.
-            repeat.objective += _penalty_cost(primary)
+            repeat.objective += _penalty_cost(primary, window)
             primary = repeat
 
     # One continuous LP for shadow prices and chaining buy-now baseline.
@@ -456,13 +546,25 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         w2_preview_cost=plan.w2_preview_cost,
         formulas_to_buy_count=plan.formulas_to_buy_count,
         formulas_to_buy_isk=plan.formulas_to_buy_isk,
+        buffer_target=plan.buffer_target,
+        buffer_open=plan.buffer_open,
     )
 
 
-def _penalty_cost(raw: "_RawSolve") -> float:
-    """ISK value of the solve's penalties in its objective."""
+def _short1_cost(window: ReactionWindow, product_id: int) -> float:
+    """Objective price of one W1 short unit: an open buffer unit costs the
+    product's buy price (the value it would have had), anything else the
+    penalty."""
+    if product_id in window.buffer:
+        return float(window.prices.get(product_id, 0.0))
+    return _SHORT_PENALTY
+
+
+def _penalty_cost(raw: "_RawSolve", window: ReactionWindow) -> float:
+    """ISK value of the solve's shorts and slot slack in its objective."""
     return (
-        _SHORT_PENALTY * (sum(raw.short1.values()) + sum(raw.short2.values()))
+        sum(_short1_cost(window, p) * q for p, q in raw.short1.items())
+        + _SHORT_PENALTY * sum(raw.short2.values())
         + _SLOT_SLACK_PENALTY * (raw.slot_slack1 + raw.slot_slack2)
     )
 
@@ -661,7 +763,8 @@ def _solve_mip(
             bounds[i_buy1 + mat_index[m]] = (0.0, 0.0)
             bounds[i_buy2 + mat_index[m]] = (0.0, 0.0)
     for p in products:
-        dem = float(window.demand.get(p, 0.0))
+        # Only need is deferred; an open buffer unit is a priced short instead.
+        dem = max(0.0, float(window.demand.get(p, 0.0)) - window.buffer_of(p))
         if force_defer is not None and p in force_defer:
             d = float(force_defer[p])
             bounds[i_defer + prod_index[p]] = (d, d)
@@ -677,6 +780,20 @@ def _solve_mip(
             j2 = float(jobs2_fix.get(recipe.key, 0))
             bounds[i_jobs1 + i] = (j1, j1)
             bounds[i_jobs2 + i] = (j2, j2)
+    # Overbuild buffer (D9 revised): a W1 short up to the buffer costs the
+    # product's buy price instead of the penalty; more than that cannot be
+    # short. Reaction-product purchases are capped (``solve`` stage 2).
+    for p in products:
+        if p in window.buffer:
+            c[i_short1 + prod_index[p]] = _short1_cost(window, p)
+            bounds[i_short1 + prod_index[p]] = (0.0, window.buffer_of(p))
+    if window.buffer_buy_cap is not None:
+        for m in layer.product_ids:
+            if m not in mat_index:
+                continue
+            lo, hi = bounds[i_buy1 + mat_index[m]]
+            cap = max(0.0, float(window.buffer_buy_cap.get(m, 0.0)))
+            bounds[i_buy1 + mat_index[m]] = (lo, cap if hi is None else min(hi, cap))
     if hard_w1_slots:
         bounds[i_slack1] = (0.0, 0.0)
     if fixed_penalties is not None:
@@ -778,6 +895,9 @@ def _solve_mip(
         row[i_buy1 + mat_index[p]] = -1.0
         row[i_buy2 + mat_index[p]] = -1.0
         row[i_short2 + prod_index[p]] = -1.0
+        if p in window.buffer:
+            # A buffer unit W1 left open need not exist after W2 either.
+            row[i_short1 + prod_index[p]] = -1.0
         demand1 = float(window.demand.get(p, 0.0))
         demand2 = window.demand2(p)
         a_rows.append(row)
@@ -1127,7 +1247,11 @@ def _postprocess(
     """Round W1, split buy1 into now / later, new_formulas, unmet; return
     pieces for cost."""
     runs1, jobs1, buy_rounded, round_warnings = _round_w1(layer, window, raw)
-    recomputed = _recompute_buy1(layer, window, runs1, raw.defer)
+    # Buy only what the demand without buffer needs: a buffer unit the
+    # rounded runs do not make stays open, it is never bought.
+    hard_window = (
+        replace(window, demand=window.hard_demand()) if window.buffer else window)
+    recomputed = _recompute_buy1(layer, hard_window, runs1, raw.defer)
     buy1, buy_later = _split_buy1(buy_rounded, recomputed)
     new_f: dict[str, int] = {}
     for recipe in layer.recipes:
@@ -1141,9 +1265,9 @@ def _postprocess(
     jobs_used = sum(jobs1.values())
     slot_slack1 = max(0.0, float(jobs_used - window.slots))
     slot_slack2 = max(0.0, float(sum(raw.jobs2.values()) - window.slots_w2))
-    unmet = dict(raw.short1)
+    unmet = {p: q for p, q in raw.short1.items() if p not in window.buffer}
     if not raw.success:
-        for p, dem in window.demand.items():
+        for p, dem in hard_window.demand.items():
             covered = (
                 float(window.on_hand.get(p, 0.0))
                 + float(window.incoming1.get(p, 0.0))
@@ -1275,6 +1399,7 @@ def _finalize(
     )
 
     slot_shadow, formula_shadows = _shadow_prices(layer, window, raw, base_lp)
+    buffer_open = _buffer_open(layer, window, runs1, buy1)
 
     by_key = {r.key: r for r in layer.recipes}
     formulas_count = sum(int(n) for n in new_f.values() if n)
@@ -1300,7 +1425,46 @@ def _finalize(
         w2_preview_cost=w2_cost,
         formulas_to_buy_count=formulas_count,
         formulas_to_buy_isk=formulas_isk,
+        buffer_target={p: window.buffer_of(p) for p in window.buffer},
+        buffer_open=buffer_open,
     )
+
+
+def _buffer_open(
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    runs1: Mapping[str, float],
+    buy1: Mapping[int, float],
+) -> dict[int, float]:
+    """Buffer units W1 leaves unfilled: stock after W1 (on hand, incoming
+    before W2, purchases, net W1 output) above the demand without buffer,
+    compared with the buffer target."""
+    if not window.buffer:
+        return {}
+    by_key = {r.key: r for r in layer.recipes}
+    net: dict[int, float] = {}
+    for key, n_runs in runs1.items():
+        if n_runs <= 0:
+            continue
+        recipe = by_key[key]
+        for m, qty in recipe.outputs.items():
+            net[m] = net.get(m, 0.0) + float(qty) * n_runs
+        for m, qty in recipe.inputs.items():
+            net[m] = net.get(m, 0.0) - float(qty) * n_runs
+    hard = window.hard_demand()
+    out: dict[int, float] = {}
+    for p in window.buffer:
+        target = window.buffer_of(p)
+        if target <= _EPS:
+            continue
+        left = (
+            float(window.on_hand.get(p, 0.0)) + float(window.incoming1.get(p, 0.0))
+            + float(buy1.get(p, 0.0)) + net.get(p, 0.0) - hard.get(p, 0.0)
+        )
+        open_qty = target - max(0.0, left)
+        if open_qty > _EPS:
+            out[p] = min(target, open_qty)
+    return out
 
 
 def _chaining_comparisons(
@@ -1358,7 +1522,10 @@ def _chaining_comparisons(
             continue
         affected.setdefault(product_id, set()).update(r_inputs)
 
-    for product_id, demand in window.demand.items():
+    # The buffer is never bought, so it never makes buying vs waiting a
+    # question: compare on the demand without buffer.
+    hard = window.hard_demand()
+    for product_id, demand in hard.items():
         if demand <= _EPS or product_id in affected:
             continue
         r_inputs = _reaction_inputs(product_id)
@@ -1386,12 +1553,12 @@ def _chaining_comparisons(
         wait_raw = _solve_mip(
             layer, window,
             allow_defer={product_id},
-            force_defer={product_id: float(window.demand.get(product_id, 0.0))},
+            force_defer={product_id: float(hard.get(product_id, 0.0))},
             continuous=True,
         )
         wait_cost = float(wait_raw.objective) if wait_raw.success else buy_now_cost
         saved = max(0.0, buy_now_cost - wait_cost)
-        units = float(window.demand.get(product_id, 0.0))
+        units = float(hard.get(product_id, 0.0))
         preferred = window.chain_choice.get(product_id, "buy")
         if preferred not in ("buy", "wait"):
             preferred = "buy"
@@ -1639,8 +1806,11 @@ def build_window(
     character_rows: Optional[list] = None,
     industry_jobs: Optional[list[tuple]] = None,
     cycle_demand: Optional[Mapping[int, float]] = None,
+    buffer: Optional[Mapping[int, float]] = None,
 ) -> tuple[ReactionWindow, WindowState]:
     """Capacities, stocks, prices and demand for ``solve`` (plan section 3/4).
+
+    ``buffer`` is the overbuild-buffer share of ``demand`` (D9 revised).
 
     ``on_hand`` = ``_stock_on_hand`` + jobs ending before the window;
     ``incoming1``/``incoming2`` from ``window_state``. Incoming that
@@ -1730,6 +1900,11 @@ def build_window(
                 float(cfg.reaction_next_window_demand_factor))
             if cfg.reaction_stock_carry_value else {}
         ),
+        buffer={
+            int(k): min(float(v), float(demand.get(k, 0.0)))
+            for k, v in (buffer or {}).items()
+            if v > _EPS and float(demand.get(k, 0.0)) > _EPS
+        },
     )
     return window, state
 
@@ -1925,7 +2100,22 @@ def plan_payload(
     if plan.next_window is not None:
         for a in plan.next_window.recipes:
             type_ids.add(a.product_type_id)
+    type_ids.update(plan.buffer_target)
     names = _type_names(sorted(type_ids))
+    buffer_rows = sorted(
+        (
+            {
+                "product_type_id": p,
+                "type_name": names.get(p),
+                "target": target,
+                "open": float(plan.buffer_open.get(p, 0.0)),
+                "filled": max(0.0, target - float(plan.buffer_open.get(p, 0.0))),
+            }
+            for p, target in plan.buffer_target.items()
+            if target > _EPS
+        ),
+        key=lambda row: (-row["open"], row["type_name"] or ""),
+    )
 
     by_recipe = [
         {
@@ -2000,6 +2190,7 @@ def plan_payload(
         "component_slot_days": component_slot_days,
         "cycle_days": cfg.reaction_cycle_days,
         "w2_demand": dict(w2_demand) if w2_demand is not None else None,
+        "buffer": buffer_rows,
     }
 
 
@@ -2011,6 +2202,7 @@ def solve_cached(
     *,
     chain_choice: Optional[Mapping[int, str]] = None,
     cycle_demand: Optional[Mapping[int, float]] = None,
+    buffer: Optional[Mapping[int, float]] = None,
 ) -> tuple[ReactionLayer, ReactionWindow, WindowState, ReactionPlan]:
     """Solve once per plan context; reuse when demand fingerprint matches.
 
@@ -2018,6 +2210,7 @@ def solve_cached(
     ``cost_indices``, ``adjusted_prices``, ``manual_stock``,
     ``manual_overrides``, and optional ``_reaction_solve_cache``.
     ``cycle_demand`` is W2's base demand (D16); None = ``demand``.
+    ``buffer`` is the overbuild-buffer share of ``demand`` (D9 revised).
     """
     def _key(values: Optional[Mapping[int, float]]):
         if values is None:
@@ -2028,6 +2221,7 @@ def solve_cached(
         _key(demand),
         tuple(sorted((int(k), str(v)) for k, v in (chain_choice or {}).items())),
         _key(cycle_demand),
+        _key(buffer),
     )
     cache = getattr(ctx, "_reaction_solve_cache", None)
     if cache is not None and cache[0] == demand_key:
@@ -2056,6 +2250,7 @@ def solve_cached(
         manual_stock=ctx.manual_stock,
         chain_choice=chain_choice,
         cycle_demand=cycle_demand,
+        buffer=buffer,
     )
     plan = solve(layer, window) if layer.recipes else ReactionPlan(
         recipes=(), buy={}, total_cost=0.0, slot_shadow_price=0.0,

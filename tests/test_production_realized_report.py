@@ -39,6 +39,9 @@ T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 T_JOB = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
 T_END = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 T_SALE = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+# Report window in days back from today that still covers T0: the fixed
+# dates above would otherwise fall out of a fixed 30-day window as time passes.
+DAYS = (datetime.now(timezone.utc) - T0).days + 30
 
 
 @pytest.fixture(scope="session")
@@ -110,14 +113,14 @@ def _group(report: dict, kind: str) -> dict:
 
 
 def test_summary_before_any_rebuild_asks_for_one(tenant):
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["status"]["needs_rebuild"] is True
     assert summary["status"]["empty"] is True
     assert summary["realized_profit"] == 0
     assert summary["flags"]["price_missing"] is False
     rebuilt = production_actions.do_rebuild_realized()
     assert rebuilt["cutover_t0"] is None
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["status"]["needs_rebuild"] is False
     assert "no wallet archive" in summary["status"]["hint"]
 
@@ -165,7 +168,7 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert freight_label_amount[2] is False
     assert "tax_missing" in freight_label_amount[3]
 
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["revenue"] == pytest.approx(500.0)
     assert summary["cost_of_goods_sold"] == pytest.approx(240.0)
     assert summary["realized_profit"] == pytest.approx(260.0)
@@ -184,13 +187,13 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert structure["job"]["amount"] == pytest.approx(20.0)
     assert structure["sales_tax"]["amount"] == pytest.approx(0.0)
 
-    products = production_actions.do_get_realized_products(days=30)
+    products = production_actions.do_get_realized_products(days=DAYS)
     assert products["rows"][0]["type_id"] == TYPE_B
     assert products["rows"][0]["flags"]["price_missing"] is False
     assert products["rows"][0]["flags"]["tax_missing"] is True
     assert "tax_missing" in products["rows"][0]["warnings"]
 
-    detail = production_actions.do_get_realized_product(TYPE_B, days=30)
+    detail = production_actions.do_get_realized_product(TYPE_B, days=DAYS)
     sale_ref = detail["sales"][0]["sale_ref"]
     assert detail["sales"][0]["flags"]["tax_missing"] is True
     assert detail["sales"][0]["location_id"] == LOC_SELL
@@ -237,7 +240,7 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     production_actions.do_add_ledger_entry(
         "revenue", 25.0, "2026-10-06T00:00:00+00:00", type_id=TYPE_B, note="manual",
     )
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["manual_revenues"] == pytest.approx(25.0)
     assert summary["profit_including_manual"] == pytest.approx(285.0)
 
@@ -308,7 +311,7 @@ def test_opening_cost_override_and_freight_reapply(tenant):
 
 def test_custom_range_and_bad_period_are_action_errors(tenant):
     with pytest.raises(production_actions.ActionError):
-        production_actions.do_get_realized_summary(days=30, since_t0=True)
+        production_actions.do_get_realized_summary(days=DAYS, since_t0=True)
     with pytest.raises(production_actions.ActionError):
         production_actions.do_add_ledger_entry("gift", 1.0, "2026-10-01")
     with pytest.raises(production_actions.ActionError):
@@ -337,18 +340,18 @@ def _seed_job_and_sale():
 def test_revoked_share_hides_the_run_until_rebuild(tenant):
     _seed_job_and_sale()
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    sale_ref = production_actions.do_get_realized_product(TYPE_B, days=30)["sales"][0]["sale_ref"]
+    sale_ref = production_actions.do_get_realized_product(TYPE_B, days=DAYS)["sales"][0]["sale_ref"]
     with storage.connect() as conn:
         conn.execute(
             "DELETE FROM esi_sharing WHERE owner_id = ? AND data_kind = 'industry_jobs'", (ALICE,),
         )
 
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["status"]["sharing_changed"] is True
     assert summary["status"]["needs_rebuild"] is True
     assert summary["revenue"] == 0
-    assert production_actions.do_get_realized_products(days=30)["rows"] == []
-    assert production_actions.do_get_realized_product(TYPE_B, days=30)["sales"] == []
+    assert production_actions.do_get_realized_products(days=DAYS)["rows"] == []
+    assert production_actions.do_get_realized_product(TYPE_B, days=DAYS)["sales"] == []
     assert production_actions.do_get_realized_jobs()["rows"] == []
     assert production_actions.do_get_realized_inventory()["rows"] == []
     assert production_actions.do_get_realized_opening()["rows"] == []
@@ -358,21 +361,21 @@ def test_revoked_share_hides_the_run_until_rebuild(tenant):
 
     # Rebuilt without the job: TYPE_B is no longer a Production type.
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["status"]["sharing_changed"] is False
     assert summary["revenue"] == pytest.approx(0.0)
 
     # Sharing again is a change too; the next rebuild brings the sale back.
     _share(ALICE, "industry_jobs")
-    assert production_actions.do_get_realized_summary(days=30)["status"]["sharing_changed"] is True
+    assert production_actions.do_get_realized_summary(days=DAYS)["status"]["sharing_changed"] is True
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    assert production_actions.do_get_realized_summary(days=30)["revenue"] == pytest.approx(500.0)
+    assert production_actions.do_get_realized_summary(days=DAYS)["revenue"] == pytest.approx(500.0)
 
 
 def test_chain_scales_job_inputs_to_the_sold_share(tenant):
     _seed_job_and_sale()
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    sale_ref = production_actions.do_get_realized_product(TYPE_B, days=30)["sales"][0]["sale_ref"]
+    sale_ref = production_actions.do_get_realized_product(TYPE_B, days=DAYS)["sales"][0]["sale_ref"]
     chain = production_actions.do_get_realized_sale_chain(sale_ref)
     [job] = chain["tree"]["children"]
     # 1 of the job's 2 output units was sold: half of its inputs and costs.
@@ -426,11 +429,11 @@ def test_opening_is_frozen_so_a_later_loss_shows_as_drift(tenant):
 def test_status_is_stale_after_a_newer_archive_sync(tenant):
     _seed_job_and_sale()
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    assert production_actions.do_get_realized_summary(days=30)["status"]["stale"] is False
+    assert production_actions.do_get_realized_summary(days=DAYS)["status"]["stale"] is False
     ledger_db.mark_archive_synced(
         "character", ALICE, "wallet_transactions", datetime.now(timezone.utc) + timedelta(minutes=1),
     )
-    assert production_actions.do_get_realized_summary(days=30)["status"]["stale"] is True
+    assert production_actions.do_get_realized_summary(days=DAYS)["status"]["stale"] is True
 
 
 def test_ledger_tab_reads_entries_freight_preview_and_archive_status(tenant):
@@ -517,7 +520,7 @@ def test_contract_buy_and_sale_reach_the_report(tenant):
         ("character", ALICE, 503, 1, TYPE_A, 9, True, False),
     ])
     _rebuild({})
-    sales = production_actions.do_get_realized_product(TYPE_A, days=30)["sales"]
+    sales = production_actions.do_get_realized_product(TYPE_A, days=DAYS)["sales"]
     assert len(sales) == 1
     assert sales[0]["source"] == "contract"
     assert sales[0]["revenue"] == pytest.approx(80.0)
@@ -529,7 +532,7 @@ def test_contract_buy_and_sale_reach_the_report(tenant):
     assert purchase["origin"] == "bought"
     inventory = {row["type_id"]: row for row in production_actions.do_get_realized_inventory()["rows"]}
     assert inventory[TYPE_A]["quantity"] == pytest.approx(2.0)
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     assert summary["tax_missing_sales"] == 0
     assert summary["flags"]["tax_missing"] is False
 
@@ -537,7 +540,7 @@ def test_contract_buy_and_sale_reach_the_report(tenant):
 def test_planned_cost_survives_rebuild_and_weights_sold_units(tenant):
     _seed_job_and_sale()
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    [row] = production_actions.do_get_realized_products(days=30)["rows"]
+    [row] = production_actions.do_get_realized_products(days=DAYS)["rows"]
     assert row["type_id"] == TYPE_B
     assert row["planned_cost_per_unit"] is None
     assert row["planned_coverage"] == pytest.approx(0.0)
@@ -545,14 +548,14 @@ def test_planned_cost_survives_rebuild_and_weights_sold_units(tenant):
     ledger_db.insert_planned_costs([
         ("character", ALICE, 77, TYPE_B, 12.5, "discover_cache"),
     ])
-    [row] = production_actions.do_get_realized_products(days=30)["rows"]
+    [row] = production_actions.do_get_realized_products(days=DAYS)["rows"]
     assert row["planned_cost_per_unit"] == pytest.approx(12.5)
     assert row["planned_coverage"] == pytest.approx(1.0)
     # Every sold unit has a planned value, so the difference is per unit.
     assert row["planned_difference_per_unit"] == pytest.approx(row["cost_per_unit"] - 12.5)
 
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    [row] = production_actions.do_get_realized_products(days=30)["rows"]
+    [row] = production_actions.do_get_realized_products(days=DAYS)["rows"]
     assert row["planned_cost_per_unit"] == pytest.approx(12.5)
 
 
@@ -784,7 +787,7 @@ def test_invention_group_cost_is_per_bpc_run_produced():
 def test_summary_spending_shows_job_fees_apart_from_cost_of_goods_sold(tenant):
     _seed_job_and_sale()
     _rebuild({TYPE_A: 6, TYPE_B: 1})
-    summary = production_actions.do_get_realized_summary(days=30)
+    summary = production_actions.do_get_realized_summary(days=DAYS)
     spending = summary["spending"]
     [fees] = spending["job_fees"]
     assert fees["label"] == "Manufacturing" and fees["jobs"] == 1

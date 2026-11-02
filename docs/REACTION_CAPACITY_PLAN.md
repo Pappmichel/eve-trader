@@ -11,7 +11,9 @@ Phase 4b (2026-10-30, review) fixed an infeasible model on uncoverable W1
 demand, tightened the MIP gap, added an LP-rounding fallback and the stock
 carry value (D15, `docs/REACTION_SLOT_PROFIT_PLAN.md` section 8).
 W2 demand now comes from own sales instead of the backlog (D16); targets without
-own sales use contract deliveries or the market estimate (D17).
+own sales use contract deliveries or the market estimate (D17). Since
+2026-11-02 the overbuild buffer on reaction products is reacted with spare
+slots only and never bought (D9 revised).
 `reaction_capacity_enabled` is already on for the Default tenant; phase 5
 (comparison numbers for the user) is still open.
 
@@ -210,7 +212,7 @@ Same layer and scenarios as 1.5.
 | D6 | Manual Build/Buy overrides | Respected: a manual Buy is never built; a manual Build is always built, even if that exceeds the capacity (shown as a warning). |
 | D7 | Switch | `reaction_capacity_enabled`, default off. Off = exactly today's behaviour. |
 | D8 | Components | Shown, not constrained (564 of about 2,500 slot-days today). The plan reports component slot-days per cycle so a constraint can be added later. |
-| D9 | Overbuild buffer (`component_overbuild`) | Counts as real demand: the buffer on reaction products competes for slot time like any other demand and is bought when it does not fit. |
+| D9 | Overbuild buffer (`component_overbuild`) | **Revised 2026-11-02:** the buffer on reaction products is reacted only with slots the need leaves free and is never bought. Need (components to build, including their own buffer) is still bought when slots are short. Raw inputs for buffer jobs may be bought. Why: on production the whole 27.2 B of reaction-product purchases was buffer (e.g. 31.7 M Sylramic Fibers, of which 33.3 M demand was buffer); the need alone used 117 of 198 slots and bought nothing. *Original rule (2026-10-27): the buffer counts as real demand and is bought when it does not fit.* |
 | D10 | Chaining (gap 7) | Shown per case: for every product whose demand this window needs bought reaction inputs (or the product itself), the planner shows "buy now" against "wait": the demand moves to the next window and is made there from this window's intermediates. Shown: ISK saved by waiting and the units delayed by one cycle. The user picks per product. **Default is buy (D1)**; revised 2026-10-27, because waiting has no cost of its own and "the cheaper option" would always wait. |
 | D11 | Formulas (gap 5) | Owned originals limit jobs per recipe. The optimizer may also buy formulas at their buy price when that pays back within `reaction_formula_payback_cycles` cycles (setting, default 1). Bought formulas appear on the Buy List. Formulas needed only by W2 jobs are **bought now** together with W1's (confirmed 2026-10-27). |
 | D12 | Window date (gap 8) | New settings `reaction_window_next` (date and time of the next window) and `reaction_window_interval_days` (default 14). Slots whose reaction jobs end after the window start are not free; output of jobs ending before it counts as on hand. Without a date set, all slots count as free. |
@@ -294,6 +296,19 @@ Stock at the start of W2, per material (a linear expression, not a variable):
   incoming2)` and `keep[m] <=` stock left after W2 without shorts.
 - The W2 input row includes `short[p,1]` (S2 contains it); without it an
   uncoverable W1 demand made the model infeasible.
+
+**Buffer (D9 revised).** `_expand_all` reports the buffer share of each
+reaction product's demand (`reaction_buffer`). `solve` runs twice: first on
+the demand without buffer, which fixes the W1 purchases of reaction products;
+then on need plus buffer with those purchases as upper bounds. In the second
+solve a W1 short of up to the buffer costs the product's buy price (the value
+the unit would have had) instead of the penalty, so spare slots go to the
+buffer worth most per slot; the W2 coverage row lets an open buffer unit stay
+open, defer applies to need only, W2's backlog base excludes the buffer, and
+post-processing buys only what the need requires. The plan reports
+`buffer_target` / `buffer_open` per product (Build List "Buffer" table).
+Production run 2026-11-02: 198/198 jobs, 0 B reaction products bought (was
+27.2 B), 44 B of 82 B buffer value filled by own jobs, 0.35 B extra Mercury.
 
 **Objective:** minimise, over both windows,
 `sum_{m,w} price[m] * buy[m,w] + sum_{r,w} fee[r] * runs[r,w] +

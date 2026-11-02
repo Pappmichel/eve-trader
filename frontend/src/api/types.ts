@@ -460,6 +460,16 @@ export interface ReactionCapacityBlock {
     fallback_types: number
     reason: string | null
   } | null
+  /** Overbuild buffer per reaction product: built only with spare slots, never bought. */
+  buffer?: ReactionBufferRow[]
+}
+
+export interface ReactionBufferRow {
+  product_type_id: number
+  type_name?: string | null
+  target: number
+  filled: number
+  open: number
 }
 
 export interface ReactionCapacityStatus {
