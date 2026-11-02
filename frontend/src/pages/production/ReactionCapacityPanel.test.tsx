@@ -126,6 +126,22 @@ describe('ReactionCapacityPanel', () => {
       'own sales (40 items, 3 without sales use the backlog)')
   })
 
+  it('lists the buffer with filled and open units', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      ...BLOCK,
+      buffer: [
+        { product_type_id: 16678, type_name: 'Tungsten Carbide', target: 1000, filled: 400, open: 600 },
+        { product_type_id: 16679, type_name: 'Fernite Carbide', target: 500, filled: 500, open: 0 },
+      ],
+    })
+    expect(screen.getByTestId('reaction-buffer-toggle')).toHaveTextContent(
+      'Buffer: 1 of 2 products filled, 1 open')
+    await user.click(screen.getByTestId('reaction-buffer-toggle'))
+    expect(screen.getByText('Tungsten Carbide')).toBeInTheDocument()
+    expect(screen.getByText(/never bought/)).toBeInTheDocument()
+  })
+
   it('names the reason when the next window uses the backlog', () => {
     renderPanel({
       ...BLOCK,
