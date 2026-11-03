@@ -6262,6 +6262,36 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
     return total
 
 
+def list_blueprint_copies(type_id: int,
+                          owner_character_ids: Optional[list[int]] = None,
+                          owner_corporation_ids: Optional[list[int]] = None) -> list[tuple[int, int, int]]:
+    """Every usable copy of `type_id` at any location as (material_efficiency,
+    runs_per_copy, copy_count) groups: ESI copies (one group per row, count 1)
+    plus manual copies (a manual row's `quantity` copies of `runs` runs each).
+    Same copy sentinel (runs > 0) and NON_STOCK_LOCATION_FLAGS exclusion as
+    available_blueprint_copies, whose run total this matches. Used by the
+    "max buildable now" check, where each copy is its own job and so its own
+    ME and material rounding."""
+    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+    groups: list[tuple[int, int, int]] = []
+    with connect() as conn:
+        for table in ("character_blueprints", "corp_blueprints"):
+            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            rows = conn.execute(
+                f"SELECT material_efficiency, runs FROM {table} WHERE type_id = ? AND runs > 0 "
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders})){id_clause}",
+                (type_id, *NON_STOCK_LOCATION_FLAGS, *id_params),
+            ).fetchall()
+            groups.extend((int(me or 0), int(runs), 1) for me, runs in rows)
+        rows = conn.execute(
+            "SELECT material_efficiency, runs, quantity FROM manual_owned_blueprints "
+            "WHERE blueprint_type_id = ? AND is_original = ? AND runs > 0 AND quantity > 0",
+            (type_id, False),
+        ).fetchall()
+        groups.extend((int(me or 0), int(runs), int(qty)) for me, runs, qty in rows)
+    return groups
+
+
 def has_bpo_at_location(type_id: int, location_id: int,
                          tables: tuple[str, str] = ("character_blueprints", "corp_blueprints"),
                          owner_character_ids: Optional[list[int]] = None,

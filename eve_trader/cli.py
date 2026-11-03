@@ -546,6 +546,50 @@ def _targets_call(tenant_id: str | None, fn):
         raise SystemExit(1) from e
 
 
+_MAX_BUILD_REASONS = {
+    "material": "not on hand",
+    "no_recipe": "cannot be built",
+    "no_blueprint": "no blueprint owned",
+    "blueprint_runs": "not enough blueprint runs",
+    "not_built_direct_mode": "not on hand (direct mode builds no components)",
+}
+
+
+@production_group.command("max-build")
+@click.argument("item")
+@click.option("--mode", type=click.Choice(["full", "direct"]), default="full", show_default=True,
+              help="full: build missing components from owned inputs; direct: only the item's own inputs.")
+@click.option("--target", "target_quantity", type=int, default=None,
+              help="Show the requirement table for this quantity instead of the maximum.")
+@_tenant_id_option
+def production_max_build(item: str, mode: str, target_quantity: int | None, tenant_id: str | None):
+    """How many of ITEM (name or type id) can be built right now from stock on
+    hand, ignoring what other targets or orders would reserve. Never buys."""
+    result = _targets_call(tenant_id, lambda: production_actions.do_max_buildable(
+        item, mode=mode, target_quantity=target_quantity))
+    bp = result["blueprint"]
+    bp_text = {"original": "original owned", "copies": f"copies, {bp['copy_runs']} runs",
+               "none": "not owned"}[bp["source"]]
+    click.echo(f"{result['type_name']} ({result['mode']} mode, blueprint: {bp_text})")
+    capped = " (search limit reached)" if result["capped"] else ""
+    click.echo(f"Max buildable now: {result['max_quantity']:,}{capped}")
+    if result.get("material_max_quantity") is not None:
+        click.echo(f"Materials alone would allow: {result['material_max_quantity']:,}")
+    if result["bottlenecks"]:
+        click.echo(f"Bottleneck for {result['bottleneck_quantity']:,}:")
+        for row in result["bottlenecks"]:
+            reason = _MAX_BUILD_REASONS.get(row["reason"], row["reason"] or "")
+            click.echo(f"  {row['type_name']:<40} short {row['short']:>14,.0f} of {row['needed']:>14,.0f}  "
+                       f"on hand {row['on_hand']:>14,.0f}  {reason}")
+    feasible = "" if result["requirements_feasible"] else " (not buildable)"
+    click.echo(f"Requirements for {result['requirements_quantity']:,}{feasible}:")
+    click.echo(f"  {'item':<44} {'needed':>14} {'on hand':>14} {'from stock':>14} {'built':>12} {'short':>12}")
+    for row in result["requirements"]:
+        name = ("  " * row["depth"] + row["type_name"])[:44]
+        click.echo(f"  {name:<44} {row['needed']:>14,.0f} {row['on_hand']:>14,.0f} {row['from_stock']:>14,.0f} "
+                   f"{row['built']:>12,.0f} {row['short']:>12,.0f}")
+
+
 @targets_group.command("show")
 @_tenant_id_option
 def targets_show(tenant_id: str | None):

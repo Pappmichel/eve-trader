@@ -284,3 +284,17 @@ def test_count_owned_formula_originals_counts_minus_one_and_stacks(tenant):
     assert counts[TYPE_ID] == 1 + 3 + 1  # char -1 + stack 3 + corp -1
     assert counts[other] == 1
     assert storage.count_owned_formula_originals([TYPE_ID + 99]) == {}
+
+
+def test_list_blueprint_copies_groups_esi_copies_and_skips_bpos_and_asset_safety(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),  # BPO - not a copy
+        _bp_row(2, TYPE_ID, me=4, te=8, runs=1, location_id=LOCATION_ID, quantity=-2),
+        _bp_row(3, TYPE_ID, me=2, te=4, runs=3, location_id=LOCATION_ID, quantity=-2,
+                location_flag="AssetSafety"),
+    ])
+    storage.replace_blueprints("corp_blueprints", [
+        _bp_row(4, TYPE_ID, me=3, te=0, runs=2, location_id=LOCATION_ID, quantity=-2),
+    ])
+
+    assert sorted(storage.list_blueprint_copies(TYPE_ID)) == [(3, 2, 1), (4, 1, 1)]

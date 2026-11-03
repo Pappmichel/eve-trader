@@ -298,3 +298,39 @@ def test_tenant_id_option_defaults_to_default_tenant(monkeypatch):
 
     assert result.exit_code == 0
     assert seen_tenant_ids == [storage.DEFAULT_TENANT_ID]
+
+
+def test_max_build_prints_quantity_bottleneck_and_requirements(monkeypatch):
+    captured = {}
+
+    def _max(item, mode, target_quantity):
+        captured.update(item=item, mode=mode, target_quantity=target_quantity)
+        row = {"type_id": 3, "type_name": "Mineral", "depth": 1, "needed": 10050.0, "on_hand": 10000.0,
+               "from_stock": 10000.0, "built": 0.0, "runs": 0, "short": 50.0, "reason": "material",
+               "blueprint": None}
+        return {
+            "type_name": "Ship", "mode": mode, "max_quantity": 66, "capped": False,
+            "blueprint": {"source": "copies", "copy_runs": 80},
+            "bottleneck_quantity": 67, "bottlenecks": [row],
+            "requirements_quantity": 66, "requirements_feasible": True, "requirements": [row],
+        }
+    monkeypatch.setattr(production_actions, "do_max_buildable", _max)
+
+    result = runner.invoke(cli.main, ["production", "max-build", "Ship", "--mode", "direct"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"item": "Ship", "mode": "direct", "target_quantity": None}
+    assert "Max buildable now: 66" in result.output
+    assert "copies, 80 runs" in result.output
+    assert "Mineral" in result.output and "not on hand" in result.output
+
+
+def test_max_build_action_error_exits_1(monkeypatch):
+    def _raise(*a, **kw):
+        raise ActionError("No type found for 'Nope'.")
+    monkeypatch.setattr(production_actions, "do_max_buildable", _raise)
+
+    result = runner.invoke(cli.main, ["production", "max-build", "Nope"])
+
+    assert result.exit_code == 1
+    assert "No type found" in result.output

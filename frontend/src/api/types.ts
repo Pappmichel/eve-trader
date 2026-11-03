@@ -800,6 +800,47 @@ export interface ShipMarginRow {
   meta_level: number | null
 }
 
+export type MaxBuildableMode = 'full' | 'direct'
+
+export interface MaxBuildableBlueprint {
+  blueprint_type_id: number
+  blueprint_name: string
+  // original = BPO / reaction formula (unlimited), copies = owned BPCs only, none = not owned
+  source: 'original' | 'copies' | 'none'
+  copy_runs: number | null
+}
+
+export interface MaxBuildableRow {
+  type_id: number
+  type_name: string
+  depth: number
+  needed: number
+  on_hand: number
+  from_stock: number
+  built: number
+  runs: number
+  short: number
+  reason: 'material' | 'no_recipe' | 'no_blueprint' | 'blueprint_runs' | 'not_built_direct_mode' | null
+  blueprint: MaxBuildableBlueprint | null
+}
+
+export interface MaxBuildableResult {
+  type_id: number
+  type_name: string
+  mode: MaxBuildableMode
+  max_quantity: number
+  capped: boolean
+  // Set when no blueprint original is owned: what materials alone would allow.
+  material_max_quantity: number | null
+  product_qty_per_run: number
+  blueprint: MaxBuildableBlueprint
+  bottleneck_quantity: number | null
+  bottlenecks: MaxBuildableRow[]
+  requirements_quantity: number
+  requirements_feasible: boolean
+  requirements: MaxBuildableRow[]
+}
+
 export interface MaterialTreeNode {
   type_id: number
   type_name: string

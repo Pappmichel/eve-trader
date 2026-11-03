@@ -2635,3 +2635,33 @@ def test_station_realized_bad_period_is_400():
     resp = client.get("/api/station-trading/realized/summary", params={"days": 0})
     assert resp.status_code == 400
     assert "days" in resp.json()["detail"]
+
+
+# ------------------------------------------ max buildable now
+def test_max_buildable_passes_request_to_action(monkeypatch):
+    captured = {}
+
+    def _max(item, mode, target_quantity):
+        captured.update(item=item, mode=mode, target_quantity=target_quantity)
+        return {"type_id": 1, "max_quantity": 3}
+    monkeypatch.setattr(production_actions, "do_max_buildable", _max)
+
+    resp = client.post("/api/production/max-buildable", json={"item": "Sacrilege", "mode": "direct"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"type_id": 1, "max_quantity": 3}
+    assert captured == {"item": "Sacrilege", "mode": "direct", "target_quantity": None}
+
+
+def test_max_buildable_rejects_unknown_mode(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_max_buildable", lambda **kw: {})
+    resp = client.post("/api/production/max-buildable", json={"item": "Sacrilege", "mode": "cheapest"})
+    assert resp.status_code == 422
+
+
+def test_max_buildable_action_error_maps_to_400(monkeypatch):
+    def _raise(**kwargs):
+        raise ActionError("No type found for 'Nope'.")
+    monkeypatch.setattr(production_actions, "do_max_buildable", _raise)
+    resp = client.post("/api/production/max-buildable", json={"item": "Nope"})
+    assert resp.status_code == 400

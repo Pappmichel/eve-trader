@@ -457,6 +457,9 @@ export const productionApi = {
   computeCombinedSpecialOrders: (orderIds: string[], netAgainstStock: boolean) =>
     post<T.SpecialOrderComputeResult>('/api/production/special-orders/combine/compute',
       { order_ids: orderIds, net_against_stock: netAgainstStock }),
+  maxBuildable: (item: string, mode: T.MaxBuildableMode, targetQuantity: number | null) =>
+    post<T.MaxBuildableResult>('/api/production/max-buildable',
+      { item, mode, target_quantity: targetQuantity }),
   auditSpecialOrders: () => get<{ ok: boolean; issues: T.SpecialOrderAuditIssue[] }>('/api/production/special-orders/audit'),
   specialOrderEvents: (orderId?: string) =>
     get<{ rows: T.SpecialOrderEventRow[] }>(
