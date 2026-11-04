@@ -4260,11 +4260,13 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         return jobs, top_level
 
     def _plan_passes(byproduct_stock: dict[int, float]
-                     ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]]]:
+                     ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]],
+                                dict[int, Optional[float]]]:
         """Order pass, then doctrine pass, then the remaining stock-target
         pass, over one fresh set of ledgers started from the order claims
         (D3/D4), merged by job key (see _merge_asset_plan_passes). Returns
-        (jobs, the order pass's top_level)."""
+        (jobs, the order pass's top_level, stock coverage by type id - the
+        latter also holds reactions the capacity solver sizes, GH #383)."""
         stock_used = dict(reserved)
         for type_id, qty in target_reserved.items():
             stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
@@ -4281,7 +4283,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         target_jobs, _ = _run_rounds(
             other_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
             stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
-        return _merge_asset_plan_passes(order_jobs, target_jobs, doctrine_jobs), order_top_level
+        return (_merge_asset_plan_passes(order_jobs, target_jobs, doctrine_jobs), order_top_level,
+                stock_coverage_by_id)
 
     # Byproduct discovery pass, same shape and same reasoning as
     # plan_production's own two-pass _expand_all call (see the comment
@@ -4344,10 +4347,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         layer, _window, state, rplan = reaction_capacity.solve_cached(
             ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
             cycle_demand=cycle_demand, buffer=collect_buffer)
+        solver_demand = dict(reaction_demand)
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
     elif any(alchemy_memo.values()):
-        provisional_jobs, _ = _plan_passes({})
+        provisional_jobs, _, _ = _plan_passes({})
         # _alchemy_byproduct_stock takes _expand_all's own build_runs shape;
         # rebuild it from the provisional AssetPlanJobs rather than teaching
         # that helper a second one. Non-alchemy jobs simply miss its index.
@@ -4359,7 +4363,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         }
         byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
 
-    jobs, order_top_level = _plan_passes(byproduct_stock)
+    jobs, order_top_level, final_coverage = _plan_passes(byproduct_stock)
 
     if capacity_on:
         # Inject W1 reaction jobs from the solution; readiness stays as today
@@ -4369,6 +4373,28 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # On-hand units already counted as ready for an earlier recipe: two
         # recipes sharing an input (platinum) must not both claim the pile.
         ready_claimed: dict[int, float] = {}
+        # Stock coverage (GH #383): the walk's own available / buffered
+        # demand when it reached the product, else on-hand stock against the
+        # solver's gross need - external demand plus what the plan's other
+        # reactions consume (a composite's processed moon material never
+        # reaches the walk at all).
+        internal_use: dict[int, float] = {}
+        for alloc in rplan.recipes:
+            recipe = by_key.get(alloc.recipe_key)
+            if recipe is None or alloc.runs <= 1e-9:
+                continue
+            for mid, per_run in recipe.inputs.items():
+                internal_use[mid] = internal_use.get(mid, 0.0) + float(per_run) * alloc.runs
+
+        def _reaction_coverage(product_id: int) -> Optional[float]:
+            if final_coverage.get(product_id) is not None:
+                return final_coverage[product_id]
+            gross = solver_demand.get(product_id, 0.0) + internal_use.get(product_id, 0.0)
+            if gross <= 1e-9:
+                return None
+            on_hand = max(0.0, _stock_on_hand(product_id, manual_stock, cfg))
+            return min(1.0, on_hand / gross)
+
         for alloc in rplan.recipes:
             recipe = by_key.get(alloc.recipe_key)
             if recipe is None or alloc.runs <= 1e-9:
@@ -4424,7 +4450,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     unit_build_cost=cost_memo.get(recipe.product_type_id),
                     tech_level=classify_activity(job_key)[0],
                     job_category="Reactions",
-                    stock_coverage=seed_stock_coverage.get(recipe.product_type_id),
+                    stock_coverage=_reaction_coverage(recipe.product_type_id),
                     margin=margin_home(recipe.product_type_id, cost_memo.get(recipe.product_type_id), home, cfg),
                     recipe_source="alchemy" if alloc.recipe_key.startswith("alchemy:") else None,
                     blockers=blockers,
@@ -4444,6 +4470,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 existing.blockers = _merge_asset_plan_blockers(existing.blockers, blockers)
                 existing.formulas_owned = recipe.owned_formulas
                 existing.formulas_needed = alloc.jobs
+                if existing.stock_coverage is None:
+                    existing.stock_coverage = _reaction_coverage(recipe.product_type_id)
                 existing.recommended_slots = _ready_slots(existing.runs_ready_now)
                 existing.runs_per_slot = runs_per_job if existing.runs_ready_now > 0 else None
                 existing.days_to_complete_at_recommended_slots = (
