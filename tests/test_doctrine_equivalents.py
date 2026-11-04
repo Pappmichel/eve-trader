@@ -258,3 +258,27 @@ def test_tenant_edits_follow_the_items_through_an_sde_renumbering():
     _class_of, after = effective_classes({2: 2, 3: 2, 4: 2}, edits, set())
     assert after == {2: (2, 4, 50)}
     assert effective_classes({2: 2, 3: 2, 4: 2}, edits, {2})[1] == {}
+
+
+# ------------------------------------------------------------------- max assemblable
+def test_max_assemblable_pools_variant_stock_without_double_use():
+    per_set = {HULL: (1.0, "exact"), SANSHA: (1.0, "exact"), BLOOD: (1.0, "exact")}
+    stock = {HULL: 5.0, BLOOD: 3.0}
+    max_sets, details = v.max_assemblable(per_set, stock, _equivalents)
+    # 3 Dark Blood cover one True Sansha + one Dark Blood line per fit: 1 fit.
+    assert max_sets == 1
+    assert details[SANSHA]["sets"] == details[BLOOD]["sets"] == 1
+    assert details[SANSHA]["variant_on_hand"] == 1.0
+    assert details[SANSHA]["on_hand"] + details[BLOOD]["on_hand"] == 3.0
+    # One more fit needs 4 hardeners in total: 1 short across the pair.
+    assert details[SANSHA]["short_for_next"] + details[BLOOD]["short_for_next"] == 1.0
+    assert details[HULL]["short_for_next"] == 0.0
+
+
+def test_max_assemblable_exact_without_lookup_unchanged():
+    max_sets, details = v.max_assemblable({SANSHA: (1.0, "exact")}, {BLOOD: 4.0})
+    assert max_sets == 0
+    assert "variant_on_hand" not in details[SANSHA]
+    max_sets, details = v.max_assemblable({SANSHA: (1.0, "exact")}, {BLOOD: 4.0}, _equivalents)
+    assert max_sets == 4
+    assert details[SANSHA]["variant_on_hand"] == 4.0

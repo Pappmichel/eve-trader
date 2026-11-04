@@ -614,11 +614,11 @@ export const doctrineApi = {
 
   equivalents: () => get<T.EquivalentsResponse>('/api/doctrine/equivalents'),
   setEquivalentExcluded: (typeId: number, excluded: boolean) =>
-    post<unknown>(`/api/doctrine/equivalents/types/${typeId}/excluded`, { excluded }),
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/types/${typeId}/excluded`, { excluded }),
   setEquivalentGroupDisabled: (typeId: number, disabled: boolean) =>
-    post<unknown>(`/api/doctrine/equivalents/groups/${typeId}/disabled`, { disabled }),
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/groups/${typeId}/disabled`, { disabled }),
   addEquivalent: (typeId: number, targetTypeId: number) =>
-    post<unknown>(`/api/doctrine/equivalents/types/${typeId}/group`, { target_type_id: targetTypeId }),
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/types/${typeId}/group`, { target_type_id: targetTypeId }),
   equivalentCandidates: (targetTypeId: number, q: string) =>
     get<{ type_id: number; type_name: string }[]>(
       `/api/doctrine/equivalents/candidates?target_type_id=${targetTypeId}&q=${encodeURIComponent(q)}`),

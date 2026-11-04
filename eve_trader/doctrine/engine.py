@@ -398,10 +398,10 @@ def _per_set_soll(candidate: _Candidate) -> dict[int, tuple[float, str]]:
     return validation.build_stockpile_soll(candidate.items, candidate.fitting.hull_type_id, 1)
 
 
-def _assemblable_summary(candidate: _Candidate,
-                         available_by_type: dict[int, float]) -> tuple[int, Optional[str]]:
+def _assemblable_summary(candidate: _Candidate, available_by_type: dict[int, float],
+                         lookup: Optional[validation.EquivalentsOf] = None) -> tuple[int, Optional[str]]:
     """(max_sets, name of the first bottleneck) for the Doctrine table."""
-    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type)
+    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type, lookup)
     if not details:
         return 0, None
     bottleneck = min(details, key=lambda t: (details[t]["sets"], t))
@@ -410,7 +410,8 @@ def _assemblable_summary(candidate: _Candidate,
 
 
 def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, float],
-                        all_candidates: list[_Candidate]) -> dict:
+                        all_candidates: list[_Candidate],
+                        lookup: Optional[validation.EquivalentsOf] = None) -> dict:
     """How many complete fits of `candidate` the Doctrine stockpile holds
     right now, the items that stop one more and the full requirement table.
 
@@ -418,8 +419,12 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
     as the Stockpile page), consumables at full quantity, top priority for
     this fitting (stock other fittings would claim still counts). Nothing is
     built or bought; `buildable` only says Production has a recipe, the page
-    asks Production's own Max buildable for the real number."""
-    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type)
+    asks Production's own Max buildable for the real number.
+
+    With `lookup` (accept_equivalent_variants), stock of equivalent variants
+    counts too (validation.max_assemblable); each row then carries
+    `variant_on_hand` (part of on_hand from variants)."""
+    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type, lookup)
     sde_by_id = storage.get_sde_types_bulk(list(details))
     hull_id = candidate.fitting.hull_type_id
 
@@ -443,6 +448,7 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
             "item_class": d["item_class"],
             "per_set": d["per_set"],
             "on_hand": d["on_hand"],
+            "variant_on_hand": d.get("variant_on_hand", 0.0),
             "sets": d["sets"],
             "short_for_next": d["short_for_next"],
             "buildable": classify_activity(type_id)[1] is not None,
@@ -478,8 +484,9 @@ def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONF
     }
     if not asset_rows:
         return {**result, "max_sets": None, "next_sets": None, "bottlenecks": [], "requirements": []}
-    available = stockpile_available(asset_rows, _per_set_soll(candidate), cfg)
-    return {**result, **fitting_assemblable(candidate, available, all_candidates)}
+    lookup = equivalents_of(cfg)
+    available = stockpile_available(asset_rows, _with_equivalents(_per_set_soll(candidate), lookup), cfg)
+    return {**result, **fitting_assemblable(candidate, available, all_candidates, lookup)}
 
 
 def _name_of(type_id: int, sde_by_id: dict) -> str:
@@ -812,7 +819,8 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
             candidate = next((c for c in load_match_candidates()
                               if c.fitting.fitting_id == fitting.fitting_id), None)
         if candidate is not None:
-            assemblable_now, assemblable_bottleneck = _assemblable_summary(candidate, available_by_type)
+            assemblable_now, assemblable_bottleneck = _assemblable_summary(
+                candidate, available_by_type, equivalents_of(cfg))
 
     worst_shortfall_pct = 0.0
     worst_severity = None

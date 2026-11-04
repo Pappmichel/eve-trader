@@ -1267,6 +1267,27 @@ deliver" hint; marking `done` stays manual. Cached Build / Asset plans
 are kept but flagged `stale` when integrated demand changes (D9). Schema change is
 `ADD COLUMN IF NOT EXISTS` on the existing `docs/special_orders_schema.sql`.
 
+## Equivalent module variants (Doctrine, confirmed with the user 2026-11-04)
+
+Items with the same group, dogma effects and dogma attributes (fitting cost
+included; only metaLevel/metaGroupID ignored) are interchangeable, e.g. True
+Sansha / Dark Blood Thermal Armor Hardener. `eve_trader/sde_equivalence.py`
+computes the classes from the SDE on every fetch (modules, charges, drones,
+fighters, subsystems; published and market-listed; abyssal templates and
+fireworks excluded) into the global `sde_type_equivalents`
+(`docs/doctrine_schema.sql`); class id = smallest member, so it changes when
+the SDE changes membership. Tenant edits from Doctrine's Equivalents tab
+(`doctrine/equivalents.py`: exclude an item, add an item of the same group,
+switch a group off) are stored **per item, never per class id**
+(`doctrine_equivalent_overrides`, `doctrine_equivalent_disabled_groups`), so
+they survive SDE updates. With `DoctrineConfig.accept_equivalent_variants`
+(default on): a contract with the twin stays valid (info row kind
+`equivalent_variant`), stockpile and Max assemblable pool the twins' stock
+(exact stock first, then twins; one unit never serves two lines), and the
+Shopping List buys the cheapest twin (`buy_type_id`). Every edit, the
+settings switch, and an SDE apply that changes the classes re-validate the
+stored contracts (no ESI call).
+
 ## Max buildable now (Special Orders page)
 
 `production/max_buildable.py` (`do_max_buildable`, `POST /api/production/

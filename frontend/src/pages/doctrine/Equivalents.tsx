@@ -13,6 +13,10 @@ import { useAction } from '../../hooks/useAction'
 import { isk } from '../../format'
 
 const PAGE = 40
+// The edit endpoints re-check stored contracts; say so instead of raw JSON.
+const saved = (p: Promise<{ revalidated: number }>) => p.then((r) =>
+  `Saved. ${r.revalidated} contract${r.revalidated === 1 ? '' : 's'} re-checked.`)
+
 const INVALIDATE = [['doctrine', 'equivalents'], ['doctrine', 'status'], ['doctrine', 'contracts'],
   ['doctrine', 'stockpile'], ['doctrine', 'shopping-list']]
 
@@ -23,7 +27,14 @@ function PriceCell({ value, cheapest, note }: { value: number | null; cheapest: 
   return (
     <Table.Td ta="right" style={{ fontVariantNumeric: 'tabular-nums' }}>
       {cheapest
-        ? <Badge size="sm" color="accent" variant="light">{isk(value)}</Badge>
+        ? (
+          <Tooltip label="Cheapest item of this group in this market">
+            <Text span size="sm" fw={600} c="accent" px={6} py={1}
+              style={{ background: 'var(--mantine-color-accent-light)', borderRadius: 4 }}>
+              {isk(value)}
+            </Text>
+          </Tooltip>
+        )
         : <Text size="sm">{isk(value)}</Text>}
     </Table.Td>
   )
@@ -39,7 +50,7 @@ function AddItem({ cls }: { cls: EquivalentClass }) {
     queryFn: () => doctrineApi.equivalentCandidates(anchor.type_id, debounced.trim()),
     enabled: open && debounced.trim().length >= 2,
   })
-  const add = useAction('Add to group', (typeId: number) => doctrineApi.addEquivalent(typeId, anchor.type_id),
+  const add = useAction('Add to group', (typeId: number) => saved(doctrineApi.addEquivalent(typeId, anchor.type_id)),
     INVALIDATE, { tier: 'local', effect: 'Treats this item as interchangeable with the group and re-checks stored contracts.' })
   const inGroup = new Set(cls.members.map((m) => m.type_id))
   const options = (data ?? []).filter((c) => !inGroup.has(c.type_id))
@@ -62,9 +73,9 @@ function AddItem({ cls }: { cls: EquivalentClass }) {
 
 function ClassCard({ cls }: { cls: EquivalentClass }) {
   const exclude = useAction('Update group', ({ typeId, excluded }: { typeId: number; excluded: boolean }) =>
-    doctrineApi.setEquivalentExcluded(typeId, excluded), INVALIDATE, { tier: 'local' })
+    saved(doctrineApi.setEquivalentExcluded(typeId, excluded)), INVALIDATE, { tier: 'local' })
   const disable = useAction('Update group', (disabled: boolean) =>
-    doctrineApi.setEquivalentGroupDisabled(cls.anchor_type_id, disabled), INVALIDATE, { tier: 'local' })
+    saved(doctrineApi.setEquivalentGroupDisabled(cls.anchor_type_id, disabled)), INVALIDATE, { tier: 'local' })
   const meta = (m: EquivalentMember) => [m.meta_group, m.manual ? 'added by you' : null].filter(Boolean).join(' · ')
 
   return (

@@ -369,7 +369,8 @@ def stockpile_deviation(type_id: int, required_total: float, allocated: float, i
 
 
 def max_assemblable(per_set: dict[int, tuple[float, str]],
-                    available_by_type: dict[int, float]) -> tuple[int, dict[int, dict]]:
+                    available_by_type: dict[int, float],
+                    equivalents_of: Optional[EquivalentsOf] = None) -> tuple[int, dict[int, dict]]:
     """How many complete sets of one fitting the stock covers right now.
 
     `per_set` is build_stockpile_soll(..., stockpile_target=1): one hull, the
@@ -379,7 +380,14 @@ def max_assemblable(per_set: dict[int, tuple[float, str]],
     stockpile allocation would claim. Returns (max_sets, {type_id: detail})
     where detail has per_set, item_class, on_hand, sets (how many sets this
     item alone allows) and short_for_next (missing for max_sets + 1).
-    An empty requirement allows 0 sets."""
+    An empty requirement allows 0 sets.
+
+    With `equivalents_of`, the stock of every equivalent variant counts:
+    the lines of one equivalence class share one pool (their own stock plus
+    every other variant's), so `on_hand` includes `variant_on_hand` and one
+    unit never serves two lines."""
+    if equivalents_of is not None:
+        return _max_assemblable_pooled(per_set, available_by_type, equivalents_of)
     details: dict[int, dict] = {}
     for type_id, (qty, item_class) in per_set.items():
         if qty <= 0:
@@ -390,6 +398,53 @@ def max_assemblable(per_set: dict[int, tuple[float, str]],
     max_sets = min((d["sets"] for d in details.values()), default=0)
     for d in details.values():
         d["short_for_next"] = max(0.0, (max_sets + 1) * d["per_set"] - d["on_hand"])
+    return max_sets, details
+
+
+def _max_assemblable_pooled(per_set: dict[int, tuple[float, str]], available_by_type: dict[int, float],
+                            equivalents_of: EquivalentsOf) -> tuple[int, dict[int, dict]]:
+    stock = {t: max(0.0, float(q)) for t, q in available_by_type.items()}
+    lines = {t: v for t, v in per_set.items() if v[0] > 0}
+    groups: dict[tuple[int, ...], list[int]] = {}
+    for type_id in sorted(lines):
+        groups.setdefault(tuple(sorted(equivalents_of(type_id))), []).append(type_id)
+
+    def _allocate(group_types: tuple[int, ...], line_types: list[int], sets: int) -> dict[int, float]:
+        """Pool split over the lines for `sets` sets: own stock first, then
+        the shared rest. Whatever is left over stays with the line whose own
+        stock it is (as far as it goes), the rest goes to the last line."""
+        pool = sum(stock.get(t, 0.0) for t in group_types)
+        target = {t: lines[t][0] * sets for t in line_types}
+        alloc = {t: min(stock.get(t, 0.0), target[t]) for t in line_types}
+        left = pool - sum(alloc.values())
+        for t in line_types:
+            take = min(max(0.0, target[t] - alloc[t]), left)
+            alloc[t] += take
+            left -= take
+        for t in line_types:
+            back = min(max(0.0, stock.get(t, 0.0) - alloc[t]), left)
+            alloc[t] += back
+            left -= back
+        alloc[line_types[-1]] += max(0.0, left)
+        return alloc
+
+    group_sets: dict[tuple[int, ...], int] = {}
+    for group_types, line_types in groups.items():
+        pool = sum(stock.get(t, 0.0) for t in group_types)
+        group_sets[group_types] = int(math.floor(pool / sum(lines[t][0] for t in line_types) + 1e-9))
+    max_sets = min(group_sets.values(), default=0)
+
+    details: dict[int, dict] = {}
+    for group_types, line_types in groups.items():
+        sets = group_sets[group_types]
+        now = _allocate(group_types, line_types, sets)
+        nxt = _allocate(group_types, line_types, max_sets + 1)
+        for t in line_types:
+            qty, item_class = lines[t]
+            own = stock.get(t, 0.0)
+            details[t] = {"per_set": qty, "item_class": item_class, "on_hand": now[t],
+                          "variant_on_hand": max(0.0, now[t] - own), "sets": sets,
+                          "short_for_next": max(0.0, (max_sets + 1) * qty - nxt[t])}
     return max_sets, details
 
 

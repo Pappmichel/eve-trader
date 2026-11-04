@@ -1498,6 +1498,8 @@ export interface AssemblableRow {
   item_class: 'exact' | 'consume'
   per_set: number
   on_hand: number
+  // Part of on_hand from equivalent variants (same stats, Equivalents tab).
+  variant_on_hand?: number
   sets: number
   short_for_next: number
   buildable: boolean
