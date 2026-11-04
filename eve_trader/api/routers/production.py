@@ -440,6 +440,7 @@ class ProductionSettings(BaseModel):
     distribution_source_location_id: Optional[int] = None
     invention_location_id: Optional[int] = None
     stock_hangar_flags: tuple[str, ...] = ()
+    excluded_system_ids: tuple[int, ...] = ()
     reaction_structure_type: str
     reaction_rig_tier: str
     component_structure_type: str

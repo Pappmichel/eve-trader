@@ -5049,6 +5049,47 @@ def mark_assembled_or_fitted(assets: list[dict]) -> list[dict]:
     return assets
 
 
+def _exclude_locations_clause(exclude_location_ids: Optional[list[int]],
+                              column: str = "resolved_location_id") -> tuple[str, tuple]:
+    """AND clause dropping rows whose `column` is one of `exclude_location_ids`
+    (ProductionConfig.excluded_system_ids, resolved to location ids by
+    location_ids_in_systems). None or empty is no filter. A NULL location
+    stays counted: it is unknown, not inside an excluded system."""
+    if not exclude_location_ids:
+        return "", ()
+    return f" AND ({column} IS NULL OR NOT ({column} = ANY(?)))", ([int(i) for i in exclude_location_ids],)
+
+
+def location_ids_in_systems(system_ids: list[int]) -> list[int]:
+    """Every location id this tenant can see that lies in one of `system_ids`:
+    the system ids themselves (items in space), SDE NPC stations, registry
+    structures with that solar_system_id, registry structures without a known
+    system whose name starts with "<system name> - " (EVE prefixes every
+    structure name with its system), shared global structure names, and
+    registry Offices/containers parented to any of those. Used to exclude
+    whole systems from Production's stock/blueprint reads."""
+    ids = sorted({int(s) for s in system_ids if s})
+    if not ids:
+        return []
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT station_id FROM sde_stations WHERE solar_system_id = ANY(?) "
+            "UNION SELECT location_id FROM location_registry WHERE solar_system_id = ANY(?) "
+            "UNION SELECT r.location_id FROM location_registry r JOIN sde_solar_systems s "
+            "ON s.solar_system_id = ANY(?) AND starts_with(r.name, s.solar_system_name || ' - ') "
+            "WHERE r.solar_system_id IS NULL "
+            "UNION SELECT location_id FROM global_structure_names WHERE solar_system_id = ANY(?)",
+            (ids, ids, ids, ids),
+        ).fetchall()
+        found = set(ids) | {int(r[0]) for r in rows}
+        children = conn.execute(
+            "SELECT location_id FROM location_registry WHERE parent_location_id = ANY(?)",
+            (sorted(found),),
+        ).fetchall()
+        found |= {int(r[0]) for r in children}
+    return sorted(found)
+
+
 def _owner_id_clause(table: str, owner_character_ids: Optional[list[int]],
                       owner_corporation_ids: Optional[list[int]]) -> tuple[str, tuple]:
     """AND clause restricting `table` to shared owner ids (docs/
@@ -5096,7 +5137,8 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
                            allowed_flags: Optional[tuple[str, ...]] = None,
                            exclude_intake_at_location_id: Optional[int] = None,
                            owner_character_ids: Optional[list[int]] = None,
-                           owner_corporation_ids: Optional[list[int]] = None) -> float:
+                           owner_corporation_ids: Optional[list[int]] = None,
+                           exclude_location_ids: Optional[list[int]] = None) -> float:
     """Sums character + corp asset quantities for `type_id`, optionally filtered
     to `location_id` (None = all locations - useful when the home structure's
     numeric ID isn't configured). Excludes NON_STOCK_LOCATION_FLAGS (see above).
@@ -5147,11 +5189,14 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
 
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause`.
     Both None (the default) is unfiltered - existing callers that haven't
-    been migrated to resolve sharing keep today's behaviour."""
+    been migrated to resolve sharing keep today's behaviour.
+
+    `exclude_location_ids`: see `_exclude_locations_clause`."""
     return esi_stock_at_location_bulk(
         [type_id], location_id, tables=tables, allowed_flags=allowed_flags,
         exclude_intake_at_location_id=exclude_intake_at_location_id,
         owner_character_ids=owner_character_ids, owner_corporation_ids=owner_corporation_ids,
+        exclude_location_ids=exclude_location_ids,
     )[type_id]
 
 
@@ -5160,7 +5205,8 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
                                 allowed_flags: Optional[tuple[str, ...]] = None,
                                 exclude_intake_at_location_id: Optional[int] = None,
                                 owner_character_ids: Optional[list[int]] = None,
-                                owner_corporation_ids: Optional[list[int]] = None) -> dict[int, float]:
+                                owner_corporation_ids: Optional[list[int]] = None,
+                                exclude_location_ids: Optional[list[int]] = None) -> dict[int, float]:
     """Same filters as esi_stock_at_location, one GROUP BY type_id query per
     asset table instead of one query per type_id. Missing ids map to 0.0.
     Empty input is `{}` and opens no connection. esi_stock_at_location is a
@@ -5176,6 +5222,7 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
         allowed_clause = f" AND resolved_hangar_flag IN ({allowed_placeholders})"
         allowed_params = tuple(allowed_flags)
     totals = {tid: 0.0 for tid in unique}
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         for table in tables:
             exclude_clause = ""
@@ -5198,16 +5245,18 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
                     f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
                     f"WHERE type_id = ANY(?) AND NOT assembled_or_fitted "
                     f"AND {NON_STOCK_SQL}"
-                    f"{allowed_clause}{exclude_clause}{owner_clause} GROUP BY type_id",
-                    (list(unique), *NON_STOCK_SQL_PARAMS, *allowed_params, *exclude_params, *owner_params),
+                    f"{allowed_clause}{exclude_clause}{owner_clause}{loc_clause} GROUP BY type_id",
+                    (list(unique), *NON_STOCK_SQL_PARAMS, *allowed_params, *exclude_params, *owner_params,
+                     *loc_params),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
                     f"WHERE type_id = ANY(?) AND resolved_location_id = ? AND NOT assembled_or_fitted "
                     f"AND {NON_STOCK_SQL}"
-                    f"{allowed_clause}{exclude_clause}{owner_clause} GROUP BY type_id",
-                    (list(unique), location_id, *NON_STOCK_SQL_PARAMS, *allowed_params, *exclude_params, *owner_params),
+                    f"{allowed_clause}{exclude_clause}{owner_clause}{loc_clause} GROUP BY type_id",
+                    (list(unique), location_id, *NON_STOCK_SQL_PARAMS, *allowed_params, *exclude_params,
+                     *owner_params, *loc_params),
                 ).fetchall()
             for tid, qty in rows:
                 if tid in totals:
@@ -5219,6 +5268,7 @@ def esi_stock_by_location_bulk(type_ids: list[int],
                                allowed_flags: Optional[tuple[str, ...]] = None,
                                owner_character_ids: Optional[list[int]] = None,
                                owner_corporation_ids: Optional[list[int]] = None,
+                               exclude_location_ids: Optional[list[int]] = None,
                                ) -> dict[int, dict[int, float]]:
     """Per type, quantity per resolved_location_id across character + corp
     assets - {type_id: {location_id: qty}}. Same NON_STOCK_LOCATION_FLAGS/
@@ -5234,6 +5284,7 @@ def esi_stock_by_location_bulk(type_ids: list[int],
         allowed_clause = f" AND resolved_hangar_flag IN ({','.join('?' * len(allowed_flags))})"
         allowed_params = tuple(allowed_flags)
     totals: dict[int, dict[int, float]] = {tid: {} for tid in unique}
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         for table in ("character_assets", "corp_assets"):
             owner_clause, owner_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
@@ -5241,8 +5292,8 @@ def esi_stock_by_location_bulk(type_ids: list[int],
                 f"SELECT type_id, resolved_location_id, COALESCE(SUM(quantity), 0) FROM {table} "
                 f"WHERE type_id = ANY(?) AND resolved_location_id IS NOT NULL AND NOT assembled_or_fitted "
                 f"AND {NON_STOCK_SQL}"
-                f"{allowed_clause}{owner_clause} GROUP BY type_id, resolved_location_id",
-                (list(unique), *NON_STOCK_SQL_PARAMS, *allowed_params, *owner_params),
+                f"{allowed_clause}{owner_clause}{loc_clause} GROUP BY type_id, resolved_location_id",
+                (list(unique), *NON_STOCK_SQL_PARAMS, *allowed_params, *owner_params, *loc_params),
             ).fetchall()
             for tid, location_id, qty in rows:
                 if tid in totals:
@@ -5582,7 +5633,8 @@ def get_esi_sync_time(scope: str) -> Optional[str]:
 
 def esi_incoming_industry_qty(product_type_id: int,
                               owner_character_ids: Optional[list[int]] = None,
-                              owner_corporation_ids: Optional[list[int]] = None) -> dict[str, float]:
+                              owner_corporation_ids: Optional[list[int]] = None,
+                              exclude_location_ids: Optional[list[int]] = None) -> dict[str, float]:
     """Returns {'runs': total outstanding job runs, 'jobs': job count} for
     `product_type_id` across character + corp industry jobs. Converting runs
     to output quantity needs the blueprint's product qty/run (see
@@ -5599,6 +5651,7 @@ def esi_incoming_industry_qty(product_type_id: int,
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
     both None (the default) is unfiltered. A caller that has resolved
     sharing passes both, even when one list is empty."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "output_location_id")
     with connect() as conn:
         runs = 0
         jobs = 0
@@ -5607,8 +5660,8 @@ def esi_incoming_industry_qty(product_type_id: int,
             row = conn.execute(
                 f"SELECT COALESCE(SUM(runs), 0), COUNT(*) FROM {table} "
                 "WHERE product_type_id = ? AND status IN ('active', 'paused', 'ready')"
-                f"{id_clause}",
-                (product_type_id, *id_params),
+                f"{id_clause}{loc_clause}",
+                (product_type_id, *id_params, *loc_params),
             ).fetchone()
             runs += row[0]
             jobs += row[1]
@@ -6110,7 +6163,8 @@ def sde_categories_for_types(type_ids: Iterable[int]) -> dict[int, str]:
 
 def get_owned_bpo_best_me_te(blueprint_type_id: int,
                               owner_character_ids: Optional[list[int]] = None,
-                              owner_corporation_ids: Optional[list[int]] = None) -> Optional[tuple[int, int]]:
+                              owner_corporation_ids: Optional[list[int]] = None,
+                              exclude_location_ids: Optional[list[int]] = None) -> Optional[tuple[int, int]]:
     """Best (highest) ME and TE independently across every owned *Original*
     (runs = -1 in ESI's blueprint model - a BPC's ME/TE was fixed by whoever
     copied it, not your own research, so only BPOs count here) of
@@ -6125,13 +6179,14 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int,
     both None (the default) is unfiltered."""
     best_me: Optional[int] = None
     best_te: Optional[int] = None
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         for table in ("character_blueprints", "corp_blueprints"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             row = conn.execute(
                 f"SELECT MAX(material_efficiency), MAX(time_efficiency) FROM {table} "
-                f"WHERE type_id = ? AND runs = -1{id_clause}",
-                (blueprint_type_id, *id_params),
+                f"WHERE type_id = ? AND runs = -1{id_clause}{loc_clause}",
+                (blueprint_type_id, *id_params, *loc_params),
             ).fetchone()
             if row and row[0] is not None:
                 best_me = row[0] if best_me is None else max(best_me, row[0])
@@ -6178,6 +6233,7 @@ def count_owned_formula_originals(
     type_ids: Optional[list[int]] = None,
     owner_character_ids: Optional[list[int]] = None,
     owner_corporation_ids: Optional[list[int]] = None,
+    exclude_location_ids: Optional[list[int]] = None,
 ) -> dict[int, int]:
     """Owned Reaction Formula *originals* per blueprint type_id, across
     character_blueprints + corp_blueprints (docs/REACTION_CAPACITY_PLAN.md
@@ -6196,6 +6252,7 @@ def count_owned_formula_originals(
         placeholders = ",".join("?" * len(type_ids))
         id_filter = f" AND type_id IN ({placeholders})"
         id_filter_params = tuple(int(t) for t in type_ids)
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         for table in ("character_blueprints", "corp_blueprints"):
             owner_clause, owner_params = _owner_id_clause(
@@ -6206,8 +6263,8 @@ def count_owned_formula_originals(
             rows = conn.execute(
                 f"SELECT type_id, quantity FROM {table} "
                 f"WHERE (quantity = -1 OR quantity > 0)"
-                f"{id_filter}{owner_clause}",
-                (*id_filter_params, *owner_params),
+                f"{id_filter}{owner_clause}{loc_clause}",
+                (*id_filter_params, *owner_params, *loc_params),
             ).fetchall()
             for type_id, quantity in rows:
                 qty = int(quantity)
@@ -6220,7 +6277,8 @@ def count_owned_formula_originals(
 def available_blueprint_copies(type_id: int, location_id: Optional[int],
                                 tables: tuple[str, str] = ("character_blueprints", "corp_blueprints"),
                                 owner_character_ids: Optional[list[int]] = None,
-                                owner_corporation_ids: Optional[list[int]] = None) -> float:
+                                owner_corporation_ids: Optional[list[int]] = None,
+                                exclude_location_ids: Optional[list[int]] = None) -> float:
     """Sums the remaining *runs* across owned blueprint copies of `type_id`
     sitting at `location_id` (None = all locations, mirroring esi_stock_at_
     location's own None branch - added for GitHub issue #114's "how many of
@@ -6272,10 +6330,13 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
     both None (the default) is unfiltered."""
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         total = 0.0
         for table in tables:
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            id_clause += loc_clause
+            id_params = (*id_params, *loc_params)
             if location_id is None:
                 row = conn.execute(
                     f"SELECT COALESCE(SUM(runs), 0) FROM {table} WHERE type_id = ? AND runs > 0 "
@@ -6295,7 +6356,8 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
 
 def list_blueprint_copies(type_id: int,
                           owner_character_ids: Optional[list[int]] = None,
-                          owner_corporation_ids: Optional[list[int]] = None) -> list[tuple[int, int, int]]:
+                          owner_corporation_ids: Optional[list[int]] = None,
+                          exclude_location_ids: Optional[list[int]] = None) -> list[tuple[int, int, int]]:
     """Every usable copy of `type_id` at any location as (material_efficiency,
     runs_per_copy, copy_count) groups: ESI copies (one group per row, count 1)
     plus manual copies (a manual row's `quantity` copies of `runs` runs each).
@@ -6305,9 +6367,12 @@ def list_blueprint_copies(type_id: int,
     ME and material rounding."""
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     groups: list[tuple[int, int, int]] = []
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         for table in ("character_blueprints", "corp_blueprints"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            id_clause += loc_clause
+            id_params = (*id_params, *loc_params)
             rows = conn.execute(
                 f"SELECT material_efficiency, runs FROM {table} WHERE type_id = ? AND runs > 0 "
                 f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders})){id_clause}",

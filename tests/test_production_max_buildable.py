@@ -35,7 +35,7 @@ def bom(monkeypatch):
                         lambda activity, type_id, cfg, cost_indices, blueprint_id=None: (1.0, 1.0, 0.0))
     monkeypatch.setattr(engine, "shared_production_owner_ids", lambda kind: ([], []))
     monkeypatch.setattr(storage, "list_blueprint_copies",
-                        lambda bp_id, owner_character_ids=None, owner_corporation_ids=None: state["copies"].get(bp_id, []))
+                        lambda bp_id, owner_character_ids=None, owner_corporation_ids=None, exclude_location_ids=None: state["copies"].get(bp_id, []))
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
     monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(engine, "_sde_type_name", lambda type_id: NAMES.get(type_id, str(type_id)))

@@ -114,7 +114,8 @@ class _Context:
             return recipe  # formulas cannot be copied; no original = cannot react
         char_ids, corp_ids = engine.shared_production_owner_ids("blueprints")
         groups = storage.list_blueprint_copies(
-            blueprint_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+            blueprint_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+            exclude_location_ids=engine.production_excluded_location_ids(self.cfg))
         if groups:
             struct = self._structure_me_mult(activity, type_id)
             recipe.copies = sorted(

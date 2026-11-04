@@ -132,6 +132,17 @@ export default function ProductionSettings() {
         value={form.stock_hangar_flags} onChange={(v) => set('stock_hangar_flags', v)}
         placeholder="All divisions" clearable />
 
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Excluded Systems</Title>
+      <Text size="xs" c="dimmed">
+        Production ignores everything located in these solar systems: assets, owned blueprints and the output of
+        running jobs there are not stock for the Build List, Asset-Optimized plan, Max buildable, Logistics or
+        Market restock. Use it for stashes that belong to another operation.
+      </Text>
+      <MultiSelect label="Systems excluded from Production" data={systemSelectData} searchable limit={50}
+        value={(form.excluded_system_ids ?? []).map(String)}
+        onChange={(v) => set('excluded_system_ids', v.map(Number))}
+        placeholder="No excluded systems" clearable nothingFoundMessage="No system found" />
+
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Where You Build</Title>
       <Text size="xs" c="dimmed">
         Structure base bonus and rig bonus stack multiplicatively. Split by reactions / components (Tech II/capital

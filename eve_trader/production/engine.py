@@ -1997,6 +1997,40 @@ def shared_production_owner_ids(data_kind: str) -> tuple[list[int], list[int]]:
     return result
 
 
+# (tenant_id, excluded system ids) -> (cached_at, location ids). Short TTL plus
+# explicit invalidation on a Settings save: newly resolved structures (the
+# location resolver runs after every ESI sync) show up within a minute.
+_excluded_locations_cache: dict[tuple[Optional[str], tuple[int, ...]], tuple[float, list[int]]] = {}
+_excluded_locations_lock = threading.Lock()
+_EXCLUDED_LOCATIONS_TTL_SECONDS = 60.0
+
+
+def production_excluded_location_ids(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[list[int]]:
+    """Location ids inside ProductionConfig.excluded_system_ids (stations,
+    structures, Offices/containers there, the system itself), or None when no
+    system is excluded. Every Production stock/blueprint/job read passes this
+    as `exclude_location_ids`, so stock in an excluded system does not exist
+    for Production."""
+    systems = tuple(sorted({int(s) for s in (cfg.excluded_system_ids or ()) if s}))
+    if not systems:
+        return None
+    key = (storage.get_current_tenant(), systems)
+    now = time.time()
+    with _excluded_locations_lock:
+        cached = _excluded_locations_cache.get(key)
+        if cached is not None and now - cached[0] < _EXCLUDED_LOCATIONS_TTL_SECONDS:
+            return cached[1]
+    ids = storage.location_ids_in_systems(list(systems))
+    with _excluded_locations_lock:
+        _excluded_locations_cache[key] = (now, ids)
+    return ids
+
+
+def invalidate_excluded_locations_cache() -> None:
+    with _excluded_locations_lock:
+        _excluded_locations_cache.clear()
+
+
 def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> None:
     """Called from esi_data.actions.do_set_sharing - the one write path
     that can change what shared_production_owner_ids returns. `all_tenants`
@@ -2031,7 +2065,8 @@ def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> fl
     location - they never go through _current_stock/_stock_on_hand at all."""
     char_ids, corp_ids = shared_production_owner_ids("assets")
     total = storage.esi_stock_at_location(
-        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids, **kwargs)
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=production_excluded_location_ids(), **kwargs)
     if location_id is not None:
         total += storage.manual_stock_at_location(type_id, location_id)
     return total
@@ -2063,7 +2098,8 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
     lifts ME even if the ESI-owned BPO's own TE happens to be higher."""
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     esi = storage.get_owned_bpo_best_me_te(
-        blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=production_excluded_location_ids())
     manual = storage.manual_bpo_best_me_te(blueprint_type_id)
     if esi is None and manual is None:
         return None
@@ -2075,7 +2111,8 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
 def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     esi_copies = storage.available_blueprint_copies(
-        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=production_excluded_location_ids())
     return esi_copies + storage.manual_bpc_runs(type_id, location_id)
 
 
@@ -2103,7 +2140,8 @@ def _invention_bpc_runs_in_progress(t2_blueprint_id: int, chosen: InventionResul
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
     return storage.esi_incoming_industry_qty(
-        type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=production_excluded_location_ids())
 
 
 def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: ProductionConfig,
@@ -5587,12 +5625,15 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
         return []
     type_ids = [t[0] for t in targets]
     char_ids, corp_ids = shared_production_owner_ids("assets")
+    excluded = production_excluded_location_ids(cfg)
     all_hangars = storage.esi_stock_by_location_bulk(
-        type_ids, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        type_ids, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=excluded)
     stock_hangars = (
         storage.esi_stock_by_location_bulk(
             type_ids, allowed_flags=cfg.stock_hangar_flags,
-            owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+            owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+            exclude_location_ids=excluded)
         if cfg.stock_hangar_flags else all_hangars
     )
     manual = storage.manual_stock_by_location_bulk(type_ids)

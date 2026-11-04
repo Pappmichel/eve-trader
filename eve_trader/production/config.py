@@ -105,6 +105,13 @@ class ProductionConfig:
     # this to match.
     stock_hangar_flags: tuple[str, ...] = ()
 
+    # Solar systems Production ignores completely: assets, owned blueprints
+    # and running jobs' output located there are not stock for any planner,
+    # Max buildable, Logistics or Market restock (engine.
+    # production_excluded_location_ids). For stashes that are not meant for
+    # Production (e.g. another operation's staging system). Empty = none.
+    excluded_system_ids: tuple[int, ...] = ()
+
     # -- System cost index, split by *what's being built* (see engine.py /
     # constants.py COMPONENT_GROUP_IDS): reactions + certain component groups
     # use one system, everything else uses another. IDs are resolved from the
@@ -289,6 +296,11 @@ def validate_production_overrides(overrides: dict) -> None:
         if bad:
             raise ConfigError(f"stock_hangar_flags: {bad!r} are not known hangar divisions. "
                                f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
+    if "excluded_system_ids" in overrides:
+        bad = [s for s in overrides["excluded_system_ids"]
+               if isinstance(s, bool) or not isinstance(s, int) or s <= 0]
+        if bad:
+            raise ConfigError(f"excluded_system_ids: {bad!r} are not solar system ids")
     if "reaction_window_next" in overrides and overrides["reaction_window_next"] is not None:
         raw = overrides["reaction_window_next"]
         if not isinstance(raw, str) or not raw.strip():
