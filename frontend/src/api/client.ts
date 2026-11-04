@@ -612,6 +612,17 @@ export const doctrineApi = {
   shoppingList: (doctrineId?: string) =>
     get<T.ShoppingListResponse>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
 
+  equivalents: () => get<T.EquivalentsResponse>('/api/doctrine/equivalents'),
+  setEquivalentExcluded: (typeId: number, excluded: boolean) =>
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/types/${typeId}/excluded`, { excluded }),
+  setEquivalentGroupDisabled: (typeId: number, disabled: boolean) =>
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/groups/${typeId}/disabled`, { disabled }),
+  addEquivalent: (typeId: number, targetTypeId: number) =>
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/types/${typeId}/group`, { target_type_id: targetTypeId }),
+  equivalentCandidates: (targetTypeId: number, q: string) =>
+    get<{ type_id: number; type_name: string }[]>(
+      `/api/doctrine/equivalents/candidates?target_type_id=${targetTypeId}&q=${encodeURIComponent(q)}`),
+
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
   removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),
 

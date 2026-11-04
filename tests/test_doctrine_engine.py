@@ -27,6 +27,8 @@ def _no_candidates_by_default(monkeypatch):
     (shared contract pool). These storage-free unit tests default it to empty;
     tests that need a candidate set override it afterwards."""
     monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
+    # Storage-free tests: no equivalent variants unless a test adds some.
+    monkeypatch.setattr(engine.equivalents, "lookup", lambda: (lambda type_id: (type_id,)))
 
 
 class _FakeTokens:

@@ -165,6 +165,7 @@ def _stub_engine(monkeypatch, shortfalls: dict[int, float], buyer: BuyerStock | 
     monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _FakeESI)
     monkeypatch.setattr(engine.buyer_sources, "collect", lambda type_ids, cfg: buyer)
+    monkeypatch.setattr(engine.equivalents, "lookup", lambda: (lambda type_id: (type_id,)))
 
 
 def test_shopping_list_covers_shortfall_with_hangar_then_orders(monkeypatch):

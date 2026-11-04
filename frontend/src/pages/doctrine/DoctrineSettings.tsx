@@ -26,7 +26,7 @@ export default function DoctrineSettings() {
   const [form, setForm] = useState<DoctrineSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
-  const save = useAction('Save Settings', doctrineApi.updateSettings, [['doctrine', 'settings']])
+  const save = useAction('Save Settings', doctrineApi.updateSettings, [['doctrine', 'settings'], ['doctrine', 'equivalents']])
 
   if (!form) return <Center h={200}><Loader color="accent" /></Center>
 
@@ -80,9 +80,13 @@ export default function DoctrineSettings() {
       </SimpleGrid>
       <Switch label="Treat unexpected extra items as a defect (strict mode)" checked={form.strict_extras}
         onChange={(e) => set('strict_extras', e.currentTarget.checked)} />
+      <Switch label="Accept equivalent variants" checked={form.accept_equivalent_variants}
+        onChange={(e) => set('accept_equivalent_variants', e.currentTarget.checked)} />
       <Text size="xs" c="dimmed">
-        Modules/rigs/subsystems always need an exact match. Drones, cargo, and loaded charges only need to clear
-        the tolerance above to count as "tolerable" instead of "critical".
+        Modules/rigs/subsystems need an exact match, or an equivalent variant from the Equivalents tab
+        (identical stats, e.g. Dark Blood for True Sansha) while the switch above is on - those count for
+        contracts and stockpile, and the Shopping List buys the cheapest one. Drones, cargo, and loaded charges
+        only need to clear the tolerance above to count as "tolerable" instead of "critical".
       </Text>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Shopping List</Title>
@@ -114,6 +118,7 @@ export default function DoctrineSettings() {
         stockpile_location_ids: form.stockpile_location_ids,
         cargo_tolerance_pct: form.cargo_tolerance_pct,
         strict_extras: form.strict_extras,
+        accept_equivalent_variants: form.accept_equivalent_variants,
         import_cost_per_m3: form.import_cost_per_m3,
         hub_region_id: form.hub_region_id,
         stockpile_hangar_flags: form.stockpile_hangar_flags,

@@ -176,6 +176,43 @@ def get_stockpile(doctrine_id: Optional[str] = None, location_id: Optional[int] 
     return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id, location_id=location_id)
 
 
+@router.get("/equivalents")
+def get_equivalents():
+    return _wrap(actions.do_list_equivalent_variants)
+
+
+class EquivalentExcluded(BaseModel):
+    excluded: bool
+
+
+class EquivalentClassDisabled(BaseModel):
+    disabled: bool
+
+
+class EquivalentAdd(BaseModel):
+    target_type_id: int
+
+
+@router.post("/equivalents/types/{type_id}/excluded")
+def set_equivalent_excluded(type_id: int, body: EquivalentExcluded):
+    return _wrap(actions.do_set_equivalent_excluded, type_id=type_id, excluded=body.excluded)
+
+
+@router.post("/equivalents/groups/{type_id}/disabled")
+def set_equivalent_group_disabled(type_id: int, body: EquivalentClassDisabled):
+    return _wrap(actions.do_set_equivalent_group_disabled, type_id=type_id, disabled=body.disabled)
+
+
+@router.post("/equivalents/types/{type_id}/group")
+def add_equivalent(type_id: int, body: EquivalentAdd):
+    return _wrap(actions.do_add_equivalent, type_id=type_id, target_type_id=body.target_type_id)
+
+
+@router.get("/equivalents/candidates")
+def search_equivalent_candidates(target_type_id: int, q: str = ""):
+    return _wrap(actions.do_search_equivalent_candidates, target_type_id=target_type_id, query=q)
+
+
 @router.get("/shopping-list")
 def get_shopping_list(doctrine_id: Optional[str] = None):
     return _wrap(actions.do_get_shopping_list, doctrine_id=doctrine_id)
@@ -218,6 +255,7 @@ class DoctrineSettings(BaseModel):
     stockpile_location_ids: tuple[int, ...] = ()
     cargo_tolerance_pct: float
     strict_extras: bool
+    accept_equivalent_variants: bool = True
     import_cost_per_m3: float
     hub_region_id: int = 10000002
     stockpile_hangar_flags: tuple[str, ...] = ()
@@ -246,8 +284,9 @@ def get_settings():
 @router.post("/settings")
 def update_settings(updates: DoctrineSettings):
     body = updates.model_dump()
-    # A client that does not send the location lists must not clear them.
-    for key in ("doctrine_structure_ids", "stockpile_location_ids"):
+    # A client that does not send the location lists (or the equivalents
+    # switch) must not reset them.
+    for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)

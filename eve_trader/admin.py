@@ -159,7 +159,10 @@ def do_apply_sde() -> dict:
     global _staged_sde
     if _staged_sde is None:
         raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
+    equivalents_before = storage.get_sde_equivalence_class_map()
     result = sde.apply_sde(_staged_sde)
+    if storage.get_sde_equivalence_class_map() != equivalents_before:
+        result = {**result, "doctrine_contracts_revalidated": _revalidate_doctrine_contracts()}
     # all_tenants=True: the SDE cache is global (this function's own
     # docstring), so a refresh can change every tenant's discover/margin
     # results, not just the calling admin's own - confirmed real gap (GitHub
@@ -173,6 +176,28 @@ def do_apply_sde() -> dict:
     dynamic_targets.mark_all_invalidated()
     _staged_sde = None
     return result
+
+
+def _revalidate_doctrine_contracts() -> int:
+    """After an SDE apply changed the equivalent-variant groups: every
+    tenant's stored Doctrine contracts are re-validated (no ESI call), so a
+    contract whose item became or stopped being an equivalent shows the right
+    status right away. Best effort per tenant - a failure is logged and never
+    fails the apply (the next contract sync re-validates anyway)."""
+    from .doctrine import actions as doctrine_actions
+
+    total = 0
+    for row in storage.list_tenants():
+        tenant_id = str(row[0])
+        try:
+            with tenant_scope.enter_tenant(tenant_id):
+                if not storage.list_doctrine_contracts():
+                    continue
+                total += doctrine_actions.do_validate_contracts().get("revalidated", 0)
+        except Exception:  # noqa: BLE001
+            log.warning("Doctrine contract re-validation after SDE apply failed for tenant %s",
+                        tenant_id, exc_info=True)
+    return total
 
 
 def do_refresh_jita_price_cache() -> dict:

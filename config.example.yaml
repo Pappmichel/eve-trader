@@ -142,6 +142,9 @@ cargo_tolerance_pct: 0.9      # consumables (drones/cargo/charges) only need to
                               # "tolerable" rather than "critical"
 strict_extras: false          # true = a contract item the fitting doesn't call
                               # for at all counts as "tolerable" instead of "info"
+accept_equivalent_variants: true  # functionally identical variants (e.g. Dark
+                              # Blood for True Sansha) count for contracts and
+                              # stockpile; the shopping list buys the cheapest
 
 # ---- Ore & Minerals / refining tool (see eve_trader/refining/config.py
 # RefiningConfig) - independent of Production's own structure/rig fields

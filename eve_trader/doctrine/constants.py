@@ -75,7 +75,12 @@ DEVIATION_KIND_MISSING = "missing"
 DEVIATION_KIND_SHORT = "short"
 DEVIATION_KIND_EXTRA = "extra"
 DEVIATION_KIND_WRONG_VARIANT = "wrong_variant"
-DEVIATION_KINDS = (DEVIATION_KIND_MISSING, DEVIATION_KIND_SHORT, DEVIATION_KIND_EXTRA, DEVIATION_KIND_WRONG_VARIANT)
+# A functionally identical variant stood in for the fitted type (same group,
+# effects and dogma attributes - eve_trader/sde_equivalence.py). Always info:
+# the contract stays valid (confirmed with the user 2026-11-04).
+DEVIATION_KIND_EQUIVALENT_VARIANT = "equivalent_variant"
+DEVIATION_KINDS = (DEVIATION_KIND_MISSING, DEVIATION_KIND_SHORT, DEVIATION_KIND_EXTRA, DEVIATION_KIND_WRONG_VARIANT,
+                   DEVIATION_KIND_EQUIVALENT_VARIANT)
 
 SEVERITY_CRITICAL = "critical"
 SEVERITY_TOLERABLE = "tolerable"

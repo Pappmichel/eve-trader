@@ -771,6 +771,8 @@ class StockpileRow(_Base):
     available: float
     shortfall: float
     severity: Optional[str] = None
+    variant_available: float = 0.0
+    variant_names: list[str] = []
 
 
 class AggregatedStockpileRow(_Base):
@@ -781,6 +783,8 @@ class AggregatedStockpileRow(_Base):
     shortfall: float
     severity: Optional[str] = None
     fitting_count: int
+    variant_available: float = 0.0
+    variant_names: list[str] = []
 
 
 class ShoppingListRow(_Base):
@@ -799,6 +803,8 @@ class ShoppingListRow(_Base):
     hub_hangar: float = 0.0
     on_order: float = 0.0
     to_buy: float = 0.0
+    buy_type_id: Optional[int] = None
+    buy_type_name: Optional[str] = None
 
 
 class FittingStatus(_Base):

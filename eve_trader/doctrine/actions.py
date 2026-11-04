@@ -15,7 +15,7 @@ from .. import storage
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
-from . import engine, esi_sync
+from . import engine, equivalents, esi_sync
 from .config import DOCTRINE_CONFIG, DoctrineConfig, validate_doctrine_overrides
 from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
@@ -627,11 +627,168 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "stockpile_locations": _location_options(cfg.effective_stockpile_location_ids),
         "cargo_tolerance_pct": cfg.cargo_tolerance_pct,
         "strict_extras": cfg.strict_extras,
+        "accept_equivalent_variants": cfg.accept_equivalent_variants,
         "import_cost_per_m3": cfg.import_cost_per_m3,
         "hub_region_id": cfg.hub_region_id,
         "stockpile_hangar_flags": list(cfg.stockpile_hangar_flags),
         "buyer_character_ids": list(cfg.buyer_character_ids),
     }
+
+
+_META_GROUP_LABELS = {1: "Tech I", 2: "Tech II", 3: "Storyline", 4: "Faction", 5: "Officer", 6: "Deadspace",
+                      14: "Tech III", 19: "Limited", 52: "Structure Faction", 53: "Structure Tech II",
+                      54: "Structure Tech I"}
+
+
+def _fitted_type_ids() -> set[int]:
+    fitted: set[int] = set()
+    for candidate in engine.load_match_candidates():
+        fitted.add(candidate.fitting.hull_type_id)
+        fitted.update(item.type_id for item in candidate.items)
+    return fitted
+
+
+def do_list_equivalent_variants(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """The Equivalents tab: every class of functionally identical variants
+    (SDE classes plus the tenant's manual ones, doctrine/equivalents.py) with
+    each member's current Jita and C-J sell price and the cheapest member per
+    market marked. Members the tenant excluded and classes it switched off
+    are listed too (flagged), so they can be switched back on.
+
+    Prices: Jita is Goonmetrics' Jita quote (one cached dump for every
+    item); C-J is production.pricing.home_prices (the live structure order
+    book, or Goonmetrics' C-J quote without a market character). A C-J quote
+    equal to the Jita quote to the last decimal is Goonmetrics repeating
+    Jita for an item C-J does not list, so it counts as no C-J price."""
+    from ..production import pricing as production_pricing
+    from ..production.config import PRODUCTION_CONFIG
+
+    sde_class_of = storage.get_sde_equivalence_class_map()
+    overrides = storage.list_doctrine_equivalent_overrides()
+    raw_class_of = equivalents.assigned_classes(sde_class_of, overrides)
+    disabled_types = storage.list_doctrine_disabled_equivalent_groups()
+    disabled = {raw_class_of[t] for t in disabled_types if t in raw_class_of}
+    manual = {t for t, a, x in overrides if not x and a is not None}
+    excluded = {t for t, _a, x in overrides if x}
+
+    members: dict[int, set[int]] = {}
+    for type_id, class_id in raw_class_of.items():
+        members.setdefault(class_id, set()).add(type_id)
+    for type_id in excluded:
+        if type_id in sde_class_of:
+            members.setdefault(sde_class_of[type_id], set()).add(type_id)
+    type_ids = sorted({t for ts in members.values() for t in ts})
+    sde_rows = storage.get_sde_types_bulk(type_ids)
+    group_names = storage.get_group_names({r[1] for r in sde_rows.values() if r})
+    fitted = _fitted_type_ids()
+    jita = production_pricing.goonmetrics_quotes(production_pricing.JITA_MARKET, type_ids) if type_ids else {}
+    home = production_pricing.home_prices(PRODUCTION_CONFIG, type_ids) if type_ids else {}
+
+    def _sell(quotes: dict, type_id: int) -> Optional[float]:
+        quote = production_pricing.reference_quote(quotes.get(type_id))
+        return quote.sell if quote is not None and quote.sell > 0 else None
+
+    classes = []
+    for class_id, ts in members.items():
+        rows = []
+        for type_id in ts:
+            sde = sde_rows.get(type_id)
+            jita_sell = _sell(jita, type_id)
+            home_sell = _sell(home, type_id)
+            rows.append({
+                "type_id": type_id, "type_name": sde[2] if sde else str(type_id),
+                "meta_group": _META_GROUP_LABELS.get(sde[7]) if sde else None,
+                "in_fitting": type_id in fitted, "excluded": type_id in excluded,
+                "manual": type_id in manual,
+                "jita_sell": jita_sell,
+                "home_sell": None if home_sell is not None and home_sell == jita_sell else home_sell,
+                "home_repeats_jita": home_sell is not None and home_sell == jita_sell,
+            })
+        active_rows = [r for r in rows if not r["excluded"]]
+        for key, flag in (("jita_sell", "cheapest_jita"), ("home_sell", "cheapest_home")):
+            priced = [r for r in active_rows if r[key] is not None]
+            best = min(priced, key=lambda r: r[key])["type_id"] if len(priced) > 1 else None
+            for r in rows:
+                r[flag] = r["type_id"] == best
+        rows.sort(key=lambda r: (r["excluded"], r["type_name"]))
+        group_id = next((sde_rows[t][1] for t in ts if sde_rows.get(t)), None)
+        jita_prices = [r["jita_sell"] for r in active_rows if r["jita_sell"] is not None]
+        classes.append({
+            "class_id": class_id, "group_name": group_names.get(group_id, ""),
+            # Any current member: the group's handle for edits (class ids
+            # change with every SDE update, item ids do not).
+            "anchor_type_id": next((r["type_id"] for r in rows if not r["excluded"]), rows[0]["type_id"]),
+            "disabled": class_id in disabled, "manual": class_id < 0 or any(r["manual"] for r in rows),
+            "active": class_id not in disabled and len(active_rows) > 1,
+            "in_fitting": any(r["in_fitting"] for r in rows),
+            "jita_saving": (max(jita_prices) - min(jita_prices)) if len(jita_prices) > 1 else 0.0,
+            "members": rows,
+        })
+    classes.sort(key=lambda c: (c["group_name"], c["members"][0]["type_name"] if c["members"] else ""))
+    return {"enabled": cfg.accept_equivalent_variants, "classes": classes}
+
+
+def _after_equivalence_change(cfg: DoctrineConfig) -> dict:
+    """Drops the cached classes and re-validates the stored contracts (no
+    ESI call) so their status reflects the edit right away."""
+    equivalents.invalidate()
+    return do_validate_contracts(cfg)
+
+
+def do_set_equivalent_excluded(type_id: int, excluded: bool, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """Takes a type out of its equivalence class (excluded) or puts it back
+    (removes the tenant's edit for it, which also undoes a manual add)."""
+    if excluded:
+        if equivalents.effective_class_of(type_id) is None and type_id not in storage.get_sde_equivalence_class_map():
+            raise ActionError(f"Type {type_id} is in no equivalence group.")
+        storage.set_doctrine_equivalent_override(type_id, None, True)
+    else:
+        storage.delete_doctrine_equivalent_override(type_id)
+    return _after_equivalence_change(cfg)
+
+
+def do_set_equivalent_group_disabled(type_id: int, disabled: bool,
+                                     cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """Switches the group that contains `type_id` off or on again."""
+    raw_class_of = equivalents.assigned_classes(
+        storage.get_sde_equivalence_class_map(), storage.list_doctrine_equivalent_overrides())
+    class_id = raw_class_of.get(int(type_id))
+    if class_id is None:
+        raise ActionError(f"Type {type_id} is in no equivalence group.")
+    members = [t for t, c in raw_class_of.items() if c == class_id]
+    if not disabled:
+        # Also clear rows of former members (an SDE update may have moved them).
+        members += [t for t in storage.list_doctrine_disabled_equivalent_groups()
+                    if raw_class_of.get(t) in (class_id, None)]
+    storage.set_doctrine_equivalent_group_disabled(members, disabled)
+    return _after_equivalence_change(cfg)
+
+
+def do_add_equivalent(type_id: int, target_type_id: int, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """Puts `type_id` into the equivalence group of `target_type_id` (the
+    user judges them interchangeable although the SDE stats differ). Both
+    must be in the same SDE group. When the target has no group yet, a new
+    manual group holds both."""
+    if type_id == target_type_id:
+        raise ActionError("Pick two different items.")
+    a, b = storage.get_sde_type(type_id), storage.get_sde_type(target_type_id)
+    if a is None or b is None:
+        raise ActionError("Unknown item.")
+    if a[1] != b[1]:
+        raise ActionError(f"{a[2]} and {b[2]} are in different item groups and cannot replace each other.")
+    storage.set_doctrine_equivalent_override(type_id, int(target_type_id), False)
+    return _after_equivalence_change(cfg)
+
+
+def do_search_equivalent_candidates(target_type_id: int, query: str, limit: int = 20) -> list[dict]:
+    """Items of the target's SDE group whose name contains `query` - the
+    picker for "add item to this group"."""
+    target = storage.get_sde_type(target_type_id)
+    if target is None:
+        raise ActionError("Unknown item.")
+    return [{"type_id": t, "type_name": n}
+            for t, n in storage.search_published_types_in_group(target[1], query, limit)
+            if t != target_type_id]
 
 
 def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
@@ -648,9 +805,13 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
         unknown = [c for c in updates["buyer_character_ids"] if c not in known]
         if unknown:
             raise ActionError(f"buyer_character_ids: {unknown} are not characters of this tenant.")
+    switch_changed = ("accept_equivalent_variants" in updates
+                      and bool(updates["accept_equivalent_variants"]) != cfg.accept_equivalent_variants)
     try:
         validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
+    if switch_changed:
+        do_validate_contracts(cfg)  # stored contract statuses follow the switch at once
     return {"updated": list(updates.keys())}

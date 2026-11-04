@@ -54,7 +54,15 @@ function RequirementsTable({ rows }: { rows: AssemblableRow[] }) {
     { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
     { header: 'Section', accessorKey: 'slot_section', size: 200 },
     { header: 'Per Fit', accessorKey: 'per_set', size: 90, cell: (i) => qty(i.getValue()) },
-    { header: 'On Hand', accessorKey: 'on_hand', size: 110, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'On Hand', accessorKey: 'on_hand', size: 140,
+      cell: (i) => {
+        const variants = i.row.original.variant_on_hand ?? 0
+        return variants > 0
+          ? <span>{qty(i.getValue())} <Text span size="xs" c="dimmed">({qty(variants)} variant)</Text></span>
+          : qty(i.getValue())
+      },
+    },
     { header: 'Fits', accessorKey: 'sets', size: 80, cell: (i) => qty(i.getValue()) },
     {
       header: 'Short For Next', accessorKey: 'short_for_next', size: 130,
