@@ -1324,6 +1324,23 @@ def _alchemy_byproduct_stock(build_runs: dict[tuple[int, int, int], int],
     return byproduct_stock
 
 
+def _byproduct_stock_for_reaction_inputs(byproduct_stock: dict[int, float],
+                                         reaction_inputs: dict[int, float]) -> dict[int, float]:
+    """The byproduct overlay with every reaction input removed, for netting
+    the capacity solver's reaction input seed.
+
+    A byproduct only exists after its alchemy job has finished and been
+    reprocessed, so it cannot cover what the planned reaction jobs consume
+    before they start. Unrefined Promethium Mercurite takes 100 Mercury per
+    run and gives 95 back after reprocessing: crediting that Mercury against
+    the input seed hid almost all Mercury from the Buy List, while the
+    Asset-Optimized plan (on-hand stock only) showed the runs blocked on
+    Mercury. Once reprocessed it is real stock and nets the next plan
+    through `_current_stock`. The overlay still nets demand deeper in the
+    walk (fuel block components and other manufacturing)."""
+    return {type_id: qty for type_id, qty in byproduct_stock.items() if type_id not in reaction_inputs}
+
+
 def _alchemy_unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
                         memo: dict[int, Optional[float]], selected_decryptors: dict[int, str],
                         t2_memo: dict[int, tuple[float, float, Optional[str]]], cost_indices: CostIndices,
@@ -3038,9 +3055,10 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # Moon materials / fuel blocks consumed by W1 runs → normal walk.
         # _expand_all never nets its seed against stock (stock-target seeds
         # arrive pre-netted), so net the consumption here first.
+        reaction_inputs = reaction_capacity.input_demand_from_plan(layer, rplan)
         input_seed = _net_seed_against_stock(
-            reaction_capacity.input_demand_from_plan(layer, rplan),
-            manual_stock, cfg, stock_used, byproduct_stock, gross_demand)
+            reaction_inputs, manual_stock, cfg, stock_used,
+            _byproduct_stock_for_reaction_inputs(byproduct_stock, reaction_inputs), gross_demand)
         if input_seed:
             input_buy, input_runs = _expand_all(
                 input_seed, cfg, home, jita, manual_overrides, cost_memo,
@@ -4403,7 +4421,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
             # Same as plan_production: round-0 seeds are not netted inside.
             input_seed = _net_seed_against_stock(
-                input_seed, manual_stock, cfg, stock_used, byproduct_stock)
+                input_seed, manual_stock, cfg, stock_used,
+                _byproduct_stock_for_reaction_inputs(byproduct_stock, input_seed))
             input_jobs, _ = _run_rounds(
                 input_seed, base_runs, margin_excluded, byproduct_stock,
                 stock_used, stock_used_on_hand, stock_coverage_by_id)

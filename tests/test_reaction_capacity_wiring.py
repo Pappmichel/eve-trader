@@ -556,6 +556,29 @@ def test_partly_stocked_reaction_input_reports_on_hand_share(monkeypatch, reacti
 
 
 @pg_helpers.postgres_required()
+def test_alchemy_byproduct_does_not_cover_reaction_inputs(monkeypatch, reaction_bom, tenant):
+    # Live case 2026-11-04: Unrefined Promethium Mercurite takes 100 Mercury
+    # per run and gives 95 back after reprocessing. That future Mercury was
+    # netted against the runs' own input, so the Buy List showed no Mercury
+    # while the Asset-Optimized plan had 840 runs blocked on it. A byproduct
+    # still nets demand below the reaction inputs (Tritanium for fuel blocks).
+    monkeypatch.setattr(engine, "_alchemy_byproduct_stock",
+                        lambda build_runs, cost_indices: {30: 1_000_000.0, 40: 1_000_000.0})
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 10, 0, 0)]))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    prod = engine.plan_production(cfg)
+
+    runs = sum(e.job_runs for e in prod["build_list"] if e.activity == "Reaction")
+    assert runs > 0
+    moon = next(e for e in prod["buy_list"] if e.type_id == 30)
+    assert moon.quantity == pytest.approx(100.0 * runs)
+    assert not [e for e in prod["buy_list"] if e.type_id == 40]
+
+
+@pg_helpers.postgres_required()
 def test_asset_plan_readiness_does_not_double_claim_a_shared_input(monkeypatch, reaction_bom, tenant):
     # Both reactions need 100 Moon per run; only 100 Moon is on hand, so
     # exactly one run can be ready, not one per recipe.
