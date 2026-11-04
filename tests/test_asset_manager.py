@@ -692,7 +692,7 @@ def test_sync_passes_the_doctrine_structure_like_the_scheduler(tenant, gate_on, 
 
     am_actions.do_sync()
 
-    assert captured["extra"] == {"structure_id": 1035466617946}
+    assert captured["extra"] == {"structure_ids": [1035466617946]}
     assert captured["tool_keys"] == gate_on
 
 

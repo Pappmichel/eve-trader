@@ -21,7 +21,7 @@ from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
 from . import engine
-from .config import DOCTRINE_CONFIG, DoctrineConfig
+from .config import DOCTRINE_CONFIG, DoctrineConfig, fetcher_extra
 from .models import ContractItemRow
 from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, FINISHED_CONTRACT_STATUSES, SYNCABLE_CONTRACT_STATUSES
 
@@ -66,7 +66,7 @@ def list_shared_doctrine_characters(tm: Optional[TokenManager] = None) -> list[t
     return out
 
 
-def _passes_history_filter(contract: dict, structure_id: Optional[int]) -> bool:
+def _passes_history_filter(contract: dict, structure_ids) -> bool:
     """Same shape as _passes_prefilter below, for FINISHED_CONTRACT_STATUSES
     instead of SYNCABLE_CONTRACT_STATUSES (GitHub issue #19) - a finished
     contract is about to drop out of the *active* snapshot (see
@@ -77,12 +77,12 @@ def _passes_history_filter(contract: dict, structure_id: Optional[int]) -> bool:
     return (
         contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
         and contract.get("status") in FINISHED_CONTRACT_STATUSES
-        and structure_id is not None
-        and contract.get("start_location_id") == structure_id
+        and bool(structure_ids)
+        and contract.get("start_location_id") in set(structure_ids)
     )
 
 
-def _passes_prefilter(contract: dict, structure_id: Optional[int]) -> bool:
+def _passes_prefilter(contract: dict, structure_ids) -> bool:
     """Phase 2 E.3 point 2 - applied before any items fetch, never after.
     Deliberately no date_expired/"is this actually still alive" check here
     anymore - SYNCABLE_CONTRACT_STATUSES (ESI's own status field) is now the
@@ -90,8 +90,8 @@ def _passes_prefilter(contract: dict, structure_id: Optional[int]) -> bool:
     return (
         contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
         and contract.get("status") in SYNCABLE_CONTRACT_STATUSES
-        and structure_id is not None
-        and contract.get("start_location_id") == structure_id
+        and bool(structure_ids)
+        and contract.get("start_location_id") in set(structure_ids)
     )
 
 
@@ -118,10 +118,10 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     from ..esi_data.orchestrator import do_sync_for_tool
     from .actions import do_validate_contracts
 
-    structure_id = cfg.effective_structure_id
-    if structure_id is None:
+    extra = fetcher_extra(cfg)
+    if extra is None:
         raise ActionError(
-            "No structure configured for Doctrine contract sync. Set it in Doctrine Settings "
+            "No structure configured for Doctrine contract sync. Set one in Doctrine Settings "
             "(or Trading's own structure_id, which this falls back to)."
         )
 
@@ -130,7 +130,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     if not characters:
         raise ActionError("No Doctrine character shared yet. Share Contracts on the Characters page.")
 
-    result = do_sync_for_tool("doctrine", extra={"structure_id": structure_id})
+    result = do_sync_for_tool("doctrine", extra=extra)
     match_result = do_validate_contracts(cfg)
 
     role_by_character = {cid: role for role, cid, _name in characters}
@@ -247,9 +247,5 @@ def sync_assets() -> dict:
         raise ActionError(
             "No Doctrine character shared yet. Share Assets with Doctrine on the Characters page."
         )
-    extra = {}
-    structure_id = DOCTRINE_CONFIG.effective_structure_id
-    if structure_id is not None:
-        extra["structure_id"] = structure_id
-    result = do_sync_for_tool("doctrine", extra=extra or None)
+    result = do_sync_for_tool("doctrine", extra=fetcher_extra(DOCTRINE_CONFIG))
     return result

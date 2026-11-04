@@ -572,7 +572,7 @@ class LedgerSnapshot:
     station_trading_station_id: Optional[int] = None
     # (owner_type, owner_id) whose wallet is shared with Station Trading.
     station_trading_wallet_owners: frozenset = frozenset()
-    doctrine_structure_id: Optional[int] = None
+    doctrine_structure_ids: frozenset = frozenset()
     # (owner_type, owner_id) whose contracts are shared with Doctrine.
     doctrine_contract_owners: frozenset = frozenset()
     # Reprocessing detection (module docstring). Without observations or

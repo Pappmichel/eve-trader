@@ -392,7 +392,7 @@ def _load_contracts() -> tuple:
         db.update_contract_regions(region_updates)
 
     doc_owners = set(access.shared_owners_for("contracts", "doctrine"))
-    doc_structure = DOCTRINE_CONFIG.effective_structure_id
+    doc_structures = set(DOCTRINE_CONFIG.effective_structure_ids)
     tenant_chars = _tenant_character_ids()
     fittings = _doctrine_fitting_ids(list(grouped))
     titles = db.contract_titles(list(grouped))
@@ -436,10 +436,10 @@ def _load_contracts() -> tuple:
         issuer_id = None if chosen[3] is None else int(chosen[3])
         start_location_id = None if chosen[6] is None else int(chosen[6])
         is_doctrine = (
-            doc_structure is not None
+            bool(doc_structures)
             and (chosen[0], int(chosen[1])) in doc_owners
             and start_location_id is not None
-            and int(start_location_id) == int(doc_structure)
+            and int(start_location_id) in doc_structures
             and issuer_id is not None
             and issuer_id in tenant_chars
         )
@@ -1017,7 +1017,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         # so a tenant without it keeps one global pool (ST1).
         station_trading_station_id=STATION_TRADING_CONFIG.station_id if station_owners else None,
         station_trading_wallet_owners=station_owners,
-        doctrine_structure_id=DOCTRINE_CONFIG.effective_structure_id,
+        doctrine_structure_ids=frozenset(DOCTRINE_CONFIG.effective_structure_ids),
         doctrine_contract_owners=frozenset(
             access.shared_owners_for("contracts", "doctrine"),
         ),

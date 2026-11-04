@@ -219,15 +219,14 @@ def do_sync(progress_callback=None) -> dict:
 
     tenant_id = storage.get_current_tenant()
     allowed = allowed_tools(granted_tools())
-    from ..doctrine.config import DOCTRINE_CONFIG
+    from ..doctrine.config import DOCTRINE_CONFIG, fetcher_extra
 
     if progress_callback:
         progress_callback({"message": "Syncing assets"})
     # Same fetcher extra as the scheduler's esi_data_sync: without it the
     # contracts fetcher would write every item exchange anywhere into
     # Doctrine's contract snapshot and fetch all their items.
-    structure_id = DOCTRINE_CONFIG.effective_structure_id
-    extra = {"structure_id": structure_id} if structure_id is not None else None
+    extra = fetcher_extra(DOCTRINE_CONFIG)
     result = do_sync_kinds(ASSET_KINDS, tool_keys=allowed, extra=extra)
     invalidate_cache(tenant_id)
     if progress_callback:

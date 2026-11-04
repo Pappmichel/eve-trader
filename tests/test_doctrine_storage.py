@@ -563,3 +563,46 @@ def test_list_doctrine_contracts_fitting_ids_is_one_query(tenant, monkeypatch):
     assert calls["n"] == 1
     assert {r[0] for r in rows} == {1, 2}
     assert storage.list_doctrine_contracts(fitting_ids=[]) == []
+
+
+def test_stockpile_sums_every_stockpile_location_and_filters_one(tenant, monkeypatch):
+    """Several stockpile locations (2026-11-04): Ist is the sum over all of
+    them; the Stockpile page's structure filter counts only one, while
+    Required stays the whole need."""
+    type_id, loc_a, loc_b, elsewhere = 34, 1000000000001, 1000000000002, 1000000000003
+    char = 9001
+    storage.replace_assets(
+        "character_assets",
+        [(1, type_id, loc_a, "Hangar", 100, 0, "pilot"),
+         (2, type_id, loc_b, "Hangar", 60, 0, "pilot"),
+         (3, type_id, elsewhere, "Hangar", 500, 0, "pilot")],
+        owner_character_id=char, owner_name="pilot",
+    )
+    _share("character", char, "assets", "doctrine")
+
+    fitting = Fitting(
+        fitting_id="f1", doctrine_id="d1", name="Fit 1", hull_type_id=1000,
+        raw_eft="", contract_target=0, stockpile_target=200,
+    )
+    items = [FittingItem("f1", 1, "low", type_id, 1)]
+    from eve_trader.doctrine.validation import build_contract_soll
+    exact, consume = build_contract_soll(items)
+    cand = _Candidate(fitting=fitting, exact_soll=exact, consume_soll=consume, items=items)
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [cand])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
+    monkeypatch.setattr(
+        storage, "get_sde_types_bulk",
+        lambda type_ids: {tid: (tid, 1, "Module", 1.0, 1, 1, 0, None) for tid in type_ids},
+    )
+    monkeypatch.setattr(storage, "get_type_slot", lambda type_id: "low")
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [])
+    cfg = DoctrineConfig(stockpile_location_ids=(loc_a, loc_b), doctrine_structure_ids=(loc_a,))
+
+    rows, _ = engine.stockpile_rows_for_doctrine(cfg=cfg)
+    row = next(r for r in rows if r.type_id == type_id)
+    assert (row.required_total, row.available, row.shortfall) == (200, 160, 40)
+
+    rows, _ = engine.stockpile_rows_for_doctrine(cfg=cfg, location_id=loc_b)
+    row = next(r for r in rows if r.type_id == type_id)
+    assert (row.required_total, row.available, row.shortfall) == (200, 60, 140)

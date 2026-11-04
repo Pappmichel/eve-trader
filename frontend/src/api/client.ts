@@ -588,18 +588,25 @@ export const doctrineApi = {
 
   status: (doctrineId?: string) =>
     get<{ doctrines: T.DoctrineStatus[] }>(`/api/doctrine/status${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
-  contracts: (fittingId?: string, status?: string) => {
+  contracts: (fittingId?: string, status?: string, locationId?: number) => {
     const params = new URLSearchParams()
     if (fittingId) params.set('fitting_id', fittingId)
     if (status) params.set('status', status)
+    if (locationId != null) params.set('location_id', String(locationId))
     const qs = params.toString()
     return get<T.DoctrineContractRow[]>(`/api/doctrine/contracts${qs ? `?${qs}` : ''}`)
   },
   contractHistory: () => get<T.ContractHistoryRow[]>('/api/doctrine/contracts/history'),
-  stockpile: (doctrineId?: string) =>
-    get<{ rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean }>(
-      `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,
-    ),
+  stockpile: (doctrineId?: string, locationId?: number) => {
+    const params = new URLSearchParams()
+    if (doctrineId) params.set('doctrine_id', doctrineId)
+    if (locationId != null) params.set('location_id', String(locationId))
+    const qs = params.toString()
+    return get<{
+      rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean
+      locations: T.DoctrineLocationOption[]
+    }>(`/api/doctrine/stockpile${qs ? `?${qs}` : ''}`)
+  },
   shoppingList: (doctrineId?: string) =>
     get<T.ShoppingListResponse>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
 

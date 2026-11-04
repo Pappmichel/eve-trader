@@ -1373,6 +1373,7 @@ export interface DoctrineContractRow {
   validation_status: string
   issuer_id: number | null
   start_location_id: number | null
+  start_location_name?: string | null
   title: string | null
   price: number | null
   date_expired: string | null
@@ -1504,9 +1505,21 @@ export interface DoctrineSyncReport {
   item_fetch_errors: Record<string, string>
 }
 
+export interface DoctrineLocationOption {
+  location_id: number
+  name: string | null
+}
+
 export interface DoctrineSettings {
-  doctrine_structure_id: number | null
-  stockpile_location_id: number | null
+  // Several contract structures / stockpile locations. Empty contract list =
+  // Trading's structure; empty stockpile list = the contract structures.
+  doctrine_structure_ids: number[]
+  stockpile_location_ids: number[]
+  // Read-only (GET only): what Doctrine actually uses, with names.
+  effective_structure_ids?: number[]
+  effective_stockpile_location_ids?: number[]
+  contract_structures?: DoctrineLocationOption[]
+  stockpile_locations?: DoctrineLocationOption[]
   cargo_tolerance_pct: number
   strict_extras: boolean
   import_cost_per_m3: number
