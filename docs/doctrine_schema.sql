@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS sde_type_slots (
     slot TEXT NOT NULL
 );
 
+-- typeID -> class of functionally identical variants (same group, effects
+-- and dogma attributes, e.g. True Sansha / Dark Blood Thermal Armor
+-- Hardener; see eve_trader/sde_equivalence.py). class_id is the smallest
+-- type_id of the class. Only types with at least one equivalent have a row.
+-- Shared like sde_type_slots, refreshed with the SDE.
+CREATE TABLE IF NOT EXISTS sde_type_equivalents (
+    type_id INTEGER PRIMARY KEY,
+    class_id INTEGER NOT NULL
+);
+
 -- ============================================================ per-tenant: doctrines/fittings
 -- Composite-PK bucket (tenant_id, <app-generated UUID>) - the UUID alone
 -- practically never collides across tenants, but every per-tenant table in
@@ -263,8 +273,41 @@ CREATE POLICY tenant_isolation ON doctrine_contract_history
 -- CREATE is gone so a full re-apply of every schema file cannot recreate
 -- the tables after esi_access_schema.sql has copied and dropped them.
 
+-- ============================================================ per-tenant: equivalent variants
+-- The tenant's edits on top of sde_type_equivalents (Doctrine Equivalents
+-- tab, doctrine/equivalents.py): an item taken out of its group (excluded),
+-- or put into the group of another item (anchor_type_id). Keyed by items,
+-- never by class id: an SDE update recomputes the classes and their ids.
+-- Composite PK - a type id is the same for every tenant.
+CREATE TABLE IF NOT EXISTS doctrine_equivalent_overrides (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    anchor_type_id INTEGER,
+    excluded BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE doctrine_equivalent_overrides ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_equivalent_overrides;
+CREATE POLICY tenant_isolation ON doctrine_equivalent_overrides
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+-- Groups switched off for this tenant, one row per member at the time it
+-- was switched off (the group containing any of these items is off).
+CREATE TABLE IF NOT EXISTS doctrine_equivalent_disabled_groups (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE doctrine_equivalent_disabled_groups ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_equivalent_disabled_groups;
+CREATE POLICY tenant_isolation ON doctrine_equivalent_disabled_groups
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    sde_type_slots, doctrines, doctrine_fittings, doctrine_fitting_items,
+    sde_type_slots, sde_type_equivalents, doctrine_equivalent_overrides,
+    doctrine_equivalent_disabled_groups, doctrines, doctrine_fittings, doctrine_fitting_items,
     doctrine_fitting_parse_issues, doctrine_contracts, doctrine_contract_items,
     doctrine_contract_deviations, doctrine_contract_history
     TO eve_trader_app;

@@ -41,6 +41,13 @@ class DoctrineConfig:
     # Turning this on treats it as "tolerable" instead, for an operator who
     # wants to enforce clean, exact contracts.
     strict_extras: bool = False
+    # Functionally identical variants (same group, effects and dogma
+    # attributes, e.g. True Sansha / Dark Blood Thermal Armor Hardener - see
+    # eve_trader/sde_equivalence.py) stand in for each other: a contract with
+    # the twin stays valid (info row), stockpile stock of the twin counts, and
+    # the shopping list buys the cheapest twin. Confirmed with the user
+    # 2026-11-04; off restores exact-type matching.
+    accept_equivalent_variants: bool = True
     # ISK/m3 to haul a Shopping List item bought at Jita back to C-J -
     # deliberately a separate setting from ProductionConfig.haul_cost_per_m3
     # (production/config.py), not a read of that same value: fitted modules/

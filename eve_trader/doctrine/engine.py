@@ -16,7 +16,7 @@ from .. import hubs, storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
-from . import buyer_sources, parser, validation
+from . import buyer_sources, equivalents, parser, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
@@ -106,6 +106,22 @@ def load_fitting_with_items(fitting_id: str) -> tuple[Fitting, list[FittingItem]
     fitting = fitting_from_row(row)
     items = items_from_rows(fitting_id, storage.load_fitting_items(fitting_id))
     return fitting, items
+
+
+def equivalents_of(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> Optional[validation.EquivalentsOf]:
+    """The equivalence lookup Doctrine validation uses (functionally
+    identical variants, eve_trader/sde_equivalence.py), or None when
+    DoctrineConfig.accept_equivalent_variants is off."""
+    return equivalents.lookup() if cfg.accept_equivalent_variants else None
+
+
+def _with_equivalents(type_ids, lookup: Optional[validation.EquivalentsOf]) -> set[int]:
+    """`type_ids` plus every equivalent variant of each."""
+    out = set(type_ids)
+    if lookup is not None:
+        for type_id in list(out):
+            out.update(lookup(type_id))
+    return out
 
 
 def effective_cargo_tolerance(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> float:
@@ -224,11 +240,13 @@ def match_and_validate_contract(contract_id: int, contract_title: Optional[str],
     (matched_fitting_id, match_score, deviations, validation_status) -
     validation_status can be NO_HULL_MATCH (see its own docstring), never
     persisted as such."""
+    lookup = equivalents_of(cfg)
     scored: list[tuple[_Candidate, float]] = []
     for c in candidates:
         if not validation.hull_gate_satisfied(contract_items, c.fitting.hull_type_id):
             continue
         ist = validation.build_contract_ist(contract_items, c.fitting.hull_type_id)
+        ist, _subs = validation.substitute_equivalents(c.exact_soll, c.consume_soll, ist, lookup)
         score = validation.match_score(c.exact_soll, c.consume_soll, ist)
         scored.append((c, score))
 
@@ -249,7 +267,7 @@ def match_and_validate_contract(contract_id: int, contract_title: Optional[str],
     tolerance = effective_cargo_tolerance(winner.fitting, cfg)
     deviations = validation.compute_deviations(contract_id, winner.exact_soll, winner.consume_soll,
                                                 contract_items, winner.fitting.hull_type_id,
-                                                tolerance, cfg.strict_extras)
+                                                tolerance, cfg.strict_extras, equivalents_of=lookup)
     deviations = validation.pair_wrong_variants(deviations, _group_id_of, _slot_of)
     status = validation.contract_status(deviations, matched=True)
     return winner.fitting.fitting_id, max_score, deviations, status
@@ -343,15 +361,18 @@ def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
                                                 valid_contracts=valid_contracts)
         ordered_soll.append((c.fitting.fitting_id, soll))
 
-    type_ids = {t for _fid, soll in ordered_soll for t in soll}
+    lookup = equivalents_of(cfg)
+    type_ids = _with_equivalents({t for _fid, soll in ordered_soll for t in soll}, lookup)
     available_by_type = stockpile_available(asset_rows, type_ids, cfg, location_id=location_id)
     sde_by_id = storage.get_sde_types_bulk(list(type_ids))
-    allocation = validation.allocate_stockpile(ordered_soll, available_by_type)
+    allocation, variants_used = validation.allocate_stockpile_with_equivalents(
+        ordered_soll, available_by_type, lookup)
 
     rows: list[StockpileRow] = []
     for c in candidates:
         soll = dict(next(s for fid, s in ordered_soll if fid == c.fitting.fitting_id))
         alloc = allocation[c.fitting.fitting_id]
+        used = variants_used.get(c.fitting.fitting_id, {})
         for type_id, (required, item_class) in soll.items():
             allocated = alloc.get(type_id, 0.0)
             tolerance = effective_cargo_tolerance(c.fitting, cfg)
@@ -366,6 +387,8 @@ def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
                 doctrine_name=doctrine_name_by_id.get(c.fitting.doctrine_id, c.fitting.doctrine_id),
                 type_id=type_id, type_name=type_name, slot_section=slot_section, required_total=required,
                 available=allocated, shortfall=shortfall, severity=severity,
+                variant_available=sum(used.get(type_id, {}).values()),
+                variant_names=[_name_of(v, sde_by_id) for v in sorted(used.get(type_id, {}))],
             ))
     return rows, assets_available, available_by_type
 
@@ -459,6 +482,11 @@ def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONF
     return {**result, **fitting_assemblable(candidate, available, all_candidates)}
 
 
+def _name_of(type_id: int, sde_by_id: dict) -> str:
+    row = sde_by_id.get(type_id)
+    return row[2] if row else str(type_id)
+
+
 def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpileRow]:
     """Combines the same item across every fitting/doctrine that needs it
     into one row (GitHub issue #1) - "how much of X do I need in total"
@@ -482,6 +510,8 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
             shortfall=sum(r.shortfall for r in group),
             severity=validation.worst_severity([r.severity for r in group]),
             fitting_count=len(group),
+            variant_available=sum(r.variant_available for r in group),
+            variant_names=sorted({n for r in group for n in r.variant_names}),
         )
         for type_id, group in by_type.items()
     ]
@@ -594,7 +624,11 @@ def shopping_list(doctrine_id: Optional[str] = None,
     # fetched at all, showing "-" for C-J/Jita even when a real price exists.
     # Same mechanism plan_special_order already relies on for its own
     # never-a-stock-target line items.
-    type_ids = [row.type_id for row in aggregated]
+    # Equivalent variants (accept_equivalent_variants): every variant is
+    # priced too and the row buys the cheapest one.
+    lookup = equivalents_of(cfg)
+    variants_by_row = {row.type_id: (lookup(row.type_id) if lookup else (row.type_id,)) for row in aggregated}
+    type_ids = sorted({t for vs in variants_by_row.values() for t in vs})
     buyer = buyer_sources.collect(type_ids, cfg)
     all_hubs = cfg.hub_region_id == hubs.ALL_HUBS
     # Build-cost material quotes need one real region; ALL_HUBS must never
@@ -654,40 +688,74 @@ def shopping_list(doctrine_id: Optional[str] = None,
                         home_stats[type_id] = st
                 break
 
-    result = []
-    for row in aggregated:
-        _, build_cost, _ = unit_cost_detail(row.type_id, PRODUCTION_CONFIG, ctx.home, ctx.jita, cost_memo,
+    def _variant_quote(type_id: int) -> dict:
+        _, build_cost, _ = unit_cost_detail(type_id, PRODUCTION_CONFIG, ctx.home, ctx.jita, cost_memo,
                                              ctx.selected_decryptors, t2_memo, ctx.cost_indices, ctx.adjusted_prices)
         # _haul_volume (not raw sde_type volume) so ships/capital modules use
         # their packaged volume for the Jita haul leg, not the much larger
         # flight/assembled volume - GitHub issue #11.
-        volume = _haul_volume(row.type_id, PRODUCTION_CONFIG)
+        volume = _haul_volume(type_id, PRODUCTION_CONFIG)
         cj_price, jita_landed_price = _shopping_prices(
-            row.type_id, ctx.home, ctx.jita, volume, cfg,
-            home_stats.get(row.type_id), jita_stats.get(row.type_id),
-            hub_landed=hub_prices.landed(row.type_id, volume or 0.0, TRADING_CONFIG.jita_buy_broker_fee)
+            type_id, ctx.home, ctx.jita, volume, cfg,
+            home_stats.get(type_id), jita_stats.get(type_id),
+            hub_landed=hub_prices.landed(type_id, volume or 0.0, TRADING_CONFIG.jita_buy_broker_fee)
             if all_hubs else None)
-        hub_id = hub_prices.hub_by_type.get(row.type_id) if jita_landed_price is not None else None
-
         candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
         priced = {k: v for k, v in candidates.items() if v is not None}
-        recommended_source = min(priced, key=priced.get) if priced else None
+        source = min(priced, key=priced.get) if priced else None
+        return {"type_id": type_id, "build": build_cost, "cj": cj_price, "jita": jita_landed_price,
+                "source": source, "price": priced[source] if source else None}
+
+    # Buyer hangar / buy-order cover is drawn from one shared pool, so a
+    # variant held by a buyer covers at most one shortfall row.
+    hangar_left = dict(buyer.hub_hangar) if buyer is not None else {}
+    orders_left = dict(buyer.on_order) if buyer is not None else {}
+
+    def _draw(pool: dict, variants: tuple[int, ...], own: int, need: float) -> float:
+        got = 0.0
+        for t in (own, *[v for v in variants if v != own]):
+            take = min(need - got, pool.get(t, 0.0))
+            if take > 0:
+                pool[t] -= take
+                got += take
+            if got >= need:
+                break
+        return got
+
+    result = []
+    for row in aggregated:
+        variants = variants_by_row[row.type_id]
+        quotes = [_variant_quote(t) for t in variants]
+        own = next(q for q in quotes if q["type_id"] == row.type_id)
+        # Cheapest variant; the fitted type wins ties and is kept when no
+        # variant has any price.
+        best = min((q for q in quotes if q["price"] is not None),
+                   key=lambda q: (q["price"], q["type_id"] != row.type_id), default=own)
+        hub_id = hub_prices.hub_by_type.get(best["type_id"]) if best["jita"] is not None else None
         hub_hangar = on_order = 0.0
         if buyer is not None:
-            hub_hangar = min(row.shortfall, buyer.hub_hangar.get(row.type_id, 0.0))
-            on_order = min(row.shortfall - hub_hangar, buyer.on_order.get(row.type_id, 0.0))
+            hub_hangar = _draw(hangar_left, variants, row.type_id, row.shortfall)
+            on_order = _draw(orders_left, variants, row.type_id, row.shortfall - hub_hangar)
         to_buy = row.shortfall - hub_hangar - on_order
-        total_cost = priced[recommended_source] * to_buy if recommended_source else None
+        total_cost = best["price"] * to_buy if best["source"] else None
+        swapped = best["type_id"] != row.type_id
 
         result.append(ShoppingListRow(
             type_id=row.type_id, type_name=row.type_name, shortfall=row.shortfall,
-            build_cost=build_cost, cj_price=cj_price, jita_landed_price=jita_landed_price,
-            recommended_source=recommended_source, total_cost=total_cost,
+            build_cost=best["build"], cj_price=best["cj"], jita_landed_price=best["jita"],
+            recommended_source=best["source"], total_cost=total_cost,
             hub_region_id=hub_id, hub_name=hubs.hub_name(hub_id) if hub_id is not None else None,
             required_total=row.required_total, available=row.available,
             hub_hangar=hub_hangar, on_order=on_order, to_buy=to_buy,
+            buy_type_id=best["type_id"] if swapped else None,
+            buy_type_name=_type_name(best["type_id"]) if swapped else None,
         ))
     return result, (buyer.warnings if buyer is not None else [])
+
+
+def _type_name(type_id: int) -> str:
+    row = storage.get_sde_type(type_id)
+    return row[2] if row else str(type_id)
 
 
 # ---------------------------------------------------------------- status / ampel

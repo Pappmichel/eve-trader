@@ -211,6 +211,7 @@ def test_do_apply_sde_invalidates_caches(monkeypatch):
     admin._staged_sde = fetched
     invalidated = []
     monkeypatch.setattr(sde, "apply_sde", lambda staged: {"sde_types": 100})
+    monkeypatch.setattr(storage, "get_sde_equivalence_class_map", lambda: {})
     monkeypatch.setattr(admin, "invalidate_discover_cache",
                          lambda all_tenants=False: invalidated.append(("discover", all_tenants)))
     monkeypatch.setattr(admin, "invalidate_ship_margin_cache",
@@ -245,6 +246,7 @@ def test_do_apply_sde_after_preview_uses_staged_data_without_redownload(monkeypa
     })
     monkeypatch.setattr(sde_diff, "build_diff", lambda f, snap: {"new_items": [{"type_id": 1, "name": "Rifter"}]})
     monkeypatch.setattr(sde, "apply_sde", lambda staged: applied.append(staged) or {"sde_types": 1})
+    monkeypatch.setattr(storage, "get_sde_equivalence_class_map", lambda: {})
     monkeypatch.setattr(admin, "invalidate_discover_cache", lambda all_tenants=False: None)
     monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda all_tenants=False: None)
 
@@ -280,7 +282,7 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
         return []
 
     monkeypatch.setattr(sde, "_fetch_csv", fake_fetch)
-    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(): ({}, {}))
+    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(), equivalence_type_ids=frozenset(): ({}, {}, {}))
     monkeypatch.setattr(sde, "_fetch_pi_planets", lambda session, base: [])
     monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
     monkeypatch.setattr(storage, "get_sde_snapshot_for_diff", lambda: {
@@ -395,3 +397,18 @@ def test_grant_default_tools_is_additive_and_keeps_extra_grants():
     assert sorted(users[52]["tool_keys"]) == sorted(access_gate.DEFAULT_TOOL_KEYS)
     assert result["unchanged"] == 1 and len(result["changed"]) == 1
     assert admin.do_grant_default_tools()["changed"] == []
+
+
+def test_do_apply_sde_revalidates_doctrine_contracts_when_equivalents_change(monkeypatch):
+    maps = iter([{1: 1, 2: 1}, {1: 1, 2: 1, 3: 1}])
+    monkeypatch.setattr(storage, "get_sde_equivalence_class_map", lambda: next(maps))
+    monkeypatch.setattr(admin, "_staged_sde", object())
+    monkeypatch.setattr(sde, "apply_sde", lambda staged: {"sde_types": 1})
+    monkeypatch.setattr(admin, "invalidate_discover_cache", lambda all_tenants=False: None)
+    monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda all_tenants=False: None)
+    monkeypatch.setattr(admin.dynamic_targets, "mark_all_invalidated", lambda: None)
+    monkeypatch.setattr(admin, "_revalidate_doctrine_contracts", lambda: 7)
+
+    result = admin.do_apply_sde()
+
+    assert result["doctrine_contracts_revalidated"] == 7

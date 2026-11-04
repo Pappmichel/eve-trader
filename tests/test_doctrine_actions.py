@@ -228,7 +228,7 @@ def test_do_get_shopping_list_wraps_engine_result(monkeypatch):
         "type_id": 100, "type_name": "Widget", "shortfall": 5.0, "build_cost": 10.0, "cj_price": 12.0,
         "jita_landed_price": 15.0, "recommended_source": "Build", "total_cost": 50.0,
         "hub_region_id": None, "hub_name": None, "required_total": 0.0, "available": 0.0,
-        "hub_hangar": 0.0, "on_order": 0.0, "to_buy": 5.0,
+        "hub_hangar": 0.0, "on_order": 0.0, "to_buy": 5.0, "buy_type_id": None, "buy_type_name": None,
     }]
     assert result["warnings"] == ["a warning"]
     assert result["buyers_configured"] is False

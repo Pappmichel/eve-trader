@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { Stack, Title, Badge, Text, Divider, Group, Select } from '@mantine/core'
+import { Stack, Title, Badge, Text, Divider, Group, Select, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
@@ -10,6 +10,17 @@ import { HintCard } from '../../components/HintCard'
 import { qty, pct } from '../../format'
 
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn' }
+
+// Stock of an equivalent variant (same stats, Equivalents tab) counts too.
+function availableCell(r: { available: number; variant_available?: number; variant_names?: string[] }) {
+  const variants = r.variant_available ?? 0
+  if (variants <= 0) return qty(r.available)
+  return (
+    <Tooltip label={`Includes ${qty(variants)} of ${(r.variant_names ?? []).join(', ')}`} multiline w={280}>
+      <span>{qty(r.available)} <Text span size="xs" c="dimmed">({qty(variants)} variant)</Text></span>
+    </Tooltip>
+  )
+}
 
 function severityBadge(value: unknown) {
   const severity = value as string | null
@@ -45,7 +56,7 @@ export default function Stockpile() {
   const aggregatedColumns = useMemo<ColumnDef<AggregatedStockpileRow, any>[]>(() => [
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Available', accessorKey: 'available', size: 130, cell: (i) => availableCell(i.row.original) },
     stockPctColumn(),
     {
       header: 'Shortfall', accessorKey: 'shortfall', size: 110,
@@ -63,7 +74,7 @@ export default function Stockpile() {
     { header: 'Type', accessorKey: 'type_name', size: 200, meta: { copyable: true } },
     { header: 'Section', accessorKey: 'slot_section', size: 110 },
     { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Available', accessorKey: 'available', size: 130, cell: (i) => availableCell(i.row.original) },
     stockPctColumn(),
     {
       header: 'Shortfall', accessorKey: 'shortfall', size: 110,
