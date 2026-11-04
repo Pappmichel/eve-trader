@@ -1234,6 +1234,22 @@ deliver" hint; marking `done` stays manual. Cached Build / Asset plans
 are kept but flagged `stale` when integrated demand changes (D9). Schema change is
 `ADD COLUMN IF NOT EXISTS` on the existing `docs/special_orders_schema.sql`.
 
+## Max buildable now (Special Orders page)
+
+`production/max_buildable.py` (`do_max_buildable`, `POST /api/production/
+max-buildable`, CLI `eve-trader production max-build ITEM [--mode full|direct]
+[--target N]`, card on the Special Orders page) answers "how many of X can I
+build right now". Confirmed with the user 2026-11-03: the item gets top
+priority, so nothing other stock targets or orders would reserve is
+subtracted; only physically on-hand stock counts (`_stock_on_hand`, no
+running jobs); nothing is bought. `full` builds missing components and
+reactions from owned inputs, `direct` counts only the item's own inputs.
+Blueprints limit the result: an owned original is unlimited, otherwise only
+owned copies (`storage.list_blueprint_copies`), each copy its own job with its
+own ME and rounding. The result is a binary search over a pooled,
+`_expand_all`-shaped walk; the bottleneck is what is short at max + 1. When no
+original is owned it also reports what materials alone would allow.
+
 ## Manual tracking for Production
 
 Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`

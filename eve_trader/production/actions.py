@@ -1095,6 +1095,28 @@ def do_compute_combined_special_orders(order_ids: list[str], net_against_stock: 
     return _plan_special_order_items(items, cfg, net_against_stock=net_against_stock)
 
 
+def do_max_buildable(item: int | str, mode: str = "full", target_quantity: Optional[int] = None,
+                     cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """How many of `item` can be built right now from stock on hand, what
+    stops one more, and the full requirement table (production/max_buildable.py).
+    Ignores what other stock targets or special orders would reserve; never buys."""
+    from . import max_buildable
+
+    if mode not in max_buildable.MODES:
+        raise ActionError(f"Mode must be one of {', '.join(max_buildable.MODES)}.")
+    if target_quantity is not None and target_quantity < 1:
+        raise ActionError("Target quantity must be at least 1.")
+    if target_quantity is not None and target_quantity > max_buildable.MAX_SEARCH_QUANTITY:
+        raise ActionError(f"Target quantity must be at most {max_buildable.MAX_SEARCH_QUANTITY:,}.")
+    if sum(storage.sde_row_counts().values()) == 0:
+        raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
+    type_id, _type_name = _resolve_type(item)
+    try:
+        return max_buildable.max_buildable(type_id, cfg, mode=mode, target_quantity=target_quantity)
+    except ValueError as e:
+        raise ActionError(str(e)) from e
+
+
 def do_audit_special_orders() -> dict:
     """Read-only integrity report (E.2). Never repairs and never plans."""
     issues = order_integrity.audit()

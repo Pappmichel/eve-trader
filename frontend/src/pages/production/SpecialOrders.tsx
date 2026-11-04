@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Badge, Button, Card, Checkbox, Group, MultiSelect, NumberInput, SegmentedControl, Stack, Text, Textarea, Title, ActionIcon, Tooltip,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconPlus, IconTrash } from '@tabler/icons-react'
+import { IconHammer, IconPlus, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -19,6 +19,7 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { dateTime, isk, pct, qty } from '../../format'
+import { MaxBuildablePanel, type MaxBuildablePrefill } from './MaxBuildablePanel'
 
 // The cached plans are included so their `stale` flag (set by the backend when
 // an integrated order changes) shows up right away.
@@ -337,11 +338,12 @@ function NewOrderForm() {
   )
 }
 
-function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
+function OrderItemsEditor({ order, items, autoRecompute, onPreview, onMaxBuildable }: {
   order: SpecialOrder
   items: SpecialOrderLineItem[]
   autoRecompute: boolean
   onPreview: (plan: SpecialOrderComputeResult) => void
+  onMaxBuildable: (typeId: number) => void
 }) {
   const queryClient = useQueryClient()
   const invalidate = () => {
@@ -382,21 +384,29 @@ function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
       ),
     },
     {
-      header: '', id: 'actions', size: 50, enableSorting: false,
+      header: '', id: 'actions', size: 80, enableSorting: false,
       cell: (i) => (
-        <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Remove ${i.row.original.type_name}`}
-          disabled={items.length === 1}
-          loading={removeItem.isPending && pendingTypeId === i.row.original.type_id}
-          onClick={() => {
-            setPendingTypeId(i.row.original.type_id)
-            removeItem.mutate(i.row.original.type_id, { onSuccess: applyResult })
-          }}>
-          <IconTrash size={14} />
-        </ActionIcon>
+        <Group gap={4} wrap="nowrap">
+          <Tooltip label="Max buildable now">
+            <ActionIcon size="sm" variant="subtle" aria-label={`Max buildable ${i.row.original.type_name}`}
+              onClick={() => onMaxBuildable(i.row.original.type_id)}>
+              <IconHammer size={14} />
+            </ActionIcon>
+          </Tooltip>
+          <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Remove ${i.row.original.type_name}`}
+            disabled={items.length === 1}
+            loading={removeItem.isPending && pendingTypeId === i.row.original.type_id}
+            onClick={() => {
+              setPendingTypeId(i.row.original.type_id)
+              removeItem.mutate(i.row.original.type_id, { onSuccess: applyResult })
+            }}>
+            <IconTrash size={14} />
+          </ActionIcon>
+        </Group>
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [items.length, setItem.isPending, removeItem.isPending, pendingTypeId, autoRecompute])
+  ], [items.length, setItem.isPending, removeItem.isPending, pendingTypeId, autoRecompute, onMaxBuildable])
 
   return (
     <Stack gap="xs">
@@ -428,7 +438,7 @@ function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
   )
 }
 
-function OrderDetail({ order }: { order: SpecialOrder }) {
+function OrderDetail({ order, onMaxBuildable }: { order: SpecialOrder; onMaxBuildable: (typeId: number) => void }) {
   const queryClient = useQueryClient()
   const { data: detail } = useQuery({
     queryKey: ['production', 'special-orders', order.order_id],
@@ -477,7 +487,7 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
       {detail && (
         <OrderItemsEditor
           order={order} items={detail.items}
-          autoRecompute={autoRecompute} onPreview={setPreview}
+          autoRecompute={autoRecompute} onPreview={setPreview} onMaxBuildable={onMaxBuildable}
         />
       )}
 
@@ -569,6 +579,9 @@ export default function SpecialOrders() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [maxPrefill, setMaxPrefill] = useState<MaxBuildablePrefill | null>(null)
+  const requestMaxBuildable = useCallback(
+    (typeId: number) => setMaxPrefill((prev) => ({ typeId, nonce: (prev?.nonce ?? 0) + 1 })), [])
   const updateOrder = useAction('Save Special Order', (args: { orderId: string; status: string }) =>
     productionApi.updateSpecialOrder(args.orderId, { status: args.status }), SPECIAL_ORDER_KEYS)
   const removeOrder = useAction('Remove Special Order', productionApi.removeSpecialOrder, SPECIAL_ORDER_KEYS)
@@ -656,6 +669,7 @@ export default function SpecialOrders() {
   return (
     <Stack>
       <NewOrderForm />
+      <MaxBuildablePanel prefill={maxPrefill} />
 
       {plansStale && (
         <Alert color="warn" variant="light" title="Build lists out of date">
@@ -695,7 +709,7 @@ export default function SpecialOrders() {
         <CombinePanel orderIds={[...selectedIds]} onClear={() => setSelectedIds(new Set())} />
       )}
 
-      {expandedOrder && <OrderDetail order={expandedOrder} />}
+      {expandedOrder && <OrderDetail order={expandedOrder} onMaxBuildable={requestMaxBuildable} />}
     </Stack>
   )
 }

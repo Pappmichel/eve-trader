@@ -1032,6 +1032,18 @@ def compute_combined_special_orders(req: CombineSpecialOrdersRequest):
                  net_against_stock=req.net_against_stock)
 
 
+class MaxBuildableRequest(BaseModel):
+    item: str
+    mode: Literal["full", "direct"] = "full"
+    target_quantity: Optional[int] = Field(default=None, ge=1)
+
+
+@router.post("/max-buildable")
+def max_buildable(req: MaxBuildableRequest):
+    return _wrap(actions.do_max_buildable, item=req.item, mode=req.mode,
+                 target_quantity=req.target_quantity)
+
+
 @router.get("/special-orders/audit")
 def audit_special_orders():
     return _wrap(actions.do_audit_special_orders)
