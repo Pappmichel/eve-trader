@@ -1,7 +1,7 @@
 """Station Trading report against Postgres: station pool, D11 scope, turnover."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,8 +33,11 @@ HOME_TYPE = 88016
 BOB_TYPE = 88014
 HOME = 60000042
 JITA = 60003760
-T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-T_SALE = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+# Relative to today: the reports read a trailing `days=30` window, so fixed
+# dates fall out of it a month after they were written.
+_BASE = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+T0 = _BASE - timedelta(days=10)
+T_SALE = _BASE - timedelta(days=7)
 
 
 @pytest.fixture(scope="session")

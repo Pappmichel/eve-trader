@@ -1,7 +1,7 @@
 """Doctrine report against Postgres: origin split, D11 scope, fitting resolution."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,10 +39,13 @@ HOME = 60000042
 JITA = 60003760
 DOC = 1049588174021
 FIT = "11111111-1111-1111-1111-111111111111"
-T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-T_JOB = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
-T_END = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
-T_SALE = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+# Relative to today: the reports read a trailing `days=30` window, so fixed
+# dates fall out of it a month after they were written.
+_BASE = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+T0 = _BASE - timedelta(days=10)
+T_JOB = _BASE - timedelta(days=9)
+T_END = _BASE - timedelta(days=8)
+T_SALE = _BASE - timedelta(days=7)
 
 
 @pytest.fixture(scope="session")
