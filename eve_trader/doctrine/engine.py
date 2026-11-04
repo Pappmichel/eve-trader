@@ -154,11 +154,18 @@ def load_match_candidates() -> list[_Candidate]:
 
 def _fit_identity(candidate: "_Candidate") -> tuple:
     """The fit a candidate represents, independent of which doctrine it sits
-    in or how its EFT text was formatted: hull plus the exact/consume Soll
-    multisets. Two fittings with the same identity are "the same fit"."""
-    return (candidate.fitting.hull_type_id,
-            frozenset(candidate.exact_soll.items()),
-            frozenset(candidate.consume_soll.items()))
+    in or how its EFT text was formatted: hull plus the total quantity per
+    type over the exact and consume Soll. Two fittings with the same identity
+    are "the same fit".
+
+    Where an item sits does not count (confirmed with the user 2026-11-04):
+    two fits that differ only in whether an item is fitted or carried in the
+    cargo (or a bay) are the same fit, so a contract of one counts for both."""
+    totals: dict[int, float] = defaultdict(float)
+    for soll in (candidate.exact_soll, candidate.consume_soll):
+        for type_id, quantity in soll.items():
+            totals[type_id] += quantity
+    return (candidate.fitting.hull_type_id, frozenset(totals.items()))
 
 
 def pooled_contract_counts(candidates: Optional[list["_Candidate"]] = None

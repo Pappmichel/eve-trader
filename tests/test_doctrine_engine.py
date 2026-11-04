@@ -671,6 +671,32 @@ def test_pooled_contract_counts_shares_contract_across_identical_fits(monkeypatc
     assert pooled["f3"] == (0, 0)   # different fit, not shared
 
 
+def test_pooled_contract_counts_ignores_fitted_versus_cargo(monkeypatch):
+    # Confirmed with the user 2026-11-04: fits that differ only in whether an
+    # item is fitted or carried in the cargo are the same fit for the pool.
+    from eve_trader.doctrine.validation import build_contract_soll
+
+    def _cand(fid, did, items):
+        ex, co = build_contract_soll(items)
+        f = Fitting(fitting_id=fid, doctrine_id=did, name="Logi", hull_type_id=HULL_A, raw_eft="",
+                    contract_target=1, stockpile_target=0)
+        return _Candidate(fitting=f, exact_soll=ex, consume_soll=co, items=items)
+
+    in_cargo = _cand("f1", "d1", [FittingItem("f1", 1, "low", MODULE, 1), FittingItem("f1", 2, "cargo", HULL_B, 1)])
+    fitted = _cand("f2", "d2", [FittingItem("f2", 1, "low", MODULE, 1), FittingItem("f2", 2, "high", HULL_B, 1)])
+    more = _cand("f3", "d3", [FittingItem("f3", 1, "low", MODULE, 1), FittingItem("f3", 2, "high", HULL_B, 2)])
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [in_cargo, fitted, more])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_row(contract_id=1, matched_fitting_id="f1", validation_status="valid", status="outstanding"),
+    ])
+
+    pooled = engine.pooled_contract_counts()
+
+    assert pooled["f1"] == (1, 0)
+    assert pooled["f2"] == (1, 0)   # same items, one fitted instead of in the cargo
+    assert pooled["f3"] == (0, 0)   # a different quantity is a different fit
+
+
 # ---------------------------------------------------------------- max assemblable
 def _asset(type_id, qty, location=60003760, flag="CorpSAG1", assembled=False):
     return {"type_id": type_id, "quantity": qty, "resolved_location_id": location,
