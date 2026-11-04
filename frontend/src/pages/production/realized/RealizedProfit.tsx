@@ -16,6 +16,7 @@ import { JobsTab } from './JobsTab'
 import { LedgerTab } from './LedgerTab'
 import { OverviewTab } from './OverviewTab'
 import { ProductsTab } from './ProductsTab'
+import { ReprocessingSection } from './ReprocessingSection'
 import { WarningsTab } from './WarningsTab'
 import {
   REALIZED_TABS, readRealizedTab, writeRealizedTab,
@@ -328,6 +329,7 @@ export default function RealizedProfit() {
           updatedAt={inventoryQuery.dataUpdatedAt}
         />
       )}
+      {tab === 'inventory' && typeFocus == null && <ReprocessingSection />}
       {tab === 'warnings' && (
         <WarningsTab
           groups={warningsQuery.data?.groups ?? []}

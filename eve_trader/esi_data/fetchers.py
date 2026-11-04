@@ -351,6 +351,19 @@ def _archive_contracts_pass(
 
 
 # ------------------------------------------------------------------ assets
+def _archive_stock_observation(owner_type: str, owner_id: int) -> None:
+    """Reprocessing detection (realized/costing.py): after an asset sync of
+    an owner in the realized-profit asset scope, store the tenant-wide
+    quantity of reprocessable types. Never fails the snapshot sync."""
+    if not _archive_for_production("assets", owner_type, owner_id):
+        return
+    try:
+        from ..realized import ingest as ledger_ingest
+        ledger_ingest.archive_stock_observation()
+    except Exception:  # noqa: BLE001
+        log.exception("stock observation failed for %s %s", owner_type, owner_id)
+
+
 def _nameable_item_ids(assets: list[dict]) -> list[int]:
     """Singleton ships and containers: ESI names only singletons, and the ones
     worth a name are the hulls and whatever holds other assets (a container is
@@ -414,6 +427,7 @@ def fetch_character_assets(
         "character_assets", _asset_rows(assets, owner_name, names),
         owner_character_id=owner_id, owner_name=owner_name,
     )
+    _archive_stock_observation("character", owner_id)
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
 
 
@@ -429,6 +443,7 @@ def fetch_corporation_assets(
         "corp_assets", _asset_rows(assets, owner_name, names),
         owner_corporation_id=owner_id, owner_name=owner_name,
     )
+    _archive_stock_observation("corporation", owner_id)
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
 
 

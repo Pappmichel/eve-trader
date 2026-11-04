@@ -483,6 +483,7 @@ export const productionApi = {
   realizedJobs: (search = '') =>
     get<T.RealizedJobList>(`/api/production/realized/jobs${search ? `?${search}` : ''}`),
   realizedInventory: () => get<T.RealizedInventoryList>('/api/production/realized/inventory'),
+  realizedReprocessing: () => get<T.RealizedReprocessList>('/api/production/realized/reprocessing'),
   realizedWarnings: () => get<T.RealizedWarningList>('/api/production/realized/warnings'),
   realizedOpening: () => get<T.RealizedOpeningList>('/api/production/realized/opening'),
   realizedEntries: () => get<T.RealizedLedgerEntryList>('/api/production/realized/entries'),

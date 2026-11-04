@@ -110,6 +110,18 @@ def owner_scope_hash() -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def assets_scope_hash() -> str:
+    """Fingerprint of the owners whose assets the realized tools read. Stock
+    observations are stored and read per fingerprint: a total over other
+    owners is not comparable, so a share change starts a new series."""
+    import hashlib
+    import json
+
+    owners = sorted([t, int(i)] for t, i in shared_owners("assets"))
+    text = json.dumps(owners, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def list_wallet_transactions_for_production(
     owner_type: str, owner_id: int,
 ) -> list[tuple]:

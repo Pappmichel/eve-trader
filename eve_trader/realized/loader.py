@@ -45,6 +45,7 @@ from . import access, db
 from .costing import (
     ORIGIN_BOUGHT,
     UNIT_ITEM,
+    CompressionLink,
     ContractItem,
     CourierContract,
     IndustryJob,
@@ -53,6 +54,8 @@ from .costing import (
     JournalEntry,
     LedgerSnapshot,
     MarketOrder,
+    ReprocessRecipe,
+    StockObservation,
     WalletTransaction,
     rebuild_costing,
 )
@@ -62,8 +65,9 @@ log = logging.getLogger(__name__)
 # Bump when a rebuild must re-derive opening inventory once. 2: Phase 5
 # contract flows. 3: stock without a purchase is valued at the planner's
 # price instead of The Forge daily average. 4: sale channels, station pool
-# and hub freight (unified plan Phase 2). NULL counts as older.
-COSTING_VERSION = 4
+# and hub freight (unified plan Phase 2). 5: reprocessing detection.
+# NULL counts as older.
+COSTING_VERSION = 5
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
@@ -722,6 +726,140 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
     return {tid: qty for tid, qty in totals.items() if qty > 0}
 
 
+# ------------------------------------------------------------- reprocessing
+def _stock_observations(t0: datetime) -> tuple[list[StockObservation], set[int]]:
+    """Observations at or after T0 for the current asset scope, each with
+    the full quantity map (rows are stored only on change, so every run
+    carries the latest quantity of each type forward), plus every type the
+    series ever held."""
+    runs, rows = db.list_stock_observations(access.assets_scope_hash())
+    if not runs:
+        return [], set()
+    by_time: dict[datetime, dict[int, float]] = defaultdict(dict)
+    for type_id, observed_at, qty in rows:
+        by_time[_as_utc(observed_at)][int(type_id)] = float(qty)
+    current: dict[int, float] = {}
+    out: list[StockObservation] = []
+    for observed_at in sorted(_as_utc(r) for r in runs):
+        current.update(by_time.get(observed_at, {}))
+        if observed_at >= t0:
+            out.append(StockObservation(observed_at, {t: q for t, q in current.items() if q}))
+    return out, {int(r[0]) for r in rows}
+
+
+def _reprocess_recipes(type_ids: set[int]) -> dict[int, ReprocessRecipe]:
+    """Ore/ice at the Ore & Minerals yield (that tool's Settings), Module
+    Reprocessing shortlist types at that tool's scrapmetal yield. A type
+    without SDE portion size or materials has no recipe (never detected)."""
+    if not type_ids:
+        return {}
+    from ..module_reprocessing.config import MODULE_REPROCESSING_CONFIG
+    from ..module_reprocessing.engine import scrapmetal_yield
+    from ..refining.candidate_discovery import ore_ice_families_for_types
+    from ..refining.config import REFINING_CONFIG
+    from ..refining.engine import ore_ice_yield
+
+    families = ore_ice_families_for_types(sorted(type_ids))
+    modules = set(db.active_module_reprocessing_type_ids())
+    recipes: dict[int, ReprocessRecipe] = {}
+    for type_id in sorted(type_ids):
+        if type_id in families:
+            yield_pct = ore_ice_yield(REFINING_CONFIG, families[type_id][0])
+        elif type_id in modules:
+            yield_pct = scrapmetal_yield(MODULE_REPROCESSING_CONFIG)
+        else:
+            continue
+        portion = storage.get_portion_size(type_id)
+        materials = storage.get_type_materials(type_id)
+        if not portion or not materials:
+            continue
+        recipes[type_id] = ReprocessRecipe(
+            type_id, int(portion), tuple((int(m), float(q)) for m, q in materials), float(yield_pct),
+        )
+    return recipes
+
+
+def _per_unit(recipe: ReprocessRecipe) -> dict[int, float]:
+    return {int(m): float(q) / max(1, int(recipe.portion_size)) for m, q in recipe.materials}
+
+
+def _compression_links(recipes: dict[int, ReprocessRecipe]) -> list[CompressionLink]:
+    """"Compressed <ore>" for each raw ore held, when both reprocess into the
+    same materials in the same proportion. The ratio is read from the SDE
+    (compressed units per raw unit), never assumed."""
+    names = {
+        int(t): str(row[0])
+        for t, row in storage.get_types_names_and_groups_bulk(sorted(recipes)).items()
+    }
+    by_name = {name: t for t, name in names.items()}
+    links: list[CompressionLink] = []
+    for raw, name in sorted(names.items()):
+        if name.startswith("Compressed "):
+            continue
+        comp = by_name.get(f"Compressed {name}")
+        if comp is None:
+            continue
+        raw_unit, comp_unit = _per_unit(recipes[raw]), _per_unit(recipes[comp])
+        if not raw_unit or set(raw_unit) != set(comp_unit) or any(v <= 0 for v in comp_unit.values()):
+            continue
+        ratios = [raw_unit[m] / comp_unit[m] for m in raw_unit]
+        if max(ratios) - min(ratios) > 1e-6 * max(ratios):
+            continue
+        links.append(CompressionLink(raw, comp, ratios[0]))
+    return links
+
+
+def _reprocess_blocked() -> Optional[str]:
+    """Detection compares the ledger with observed stock, so every owner
+    whose trades move items must also be observed. Otherwise ore bought by
+    a character whose assets are not shared would read as reprocessed."""
+    asset_owners = set(access.shared_owners("assets"))
+    order_owners = set(access.shared_owners("market_orders"))
+    missing: list[str] = []
+    for owner in access.shared_owners("wallet"):
+        if owner not in asset_owners:
+            missing.append(f"{owner[0]} {owner[1]} shares its wallet but not its assets")
+        elif owner not in order_owners:
+            missing.append(f"{owner[0]} {owner[1]} shares its wallet but not its market orders")
+    for owner in access.shared_item_exchange_owners():
+        if owner not in asset_owners:
+            missing.append(f"{owner[0]} {owner[1]} shares its contracts but not its assets")
+    return "; ".join(sorted(set(missing))) or None
+
+
+def _reprocess_inputs(t0: datetime) -> dict:
+    """LedgerSnapshot fields for reprocessing detection (empty when nothing
+    was observed yet)."""
+    observations, held = _stock_observations(t0)
+    if not observations:
+        return {}
+    recipes = _reprocess_recipes(held)
+    return {
+        "stock_observations": tuple(observations),
+        "reprocess_recipes": recipes,
+        "compression_links": tuple(_compression_links(recipes)),
+        "reprocess_detection_blocked": _reprocess_blocked(),
+    }
+
+
+def _baseline_changed(baseline: Optional[datetime]) -> bool:
+    """True once when detection starts using observations: minerals already
+    in stock were frozen as opening by an earlier rebuild and would
+    otherwise count twice (opening and reprocessing output)."""
+    if baseline is None:
+        return False
+    row = db.latest_costing_version()
+    if row is None:
+        return False
+    previous = row[2] if len(row) > 2 else None
+    return previous is None or _as_utc(previous) != baseline
+
+
+def _reprocess_baseline(snapshot) -> Optional[datetime]:
+    obs = getattr(snapshot, "stock_observations", ()) or ()
+    return min((o.observed_at for o in obs), default=None)
+
+
 # ------------------------------------------------------------------ snapshot
 def _frozen_opening(t0: datetime, scope_hash: str, reset: bool) -> Optional[dict[int, float]]:
     """Opening quantities frozen by earlier rebuilds, or None when they must
@@ -841,6 +979,13 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         for inp in job.inputs:
             type_ids.add(int(inp.type_id))
 
+    reprocess = _reprocess_inputs(t0)
+    if reprocess and _baseline_changed(min(o.observed_at for o in reprocess["stock_observations"])):
+        reset_opening = True
+    for obs in reprocess.get("stock_observations", ()):
+        type_ids.update(int(t) for t in obs.quantities)
+    for recipe in reprocess.get("reprocess_recipes", {}).values():
+        type_ids.update(int(m) for m, _q in recipe.materials)
     stock = _opening_stock(type_ids)
     type_ids.update(stock.keys())
     prices, _misses = _cached_prices(type_ids)
@@ -876,6 +1021,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         doctrine_contract_owners=frozenset(
             access.shared_owners_for("contracts", "doctrine"),
         ),
+        **reprocess,
     )
 
 
@@ -992,7 +1138,26 @@ def _draw_rows(result, snapshot) -> list[tuple]:
     for job in result.jobs:
         for seq, draw in enumerate(job.draws):
             rows.append(one("job", job.job_ref, seq, draw, None))
+    for rec in getattr(result, "reprocess_records", ()):
+        for seq, draw in enumerate(rec.draws):
+            rows.append(one("reprocess", rec.ref, seq, draw, None))
     return rows
+
+
+def _reprocess_rows(result) -> list[tuple]:
+    unit_cost = {int(layer.layer_id): float(layer.unit_cost) for layer in result.all_layers}
+    return [
+        (
+            rec.ref, rec.kind, int(rec.type_id), float(rec.quantity), rec.when, rec.detected_at,
+            float(rec.tax), *_components(rec.components), bool(rec.price_missing),
+            [
+                {"type_id": int(t), "quantity": float(q), "layer_id": int(layer_id),
+                 "unit_cost": unit_cost.get(int(layer_id))}
+                for t, q, layer_id in rec.output_layers
+            ],
+        )
+        for rec in getattr(result, "reprocess_records", ())
+    ]
 
 
 def _job_rows(result, bonus_by_job: dict) -> list[tuple]:
@@ -1111,6 +1276,8 @@ def _persist(snapshot, result, scope_hash: str) -> tuple[int, list]:
         reset_frozen_opening=snapshot.frozen_opening is None,
         owner_scope_hash=scope_hash,
         costing_version=COSTING_VERSION,
+        reprocess_events=_reprocess_rows(result),
+        reprocess_baseline_at=_reprocess_baseline(snapshot),
     )
     return run_id, extra
 
@@ -1156,4 +1323,5 @@ def rebuild_realized(reset_opening: bool = False) -> dict:
         "wallet_transactions": len(snapshot.wallet_transactions),
         "industry_jobs": len(snapshot.industry_jobs),
         "journal_entries": len(snapshot.journal_entries),
+        "reprocess_events": len(result.reprocess_records),
     }

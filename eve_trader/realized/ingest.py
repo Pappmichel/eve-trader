@@ -549,3 +549,37 @@ def contract_party_matches(
         contract.get("issuer_corporation_id") == oid
         or contract.get("acceptor_id") == oid
     )
+
+
+def archive_stock_observation(now: Optional[datetime] = None) -> int:
+    """Store the tenant-wide quantity of every reprocessable type (ore, ice,
+    compressed ore, active Module Reprocessing shortlist types) for the
+    realized-profit asset scope: assets of every shared owner, plus listed
+    sell orders and outstanding item-exchange contracts. Costing compares
+    these observations with its own ledger to detect reprocessing. Called
+    after each asset sync of an owner in that scope. Returns quantity rows
+    written (only changed types are stored)."""
+    from . import access
+
+    now = _now(now)
+    owners = access.shared_owners("assets")
+    if not owners:
+        return 0
+    modules = db.active_module_reprocessing_type_ids()
+    totals = dict(db.reprocessable_asset_totals(
+        [oid for ot, oid in owners if ot == "character"],
+        [oid for ot, oid in owners if ot == "corporation"],
+        modules,
+    ))
+    order_owners = access.shared_owners("market_orders")
+    listed = db.listed_sell_qty_by_type(
+        [oid for ot, oid in order_owners if ot == "character"],
+        [oid for ot, oid in order_owners if ot == "corporation"],
+    )
+    in_contracts = db.outstanding_contract_qty_by_type(access.shared_item_exchange_owners())
+    keep = db.ore_ice_type_ids(set(listed) | set(in_contracts)) | set(modules)
+    for extra in (listed, in_contracts):
+        for type_id, qty in extra.items():
+            if int(type_id) in keep:
+                totals[int(type_id)] = totals.get(int(type_id), 0.0) + float(qty)
+    return db.record_stock_observation(access.assets_scope_hash(), now, totals)

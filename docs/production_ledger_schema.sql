@@ -728,3 +728,75 @@ ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_courier 
 ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- ====================================================== reprocessing detection
+-- ESI has no reprocessing event. Every asset sync of an owner shared with a
+-- realized tool stores the tenant-wide quantity of each reprocessable type
+-- (ore, ice, compressed ore, Module Reprocessing shortlist types): one run
+-- row per sync, and a quantity row only when a type's quantity changed since
+-- the previous run of the same asset-owner scope. Costing reads them to find
+-- ore that disappeared (realized/costing.py, "Reprocessing").
+CREATE TABLE IF NOT EXISTS ledger_stock_observation_runs (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    scope_hash TEXT NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, scope_hash, observed_at)
+);
+ALTER TABLE ledger_stock_observation_runs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_stock_observation_runs;
+CREATE POLICY tenant_isolation ON ledger_stock_observation_runs
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_stock_observation_runs TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS ledger_stock_observations (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    scope_hash TEXT NOT NULL,
+    type_id INTEGER NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (tenant_id, scope_hash, type_id, observed_at)
+);
+ALTER TABLE ledger_stock_observations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_stock_observations;
+CREATE POLICY tenant_isolation ON ledger_stock_observations
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_stock_observations TO eve_trader_app;
+
+-- Derived: one row per detected reprocessing or compression. `outputs` is a
+-- list of {type_id, quantity, layer_id}.
+CREATE TABLE IF NOT EXISTS prod_reprocess_events (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    ref TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('reprocess', 'compress')),
+    type_id INTEGER NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    event_date TIMESTAMPTZ NOT NULL,
+    detected_at TIMESTAMPTZ NOT NULL,
+    tax DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_materials_bought DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_materials_estimated DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_freight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_job DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_invention DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+    price_missing BOOLEAN NOT NULL DEFAULT FALSE,
+    outputs JSONB NOT NULL,
+    PRIMARY KEY (tenant_id, ref)
+);
+ALTER TABLE prod_reprocess_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_reprocess_events;
+CREATE POLICY tenant_isolation ON prod_reprocess_events
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_reprocess_events TO eve_trader_app;
+
+-- A reprocessing consumes its input like a job: its draws are stored too.
+ALTER TABLE prod_cost_draws DROP CONSTRAINT IF EXISTS prod_cost_draws_consumer_kind_check;
+ALTER TABLE prod_cost_draws ADD CONSTRAINT prod_cost_draws_consumer_kind_check
+    CHECK (consumer_kind IN ('sale', 'job', 'reprocess'));
+-- First stock observation a run used. When it changes (detection becomes
+-- active), opening quantities are re-derived once, so minerals already in
+-- stock are not counted both as opening and as reprocessing output.
+ALTER TABLE prod_ledger_runs ADD COLUMN IF NOT EXISTS reprocess_baseline_at TIMESTAMPTZ;

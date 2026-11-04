@@ -23,7 +23,7 @@ export function structureBonusText(value: boolean | null | undefined): string {
   return 'unknown'
 }
 
-const ORIGIN_ORDER = ['bought', 'produced', 'opening', 'unknown']
+const ORIGIN_ORDER = ['bought', 'produced', 'reprocessed', 'compressed', 'opening', 'unknown']
 
 /** Whole quantities use the app's qty formatter. A fractional drift stays visible (never rounded to 0). */
 export function displayQty(value: number | null | undefined): string {

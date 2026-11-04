@@ -3463,6 +3463,11 @@ export interface RealizedChainNode {
   cost_share: number | null
   sale_ref: string | null
   source: string | null
+  /** Reprocessing node: the ore the minerals came from. */
+  input_type_id?: number | null
+  input_type_name?: string | null
+  input_quantity?: number | null
+  tax?: number | null
   flags: RealizedFlags
   children: RealizedChainNode[]
 }
@@ -3565,6 +3570,34 @@ export interface RealizedInventoryRow {
 export interface RealizedInventoryList {
   needs_rebuild: boolean
   rows: RealizedInventoryRow[]
+}
+
+export interface RealizedReprocessOutput {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  unit_cost: number | null
+}
+
+export interface RealizedReprocessRow {
+  ref: string
+  kind: 'reprocess' | 'compress' | string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  date: string | null
+  detected_at: string | null
+  tax: number
+  cost: number
+  cost_per_unit: number | null
+  outputs: RealizedReprocessOutput[]
+  flags: RealizedFlags
+}
+
+export interface RealizedReprocessList {
+  needs_rebuild: boolean
+  observed_since: string | null
+  rows: RealizedReprocessRow[]
 }
 
 export interface RealizedWarningGroup {

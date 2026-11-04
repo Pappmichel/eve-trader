@@ -201,6 +201,27 @@ priced freight (reward, booked freight, gap), rewards whose courier is
 not archived, and failed couriers. A Trading contracts share supplies
 those couriers; item-exchange sales stay on Production and Doctrine shares.
 
+**Reprocessing (confirmed with the user 2026-11-04).** ESI has no
+reprocessing event, so ore that disappears counts as reprocessed. Every asset
+sync of an owner in the realized-profit asset scope writes the tenant-wide
+quantity of ore, ice, compressed ore and active Module Reprocessing shortlist
+types (`ledger_stock_observations`, changed rows only, per
+`access.assets_scope_hash`; everything counts, fitted and listed included).
+Costing (`costing._detect_reprocessing`, a quantity-only pre-pass) books a
+deficit against the ledger as a `reprocess` event in whole portions, placed
+at the previous observation: it consumes the ore FIFO, adds that window's
+`reprocessing_tax` journal entries as fees, and splits the cost over the
+outputs by reference value (`origin = reprocessed`). A raw deficit next to a
+compressed surplus is a compression (`origin = compressed`, ratio from SDE
+materials). A surplus within 14 days undoes an earlier deficit and the other
+way round (couriers, moves between owners). Yields come from Ore & Minerals /
+Module Reprocessing settings, so outputs are estimates; a wrong yield shows as
+inventory drift. Detection is switched off (warning `reprocess_detection_off`)
+while a wallet owner does not also share assets and market orders, or a
+contracts owner its assets. Opening is re-derived once when the first
+observation is used (`prod_ledger_runs.reprocess_baseline_at`). Other modules
+stay drift: they also vanish through losses and gifts.
+
 `ledger_job_planned_costs` is an archive table (not in the rebuild's replace
 set). The first time a job is archived, a cached planner cost/unit is frozen
 if one is already in memory (build plan, asset plan, ship-margin cache, or
