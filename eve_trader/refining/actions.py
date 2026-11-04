@@ -28,8 +28,8 @@ from .optimizer import OptimizationError, optimize_shopping_list
 from ..paste_parser import ParsedPasteLine, merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
 from .reprocessing import (
-    NO_MARKET_DATA_DECISION, REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line,
-    mineral_type_ids_for_lines, resolve_type_id,
+    REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,
+    resolve_type_id,
 )
 
 log = logging.getLogger("eve_trader.refining.actions")
@@ -158,16 +158,18 @@ def do_activate_ore_shortlist_items(item_ids: list[int]) -> dict:
 def reprocess_worthwhile_types(quantities: dict[int, float], trading_cfg: TradingConfig = TRADING_CONFIG,
                                refining_cfg: RefiningConfig = REFINING_CONFIG,
                                oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict[int, float]:
-    """{type_id: quantity} of the stacks in `quantities` that are worth more
-    reprocessed than sold as-is - the decision the Reprocessing page makes for
-    a paste (evaluate_reprocessing_line, C-J prices, this tenant's yield and
-    refining tax). Used by the Sorting tool's "reprocess" tag.
+    """{type_id: quantity} of the intake stacks worth more reprocessed than
+    the item is worth in the hub. Used by the Sorting tool's "reprocess" tag.
 
-    One difference: with no sell order at C-J the page says "No market data",
-    but a stack that is already at C-J can still be reprocessed. Then the
-    refined value is compared with selling into C-J's buy orders, and with
-    no buy orders either, reprocessing wins (e.g. compressed moon ore nobody
-    lists at C-J). Raises ActionError when the C-J order book cannot be read."""
+    Intake stacks were bought in the hub (Jita), not at C-J (confirmed with
+    the user 2026-11-04), so the item side is its hub value landed at C-J
+    (refining.pricing.landed_cost_per_unit: sell percentile + broker fee +
+    freight, at RefiningConfig.hub_region_id), the same figure the Ore
+    Shortlist's margin uses. The mineral side is the Reprocessing page's
+    (evaluate_reprocessing_line: C-J mineral prices, this tenant's yield),
+    net of the refining tax. An item the hub does not list at all is tagged
+    when its minerals are priced. Raises ActionError when an order book
+    cannot be read."""
     type_ids = sorted(t for t, qty in quantities.items() if qty >= 1)
     if not type_ids:
         return {}
@@ -175,36 +177,42 @@ def reprocess_worthwhile_types(quantities: dict[int, float], trading_cfg: Tradin
     client = ESIClient(trading_cfg, tm)
     mineral_ids = mineral_type_ids_for_lines(type_ids)
     ore_ice_by_type = ore_ice_families_for_types(type_ids)
+    sde_rows = storage.get_sde_types_bulk(type_ids)
+    volumes = {t: (sde_rows[t][3] or 0.0) if sde_rows.get(t) else 0.0 for t in type_ids}
     try:
-        stats_by_id, _fallback = client.structure_order_stats_bulk_or_goonmetrics(
-            trading_cfg.structure_id, sorted(set(type_ids) | set(mineral_ids)), auth_roles=_seller_roles(tm),
+        mineral_stats, _fallback = client.structure_order_stats_bulk_or_goonmetrics(
+            trading_cfg.structure_id, sorted(mineral_ids), auth_roles=_seller_roles(tm),
             goonmetrics_market_slug=trading_cfg.structure_market_slug)
-    except ESIError as e:
-        raise ActionError(f"Could not fetch the structure's order book ({e}).") from e
-    names = storage.get_sde_types_bulk(type_ids)
+        hub = hubs.hub_pricing(client, refining_cfg.hub_region_id, type_ids, volumes,
+                               trading_cfg.jita_buy_broker_fee, trading_cfg.import_cost_per_m3, trading_cfg)
+    except (ESIError, requests.RequestException) as e:
+        raise ActionError(f"Could not fetch the order book ({e}).") from e
     worthwhile: dict[int, float] = {}
     for type_id in type_ids:
-        sde_row = names.get(type_id)
+        sde_row = sde_rows.get(type_id)
         line = ParsedPasteLine(raw_line="", name=sde_row[2] if sde_row else str(type_id),
                                quantity=int(quantities[type_id]), category="", volume_m3=None)
-        row = evaluate_reprocessing_line(line, stats_by_id.get(type_id), stats_by_id, trading_cfg, refining_cfg,
+        # Item stats None: only the mineral side is needed from this row.
+        row = evaluate_reprocessing_line(line, None, mineral_stats, trading_cfg, refining_cfg,
                                          type_id=type_id, ore_ice_family=ore_ice_by_type.get(type_id))
-        if row.decision == REPROCESS_DECISION or _worth_reprocessing_without_listing(
-                row, stats_by_id.get(type_id), trading_cfg, refining_cfg):
+        stats = hub.stats.get(type_id)
+        unit_value = landed_cost_per_unit(stats.sell_percentile if stats else None, volumes[type_id],
+                                          trading_cfg, hub.freight_by_type.get(type_id))
+        if _worth_reprocessing(row.mineral_value, unit_value, line.quantity, refining_cfg):
             worthwhile[type_id] = quantities[type_id]
     return worthwhile
 
 
-def _worth_reprocessing_without_listing(row: ReprocessingQuoteRow, item_stats, trading_cfg: TradingConfig,
-                                        refining_cfg: RefiningConfig) -> bool:
-    """No sell order to compare against, but every mineral is priced: compare
-    the refined value with selling the stack into the buy orders."""
-    if row.decision != NO_MARKET_DATA_DECISION or row.sell_as_is_value is not None or not row.mineral_value:
+def _worth_reprocessing(mineral_value: Optional[float], hub_unit_value: Optional[float], quantity: int,
+                        refining_cfg: RefiningConfig) -> bool:
+    """Refined value (C-J minerals, net of tax) above the stack's landed hub
+    value. Unpriced minerals: never. No hub price: reprocessing wins."""
+    if not mineral_value:
         return False
-    refined_value = row.mineral_value * (1 - refining_cfg.refining_tax_rate)
-    buy_price = item_stats.buy_percentile if item_stats else None
-    sell_to_buy_orders = buy_price * row.quantity * trading_cfg.structure_sell_haircut if buy_price else 0.0
-    return refined_value > sell_to_buy_orders
+    refined_value = mineral_value * (1 - refining_cfg.refining_tax_rate)
+    if hub_unit_value is None:
+        return True
+    return refined_value > hub_unit_value * quantity
 
 
 def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_CONFIG,
