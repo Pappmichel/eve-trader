@@ -8,7 +8,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError, charAlertsApi } from '../../../api/client'
-import type { AlertSubscription, AlertType } from '../../../api/types'
+import type { AlertSubscription, AlertType, ContractAlertFilters } from '../../../api/types'
 
 const KEY = ['char-alerts', 'settings']
 const LINK_RESULT: Record<string, { color: string; title: string; message: string }> = {
@@ -32,13 +32,22 @@ const ALERT_TYPES: AlertType[] = [
 ]
 const LEAD_TIME_TYPES = new Set<AlertType>(['skillqueue_empty', 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty'])
 
+const DEFAULT_CONTRACT_FILTERS: ContractAlertFilters = {
+  min_interval_minutes: null, notify_finished: true, notify_expired: true, doctrine_only: false, sold_out_only: false,
+}
+
+type SubscriptionChange = {
+  enabled: boolean; include_content?: boolean; lead_hours?: number; contract_filters?: ContractAlertFilters
+}
+
 function errorMessage(e: unknown): string {
   return e instanceof ApiError ? e.message : 'Something went wrong.'
 }
 
 function AlertRow(props: {
   characterId: number; label: string; type: AlertType; sub: AlertSubscription; linked: boolean; pending: boolean
-  onChange: (change: { enabled: boolean; include_content?: boolean; lead_hours?: number }) => void
+  doctrineGranted?: boolean
+  onChange: (change: SubscriptionChange) => void
 }) {
   const { sub, linked, pending, type } = props
   const blocked = !sub.enabled && (!linked || !sub.shared)
@@ -77,6 +86,68 @@ function AlertRow(props: {
           </Text>
         </Stack>
       )}
+      {type === 'contract_status' && sub.enabled && (
+        <ContractFilterOptions
+          label={props.label} filters={sub.contract_filters ?? DEFAULT_CONTRACT_FILTERS} pending={pending}
+          doctrineGranted={!!props.doctrineGranted}
+          onChange={(contract_filters) => props.onChange({ enabled: true, contract_filters })}
+        />
+      )}
+    </Stack>
+  )
+}
+
+// Opt-in filters for the contract alert (GH #382). Every option off/empty is
+// the unfiltered alert.
+function ContractFilterOptions(props: {
+  label: string; filters: ContractAlertFilters; pending: boolean; doctrineGranted: boolean
+  onChange: (filters: ContractAlertFilters) => void
+}) {
+  const { filters: f, pending, label } = props
+  const set = (patch: Partial<ContractAlertFilters>) => props.onChange({ ...f, ...patch })
+  return (
+    <Stack gap={4} pl="xs">
+      <Group gap="md">
+        <Checkbox
+          size="xs" checked={f.notify_finished} disabled={pending || (f.notify_finished && !f.notify_expired) || f.sold_out_only}
+          label="Finished" aria-label={`${label} contract alert finished`}
+          onChange={(e) => set({ notify_finished: e.currentTarget.checked })}
+        />
+        <Checkbox
+          size="xs" checked={f.notify_expired} disabled={pending || (f.notify_expired && !f.notify_finished)}
+          label="Expired" aria-label={`${label} contract alert expired`}
+          onChange={(e) => set({ notify_expired: e.currentTarget.checked })}
+        />
+      </Group>
+      <NumberInput
+        size="xs" w={260} min={15} max={1440} allowDecimal={false} disabled={pending}
+        value={f.min_interval_minutes ?? ''} placeholder="every poll" prefix="At most one DM per " suffix=" min"
+        aria-label={`${label} contract alert minimum interval in minutes`}
+        onChange={(v) => {
+          if (v === '' || v === null) set({ min_interval_minutes: null })
+          else if (typeof v === 'number' && v >= 15 && v <= 1440) set({ min_interval_minutes: v })
+        }}
+      />
+      {props.doctrineGranted && (
+        <>
+          <Checkbox
+            size="xs" checked={f.doctrine_only} disabled={pending}
+            label="Only contracts that match a Doctrine fitting"
+            aria-label={`${label} contract alert doctrine only`}
+            onChange={(e) => set({ doctrine_only: e.currentTarget.checked })}
+          />
+          <Checkbox
+            size="xs" checked={f.sold_out_only} disabled={pending || !f.notify_finished}
+            label="Only when a sale leaves a fitting without contracts"
+            aria-label={`${label} contract alert sold out only`}
+            onChange={(e) => set({ sold_out_only: e.currentTarget.checked })}
+          />
+        </>
+      )}
+      <Text size="xs" c="dimmed">
+        Contracts a filter skips are not announced later. With a minimum interval, new contracts are collected and
+        sent together in the next message.
+      </Text>
     </Stack>
   )
 }
@@ -177,6 +248,7 @@ export default function AlertsPage() {
                               <AlertRow
                                 key={type} characterId={c.character_id} label={c.character_name} type={type}
                                 sub={c.alerts[type]!} linked={data.linked} pending={subscribe.isPending}
+                                doctrineGranted={data.doctrine_granted}
                                 onChange={(change) => subscribe.mutate({ character_id: c.character_id, alert_type: type, ...change })}
                               />
                             ))}

@@ -191,27 +191,29 @@ def pooled_contract_counts(candidates: Optional[list["_Candidate"]] = None
             for fid, key in identity_by_fitting.items()}
 
 
-def sold_out_fittings(sold: set[int], unavailable: set[int], now: datetime) -> list[str]:
-    """Names of the fittings a sale just emptied (Discord contract alert).
-    `sold`: contract ids that just finished; `unavailable`: every contract id
-    a live ESI read shows as no longer buyable (finished, deleted, or past its
-    expiry), a superset of `sold`. A fitting counts as sold out only when one
-    of the sold contracts was a valid/tolerable match for it and no other
-    contract of the same fit (the pooled identity of pooled_contract_counts)
-    is still available - a fitting that already had no contract never counts.
-    The snapshot can lag behind ESI; `unavailable` covers what the live read
-    already knows."""
+def sold_out_by_contract(sold: set[int], unavailable: set[int], now: datetime) -> dict[int, str]:
+    """`{sold contract id: fitting name}` for every sale that just emptied its
+    fitting (Discord contract alert). `sold`: contract ids that just finished;
+    `unavailable`: every contract id a live ESI read shows as no longer
+    buyable (finished, deleted, or past its expiry), a superset of `sold`. A
+    fitting counts as sold out only when one of the sold contracts was a
+    valid/tolerable match for it and no other contract of the same fit (the
+    pooled identity of pooled_contract_counts) is still available - a
+    fitting that already had no contract never counts. The snapshot can lag
+    behind ESI; `unavailable` covers what the live read already knows."""
     candidates = load_match_candidates()
     by_id = {c.fitting.fitting_id: c for c in candidates}
     identity_by_fitting = {fid: _fit_identity(c) for fid, c in by_id.items()}
     available: dict[tuple, int] = defaultdict(int)
     sold_fittings: dict[tuple, str] = {}
+    sold_keys: dict[int, tuple] = {}
     for ct in contract_rows_from_db(storage.list_doctrine_contracts()):
         key = identity_by_fitting.get(str(ct.matched_fitting_id)) if ct.matched_fitting_id else None
         if key is None or ct.validation_status not in ("valid", "tolerable"):
             continue
         if ct.contract_id in sold:
             sold_fittings.setdefault(key, by_id[str(ct.matched_fitting_id)].fitting.name)
+            sold_keys[ct.contract_id] = key
             continue
         expires = datetime.fromisoformat(ct.date_expired) if ct.date_expired else None
         if expires is not None and expires.tzinfo is None:
@@ -219,7 +221,29 @@ def sold_out_fittings(sold: set[int], unavailable: set[int], now: datetime) -> l
         if ct.status == "expired" or ct.contract_id in unavailable or (expires is not None and expires <= now):
             continue
         available[key] += 1
-    return [name for key, name in sold_fittings.items() if not available[key]]
+    return {cid: sold_fittings[key] for cid, key in sold_keys.items() if not available[key]}
+
+
+def sold_out_fittings(sold: set[int], unavailable: set[int], now: datetime) -> list[str]:
+    """Names of the fittings a sale just emptied; see sold_out_by_contract."""
+    return list(dict.fromkeys(sold_out_by_contract(sold, unavailable, now).values()))
+
+
+def contract_doctrine_matches(contract_ids: set[int]) -> dict[int, str]:
+    """`{contract id: fitting name}` for the given contracts that the last
+    Doctrine sync matched validly (valid/tolerable) to a stored fitting. A
+    contract the snapshot no longer holds is simply absent."""
+    if not contract_ids:
+        return {}
+    names = {c.fitting.fitting_id: c.fitting.name for c in load_match_candidates()}
+    out: dict[int, str] = {}
+    for ct in contract_rows_from_db(storage.list_doctrine_contracts()):
+        if (ct.contract_id in contract_ids and ct.matched_fitting_id
+                and ct.validation_status in ("valid", "tolerable")):
+            name = names.get(str(ct.matched_fitting_id))
+            if name:
+                out[ct.contract_id] = name
+    return out
 
 
 #: Status sentinel, never added to constants.VALIDATION_STATUSES. Matching

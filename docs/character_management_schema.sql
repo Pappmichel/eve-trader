@@ -455,6 +455,14 @@ CREATE POLICY tenant_isolation ON alert_subscriptions
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON alert_subscriptions TO eve_trader_app;
+-- Contract alert filters (GH #382), all opt-in: the defaults are the
+-- unfiltered alert. Only meaningful on contract_status rows.
+ALTER TABLE alert_subscriptions ADD COLUMN IF NOT EXISTS contract_min_interval_minutes INTEGER
+    CHECK (contract_min_interval_minutes IS NULL OR contract_min_interval_minutes BETWEEN 15 AND 1440);
+ALTER TABLE alert_subscriptions ADD COLUMN IF NOT EXISTS contract_notify_finished BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE alert_subscriptions ADD COLUMN IF NOT EXISTS contract_notify_expired BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE alert_subscriptions ADD COLUMN IF NOT EXISTS contract_doctrine_only BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE alert_subscriptions ADD COLUMN IF NOT EXISTS contract_sold_out_only BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS alert_state (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,

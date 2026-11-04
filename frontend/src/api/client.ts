@@ -883,6 +883,7 @@ export const charAlertsApi = {
   settings: () => get<T.AlertSettings>('/api/char-alerts/settings'),
   setSubscription: (s: {
     character_id: number; alert_type: T.AlertType; enabled: boolean; include_content?: boolean; lead_hours?: number
+    contract_filters?: T.ContractAlertFilters
   }) => post<unknown>('/api/char-alerts/subscriptions', s),
   linkStart: () => get<{ url: string }>('/api/char-alerts/discord/start'),
   unlink: () => del<{ unlinked: boolean }>('/api/char-alerts/discord'),

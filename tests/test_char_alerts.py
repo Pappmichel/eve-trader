@@ -225,3 +225,17 @@ def test_callback_redirects_with_the_outcome(monkeypatch):
     monkeypatch.setattr(aa, "do_finish_discord_link", lambda code, state: (_ for _ in ()).throw(ActionError("x")))
     r = _client.get("/api/char-alerts/discord/callback?code=c&state=s", follow_redirects=False)
     assert r.headers["location"].endswith("discord=error")
+
+
+def test_subscription_route_passes_contract_filters(monkeypatch):
+    calls = []
+    monkeypatch.setattr(aa, "do_set_subscription", lambda **kw: calls.append(kw) or {"ok": True})
+    r = _client.post("/api/char-alerts/subscriptions", json={
+        "character_id": 1, "alert_type": "contract_status", "enabled": True,
+        "contract_filters": {"min_interval_minutes": 60, "doctrine_only": True}})
+    assert r.status_code == 200
+    assert calls[-1]["contract_filters"] == {
+        "min_interval_minutes": 60, "notify_finished": True, "notify_expired": True,
+        "doctrine_only": True, "sold_out_only": False}
+    _client.post("/api/char-alerts/subscriptions", json={"character_id": 1, "alert_type": "mail_new", "enabled": False})
+    assert calls[-1]["contract_filters"] is None
