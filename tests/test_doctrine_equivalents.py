@@ -52,6 +52,22 @@ def test_equivalence_classes_need_same_group_effects_and_float_noise_is_ignored(
     assert sde_equivalence.equivalence_classes(groups, attrs, effects) == {1: 1, 2: 1}
 
 
+def test_equivalence_classes_keep_different_volume_apart():
+    """Cap Booster 800 / Navy Cap Booster 800: identical dogma, but the Navy
+    charge is 24 m3 instead of 32 m3 (user report 2026-11-04)."""
+    cap, navy, twin = 11289, 32014, 99999
+    groups = {cap: 87, navy: 87, twin: 87}
+    attrs = {t: {67: 800.0, 1692: 1.0} for t in groups}
+    effects = {t: [] for t in groups}
+    types = [{"typeID": str(cap), "volume": "32.0", "capacity": "0.0", "mass": "80.0"},
+             {"typeID": str(navy), "volume": "24.0", "capacity": "0", "mass": "80.0"},
+             {"typeID": str(twin), "volume": "32", "capacity": "", "mass": "80"}]
+    physical = sde_equivalence.physical_properties(types, frozenset(groups))
+    assert sde_equivalence.equivalence_classes(groups, attrs, effects, physical) == {cap: cap, twin: cap}
+    # Without physical data dogma alone decides, as before.
+    assert sde_equivalence.equivalence_classes(groups, attrs, effects) == {cap: cap, navy: cap, twin: cap}
+
+
 def test_candidate_type_ids_filters_category_market_publish_abyssal_and_fireworks():
     groups = [
         {"groupID": "328", "categoryID": "7", "groupName": "Armor Hardener"},
