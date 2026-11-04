@@ -757,3 +757,20 @@ def test_asset_plan_reaction_coverage_counts_stock(monkeypatch, reaction_bom, te
 
     job = next(j for j in asset["jobs"] if j.type_id == 10)
     assert job.stock_coverage == pytest.approx(0.2)
+
+
+@pg_helpers.postgres_required()
+def test_asset_plan_reaction_coverage_is_capped_at_full(monkeypatch, reaction_bom, tenant):
+    # Live 2026-11-04: stock 19x the walk's demand showed as 1936%.
+    stock = {10: 2000.0}
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 10, 0, 0)]))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    asset = engine.plan_asset_optimized(cfg)
+
+    assert all(j.stock_coverage is None or 0.0 <= j.stock_coverage <= 1.0
+               for j in asset["jobs"] if j.activity == "Reaction")
