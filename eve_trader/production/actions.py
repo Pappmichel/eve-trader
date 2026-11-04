@@ -25,7 +25,8 @@ from .engine import (
     _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
     asset_plan_ready_jobs, build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
-    invalidate_discover_cache, invalidate_facility_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
+    invalidate_discover_cache, invalidate_excluded_locations_cache, invalidate_facility_cache,
+    invalidate_ship_margin_cache, t1_bpc_invention_needs,
     _load_category_facilities, category_profile, facility_resolution,
     invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
     plan_production, plan_special_order, production_needs_by_type, shared_production_owner_ids, stock_value,
@@ -79,6 +80,9 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
     invalidate_ship_margin_cache()  # structure/rig/fee settings feed build_cost/margins here too
     if "home_location_id" in updates:
         invalidate_production_locations_cache()  # _current_stock's location set includes this
+    if "excluded_system_ids" in updates:
+        invalidate_excluded_locations_cache()
+        _mark_cached_production_plans_stale()  # stock changes under the cached Build / Asset plans
     return updates
 
 

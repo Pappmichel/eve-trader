@@ -1172,6 +1172,18 @@ Manager (which badges such rows instead) - an assembled ship still has
 value and still exists. A new stock reader must apply the
 same filter.
 
+**Excluded systems (Production Settings, confirmed with the user
+2026-11-04).** `ProductionConfig.excluded_system_ids` lists solar systems
+Production ignores completely. `engine.production_excluded_location_ids`
+resolves them once (60 s cache, cleared on a Settings save) to every location
+id inside: SDE stations, registry structures with that system, registry
+structures without a known system whose name starts with "<system> - ",
+global structure names, and Offices/containers parented there
+(`storage.location_ids_in_systems`). Production's asset, blueprint, formula
+and running-job readers pass it as `exclude_location_ids`; a new Production
+stock or blueprint reader must pass it too. Valuation, the Asset Manager and
+other tools are not affected.
+
 ## Job-time character-skill bonus (confirmed real gap, fixed 2026-09-27)
 
 `_activity_mods`/`_tech_ii_mods` (`production/engine.py`) used to combine

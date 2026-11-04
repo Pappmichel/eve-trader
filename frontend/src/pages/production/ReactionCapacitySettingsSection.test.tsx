@@ -28,6 +28,7 @@ const BASE: ProductionSettings = {
   distribution_source_location_id: null,
   invention_location_id: null,
   stock_hangar_flags: [],
+  excluded_system_ids: [],
   reaction_structure_type: 'Tatara',
   reaction_rig_tier: 'T2',
   component_structure_type: 'Azbel',

@@ -1041,6 +1041,7 @@ export interface ProductionSettings {
   distribution_source_location_id: number | null
   invention_location_id: number | null
   stock_hangar_flags: string[]
+  excluded_system_ids: number[]
   reaction_structure_type: string
   reaction_rig_tier: string
   component_structure_type: string
