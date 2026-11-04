@@ -2430,17 +2430,30 @@ export interface MailRecipientHit {
 export type AlertType = 'skillqueue_empty' | 'mail_new' | 'pi_extractor_expiry' | 'pi_pad_full' | 'pi_inputs_empty'
   | 'contract_status'
 
+// Opt-in narrowing of the contract alert (GH #382); defaults = unfiltered.
+export interface ContractAlertFilters {
+  min_interval_minutes: number | null
+  notify_finished: boolean
+  notify_expired: boolean
+  doctrine_only: boolean
+  sold_out_only: boolean
+}
+
 export interface AlertSubscription {
   shared: boolean
   enabled: boolean
   include_content: boolean
   lead_hours: number
+  // contract_status only
+  contract_filters?: ContractAlertFilters
 }
 
 export interface AlertSettings {
   bot_configured: boolean
   link_configured: boolean
   linked: boolean
+  // The Doctrine contract filters need the doctrine grant.
+  doctrine_granted?: boolean
   characters: Array<{
     character_id: number
     character_name: string

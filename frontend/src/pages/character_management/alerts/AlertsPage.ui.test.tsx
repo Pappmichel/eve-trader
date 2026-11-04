@@ -98,4 +98,36 @@ describe('AlertsPage', () => {
     renderPage('/?discord=linked')
     expect(await screen.findByText('Discord linked')).toBeInTheDocument()
   })
+  it('contract alert filters are sent with the subscription; doctrine ones need the grant', async () => {
+    const on = { ...off, enabled: true }
+    const filters = {
+      min_interval_minutes: null, notify_finished: true, notify_expired: true, doctrine_only: false, sold_out_only: false,
+    }
+    vi.mocked(charAlertsApi.settings).mockResolvedValue(settings({
+      characters: [{ character_id: 1, character_name: 'Alice', alerts: {
+        contract_status: { ...on, contract_filters: filters },
+      } }],
+    }))
+    const { unmount } = renderPage()
+    await userEvent.click(await screen.findByLabelText('Alice contract alert expired'))
+    await waitFor(() => expect(charAlertsApi.setSubscription).toHaveBeenCalled())
+    expect(vi.mocked(charAlertsApi.setSubscription).mock.calls[0][0]).toMatchObject({
+      alert_type: 'contract_status', enabled: true, contract_filters: { ...filters, notify_expired: false },
+    })
+    expect(screen.queryByLabelText('Alice contract alert doctrine only')).not.toBeInTheDocument()
+    unmount()
+
+    vi.mocked(charAlertsApi.settings).mockResolvedValue(settings({
+      doctrine_granted: true,
+      characters: [{ character_id: 1, character_name: 'Alice', alerts: {
+        contract_status: { ...on, contract_filters: filters },
+      } }],
+    }))
+    renderPage()
+    await userEvent.click(await screen.findByLabelText('Alice contract alert sold out only'))
+    await waitFor(() => expect(vi.mocked(charAlertsApi.setSubscription).mock.calls.length).toBe(2))
+    expect(vi.mocked(charAlertsApi.setSubscription).mock.calls[1][0].contract_filters).toMatchObject(
+      { sold_out_only: true },
+    )
+  })
 })

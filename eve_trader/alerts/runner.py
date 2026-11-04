@@ -319,29 +319,52 @@ def _contract_items(client: ESIClient, cid: int, role: str, contract_ids: list[i
     return out
 
 
-def _sold_out_fittings(contracts: list[dict], fresh: list[tuple[int, str, dict]], now: datetime,
-                       tenant_id: str) -> list[str]:
-    """Doctrine fittings the fresh sales emptied. Reads another tool's data,
-    so only for a tenant holding the `doctrine` grant (same rule as the
-    Doctrine skill check). A failure only drops the extra line."""
+class _DoctrineUnavailable(Exception):
+    """The Doctrine lookup failed for a reason that may pass (not a missing grant)."""
+
+
+def _doctrine_lookups(contracts: list[dict], fresh: list[tuple[int, str, dict]], now: datetime,
+                      tenant_id: Optional[str], need_matches: bool
+                      ) -> tuple[Optional[dict[int, str]], Optional[dict[int, str]]]:
+    """`(sold_out, matches)`: sold contract id -> the fitting its sale emptied,
+    and (only when `need_matches`) contract id -> its valid Doctrine fitting.
+    Reads another tool's data, so both are None without the `doctrine` grant
+    (same rule as the Doctrine skill check). Raises _DoctrineUnavailable when
+    the lookup itself failed."""
+    if not tenant_id or not tenant_eligibility.may_use("doctrine", tenant_eligibility.granted_tools(tenant_id)):
+        return None, None
     sold = {i for i, e, c in fresh if e == logic.CONTRACT_FINISHED and c.get("type") == "item_exchange"}
-    if not sold or not tenant_eligibility.may_use("doctrine", tenant_eligibility.granted_tools(tenant_id)):
-        return []
     unavailable = {int(c["contract_id"]) for c in contracts if "contract_id" in c and (
         c.get("status") != "outstanding" or (logic.parse_iso(c.get("date_expired")) or now) <= now)}
     try:
-        from ..doctrine.engine import sold_out_fittings
-        return sold_out_fittings(sold, unavailable | sold, now)
-    except Exception as e:  # noqa: BLE001 - the contract alert itself must still go out
-        log.warning("Doctrine sold-out check failed: %s", e)
-        return []
+        from ..doctrine import engine as doctrine_engine
+        sold_out = doctrine_engine.sold_out_by_contract(sold, unavailable | sold, now) if sold else {}
+        matches = doctrine_engine.contract_doctrine_matches({i for i, _e, _c in fresh}) if need_matches else None
+    except Exception as e:  # noqa: BLE001 - surfaced to the caller as "try again later"
+        log.warning("Doctrine lookup for the contract alert failed: %s", e)
+        raise _DoctrineUnavailable() from e
+    return sold_out, matches
+
+
+def _contract_filters(cid: int) -> logic.ContractFilters:
+    row = storage.get_contract_alert_filters(cid)
+    if row is None:
+        return logic.ContractFilters()
+    interval, finished, expired, doctrine_only, sold_out_only = row
+    return logic.ContractFilters(
+        min_interval_minutes=int(interval) if interval else None, notify_finished=bool(finished),
+        notify_expired=bool(expired), doctrine_only=bool(doctrine_only), sold_out_only=bool(sold_out_only))
 
 
 def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, client: ESIClient,
                    tokens: TokenManager, tenant_id: Optional[str] = None) -> None:
     """Contracts the character issued that finished or expired since the
     opt-in, each announced once. Polled live like mail: the contracts snapshot
-    refreshes only every few hours. The first poll stores a baseline."""
+    refreshes only every few hours. The first poll stores a baseline.
+
+    Opt-in filters (GH #382): an event a filter drops is marked seen, so it
+    never comes back; while the minimum interval since the last DM has not
+    passed, the kept events stay unseen and go out together in the next DM."""
     state = storage.get_alert_state(cid, logic.CONTRACT_STATUS)
     if _recently_attempted(state, now, poll_minutes):
         return
@@ -367,18 +390,32 @@ def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, clie
     if not fresh:
         storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
         return
-    listed = sorted(fresh, key=lambda ev: ev[0])[:logic.MAX_CONTRACTS_LISTED]
+    filters = _contract_filters(cid)
+    try:
+        sold_out_map, matches = _doctrine_lookups(contracts, fresh, now, tenant_id, filters.doctrine_only)
+    except _DoctrineUnavailable:
+        if filters.needs_doctrine:                     # cannot decide now: keep everything for the next poll
+            storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
+            return
+        sold_out_map, matches = {}, None
+    kept, dropped = logic.filter_contract_events(fresh, filters, matches, sold_out_map)
+    if dropped:
+        storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in dropped], at=now)
+    if not kept or not logic.contract_interval_open(filters, _aware(state[2]) if state[2] else None, now):
+        storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
+        return
+    listed = sorted(kept, key=lambda ev: ev[0])[:logic.MAX_CONTRACTS_LISTED]
     untitled = [i for i, _e, c in listed if not str(c.get("title") or "").strip() and c.get("type") != "courier"]
     items = _contract_items(client, cid, role, untitled)
     places = storage.get_location_names({int(c["start_location_id"]) for _i, _e, c in listed if c.get("start_location_id")})
     acceptors = _sender_names(client, [int(c["acceptor_id"]) for _i, e, c in listed
                                        if e == logic.CONTRACT_FINISHED and c.get("acceptor_id")])
-    sold_out = _sold_out_fittings(contracts, fresh, now, tenant_id) if tenant_id else []
-    message = logic.contract_message(fresh, name, items, {k: v for k, v in places.items() if v},
+    sold_out = list(dict.fromkeys(sold_out_map[i] for i, _e, _c in kept if i in (sold_out_map or {})))
+    message = logic.contract_message(kept, name, items, {k: v for k, v in places.items() if v},
                                      acceptors, sold_out)
-    decision = logic.Decision(f"contracts:{max(i for i, _e, _c in fresh)}", message)
+    decision = logic.Decision(f"contracts:{max(i for i, _e, _c in kept)}", message)
     if _send(cid, logic.CONTRACT_STATUS, decision, now, tokens=tokens):
-        storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in fresh], at=now)
+        storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in kept], at=now)
 
 
 def run_for_tenant(

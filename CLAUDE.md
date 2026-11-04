@@ -662,6 +662,16 @@ announced; `mail` stays `live_only` (polled by the alerts job, not
 `alerts_contract_poll_minutes` (15) and announces each contract the character
 issued once when it finishes or passes its expiry (`contract_alert_state`,
 first poll = baseline); messages disable mentions and are English-only, no quiet hours.
+Contract alert filters (GH #382) are opt-in columns on the `contract_status`
+subscription row (`contract_*`, defaults = unfiltered): finished / expired
+switches, a minimum interval between DMs (15-1440 min), "only valid Doctrine
+fits" (`doctrine.engine.contract_doctrine_matches`, valid/tolerable in the
+`doctrine_contracts` snapshot) and "only when a sale empties a fitting"
+(`sold_out_by_contract`). Both Doctrine filters need the `doctrine` grant
+(checked on save and at send time; without it they let nothing through). A
+filtered-out event is marked seen and never announced; an event held back by
+the interval stays unseen and goes out with the next DM; a failed Doctrine
+lookup with a Doctrine filter on marks nothing and retries next poll.
 
 **Scheduler integration** is covered by the Scheduler section above
 (`schedule_mode = "on_demand"`, `useSyncWhenStale.ts`'s page-open sync) -

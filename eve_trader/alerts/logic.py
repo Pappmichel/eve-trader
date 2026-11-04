@@ -136,6 +136,65 @@ def contract_events(contracts: Sequence[dict], character_id: int, now: datetime)
     return out
 
 
+@dataclass(frozen=True)
+class ContractFilters:
+    """Opt-in narrowing of the contract alert (GH #382). The defaults are the
+    unfiltered alert: every finished and expired contract, sent each poll."""
+    min_interval_minutes: Optional[int] = None   # at most one DM per this many minutes
+    notify_finished: bool = True
+    notify_expired: bool = True
+    doctrine_only: bool = False                  # only valid/tolerable Doctrine fit matches
+    sold_out_only: bool = False                  # only sales that leave a fitting with no contract
+
+    @property
+    def needs_doctrine(self) -> bool:
+        return self.doctrine_only or self.sold_out_only
+
+
+MIN_CONTRACT_INTERVAL_MINUTES, MAX_CONTRACT_INTERVAL_MINUTES = 15, 1440
+
+
+def contract_filter_error(f: ContractFilters) -> Optional[str]:
+    """Why these filters can never let anything through, else None."""
+    if f.min_interval_minutes is not None and not (
+            MIN_CONTRACT_INTERVAL_MINUTES <= f.min_interval_minutes <= MAX_CONTRACT_INTERVAL_MINUTES):
+        return (f"The minimum interval must be {MIN_CONTRACT_INTERVAL_MINUTES}-"
+                f"{MAX_CONTRACT_INTERVAL_MINUTES} minutes.")
+    if not (f.notify_finished or f.notify_expired):
+        return "Choose finished contracts, expired contracts, or both."
+    if f.sold_out_only and not f.notify_finished:
+        return "Sold-out alerts come from finished contracts; keep finished contracts on."
+    return None
+
+
+def filter_contract_events(events: Sequence[tuple[int, str, dict]], f: ContractFilters,
+                           doctrine_matches: Optional[dict[int, str]] = None,
+                           sold_out: Optional[dict[int, str]] = None,
+                           ) -> tuple[list[tuple[int, str, dict]], list[tuple[int, str, dict]]]:
+    """Split `events` into (kept, dropped). `doctrine_matches` maps a contract
+    id to the Doctrine fitting it validly matched, `sold_out` a sold contract
+    id to the fitting its sale emptied; None means that lookup is unavailable
+    (no `doctrine` grant), and a filter that needs it then keeps nothing."""
+    kept, dropped = [], []
+    for ev in events:
+        contract_id, event, c = ev
+        ok = (event == CONTRACT_FINISHED and f.notify_finished) or (event == CONTRACT_EXPIRED and f.notify_expired)
+        if ok and f.doctrine_only:
+            ok = doctrine_matches is not None and contract_id in doctrine_matches
+        if ok and f.sold_out_only:
+            ok = (event == CONTRACT_FINISHED and c.get("type") == "item_exchange"
+                  and sold_out is not None and contract_id in sold_out)
+        (kept if ok else dropped).append(ev)
+    return kept, dropped
+
+
+def contract_interval_open(f: ContractFilters, last_sent_at: Optional[datetime], now: datetime) -> bool:
+    """True when the minimum interval allows a DM now."""
+    if not f.min_interval_minutes or last_sent_at is None:
+        return True
+    return (now - last_sent_at).total_seconds() >= f.min_interval_minutes * 60
+
+
 def _isk(value: float) -> str:
     for size, unit, digits in ((1e9, "B", 2), (1e6, "M", 1), (1e3, "k", 0)):
         if abs(value) >= size:

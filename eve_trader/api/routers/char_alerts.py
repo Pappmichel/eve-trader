@@ -20,12 +20,21 @@ router = APIRouter()
 _UI_PATH = "/character-management/alerts"
 
 
+class ContractFiltersRequest(BaseModel):
+    min_interval_minutes: Optional[int] = None
+    notify_finished: bool = True
+    notify_expired: bool = True
+    doctrine_only: bool = False
+    sold_out_only: bool = False
+
+
 class SubscriptionRequest(BaseModel):
     character_id: int
     alert_type: str
     enabled: bool
     include_content: bool = False
     lead_hours: Optional[int] = None
+    contract_filters: Optional[ContractFiltersRequest] = None
 
 
 def _wrap(fn, **kwargs):
@@ -45,6 +54,7 @@ def set_subscription(body: SubscriptionRequest):
     return _wrap(
         alert_actions.do_set_subscription, character_id=body.character_id, alert_type=body.alert_type,
         enabled=body.enabled, include_content=body.include_content, lead_hours=body.lead_hours,
+        contract_filters=body.contract_filters.model_dump() if body.contract_filters else None,
     )
 
 
