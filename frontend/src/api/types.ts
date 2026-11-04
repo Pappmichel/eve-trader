@@ -1739,6 +1739,8 @@ export interface SortingRow {
 
 export interface SortingList {
   rows: SortingRow[]
+  // Set when the live C-J price check behind the "reprocess" tag failed.
+  reprocess_error?: string | null
 }
 
 export interface SortingIntakeSource {

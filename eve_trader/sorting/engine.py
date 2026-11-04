@@ -10,15 +10,20 @@ allocation logic (EVE itself has no such concept).
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import pandas as pd
+import requests
 
 from .. import storage
 from ..doctrine.config import DOCTRINE_CONFIG, DoctrineConfig
 from ..doctrine.engine import stockpile_rows_for_doctrine
+from ..esi_client import ESIError
 from ..production import engine as production_engine
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
+
+log = logging.getLogger("eve_trader.sorting.engine")
 
 
 # Snapshot decisions that mean "this is a live Trading SKU". The Shortlist
@@ -189,6 +194,22 @@ def _market_listing_wanted_by_type(production_cfg: ProductionConfig) -> dict[int
     return production_engine.market_listing_shortfall_by_type(production_cfg)
 
 
+def _reprocess_wanted_by_type(intake: dict[int, float]) -> tuple[dict[int, float], Optional[str]]:
+    """Intake stacks worth more reprocessed than sold as-is at C-J - the same
+    decision as Ore & Minerals' Reprocessing page (refining.actions.
+    reprocess_worthwhile_types); the whole stack is the wanted quantity.
+    Unlike the other pots this prices live (cached C-J order book, or the
+    Goonmetrics fallback), so a pricing failure returns ({}, reason) and
+    the rest of the list still loads."""
+    from ..actions import ActionError
+    from ..refining.actions import reprocess_worthwhile_types
+    try:
+        return reprocess_worthwhile_types(intake), None
+    except (ActionError, ESIError, requests.RequestException) as e:
+        log.warning("Sorting reprocess check failed: %s", e)
+        return {}, str(e)
+
+
 def _source_label(source_kind: str, owner_name: Optional[str], hangar_flag: str,
                   label: Optional[str]) -> str:
     if label:
@@ -268,13 +289,14 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     one character/corp intake."""
     intake, by_source = _intake_from_sources(production_cfg)
     if not intake:
-        return {"rows": []}
+        return {"rows": [], "reprocess_error": None}
 
     trading_by_id, trading_by_name = _trading_wanted()
     market_listing_wanted = _market_listing_wanted_by_type(production_cfg)
     material_wanted = _material_wanted_by_type()
     doctrine_wanted = _doctrine_wanted_by_type(doctrine_cfg)
     ore_minerals_wanted = _ore_minerals_wanted_by_type()
+    reprocess_wanted, reprocess_error = _reprocess_wanted_by_type(intake)
 
     rows = []
     sde_by_id = storage.get_sde_types_bulk(list(intake))
@@ -291,6 +313,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
             ("material", material_wanted.get(type_id)),
             ("doctrine", doctrine_wanted.get(type_id)),
             ("ore_minerals", ore_minerals_wanted.get(type_id)),
+            ("reprocess", reprocess_wanted.get(type_id)),
         ):
             if qty:
                 wanted_by_tool.append({"tool": tool, "wanted_qty": qty})
@@ -306,4 +329,4 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
             "wanted_by_tool": wanted_by_tool,
             "unclaimed": len(wanted_by_tool) == 0,
         })
-    return {"rows": rows}
+    return {"rows": rows, "reprocess_error": reprocess_error}
