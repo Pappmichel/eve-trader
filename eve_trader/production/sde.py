@@ -558,8 +558,9 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     group_by_type = {
         int(r["typeID"]): int(r["groupID"]) for r in inv_types if int(r["typeID"]) in equivalence_type_ids
     }
-    type_equivalent_rows = sorted(
-        sde_equivalence.equivalence_classes(group_by_type, equivalence_attrs, effects_by_type).items())
+    type_equivalent_rows = sorted(sde_equivalence.equivalence_classes(
+        group_by_type, equivalence_attrs, effects_by_type,
+        sde_equivalence.physical_properties(inv_types, equivalence_type_ids)).items())
 
     return FetchedSde(
         types=types_rows, groups=groups_rows, market_groups=market_groups_rows,
