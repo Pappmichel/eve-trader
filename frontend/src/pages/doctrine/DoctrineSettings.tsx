@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
+import { Alert, Stack, Title, Text, SimpleGrid, NumberInput, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
 
 import { doctrineApi } from '../../api/client'
 import type { DoctrineSettings as DoctrineSettingsT } from '../../api/types'
@@ -37,6 +37,8 @@ export default function DoctrineSettings() {
       ...(o.market_orders_shared ? [] : [`${o.character_name}: Market Orders`]),
     ])
 
+  // Saved state, not the unsaved form: the sync reads what is stored.
+  const noStructure = (data?.effective_structure_ids ?? []).length === 0
   const fallbackStructures = (data?.contract_structures ?? []).map(locationLabel).join(', ')
   const fallbackStockpile = form.doctrine_structure_ids.length > 0
     ? 'the contract structures above'
@@ -50,10 +52,17 @@ export default function DoctrineSettings() {
       <HintCard>Changes take effect immediately. The scheduled sync interval is configured on the Trading Settings page.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Structure &amp; Stockpile</Title>
+      {noStructure && (
+        <Alert color="warn" variant="light" title="No contract structure set">
+          Neither Doctrine nor Trading has a structure, so the contract sync cannot run. Add at least one
+          contract structure below and save.
+        </Alert>
+      )}
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <StructureIdListField label="Contract structures" value={form.doctrine_structure_ids}
           description={form.doctrine_structure_ids.length === 0
-            ? `None set - using Trading's structure${fallbackStructures ? `: ${fallbackStructures}` : ''}.`
+            ? (fallbackStructures ? `None set - using Trading's structure: ${fallbackStructures}.`
+              : 'None set, and Trading has no structure either.')
             : "Contracts at any of these count toward each fitting's contract target."}
           onChange={(v) => set('doctrine_structure_ids', v)} structureNames={structureNames} />
         <StructureIdListField label="Stockpile locations" value={form.stockpile_location_ids}
