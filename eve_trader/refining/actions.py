@@ -28,8 +28,8 @@ from .optimizer import OptimizationError, optimize_shopping_list
 from ..paste_parser import ParsedPasteLine, merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
 from .reprocessing import (
-    REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,
-    resolve_type_id,
+    NO_MARKET_DATA_DECISION, REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line,
+    mineral_type_ids_for_lines, resolve_type_id,
 )
 
 log = logging.getLogger("eve_trader.refining.actions")
@@ -159,10 +159,15 @@ def reprocess_worthwhile_types(quantities: dict[int, float], trading_cfg: Tradin
                                refining_cfg: RefiningConfig = REFINING_CONFIG,
                                oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict[int, float]:
     """{type_id: quantity} of the stacks in `quantities` that are worth more
-    reprocessed than sold as-is - the exact decision the Reprocessing page
-    makes for a paste (evaluate_reprocessing_line, C-J prices, this tenant's
-    yield and refining tax). Used by the Sorting tool's "reprocess" tag.
-    Raises ActionError when the C-J order book cannot be read."""
+    reprocessed than sold as-is - the decision the Reprocessing page makes for
+    a paste (evaluate_reprocessing_line, C-J prices, this tenant's yield and
+    refining tax). Used by the Sorting tool's "reprocess" tag.
+
+    One difference: with no sell order at C-J the page says "No market data",
+    but a stack that is already at C-J can still be reprocessed. Then the
+    refined value is compared with selling into C-J's buy orders, and with
+    no buy orders either, reprocessing wins (e.g. compressed moon ore nobody
+    lists at C-J). Raises ActionError when the C-J order book cannot be read."""
     type_ids = sorted(t for t, qty in quantities.items() if qty >= 1)
     if not type_ids:
         return {}
@@ -184,9 +189,22 @@ def reprocess_worthwhile_types(quantities: dict[int, float], trading_cfg: Tradin
                                quantity=int(quantities[type_id]), category="", volume_m3=None)
         row = evaluate_reprocessing_line(line, stats_by_id.get(type_id), stats_by_id, trading_cfg, refining_cfg,
                                          type_id=type_id, ore_ice_family=ore_ice_by_type.get(type_id))
-        if row.decision == REPROCESS_DECISION:
+        if row.decision == REPROCESS_DECISION or _worth_reprocessing_without_listing(
+                row, stats_by_id.get(type_id), trading_cfg, refining_cfg):
             worthwhile[type_id] = quantities[type_id]
     return worthwhile
+
+
+def _worth_reprocessing_without_listing(row: ReprocessingQuoteRow, item_stats, trading_cfg: TradingConfig,
+                                        refining_cfg: RefiningConfig) -> bool:
+    """No sell order to compare against, but every mineral is priced: compare
+    the refined value with selling the stack into the buy orders."""
+    if row.decision != NO_MARKET_DATA_DECISION or row.sell_as_is_value is not None or not row.mineral_value:
+        return False
+    refined_value = row.mineral_value * (1 - refining_cfg.refining_tax_rate)
+    buy_price = item_stats.buy_percentile if item_stats else None
+    sell_to_buy_orders = buy_price * row.quantity * trading_cfg.structure_sell_haircut if buy_price else 0.0
+    return refined_value > sell_to_buy_orders
 
 
 def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_CONFIG,
