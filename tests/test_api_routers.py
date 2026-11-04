@@ -2665,3 +2665,35 @@ def test_max_buildable_action_error_maps_to_400(monkeypatch):
     monkeypatch.setattr(production_actions, "do_max_buildable", _raise)
     resp = client.post("/api/production/max-buildable", json={"item": "Nope"})
     assert resp.status_code == 400
+
+
+def test_category_facility_set_passes_fields_to_action(monkeypatch):
+    captured = {}
+
+    def _set(category, structure_type, rig_tier_basic, rig_tier_advanced):
+        captured.update(category=category, structure_type=structure_type,
+                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced)
+        return captured
+    monkeypatch.setattr(production_actions, "do_set_category_facility", _set)
+
+    resp = client.post("/api/production/logistics/facilities",
+                       json={"category": "Large Ships", "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig"})
+
+    assert resp.status_code == 200
+    assert captured == {"category": "Large Ships", "structure_type": None,
+                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig"}
+
+
+def test_category_facility_errors_map_to_400(monkeypatch):
+    def _raise(**kwargs):
+        raise ActionError("Unknown rig tier 'T3-Rig'.")
+    monkeypatch.setattr(production_actions, "do_set_category_facility", _raise)
+    resp = client.post("/api/production/logistics/facilities", json={"category": "Large Ships", "rig_tier_basic": "T3-Rig"})
+    assert resp.status_code == 400
+
+
+def test_category_facilities_list_and_clear(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_list_category_facilities", lambda: {"categories": []})
+    monkeypatch.setattr(production_actions, "do_clear_category_facility", lambda category: {"category": category})
+    assert client.get("/api/production/logistics/facilities").json() == {"categories": []}
+    assert client.delete("/api/production/logistics/facilities/Large Ships").json() == {"category": "Large Ships"}

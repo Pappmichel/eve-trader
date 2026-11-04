@@ -1572,10 +1572,13 @@ export interface OrePurchase {
   portions: number
   units: number
   volume_m3: number
+  // Average over the order-book tiers bought.
   landed_cost_per_unit: number
   total_cost: number
   hub_region_id: number | null
   hub_name: string | null
+  // False when some units come from a source with unknown listed volume.
+  depth_checked: boolean
 }
 
 export interface DirectMineralPurchase {
@@ -1587,6 +1590,8 @@ export interface DirectMineralPurchase {
   // "Home" or the name of the trade hub it is bought at (e.g. "Jita", "Amarr").
   source: string | null
   hub_region_id: number | null
+  // False for the home-market quote: Goonmetrics gives no listed volume.
+  depth_checked: boolean
 }
 
 export interface MineralCoverage {
@@ -1597,6 +1602,8 @@ export interface MineralCoverage {
   from_direct: number
   delivered: number
   surplus: number
+  // Not available at an acceptable price from any source.
+  short: number
 }
 
 export interface ShoppingListPlan {
@@ -1610,6 +1617,7 @@ export interface ShoppingListPlan {
   all_direct_cost: number | null
   savings_vs_all_direct: number | null
   total_volume_m3: number
+  shortfall: boolean
 }
 
 export interface RefiningSettings {
@@ -1623,6 +1631,7 @@ export interface RefiningSettings {
   ore_family_skill_levels: Record<string, number>
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
+  shopping_price_tolerance: number
 }
 
 export interface ReprocessingQuoteRow {
@@ -1780,10 +1789,13 @@ export interface ReprocessPurchase {
   portions: number
   units: number
   volume_m3: number
+  // Average over the order-book tiers bought.
   landed_cost_per_unit: number
   total_cost: number
   hub_region_id: number | null
   hub_name: string | null
+  // False when some units come from a source with unknown listed volume.
+  depth_checked: boolean
 }
 
 export interface ReprocessMineralCoverage {
@@ -1794,6 +1806,8 @@ export interface ReprocessMineralCoverage {
   from_direct: number
   delivered: number
   surplus: number
+  // Not available at an acceptable price from any source.
+  short: number
 }
 
 export interface ModuleShoppingListPlan {
@@ -1807,11 +1821,13 @@ export interface ModuleShoppingListPlan {
   all_direct_cost: number | null
   savings_vs_all_direct: number | null
   total_volume_m3: number
+  shortfall: boolean
 }
 
 export interface ModuleReprocessingSettings {
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
+  shopping_price_tolerance: number
   freight_cost_per_m3: number
   min_profit_threshold: number
   min_margin_threshold: number
@@ -3968,4 +3984,41 @@ export interface LocationReport {
   registry_status: Record<string, number>
   unresolved_planetary_goods_only: number
   suggested_characters: { character_id: number; character_name: string; structures: number }[]
+}
+
+// Per-category structure type and ME rigs (Logistics page).
+export type FacilitySource = 'set' | 'name' | 'global'
+
+export interface CategoryFacilityUpdate {
+  category: string
+  structure_type: string | null
+  rig_tier_basic: string | null
+  rig_tier_advanced: string | null
+}
+
+export interface CategoryFacilityRow {
+  category: string
+  profile: string
+  location_id: number | null
+  structure_name: string | null
+  security: number | null
+  // Ship categories have a separate rig for Tech II/III hulls.
+  split_by_tech: boolean
+  saved: Omit<CategoryFacilityUpdate, 'category'>
+  from_name: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
+  effective: {
+    structure_type: string
+    structure_source: FacilitySource
+    rig_tier_basic: string
+    rig_source_basic: FacilitySource
+    rig_tier_advanced: string | null
+    rig_source_advanced: FacilitySource | null
+    security_multiplier: number
+  }
+}
+
+export interface CategoryFacilities {
+  categories: CategoryFacilityRow[]
+  structure_types: string[]
+  rig_tiers: string[]
 }

@@ -907,6 +907,29 @@ def clear_category_location(category: str):
     return _wrap(actions.do_clear_category_location, category=category)
 
 
+@router.get("/logistics/facilities")
+def get_category_facilities():
+    return _wrap(actions.do_list_category_facilities)
+
+
+class CategoryFacilityRequest(BaseModel):
+    category: str
+    structure_type: Optional[str] = None
+    rig_tier_basic: Optional[str] = None
+    rig_tier_advanced: Optional[str] = None
+
+
+@router.post("/logistics/facilities")
+def set_category_facility(req: CategoryFacilityRequest):
+    return _wrap(actions.do_set_category_facility, category=req.category, structure_type=req.structure_type,
+                 rig_tier_basic=req.rig_tier_basic, rig_tier_advanced=req.rig_tier_advanced)
+
+
+@router.delete("/logistics/facilities/{category}")
+def clear_category_facility(category: str):
+    return _wrap(actions.do_clear_category_facility, category=category)
+
+
 class CategoryCostIndexOverrideRequest(BaseModel):
     category: str
     value: float

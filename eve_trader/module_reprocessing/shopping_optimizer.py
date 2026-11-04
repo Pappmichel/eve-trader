@@ -72,11 +72,7 @@ refining/optimizer.py's (see its own docstring for the full history):
 """
 from __future__ import annotations
 
-import math
-
-import numpy as np
-from scipy.optimize import linprog
-
+from .. import mineral_supply_lp as supply
 from .models import (
     DirectMineralPurchase,
     MineralCoverage,
@@ -87,42 +83,26 @@ from .models import (
     ReprocessPurchase,
 )
 
-# Solver noise guard - see refining/optimizer.py's own _EPS comment.
-_EPS = 1e-9
-
-# Defensive backstop only - see refining/optimizer.py's own
-# _MAX_REPAIR_ROUNDS comment (the MIP's hard constraints already guarantee
-# coverage; this exists for a time-limit incumbent or float slop).
-_MAX_REPAIR_ROUNDS = 8
-
-# Same safety net as refining/optimizer.py's _MIP_TIME_LIMIT_SECONDS: a
-# pathological instance degrades to HiGHS' best feasible incumbent instead of
-# hanging the request. Unlike there, this cap is realistically reachable
-# here: the column count is the full ore universe PLUS the module shortlist
-# (hundreds of near-tied module columns), and a 60-ore + 400-module instance
-# measured ~4-5s in a slow sandbox. The incumbent HiGHS returns on a timeout
-# was still within ~0.01% of the continuous LP floor in those measurements
-# (HiGHS' own default optimality gap is 0.01% anyway), so the cap costs
-# essentially nothing in plan quality - see test_realistic_scale_solves_quickly,
-# which asserts exactly that.
-_MIP_TIME_LIMIT_SECONDS = 5.0
+# Solver, time limit and shortfall handling: mineral_supply_lp (shared with
+# refining/optimizer.py since 2026-11-04, when both gained market depth).
 
 
 class OptimizationError(Exception):
-    """Raised when no plan can satisfy the requirements at all (a mineral no
-    source yields and no market lists, or a solver failure).
+    """Raised for an empty requirement list or a solver failure with no usable
+    incumbent. A mineral nothing can supply at an acceptable price is reported
+    as a shortfall (MineralCoverage.short), not raised.
     module_reprocessing/actions.py converts this to the app-wide ActionError -
     see CLAUDE.md's "ActionError is the one user-facing error type"."""
 
 
 def optimize_shopping_list(requirements: list[MineralRequirement], options: list[ReprocessOption],
                             mineral_options: dict[int, MineralOption]) -> ModuleShoppingListPlan:
-    """Pure - every price, yield and portion size is pre-fetched by the caller,
-    nothing here touches storage/ESI. `options` is ONE combined list of ore/
-    ice and module/drone columns; the solver treats them identically.
-    `mineral_options` is keyed by mineral type_id and must cover every
-    requirement (a missing/None landed cost just means "can't be bought
-    directly", not an error, as long as some source yields it)."""
+    """Pure - every price, yield, portion size and listed depth is pre-fetched
+    by the caller, nothing here touches storage/ESI. `options` is ONE combined
+    list of ore/ice and module/drone columns; the solver treats them
+    identically. An option or mineral without `tiers` is one uncapped tier at
+    its landed price. What no source covers at an acceptable price comes back
+    as `MineralCoverage.short` (see mineral_supply_lp)."""
     wanted = [r for r in requirements if r.required_qty > 0]
     if not wanted:
         raise OptimizationError("No mineral requirements to solve for - add at least one mineral and quantity.")
@@ -133,88 +113,47 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
 
     # Only sources that actually yield something we asked for are columns in
     # the LP - one whose entire yield is minerals nobody wants is pure cost.
-    sources = [o for o in options
-               if o.portion_size > 0 and any(o.yield_per_portion.get(m, 0) > 0 for m in mineral_ids)]
+    options_used = [o for o in options
+                    if o.portion_size > 0 and any(o.yield_per_portion.get(m, 0) > 0 for m in mineral_ids)]
+    sources = [supply.SupplySource(portion_size=o.portion_size, yield_per_portion=o.yield_per_portion,
+                                   tiers=supply.option_tiers(o.landed_cost_per_unit, o.tiers, o.hub_region_id))
+               for o in options_used]
+    direct_tiers = {}
+    for m in mineral_ids:
+        option = mineral_options.get(m)
+        direct_tiers[m] = (supply.mineral_tiers(option.landed_cost_per_unit, option.tiers, option.source,
+                                                option.hub_region_id) if option else [])
 
-    direct_price = {m: mineral_options[m].landed_cost_per_unit
-                    for m in mineral_ids
-                    if m in mineral_options and mineral_options[m].landed_cost_per_unit is not None}
-
-    unreachable = [names[m] for m in mineral_ids
-                   if m not in direct_price and not any(o.yield_per_portion.get(m, 0) > 0 for o in sources)]
-    if unreachable:
-        raise OptimizationError(
-            "No way to source " + ", ".join(sorted(unreachable))
-            + " - no compressed ore/ice or shortlisted module reprocesses into it and it isn't listed"
-            " in Jita right now."
-        )
-
-    direct_ids = [m for m in mineral_ids if m in direct_price]
-
-    # ---------------------------------------------------------------- the LP
-    n_src, n_direct = len(sources), len(direct_ids)
-    cost = np.array([o.landed_cost_per_portion for o in sources] + [direct_price[m] for m in direct_ids],
-                    dtype=float)
-
-    # linprog only speaks <=, so every ">= required" row is negated.
-    a_ub = np.zeros((len(mineral_ids), n_src + n_direct), dtype=float)
-    for row, mineral_id in enumerate(mineral_ids):
-        for col, source in enumerate(sources):
-            a_ub[row, col] = -float(source.yield_per_portion.get(mineral_id, 0))
-        if mineral_id in direct_price:
-            a_ub[row, n_src + direct_ids.index(mineral_id)] = -1.0
-    b_ub = np.array([-required[m] for m in mineral_ids], dtype=float)
-
-    # Solved once, continuous, purely to report `lp_cost` - see decision 1.
-    relaxed = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=(0, None), method="highs")
-    if not relaxed.success:
-        raise OptimizationError(f"Could not solve the shopping list ({relaxed.message.strip()}).")
-    lp_cost = float(relaxed.fun)
-
-    # ------------------------------------------------------- the real (integer) program
-    integrality = np.array([1] * n_src + [1] * n_direct)
-    result = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=(0, None), method="highs",
-                      integrality=integrality, options={"time_limit": _MIP_TIME_LIMIT_SECONDS})
-    if result.x is None:
-        raise OptimizationError(f"Could not solve the shopping list as a whole-unit plan ({result.message.strip()}).")
-
-    # round(), not ceil() - only solver noise to round off (see
-    # refining/optimizer.py's own comment on this same line).
-    portions = {i: max(0, round(result.x[i])) for i in range(n_src)}
-    delivered = _delivered_from_sources(sources, portions, mineral_ids)
-    _repair_shortfalls(sources, portions, delivered, mineral_ids, required, direct_price, names)
-    delivered = _delivered_from_sources(sources, portions, mineral_ids)
+    try:
+        solution = supply.solve(mineral_ids, required, sources, direct_tiers)
+    except supply.SolveError as e:
+        raise OptimizationError(str(e)) from e
 
     reprocess_purchases = []
-    for i, source in enumerate(sources):
-        if portions[i] <= 0:
+    for i, source in enumerate(options_used):
+        total = supply.source_total(solution, i, sources[i])
+        if total is None:
             continue
-        units = portions[i] * source.portion_size
         reprocess_purchases.append(ReprocessPurchase(
             type_id=source.type_id, item=source.item, category=source.category, family=source.family,
-            is_ice=source.is_ice, portions=portions[i], units=units, volume_m3=units * source.volume_m3,
-            landed_cost_per_unit=source.landed_cost_per_unit,
-            total_cost=units * source.landed_cost_per_unit,
-            hub_region_id=source.hub_region_id,
+            is_ice=source.is_ice, portions=total.portions, units=total.units,
+            volume_m3=total.units * source.volume_m3,
+            landed_cost_per_unit=total.total_cost / total.units, total_cost=total.total_cost,
+            hub_region_id=source.hub_region_id, depth_checked=total.depth_checked,
         ))
     reprocess_purchases.sort(key=lambda p: -p.total_cost)
 
-    # Whatever the solved reprocessing quantities still don't cover is bought outright.
+    delivered = supply.delivered_from_sources(solution, sources, mineral_ids)
     direct_purchases = []
     from_direct: dict[int, int] = {}
     for mineral_id in mineral_ids:
-        shortfall = required[mineral_id] - delivered.get(mineral_id, 0)
-        if shortfall <= _EPS or mineral_id not in direct_price:
-            continue
-        quantity = math.ceil(shortfall - _EPS)
-        from_direct[mineral_id] = quantity
-        direct_purchases.append(DirectMineralPurchase(
-            type_id=mineral_id, name=names[mineral_id], quantity=quantity,
-            landed_cost_per_unit=direct_price[mineral_id],
-            total_cost=quantity * direct_price[mineral_id],
-            source=mineral_options[mineral_id].source if mineral_id in mineral_options else None,
-            hub_region_id=mineral_options[mineral_id].hub_region_id if mineral_id in mineral_options else None,
-        ))
+        for line in supply.direct_totals(solution, mineral_id, direct_tiers[mineral_id]):
+            from_direct[mineral_id] = from_direct.get(mineral_id, 0) + line.quantity
+            direct_purchases.append(DirectMineralPurchase(
+                type_id=mineral_id, name=names[mineral_id], quantity=line.quantity,
+                landed_cost_per_unit=line.total_cost / line.quantity, total_cost=line.total_cost,
+                source=line.source, hub_region_id=line.hub_region_id, depth_checked=line.depth_checked,
+            ))
     direct_purchases.sort(key=lambda p: -p.total_cost)
 
     coverage = []
@@ -225,61 +164,20 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
         coverage.append(MineralCoverage(
             type_id=mineral_id, name=names[mineral_id], required=required[mineral_id],
             from_reprocessing=reprocessed_qty, from_direct=direct_qty, delivered=total,
-            surplus=total - required[mineral_id],
+            surplus=max(0.0, total - required[mineral_id]), short=solution.short.get(mineral_id, 0),
         ))
     coverage.sort(key=lambda c: c.name)
 
-    short = [c.name for c in coverage if c.delivered + _EPS < c.required]
-    if short:
-        # Belt-and-braces - failing loudly beats handing back a shopping list
-        # that quietly doesn't cover the build.
-        raise OptimizationError("Could not build a plan that covers " + ", ".join(sorted(short)) + ".")
-
     reprocess_cost = sum(p.total_cost for p in reprocess_purchases)
     direct_cost = sum(p.total_cost for p in direct_purchases)
-    all_direct_cost = (sum(required[m] * direct_price[m] for m in mineral_ids)
-                       if len(direct_price) == len(mineral_ids) else None)
+    all_direct_cost = supply.all_direct_cost(mineral_ids, required, direct_tiers)
     total_cost = reprocess_cost + direct_cost
 
     return ModuleShoppingListPlan(
         reprocess_purchases=reprocess_purchases, direct_purchases=direct_purchases, coverage=coverage,
-        reprocess_cost=reprocess_cost, direct_cost=direct_cost, total_cost=total_cost, lp_cost=lp_cost,
+        reprocess_cost=reprocess_cost, direct_cost=direct_cost, total_cost=total_cost, lp_cost=solution.lp_cost,
         all_direct_cost=all_direct_cost,
         savings_vs_all_direct=(all_direct_cost - total_cost) if all_direct_cost is not None else None,
         total_volume_m3=sum(p.volume_m3 for p in reprocess_purchases),
+        shortfall=bool(solution.short),
     )
-
-
-def _delivered_from_sources(sources: list[ReprocessOption], portions: dict[int, int],
-                             mineral_ids: list[int]) -> dict[int, int]:
-    delivered = {m: 0 for m in mineral_ids}
-    for i, source in enumerate(sources):
-        if portions[i] <= 0:
-            continue
-        for mineral_id in mineral_ids:
-            delivered[mineral_id] += portions[i] * source.yield_per_portion.get(mineral_id, 0)
-    return delivered
-
-
-def _repair_shortfalls(sources: list[ReprocessOption], portions: dict[int, int], delivered: dict[int, int],
-                        mineral_ids: list[int], required: dict[int, float],
-                        direct_price: dict[int, float], names: dict[int, str]) -> None:
-    """Closes any gap left for a mineral that CAN'T be bought directly, by
-    adding whole portions of whichever source (ore or module) supplies it
-    most cheaply. Same defensive backstop as refining/optimizer.py's own
-    _repair_shortfalls. Mutates `portions`/`delivered` in place."""
-    for _ in range(_MAX_REPAIR_ROUNDS):
-        gaps = [m for m in mineral_ids
-                if m not in direct_price and delivered.get(m, 0) + _EPS < required[m]]
-        if not gaps:
-            return
-        for mineral_id in gaps:
-            candidates = [(i, o) for i, o in enumerate(sources) if o.yield_per_portion.get(mineral_id, 0) > 0]
-            if not candidates:
-                raise OptimizationError(f"Nothing reprocessable yields {names[mineral_id]}.")
-            i, source = min(candidates,
-                            key=lambda pair: pair[1].landed_cost_per_portion / pair[1].yield_per_portion[mineral_id])
-            gap = required[mineral_id] - delivered.get(mineral_id, 0)
-            extra = max(1, math.ceil(gap / source.yield_per_portion[mineral_id] - _EPS))
-            portions[i] += extra
-            delivered.update(_delivered_from_sources(sources, portions, mineral_ids))

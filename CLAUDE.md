@@ -1250,6 +1250,43 @@ own ME and rounding. The result is a binary search over a pooled,
 `_expand_all`-shaped walk; the bottleneck is what is short at max + 1. When no
 original is owned it also reports what materials alone would allow.
 
+## Mineral shopping lists respect market depth
+
+Both mineral shopping lists (Ore & Minerals `refining/optimizer.py`, Module
+Reprocessing `module_reprocessing/shopping_optimizer.py`) solve through one
+shared integer program, `eve_trader/mineral_supply_lp.py`. Every ore, module
+and directly bought mineral is split into supply tiers
+(`eve_trader/market_depth.py`): the hub's real sell orders up to the reference
+price (5th percentile) plus `shopping_price_tolerance` (default 5%, separate
+field in RefiningConfig and ModuleReprocessingConfig), in price bands starting
++1%, +2%, +4%... above the cheapest order, each at its volume-weighted price.
+Deeper bands are bought only while they still beat every other source; when a
+cheap source runs out the solver switches to other ores/modules, and what is
+still missing is reported as `MineralCoverage.short` / plan `shortfall`
+instead of an error (confirmed with the user 2026-11-04). The home-market
+quote (Goonmetrics) has no volume: it stays one uncapped tier and its lines
+carry `depth_checked: false` ("qty unchecked" in the UI). Order books come
+from the same cached `region_orders_raw` the prices came from, so depth costs
+no extra ESI calls.
+
+## Structure rigs per job category (Logistics page)
+
+Every structure/rig bonus goes through `engine._facility_mults` /
+`facility_resolution` (ME, TE and job cost; also Realized and Max buildable).
+For an item's job category (`job_category`) the order is: the value saved in
+`job_category_facilities` (Logistics page, CLI `eve-trader production
+facilities list|set|clear`), then the rig tier the category structure's name
+states (`production/facility_names.py`, e.g. "IAK-JW - CEZ T2 Adv L T1 Basic
+L"), then the global Settings profile (`*_structure_type` / `*_rig_tier`).
+Rig security comes from the category structure's system when known. Only the
+three ship-size categories have a separate rig for Tech II/III hulls
+("Advanced" rigs); every other category uses one rig. Confirmed with the user
+2026-11-04: rigs are set per category and filled from the structure name
+where it says so; the CEZ/KFEZ/GEZ prefixes are owner tags, not structure
+types. Structure rigs are not in ESI assets unless the corp owns the
+structure, so names are the only automatic source. Data is cached per tenant
+(60 s TTL plus `invalidate_facility_cache()` on every write path).
+
 ## Manual tracking for Production
 
 Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`

@@ -46,6 +46,10 @@ class ModuleReprocessingConfig:
     # confirmed with the user during planning: every tool gets its own config
     # dataclass, see CLAUDE.md's Config section.
     refining_tax_rate: float = 0.0
+    # Mineral Shopping List: buy along the hubs' sell orders up to this much
+    # above the reference (5th-percentile) price - see market_depth.py. Own
+    # value, like refining_tax_rate (same field name as RefiningConfig's).
+    shopping_price_tolerance: float = 0.05
     freight_cost_per_m3: float = 800.0
     min_profit_threshold: float = 0.0
     min_margin_threshold: float = 0.05

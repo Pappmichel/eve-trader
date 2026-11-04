@@ -30,7 +30,7 @@ from typing import Optional
 
 import requests
 
-from .. import hubs, storage
+from .. import hubs, market_depth, storage
 from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_roles
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
@@ -262,7 +262,8 @@ def do_save_module_shopping_requirements(requirements: list[dict]) -> dict:
 
 def _ore_reprocess_option(candidate, jita_stats, refining_cfg: RefiningConfig,
                            trading_cfg: TradingConfig, hub_region_id: Optional[int] = None,
-                           freight_per_m3: Optional[float] = None) -> Optional[ReprocessOption]:
+                           freight_per_m3: Optional[float] = None, orders: Optional[list[dict]] = None,
+                           tolerance: float = 0.0) -> Optional[ReprocessOption]:
     """One compressed ore/ice LP column - the same pricing/yield as refining/
     actions.py's _ore_option (refining.pricing.landed_cost_per_unit,
     refining.engine.ore_ice_yield net of RefiningConfig.refining_tax_rate,
@@ -279,15 +280,23 @@ def _ore_reprocess_option(candidate, jita_stats, refining_cfg: RefiningConfig,
     yield_per_portion = apply_reprocessing_yield(candidate.type_id, portion_size, effective_yield)
     if not yield_per_portion:
         return None
+    tiers = None
+    if orders is not None:
+        tiers = market_depth.supply_tiers(
+            orders, jita_sell, tolerance,
+            lambda price: refining_pricing.landed_cost_per_unit(price, candidate.volume_m3, trading_cfg,
+                                                                freight_per_m3),
+            hub_region_id=hub_region_id)
     return ReprocessOption(type_id=candidate.type_id, item=candidate.item, category=ORE_CATEGORY,
                             family=candidate.family, is_ice=candidate.is_ice, volume_m3=candidate.volume_m3,
                             portion_size=portion_size, landed_cost_per_unit=unit_cost,
-                            yield_per_portion=yield_per_portion, hub_region_id=hub_region_id)
+                            yield_per_portion=yield_per_portion, hub_region_id=hub_region_id, tiers=tiers)
 
 
 def _module_reprocess_option(candidate: ModuleCandidate, item_stats, cfg: ModuleReprocessingConfig,
                               trading_cfg: TradingConfig,
-                              hub_region_id: Optional[int] = None) -> Optional[ReprocessOption]:
+                              hub_region_id: Optional[int] = None,
+                              orders: Optional[list[dict]] = None) -> Optional[ReprocessOption]:
     """One module/drone LP column - this tool's own pricing (module_
     reprocessing.pricing.landed_cost_per_unit, i.e. cfg.freight_cost_per_m3)
     and scrapmetal yield net of cfg.refining_tax_rate, same shape as
@@ -302,10 +311,16 @@ def _module_reprocess_option(candidate: ModuleCandidate, item_stats, cfg: Module
     yield_per_portion = apply_reprocessing_yield(candidate.type_id, portion_size, effective_yield)
     if not yield_per_portion:
         return None
+    tiers = None
+    if orders is not None:
+        tiers = market_depth.supply_tiers(
+            orders, buy_price, cfg.shopping_price_tolerance,
+            lambda price: module_pricing.landed_cost_per_unit(price, candidate.volume_m3, trading_cfg, cfg),
+            hub_region_id=hub_region_id)
     return ReprocessOption(type_id=candidate.type_id, item=candidate.item, category=MODULE_CATEGORY,
                             family=None, is_ice=False, volume_m3=candidate.volume_m3,
                             portion_size=portion_size, landed_cost_per_unit=unit_cost,
-                            yield_per_portion=yield_per_portion, hub_region_id=hub_region_id)
+                            yield_per_portion=yield_per_portion, hub_region_id=hub_region_id, tiers=tiers)
 
 
 def _home_mineral_prices(mineral_ids: set[int], trading_cfg: TradingConfig) -> dict:
@@ -410,13 +425,18 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
     except (ESIError, requests.RequestException) as e:
         # Transport-level failure - see refining/actions.py's identical wrap.
         raise ActionError(f"Could not fetch the order book ({e}).") from e
+    # Same (cached) order books the prices came from - for the listed depth.
+    tolerance = cfg.shopping_price_tolerance
+    input_orders = market_depth.sell_orders_by_type(client, dict(pricing.hub_by_type))
+    module_orders = market_depth.sell_orders_by_type(client, {t: cfg.purchase_region_id for t in module_ids})
 
     options = [o for o in (_ore_reprocess_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg,
                                                  pricing.hub_by_type.get(c.type_id),
-                                                 pricing.freight_by_type.get(c.type_id))
+                                                 pricing.freight_by_type.get(c.type_id),
+                                                 input_orders.get(c.type_id, []), tolerance)
                            for c in ore_candidates) if o is not None]
     options += [o for o in (_module_reprocess_option(c, module_stats_by_id.get(c.type_id), cfg, trading_cfg,
-                                                     cfg.purchase_region_id)
+                                                     cfg.purchase_region_id, module_orders.get(c.type_id, []))
                             for c in module_candidates) if o is not None]
 
     home_quotes = _home_mineral_prices(set(mineral_ids), trading_cfg)
@@ -441,9 +461,18 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
         else:
             unit_cost, source, mineral_hub = None, None, None
 
+        hub = pricing.hub_by_type.get(req.type_id)
+        tiers = market_depth.supply_tiers(
+            input_orders.get(req.type_id, []), stats.sell_percentile if stats else None, tolerance,
+            lambda price, volume=volume, type_id=req.type_id: refining_pricing.landed_cost_per_unit(
+                price, volume, trading_cfg, pricing.freight_by_type.get(type_id)),
+            source=hubs.hub_name(hub) if hub is not None else "Jita", hub_region_id=hub)
+        if home_cost is not None:
+            # Goonmetrics has no volume: uncapped, shown as depth not checked.
+            tiers.append(market_depth.SupplyTier(unit_cost=home_cost, max_units=None, source="Home"))
         mineral_options[req.type_id] = MineralOption(
             type_id=req.type_id, name=req.name, landed_cost_per_unit=unit_cost, source=source,
-            hub_region_id=mineral_hub,
+            hub_region_id=mineral_hub, tiers=tiers,
         )
 
     try:
@@ -462,4 +491,5 @@ def _shopping_plan_to_dict(plan: ModuleShoppingListPlan) -> dict:
         "reprocess_cost": plan.reprocess_cost, "direct_cost": plan.direct_cost, "total_cost": plan.total_cost,
         "lp_cost": plan.lp_cost, "all_direct_cost": plan.all_direct_cost,
         "savings_vs_all_direct": plan.savings_vs_all_direct, "total_volume_m3": plan.total_volume_m3,
+        "shortfall": plan.shortfall,
     }

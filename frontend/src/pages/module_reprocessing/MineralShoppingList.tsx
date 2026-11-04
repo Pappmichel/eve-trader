@@ -12,6 +12,7 @@ import type {
   DirectMineralPurchase, MineralRequirement, ModuleShoppingListPlan, ReprocessMineralCoverage, ReprocessPurchase,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { DEPTH_HINT, ShortCell, ShortfallAlert, SourceBadge } from '../refining/shoppingDepth'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
@@ -117,7 +118,7 @@ export default function MineralShoppingList() {
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
-    { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
+    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
   ], [allHubs, hub])
 
@@ -126,18 +127,18 @@ export default function MineralShoppingList() {
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m³)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
-    { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
+    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
   ], [])
 
   const directColumns = useMemo<ColumnDef<DirectMineralPurchase, any>[]>(() => [
     { header: 'Buy Directly', accessorKey: 'name', size: 220 },
     { header: 'Quantity', accessorKey: 'quantity', size: 130, cell: (i) => qty(i.getValue()) },
-    { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
+    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
     {
-      header: 'Source', accessorKey: 'source', size: 100,
-      cell: (i) => <Badge size="sm" variant="light" color={i.getValue() === 'Home' ? 'accent' : 'gray'}>{i.getValue() ?? '–'}</Badge>,
+      header: 'Source', accessorKey: 'source', size: 170,
+      cell: (i) => <SourceBadge source={i.getValue()} depthChecked={i.row.original.depth_checked} />,
     },
   ], [])
 
@@ -151,6 +152,7 @@ export default function MineralShoppingList() {
       header: 'Surplus', accessorKey: 'surplus', size: 120,
       cell: (i) => <Text size="sm" c={(i.getValue() as number) < 0 ? 'danger' : undefined}>{qty(i.getValue())}</Text>,
     },
+    { header: 'Short', accessorKey: 'short', size: 100, cell: (i) => <ShortCell value={i.getValue()} /> },
   ], [])
 
   if (!minerals || !saved) return <Center h={200}><Loader color="accent" /></Center>
@@ -162,6 +164,7 @@ export default function MineralShoppingList() {
         ore/ice or your active shortlisted modules and reprocessing them vs. buying the minerals outright, using
         landed prices plus Ore &amp; Minerals&apos; refining yield (ore/ice) and this tool&apos;s own Settings
         (modules).
+        {' '}{DEPTH_HINT}
       </HintCard>
 
       <Group align="flex-end">
@@ -208,6 +211,7 @@ export default function MineralShoppingList() {
 
       {plan && (
         <>
+          <ShortfallAlert show={plan.shortfall} tolerance={settings?.shopping_price_tolerance} />
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Total Cost</Text>
@@ -257,7 +261,7 @@ export default function MineralShoppingList() {
             <HintCard>None - reprocessing covers every requirement more cheaply.</HintCard>
           ) : (
             <DataTable data={plan.direct_purchases} columns={directColumns} maxHeight={300}
-              getRowId={(r) => String(r.type_id)} />
+              getRowId={(r) => `${r.type_id}-${r.source}`} />
           )}
 
           <Title order={6} c="dimmed" tt="uppercase" mt="md">Coverage Check</Title>

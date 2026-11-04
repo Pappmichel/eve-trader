@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from eve_trader.market_depth import SupplyTier
 from eve_trader.module_reprocessing.models import MineralOption, MineralRequirement, ReprocessOption
 from eve_trader.module_reprocessing.shopping_optimizer import OptimizationError, optimize_shopping_list
 
@@ -179,10 +180,23 @@ def test_direct_purchase_only_when_no_source_reprocesses_into_the_mineral():
     assert plan.all_direct_cost == pytest.approx(plan.total_cost)
 
 
-def test_unsourceable_mineral_raises():
-    with pytest.raises(OptimizationError, match="No way to source Morphite"):
-        optimize_shopping_list([_req(11399, "Morphite", 10)], [_ore(), _module()],
-                                {11399: _mineral(11399, "Morphite", None)})
+def test_unsourceable_mineral_is_reported_as_shortfall():
+    plan = optimize_shopping_list([_req(11399, "Morphite", 10)], [_ore(), _module()],
+                                   {11399: _mineral(11399, "Morphite", None)})
+    assert plan.shortfall is True
+    assert plan.coverage[0].short == 10
+
+
+def test_capped_module_switches_to_ore():
+    module = _module(type_id=100, landed_cost_per_unit=500.0)
+    module.tiers = [SupplyTier(unit_cost=1.0, max_units=2, source="Jita", hub_region_id=10000002)]
+    # 2 listed modules (200 Trit) + 10 ore portions (4000) cover 4200 exactly.
+    plan = optimize_shopping_list([_req(TRIT, "Tritanium", 4200)],
+                                   [module, _ore(type_id=1, landed_cost_per_unit=10.0, yields={TRIT: 400})],
+                                   {TRIT: _mineral(TRIT, "Tritanium", 100.0)})
+    units = {p.type_id: p.units for p in plan.reprocess_purchases}
+    assert units == {100: 2, 1: 1000}
+    assert plan.shortfall is False
 
 
 def test_empty_requirements_raises():
