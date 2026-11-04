@@ -1,4 +1,4 @@
-import { AppShell, Stack, Title, Text, Button, Group, Tabs, Container, Divider, Tooltip } from '@mantine/core'
+import { AppShell, Stack, Title, Text, Button, Group, Tabs, Container, Divider, Tooltip, Anchor } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -99,6 +99,9 @@ export default function DoctrineLayout() {
   })
   const syncStart = useBackgroundJobStart(syncJob, () => doctrineApi.syncContracts())
   const syncRunning = syncJob.runningStatus || syncStart.isPending
+  // Contract sync needs a structure (Doctrine's own, else Trading's).
+  const { data: settings } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
+  const noStructure = !!settings && (settings.effective_structure_ids ?? []).length === 0
 
   const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
   const syncAssets = useAction('Sync Assets', doctrineApi.syncAssets, [
@@ -131,6 +134,13 @@ export default function DoctrineLayout() {
                 Refresh what I need
               </Button>
             </Tooltip>
+            {noStructure && (
+              <Text size="xs" c="warn" mt={4}>
+                No contract structure set.{' '}
+                <Anchor size="xs" onClick={() => navigate('/doctrine/settings')}>Set one in Settings</Anchor>
+                {' '}before syncing.
+              </Text>
+            )}
             {syncRunning && (
               <div style={{ marginTop: 4 }}>
                 <JobProgress label={syncJob.formatProgress(syncJob.status?.progress, syncJob.jobName)} progress={syncJob.status?.progress} />
