@@ -1250,6 +1250,24 @@ own ME and rounding. The result is a binary search over a pooled,
 `_expand_all`-shaped walk; the bottleneck is what is short at max + 1. When no
 original is owned it also reports what materials alone would allow.
 
+## Structure rigs per job category (Logistics page)
+
+Every structure/rig bonus goes through `engine._facility_mults` /
+`facility_resolution` (ME, TE and job cost; also Realized and Max buildable).
+For an item's job category (`job_category`) the order is: the value saved in
+`job_category_facilities` (Logistics page, CLI `eve-trader production
+facilities list|set|clear`), then the rig tier the category structure's name
+states (`production/facility_names.py`, e.g. "IAK-JW - CEZ T2 Adv L T1 Basic
+L"), then the global Settings profile (`*_structure_type` / `*_rig_tier`).
+Rig security comes from the category structure's system when known. Only the
+three ship-size categories have a separate rig for Tech II/III hulls
+("Advanced" rigs); every other category uses one rig. Confirmed with the user
+2026-11-04: rigs are set per category and filled from the structure name
+where it says so; the CEZ/KFEZ/GEZ prefixes are owner tags, not structure
+types. Structure rigs are not in ESI assets unless the corp owns the
+structure, so names are the only automatic source. Data is cached per tenant
+(60 s TTL plus `invalidate_facility_cache()` on every write path).
+
 ## Manual tracking for Production
 
 Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`

@@ -137,7 +137,8 @@ export default function ProductionSettings() {
         Structure base bonus and rig bonus stack multiplicatively. Split by reactions / components (Tech II/capital
         components, tools, data interfaces, Tech III components) / supercapitals (Titan/Supercarrier hulls - these
         need a genuinely bigger structure than a regular Capital Ship build) / manufacturing (everything else) -
-        you can build in four different structures.
+        you can build in four different structures. These are defaults: a job category's own structure on the
+        Logistics page wins (rig tier set there or read from the structure name, security of that structure's system).
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Select label="Structure - Reactions" data={structureOptions.structure_types} value={form.reaction_structure_type}

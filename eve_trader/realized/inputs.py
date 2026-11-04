@@ -18,13 +18,10 @@ from ..production.constants import (
     ACTIVITY_MODS,
     ACTIVITY_REACTION,
     DECRYPTORS,
-    structure_rig_multiplier,
 )
 from ..production.engine import (
+    _facility_mults,
     _material_qty,
-    _security_multiplier_for,
-    _structure_profile,
-    _structure_rig,
     classify_activity,
     job_category,
 )
@@ -126,12 +123,7 @@ def _material_multiplier_for_job(
         category = job_category(type_id)
         locations = storage.load_category_locations()
         if category is not None and locations.get(category) == int(facility_id):
-            profile = _structure_profile(activity_label, type_id)
-            structure_type, rig_tier = _structure_rig(profile, cfg)
-            security = _security_multiplier_for(profile, cfg)
-            _cost, me_structure, _te = structure_rig_multiplier(
-                structure_type, rig_tier, security,
-            )
+            _cost, me_structure, _te = _facility_mults(activity_label, type_id, cfg)
             applied = True
     return base_me_mult * me_structure, applied
 

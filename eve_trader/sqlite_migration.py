@@ -136,6 +136,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "reaction_chain_choice": "Postgres-native (reaction capacity D10 chaining buy/wait choice, docs/REACTION_CAPACITY_PLAN.md - never existed in the pre-migration SQLite schema)",
     "pipeline_runs": "Postgres-native (background Search+Add+Clean Up status - never existed in the pre-migration SQLite schema)",
     "job_category_cost_index_overrides": "Postgres-native (confirmed with the user 2026-09-16 - never existed in the pre-migration SQLite schema)",
+    "job_category_facilities": "Postgres-native (per-category structure type and rig tiers, 2026-11-04 - never existed in the pre-migration SQLite schema)",
     "manual_blueprint_me_te_overrides": "Postgres-native (confirmed with the user 2026-09-16 - never existed in the pre-migration SQLite schema)",
     "esi_sharing": "Postgres-native (ESI access plan Phase 1 - sharing relation, never existed in the pre-migration SQLite schema)",
     "esi_freshness": "Postgres-native (ESI access plan Phase 1 - per-owner freshness, never existed in the pre-migration SQLite schema)",

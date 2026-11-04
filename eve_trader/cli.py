@@ -590,6 +590,51 @@ def production_max_build(item: str, mode: str, target_quantity: int | None, tena
                    f"{row['built']:>12,.0f} {row['short']:>12,.0f}")
 
 
+@production_group.group("facilities")
+def facilities_group():
+    """Structure type and ME rig per job category (Logistics page)."""
+
+
+@facilities_group.command("list")
+@_tenant_id_option
+def facilities_list(tenant_id: str | None):
+    """Shows the structure type and rigs each job category is computed with,
+    and where each value comes from (set / name / global)."""
+    result = _targets_call(tenant_id, production_actions.do_list_category_facilities)
+    click.echo(f"{'category':<20} {'structure':<34} {'Tech I rig':<16} {'Tech II rig':<16} {'sec x':>5}  name")
+    for row in result["categories"]:
+        eff = row["effective"]
+        basic = f"{eff['rig_tier_basic']} ({eff['rig_source_basic']})"
+        advanced = f"{eff['rig_tier_advanced']} ({eff['rig_source_advanced']})" if row["split_by_tech"] else "-"
+        structure = f"{eff['structure_type']} ({eff['structure_source']})"
+        click.echo(f"{row['category']:<20} {structure[:34]:<34} {basic:<16} {advanced:<16} "
+                   f"{eff['security_multiplier']:>5.2f}  {row['structure_name'] or '-'}")
+
+
+@facilities_group.command("set")
+@click.argument("category")
+@click.option("--structure", "structure_type", default=None, help="Structure type, e.g. 'Azbel (L Engineering Complex)'.")
+@click.option("--rig", "rig_tier_basic", default=None, help="Rig tier for Tech I items (or every item outside ship categories).")
+@click.option("--rig-advanced", "rig_tier_advanced", default=None, help="Rig tier for Tech II/III hulls (ship categories only).")
+@_tenant_id_option
+def facilities_set(category: str, structure_type: str | None, rig_tier_basic: str | None,
+                   rig_tier_advanced: str | None, tenant_id: str | None):
+    """Saves CATEGORY's structure type and rig tiers (values not given are
+    cleared and fall back to the structure name, then the global setting)."""
+    _targets_call(tenant_id, lambda: production_actions.do_set_category_facility(
+        category, structure_type=structure_type, rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced))
+    click.echo(f"Saved {category}.")
+
+
+@facilities_group.command("clear")
+@click.argument("category")
+@_tenant_id_option
+def facilities_clear(category: str, tenant_id: str | None):
+    """Removes CATEGORY's saved values (structure name, then global setting apply)."""
+    _targets_call(tenant_id, lambda: production_actions.do_clear_category_facility(category))
+    click.echo(f"Cleared {category}.")
+
+
 @targets_group.command("show")
 @_tenant_id_option
 def targets_show(tenant_id: str | None):

@@ -20,15 +20,17 @@ from ..esi_client import ESIClient, ESIError
 from ..paste_parser import merge_duplicate_stacks, parse_paste
 from . import dynamic_targets, esi_sync, invention, jobs, order_integrity, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
-from .constants import DECRYPTORS, JOB_CATEGORIES
+from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES
 from .engine import (
     _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
     asset_plan_ready_jobs, build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
-    invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
+    invalidate_discover_cache, invalidate_facility_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
+    _load_category_facilities, category_profile, facility_resolution,
     invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
     plan_production, plan_special_order, production_needs_by_type, shared_production_owner_ids, stock_value,
 )
+from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .models import (
     BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
     SpecialOrder, UnlistedStockRow,
@@ -604,13 +606,87 @@ def do_set_category_location(category: str, location_id: int) -> dict:
     # shouldn't require a separate "save as option" step too.
     storage.add_category_location_option(category, location_id)
     invalidate_production_locations_cache()  # _current_stock now checks this location too
+    invalidate_facility_cache()  # the structure's name and system feed the rig bonus
+    invalidate_discover_cache()
     return {"category": category, "location_id": location_id}
 
 
 def do_clear_category_location(category: str) -> dict:
     storage.delete_category_location(category)
     invalidate_production_locations_cache()
+    invalidate_facility_cache()
+    invalidate_discover_cache()
     return {"category": category}
+
+
+def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Structure type and ME rig per job category: what is saved, what the
+    category structure's name states, and what the engine actually uses
+    (with its source: "set", "name" or "global"). Ship categories have a
+    separate rig for Tech II/III hulls; other categories use one rig for
+    every tech level (`advanced` is None for them)."""
+    facilities = _load_category_facilities()
+    rows = []
+    for category in JOB_CATEGORIES:
+        facility = facilities.get(category, {})
+        profile = category_profile(category)
+        named_basic, named_advanced = rig_tiers_from_name(facility.get("structure_name"), category)
+        split = category in SPLIT_BY_TECH_CATEGORIES
+        basic = facility_resolution(category, "Tech I", profile, cfg)
+        advanced = facility_resolution(category, "Tech II", profile, cfg) if split else None
+        rows.append({
+            "category": category,
+            "profile": profile,
+            "location_id": facility.get("location_id"),
+            "structure_name": facility.get("structure_name"),
+            "security": facility.get("security"),
+            "split_by_tech": split,
+            "saved": {
+                "structure_type": facility.get("structure_type"),
+                "rig_tier_basic": facility.get("rig_tier_basic"),
+                "rig_tier_advanced": facility.get("rig_tier_advanced") if split else None,
+            },
+            "from_name": {"rig_tier_basic": named_basic, "rig_tier_advanced": named_advanced if split else None},
+            "effective": {
+                "structure_type": basic["structure_type"],
+                "structure_source": basic["structure_source"],
+                "rig_tier_basic": basic["rig_tier"],
+                "rig_source_basic": basic["rig_source"],
+                "rig_tier_advanced": advanced["rig_tier"] if advanced else None,
+                "rig_source_advanced": advanced["rig_source"] if advanced else None,
+                "security_multiplier": basic["security_multiplier"],
+            },
+        })
+    return {"categories": rows, "structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS)}
+
+
+def do_set_category_facility(category: str, structure_type: Optional[str] = None,
+                             rig_tier_basic: Optional[str] = None,
+                             rig_tier_advanced: Optional[str] = None) -> dict:
+    """Saves the structure type and rig tiers for one job category. None
+    means "not set" (the engine then reads the structure name, then the
+    global profile); all three None removes the row."""
+    if category not in JOB_CATEGORIES:
+        raise ActionError(f"Unknown category '{category}'. Options: {', '.join(JOB_CATEGORIES)}")
+    if structure_type is not None and structure_type not in STRUCTURE_TYPES:
+        raise ActionError(f"Unknown structure type '{structure_type}'. Options: {', '.join(STRUCTURE_TYPES)}")
+    for tier in (rig_tier_basic, rig_tier_advanced):
+        if tier is not None and tier not in RIG_TIERS:
+            raise ActionError(f"Unknown rig tier '{tier}'. Options: {', '.join(RIG_TIERS)}")
+    if rig_tier_advanced is not None and category not in SPLIT_BY_TECH_CATEGORIES:
+        raise ActionError(f"'{category}' uses one rig for every tech level; set the Tech I rig only.")
+    if structure_type is None and rig_tier_basic is None and rig_tier_advanced is None:
+        storage.delete_category_facility(category)
+    else:
+        storage.upsert_category_facility(category, structure_type, rig_tier_basic, rig_tier_advanced)
+    invalidate_facility_cache()
+    invalidate_discover_cache()  # rigs change every build cost in this category
+    return {"category": category, "structure_type": structure_type,
+            "rig_tier_basic": rig_tier_basic, "rig_tier_advanced": rig_tier_advanced}
+
+
+def do_clear_category_facility(category: str) -> dict:
+    return do_set_category_facility(category)
 
 
 def do_set_category_cost_index_override(category: str, value: float) -> dict:

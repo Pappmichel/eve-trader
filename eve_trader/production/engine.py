@@ -148,6 +148,7 @@ from .constants import (
     SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID, STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
     rig_security_multiplier, structure_rig_multiplier,
 )
+from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .jobs import character_slot_overview
 from .models import (
     AlchemyComparison, AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow,
@@ -598,6 +599,126 @@ def _security_multiplier_for(structure_profile: str, cfg: ProductionConfig) -> f
     return rig_security_multiplier(storage.get_system_security(system_id), is_reaction=(structure_profile == "reaction"))
 
 
+# Per-category facilities (job_category_facilities + the category structure's
+# name and system). Read once per tenant: _facility_mults runs for every item
+# of a plan. Explicit invalidation from every write path that changes it
+# (facility and category-location actions); the short TTL only covers a
+# structure name the location resolver fills in later.
+_FACILITY_CACHE_TTL_SECONDS = 60.0
+_facility_cache: dict[Optional[str], tuple[float, dict[str, dict]]] = {}
+_facility_cache_lock = threading.Lock()
+
+
+def invalidate_facility_cache(all_tenants: bool = False) -> None:
+    with _facility_cache_lock:
+        if all_tenants:
+            _facility_cache.clear()
+        else:
+            _facility_cache.pop(storage.get_current_tenant(), None)
+
+
+def _load_category_facilities() -> dict[str, dict]:
+    """{category: {structure_type, rig_tier_basic, rig_tier_advanced (saved,
+    each None when not set), location_id, structure_name, system_id,
+    security}}. Empty without a tenant (pure unit tests)."""
+    tenant_id = storage.get_current_tenant()
+    if tenant_id is None:
+        return {}
+    now = time.time()
+    with _facility_cache_lock:
+        cached = _facility_cache.get(tenant_id)
+    if cached is not None and now - cached[0] < _FACILITY_CACHE_TTL_SECONDS:
+        return cached[1]
+    saved = storage.load_category_facilities()
+    locations = storage.load_category_locations()
+    systems = storage.load_category_system_ids()
+    names = storage.get_location_names(set(locations.values())) if locations else {}
+    result: dict[str, dict] = {}
+    for category in set(saved) | set(locations):
+        row = saved.get(category, {})
+        location_id = locations.get(category)
+        system_id = systems.get(category)
+        result[category] = {
+            "structure_type": row.get("structure_type"),
+            "rig_tier_basic": row.get("rig_tier_basic"),
+            "rig_tier_advanced": row.get("rig_tier_advanced"),
+            "location_id": location_id,
+            "structure_name": names.get(location_id) if location_id is not None else None,
+            "system_id": system_id,
+            "security": storage.get_system_security(system_id) if system_id is not None else None,
+        }
+    with _facility_cache_lock:
+        _facility_cache[tenant_id] = (now, result)
+    return result
+
+
+def _is_advanced_tech(activity: str) -> bool:
+    """Invented items ("Tech II", which also covers Tech III - see
+    classify_activity) use the "Advanced" ship rigs, everything else the
+    "Basic" ones."""
+    return activity == "Tech II"
+
+
+def facility_resolution(category: Optional[str], activity: str, profile: str,
+                        cfg: ProductionConfig) -> dict:
+    """Which structure type, rig tier and security apply to one job category
+    and tech level, and where each came from. Order: the tier saved for the
+    category, then the tier its structure's name states, then the global
+    profile (ProductionConfig.<profile>_structure_type/_rig_tier). Security
+    comes from the category structure's system when it is known, else the
+    profile's flat system."""
+    global_structure, global_rig = _structure_rig(profile, cfg)
+    facility = _load_category_facilities().get(category) if category is not None else None
+    # Only ship categories have separate Basic/Advanced rigs; elsewhere one
+    # rig covers every tech level, stored in the "basic" slot.
+    advanced = _is_advanced_tech(activity) and category in SPLIT_BY_TECH_CATEGORIES
+    structure_type, structure_source = global_structure, "global"
+    rig_tier, rig_source = global_rig, "global"
+    is_reaction = profile == "reaction"
+    security_multiplier = _security_multiplier_for(profile, cfg)
+    if facility is not None:
+        if facility["structure_type"]:
+            structure_type, structure_source = facility["structure_type"], "set"
+        saved_rig = facility["rig_tier_advanced" if advanced else "rig_tier_basic"]
+        if saved_rig:
+            rig_tier, rig_source = saved_rig, "set"
+        else:
+            named_basic, named_advanced = rig_tiers_from_name(facility["structure_name"], category)
+            named = named_advanced if advanced else named_basic
+            if named:
+                rig_tier, rig_source = named, "name"
+        if facility["system_id"] is not None:
+            security_multiplier = rig_security_multiplier(facility["security"], is_reaction=is_reaction)
+    return {
+        "structure_type": structure_type, "structure_source": structure_source,
+        "rig_tier": rig_tier, "rig_source": rig_source,
+        "security_multiplier": security_multiplier,
+    }
+
+
+def category_profile(category: str) -> str:
+    """The global structure profile a job category falls back to (see
+    _structure_profile, which decides the same per item)."""
+    if category == "Reactions":
+        return "reaction"
+    if category in ("Advanced Components", "Capital Components"):
+        return "component"
+    if category == "Super Capital Ship":
+        return "supercapital"
+    return "manufacturing"
+
+
+def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple[float, float, float]:
+    """(cost, ME, TE) structure/rig multipliers for building `type_id`, from
+    the structure of its job category (see facility_resolution)."""
+    profile = _structure_profile(activity, type_id)
+    # job_category costs SDE lookups; skip it when no category has a facility.
+    category = job_category(type_id) if _load_category_facilities() else None
+    resolved = facility_resolution(category, activity, profile, cfg)
+    return structure_rig_multiplier(resolved["structure_type"], resolved["rig_tier"],
+                                    resolved["security_multiplier"])
+
+
 def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indices: CostIndices) -> float:
     """Live system-cost-index-derived job cost rate, split by build profile
     (see module docstring). Falls back to the flat ACTIVITY_MODS rate if that
@@ -655,8 +776,7 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     specific value set here should always win over a broader one. Falls
     through to the flat fields (and everything below) when no override is
     set for that specific category."""
-    structure_type, rig_tier = _structure_rig(_structure_profile(activity, type_id), cfg)
-    cost_mult, _, _ = structure_rig_multiplier(structure_type, rig_tier)
+    cost_mult, _, _ = _facility_mults(activity, type_id, cfg)
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
     is_component_profile = activity == "Reaction" or _is_component(type_id)
 
@@ -803,10 +923,7 @@ def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
     override, not a fallback to override with owned data the way Tech I's
     "assumes perfect research" baseline is."""
     base = ACTIVITY_MODS[activity]
-    structure_profile = _structure_profile(activity, type_id)
-    structure_type, rig_tier = _structure_rig(structure_profile, cfg)
-    security_multiplier = _security_multiplier_for(structure_profile, cfg)
-    _, me_mult, te_mult = structure_rig_multiplier(structure_type, rig_tier, security_multiplier)
+    _, me_mult, te_mult = _facility_mults(activity, type_id, cfg)
     job_cost_rate = _job_cost_rate(activity, type_id, cfg, cost_indices)
 
     base_material_mult, base_time_mult = base.material_multiplier, base.time_multiplier
@@ -855,10 +972,7 @@ def _tech_ii_mods(type_id: int, blueprint_id: int, activity_id: int, cfg: Produc
     if type_id in memo:
         return memo[type_id]
 
-    structure_profile = _structure_profile("Tech II", type_id)
-    structure_type, rig_tier = _structure_rig(structure_profile, cfg)
-    security_multiplier = _security_multiplier_for(structure_profile, cfg)
-    _, me_mult, te_mult = structure_rig_multiplier(structure_type, rig_tier, security_multiplier)
+    _, me_mult, te_mult = _facility_mults("Tech II", type_id, cfg)
     # Tech II/III's own build is always Manufacturing (activity_id=1) - a
     # product whose blueprint activity is genuinely Reaction is classified
     # "Reaction" by classify_activity before ever reaching _tech_ii_mods, so
@@ -5160,10 +5274,7 @@ def _direct_material_mult(type_id: int, activity: str, decryptor_name: Optional[
     or Tech II with no decryptor decided (no invention recipe found - mirrors
     _tech_ii_mods' own fallback)."""
     if activity == "Tech II" and decryptor_name is not None and decryptor_name in DECRYPTORS:
-        structure_profile = _structure_profile("Tech II", type_id)
-        structure_type, rig_tier = _structure_rig(structure_profile, cfg)
-        security_multiplier = _security_multiplier_for(structure_profile, cfg)
-        _, me_mult, _ = structure_rig_multiplier(structure_type, rig_tier, security_multiplier)
+        _, me_mult, _ = _facility_mults("Tech II", type_id, cfg)
         return (1 - DECRYPTORS[decryptor_name].me_bonus / 100) * me_mult
     material_mult, _, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
     return material_mult

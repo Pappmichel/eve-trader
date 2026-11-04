@@ -64,3 +64,25 @@ INSERT INTO job_category_cost_index_overrides (tenant_id, category, cost_index_o
     FROM job_category_cost_index_overrides WHERE category = 'Drones & Ammunition'
     ON CONFLICT (tenant_id, category) DO NOTHING;
 DELETE FROM job_category_cost_index_overrides WHERE category = 'Drones & Ammunition';
+
+-- 2026-11-04: per-category structure type and rig tiers. Each job category
+-- is built in its own structure, often with two ME rigs (one for Tech I,
+-- one for Tech II/III items, e.g. "Basic" vs "Advanced Large Ship" rigs).
+-- NULL means "not set": production/engine.py's _facility_mults then reads
+-- the tier from the category structure's name, and falls back to the global
+-- ProductionConfig profile when the name says nothing.
+CREATE TABLE IF NOT EXISTS job_category_facilities (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    category TEXT NOT NULL,
+    structure_type TEXT,
+    rig_tier_basic TEXT,
+    rig_tier_advanced TEXT,
+    PRIMARY KEY (tenant_id, category)
+);
+ALTER TABLE job_category_facilities ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON job_category_facilities;
+CREATE POLICY tenant_isolation ON job_category_facilities
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON job_category_facilities TO eve_trader_app;

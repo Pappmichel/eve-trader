@@ -2626,6 +2626,37 @@ def delete_category_cost_index_override(category: str) -> None:
         conn.execute("DELETE FROM job_category_cost_index_overrides WHERE category = ?", (category,))
 
 
+def load_category_facilities() -> dict[str, dict[str, Optional[str]]]:
+    """{category: {structure_type, rig_tier_basic, rig_tier_advanced}} - each
+    value None when not set (see docs/job_category_cost_index_overrides_
+    schema.sql's job_category_facilities)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT category, structure_type, rig_tier_basic, rig_tier_advanced FROM job_category_facilities"
+        ).fetchall()
+    return {
+        r[0]: {"structure_type": r[1], "rig_tier_basic": r[2], "rig_tier_advanced": r[3]}
+        for r in rows
+    }
+
+
+def upsert_category_facility(category: str, structure_type: Optional[str],
+                             rig_tier_basic: Optional[str], rig_tier_advanced: Optional[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO job_category_facilities (category, structure_type, rig_tier_basic, rig_tier_advanced) "
+            "VALUES (?,?,?,?) ON CONFLICT(tenant_id, category) DO UPDATE SET "
+            "structure_type=excluded.structure_type, rig_tier_basic=excluded.rig_tier_basic, "
+            "rig_tier_advanced=excluded.rig_tier_advanced",
+            (category, structure_type, rig_tier_basic, rig_tier_advanced),
+        )
+
+
+def delete_category_facility(category: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM job_category_facilities WHERE category = ?", (category,))
+
+
 def add_category_location_option(category: str, location_id: int) -> None:
     with connect() as conn:
         conn.execute(

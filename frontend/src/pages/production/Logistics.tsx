@@ -8,12 +8,13 @@ import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { DistributionRow, LogisticsRow, LogisticsScope, MarketRestockRow } from '../../api/types'
+import type { CategoryFacilityUpdate, DistributionRow, LogisticsRow, LogisticsScope, MarketRestockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StructureIdField } from '../../components/StructureIdField'
 import { useAction } from '../../hooks/useAction'
 import { qty, volume } from '../../format'
+import { CategoryFacilityFields } from './CategoryFacilityFields'
 import { StalePlanAlert } from './StalePlanAlert'
 
 const SCOPE_KEY = 'production-logistics-scope'
@@ -47,6 +48,7 @@ export default function Logistics() {
   const { data: costIndexOverrides } = useQuery({ queryKey: ['production', 'category-cost-index-overrides'], queryFn: productionApi.categoryCostIndexOverrides })
   const { data: structureNames } = useQuery({ queryKey: ['production', 'structure-names'], queryFn: productionApi.structureNames })
   const { data: structureSystemIds } = useQuery({ queryKey: ['production', 'structure-system-ids'], queryFn: productionApi.structureSystemIds })
+  const { data: facilities } = useQuery({ queryKey: ['production', 'category-facilities'], queryFn: productionApi.categoryFacilities })
   const [scope, setScope] = useState<LogisticsScope>(readScope)
   const changeScope = (value: string) => {
     const next = value === 'asset_ready' ? 'asset_ready' : 'build_list'
@@ -191,6 +193,16 @@ export default function Logistics() {
     ['production', 'category-cost-index-overrides'],
   ])
 
+  const facilityByCategory = useMemo(
+    () => new Map((facilities?.categories ?? []).map((row) => [row.category, row])),
+    [facilities],
+  )
+  const [pendingFacilityCategory, setPendingFacilityCategory] = useState<string | null>(null)
+  const saveFacility = useAction('Structure Rigs Saved', (update: CategoryFacilityUpdate) =>
+    productionApi.setCategoryFacility(update), [
+    ['production', 'category-facilities'], ['production', 'logistics'],
+  ])
+
   const grouped = useMemo(() => {
     const map = new Map<string, LogisticsRow[]>()
     for (const r of rows ?? []) {
@@ -275,6 +287,8 @@ export default function Logistics() {
           the highest-priority ISK job-cost-index source for that category - it beats even this structure's own
           live system index and the flat Settings-page overrides, so use it when you need a category's rate to
           differ from what its assigned system would otherwise give it. Leave blank to use the live system index.
+          ME rig and structure type: "Auto" reads the rig tier from the structure name (e.g. "T2 Adv L T1 Basic L"),
+          else uses the Settings page. The rig bonus scales with the security of the structure's system.
         </Text>
         <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
           {(categories ?? []).map((cat) => {
@@ -416,6 +430,18 @@ export default function Logistics() {
                     </ActionIcon>
                   )}
                 </Group>
+                {facilities && facilityByCategory.get(cat) && (
+                  <CategoryFacilityFields
+                    row={facilityByCategory.get(cat)!}
+                    structureTypes={facilities.structure_types}
+                    rigTiers={facilities.rig_tiers}
+                    saving={saveFacility.isPending && pendingFacilityCategory === cat}
+                    onSave={(update) => {
+                      setPendingFacilityCategory(cat)
+                      saveFacility.mutate(update)
+                    }}
+                  />
+                )}
               </div>
             )
           })}

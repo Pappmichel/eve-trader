@@ -3969,3 +3969,40 @@ export interface LocationReport {
   unresolved_planetary_goods_only: number
   suggested_characters: { character_id: number; character_name: string; structures: number }[]
 }
+
+// Per-category structure type and ME rigs (Logistics page).
+export type FacilitySource = 'set' | 'name' | 'global'
+
+export interface CategoryFacilityUpdate {
+  category: string
+  structure_type: string | null
+  rig_tier_basic: string | null
+  rig_tier_advanced: string | null
+}
+
+export interface CategoryFacilityRow {
+  category: string
+  profile: string
+  location_id: number | null
+  structure_name: string | null
+  security: number | null
+  // Ship categories have a separate rig for Tech II/III hulls.
+  split_by_tech: boolean
+  saved: Omit<CategoryFacilityUpdate, 'category'>
+  from_name: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
+  effective: {
+    structure_type: string
+    structure_source: FacilitySource
+    rig_tier_basic: string
+    rig_source_basic: FacilitySource
+    rig_tier_advanced: string | null
+    rig_source_advanced: FacilitySource | null
+    security_multiplier: number
+  }
+}
+
+export interface CategoryFacilities {
+  categories: CategoryFacilityRow[]
+  structure_types: string[]
+  rig_tiers: string[]
+}

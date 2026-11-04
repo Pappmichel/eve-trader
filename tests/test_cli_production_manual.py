@@ -334,3 +334,36 @@ def test_max_build_action_error_exits_1(monkeypatch):
 
     assert result.exit_code == 1
     assert "No type found" in result.output
+
+
+def test_facilities_list_prints_effective_rigs_and_sources(monkeypatch):
+    row = {
+        "category": "Large Ships", "structure_name": "IAK-JW - CEZ T2 Adv L T1 Basic L", "split_by_tech": True,
+        "effective": {"structure_type": "Raitaru (M Engineering Complex)", "structure_source": "global",
+                      "rig_tier_basic": "T1-Rig", "rig_source_basic": "name",
+                      "rig_tier_advanced": "T2-Rig", "rig_source_advanced": "name", "security_multiplier": 2.1},
+    }
+    monkeypatch.setattr(production_actions, "do_list_category_facilities", lambda: {"categories": [row]})
+
+    result = runner.invoke(cli.main, ["production", "facilities", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "T1-Rig (name)" in result.output and "T2-Rig (name)" in result.output
+    assert "IAK-JW - CEZ T2 Adv L T1 Basic L" in result.output
+
+
+def test_facilities_set_passes_options(monkeypatch):
+    captured = {}
+
+    def _set(category, structure_type=None, rig_tier_basic=None, rig_tier_advanced=None):
+        captured.update(category=category, structure_type=structure_type,
+                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced)
+        return captured
+    monkeypatch.setattr(production_actions, "do_set_category_facility", _set)
+
+    result = runner.invoke(cli.main, ["production", "facilities", "set", "Large Ships",
+                                      "--rig", "T1-Rig", "--rig-advanced", "T2-Rig"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"category": "Large Ships", "structure_type": None,
+                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig"}

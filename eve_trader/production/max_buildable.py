@@ -30,7 +30,6 @@ from typing import Optional
 from .. import storage
 from . import engine
 from .config import ProductionConfig
-from .constants import structure_rig_multiplier
 
 MODES = ("full", "direct")
 MAX_SEARCH_QUANTITY = 1_000_000
@@ -87,10 +86,7 @@ class _Context:
         return self._recipes[type_id]
 
     def _structure_me_mult(self, activity: str, type_id: int) -> float:
-        profile = engine._structure_profile(activity, type_id)
-        structure_type, rig_tier = engine._structure_rig(profile, self.cfg)
-        security = engine._security_multiplier_for(profile, self.cfg)
-        _, me_mult, _ = structure_rig_multiplier(structure_type, rig_tier, security)
+        _, me_mult, _ = engine._facility_mults(activity, type_id, self.cfg)
         return me_mult
 
     def _load_recipe(self, type_id: int) -> Optional[_Recipe]:
