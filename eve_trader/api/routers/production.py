@@ -456,6 +456,7 @@ class ProductionSettings(BaseModel):
     component_cost_index_override: Optional[float] = None
     manufacturing_cost_index_override: Optional[float] = None
     asset_plan_slot_days_target: Optional[float] = None
+    asset_plan_ready_at_build_location: bool = False
     alchemy_reactions_enabled: bool = False
     # docs/REACTION_CAPACITY_PLAN.md phase 4
     reaction_capacity_enabled: bool = False

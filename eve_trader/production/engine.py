@@ -2134,7 +2134,87 @@ def _invention_bpc_runs_in_progress(t2_blueprint_id: int, chosen: InventionResul
     successes = storage.esi_expected_invention_successes(
         t2_blueprint_id, chosen.probability,
         owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    # Delivered inventions whose copies the (rarely synced) blueprint
+    # snapshot does not show yet still count; their successes are known.
+    lag_chars, lag_corps = _owners_sharing_both("industry_jobs", "blueprints")
+    if lag_chars or lag_corps:
+        successes += storage.delivered_inventions_after_blueprints(
+            t2_blueprint_id, owner_character_ids=lag_chars, owner_corporation_ids=lag_corps)
     return int(round(successes * chosen.output_runs))
+
+
+# Asset lag (jobs fresher than assets/blueprints). Cached per tenant and
+# keyed on the newest esi_freshness attempt, so a sync that changes either
+# snapshot is seen on the next read; within _ASSET_LAG_RECHECK_SECONDS even
+# that check is skipped (the planners call _current_stock once per type).
+_ASSET_LAG_RECHECK_SECONDS = 2.0
+_asset_lag_cache: dict[Optional[str], tuple[float, object, tuple[dict, dict]]] = {}
+_asset_lag_lock = threading.Lock()
+
+
+def invalidate_asset_lag_cache(all_tenants: bool = False) -> None:
+    with _asset_lag_lock:
+        if all_tenants:
+            _asset_lag_cache.clear()
+        else:
+            _asset_lag_cache.pop(storage.get_current_tenant(), None)
+
+
+def _owners_sharing_both(first_kind: str, second_kind: str) -> tuple[list[int], list[int]]:
+    """Owners shared with Production for both kinds: a job's output only ever
+    shows up in stock when the same owner's assets are read too."""
+    a_chars, a_corps = shared_production_owner_ids(first_kind)
+    b_chars, b_corps = shared_production_owner_ids(second_kind)
+    # None is "unfiltered" (only unit tests resolve no sharing); the lag
+    # correction is then skipped rather than applied to every owner.
+    return (sorted(set(a_chars or []) & set(b_chars or [])),
+            sorted(set(a_corps or []) & set(b_corps or [])))
+
+
+def _asset_lag_adjustments() -> tuple[dict[tuple[int, Optional[int]], float],
+                                      dict[tuple[int, Optional[int]], float]]:
+    """(delivered outputs, consumed inputs) per (type_id, station_id) that
+    the owner's asset snapshot does not show yet - see
+    storage.delivered_job_outputs_after_assets / started_job_inputs_after_assets.
+    Added to / taken from stock by _current_stock and _stock_on_hand."""
+    char_ids, corp_ids = _owners_sharing_both("industry_jobs", "assets")
+    if not char_ids and not corp_ids:
+        return {}, {}
+    tenant_id = storage.get_current_tenant()
+    now = time.time()
+    with _asset_lag_lock:
+        cached = _asset_lag_cache.get(tenant_id)
+    if cached is not None and now - cached[0] < _ASSET_LAG_RECHECK_SECONDS:
+        return cached[2]
+    stamp = storage.newest_esi_freshness_attempt_at()
+    if cached is not None and cached[1] == stamp:
+        with _asset_lag_lock:
+            _asset_lag_cache[tenant_id] = (now, stamp, cached[2])
+        return cached[2]
+    excluded = production_excluded_location_ids()
+    result: tuple[dict, dict] = (
+        storage.delivered_job_outputs_after_assets(
+            char_ids, corp_ids, exclude_location_ids=excluded),
+        storage.started_job_inputs_after_assets(
+            char_ids, corp_ids, exclude_location_ids=excluded),
+    )
+    with _asset_lag_lock:
+        _asset_lag_cache[tenant_id] = (now, stamp, result)
+    return result
+
+
+def _asset_lag_delta(type_id: int, location_id: Optional[int] = None) -> float:
+    """Net stock correction for `type_id` (all locations when `location_id`
+    is None): + delivered output not in assets yet, - consumed inputs still
+    in assets."""
+    outputs, inputs = _asset_lag_adjustments()
+    if location_id is None:
+        added = sum(q for (t, _loc), q in outputs.items() if t == type_id)
+        taken = sum(q for (t, _loc), q in inputs.items() if t == type_id)
+    else:
+        added = outputs.get((type_id, location_id), 0.0)
+        taken = inputs.get((type_id, location_id), 0.0)
+    return added - taken
 
 
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
@@ -2177,9 +2257,12 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     cfg.home_location_id (C-J) - that hangar is unsortiertes staging, not
     Production Ist. The same owner+flag at any other location still counts."""
     total = manual_stock.get(type_id, 0)
-    total += _stock_at_location(
+    # Asset lag: delivered output the asset snapshot does not show yet is
+    # added, materials of jobs started since then are taken out (see
+    # _asset_lag_adjustments).
+    total += max(0.0, _stock_at_location(
         type_id, None, allowed_flags=cfg.stock_hangar_flags,
-        exclude_intake_at_location_id=cfg.home_location_id)
+        exclude_intake_at_location_id=cfg.home_location_id) + _asset_lag_delta(type_id))
     incoming = _esi_incoming_industry_qty(type_id)
     if incoming["runs"] and bp is not None:
         _, _, product_qty = bp
@@ -2214,9 +2297,11 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
     readiness signal needs this on-hand-only number instead - see
     plan_asset_optimized's Phase B for the split ledger this requires
     (stock_used vs. stock_used_on_hand)."""
-    return manual_stock.get(type_id, 0) + _stock_at_location(
+    # Delivered output is physically there even before the asset snapshot
+    # shows it; started jobs' materials are not (see _asset_lag_adjustments).
+    return manual_stock.get(type_id, 0) + max(0.0, _stock_at_location(
         type_id, None, allowed_flags=cfg.stock_hangar_flags,
-        exclude_intake_at_location_id=cfg.home_location_id)
+        exclude_intake_at_location_id=cfg.home_location_id) + _asset_lag_delta(type_id))
 
 
 def _net_seed_against_stock(seed: dict[int, float], manual_stock: dict[int, float], cfg: ProductionConfig,
@@ -3371,6 +3456,74 @@ def _free_slots_by_category() -> dict[str, int]:
     return totals
 
 
+def _stock_on_hand_at(type_id: int, location_id: int, cfg: ProductionConfig) -> float:
+    """Physically on-hand stock at one structure: ESI assets there (same
+    hangar-flag and intake filters as _stock_on_hand), manual stock entered
+    for that location or without one (location_id 0 - where it lies is
+    unknown, so it may serve any location; the readiness ledger's total cap
+    keeps it from being used twice), plus the asset-lag correction for jobs
+    at that structure."""
+    esi = _stock_at_location(
+        type_id, location_id, allowed_flags=cfg.stock_hangar_flags,
+        exclude_intake_at_location_id=cfg.home_location_id)
+    return (max(0.0, esi + _asset_lag_delta(type_id, location_id))
+            + storage.manual_stock_at_location(type_id, 0))
+
+
+class _ReadinessLedger:
+    """On-hand units already promised to a "Ready Now" run during one
+    plan_asset_optimized call.
+
+    Without location mode every claim is location-less and this is exactly
+    the old per-type dict against _stock_on_hand. With location mode
+    (ProductionConfig.asset_plan_ready_at_build_location) a claim names the
+    build structure of the claiming job's category; it may only use stock
+    at that structure and is also bounded by the type's total, so a unit
+    is never promised twice (a location-less claim - a category without a
+    configured structure - draws from the total)."""
+
+    def __init__(self, manual_stock: dict[int, float], cfg: ProductionConfig,
+                 initial_used: Optional[dict[int, float]] = None):
+        self._manual_stock = manual_stock
+        self._cfg = cfg
+        self._total_used: dict[int, float] = dict(initial_used or {})
+        self._loc_used: dict[tuple[int, int], float] = {}
+        self._total_on_hand: dict[int, float] = {}
+        self._loc_on_hand: dict[tuple[int, int], float] = {}
+
+    def _total(self, type_id: int) -> float:
+        if type_id not in self._total_on_hand:
+            self._total_on_hand[type_id] = _stock_on_hand(type_id, self._manual_stock, self._cfg)
+        return self._total_on_hand[type_id]
+
+    def free_total(self, type_id: int) -> float:
+        return max(0.0, self._total(type_id) - self._total_used.get(type_id, 0.0))
+
+    def available(self, type_id: int, location_id: Optional[int]) -> float:
+        free = self.free_total(type_id)
+        if location_id is None:
+            return free
+        key = (type_id, location_id)
+        if key not in self._loc_on_hand:
+            self._loc_on_hand[key] = _stock_on_hand_at(type_id, location_id, self._cfg)
+        return min(free, max(0.0, self._loc_on_hand[key] - self._loc_used.get(key, 0.0)))
+
+    def claim(self, type_id: int, location_id: Optional[int], qty: float) -> None:
+        if qty <= 0:
+            return
+        self._total_used[type_id] = self._total_used.get(type_id, 0.0) + qty
+        if location_id is not None:
+            key = (type_id, location_id)
+            self._loc_used[key] = self._loc_used.get(key, 0.0) + qty
+
+    def elsewhere(self, type_id: int, location_id: Optional[int], shortfall: float) -> float:
+        """Of `shortfall`, how much lies free outside `location_id` (0 for a
+        location-less claim - it already sees every location)."""
+        if location_id is None or shortfall <= 0:
+            return 0.0
+        return min(shortfall, max(0.0, self.free_total(type_id) - self.available(type_id, location_id)))
+
+
 def _allocate_scarce_stock(claims: list[tuple[int, float]], available: float) -> dict[int, float]:
     """Splits `available` units of a scarce shared material across competing
     claims (parent_job_type_id, quantity_needed): smallest claim first, each
@@ -3592,11 +3745,12 @@ def _merge_asset_plan_blockers(
         if prev is None:
             combined[blocker.type_id] = AssetPlanBlocker(
                 type_id=blocker.type_id, type_name=blocker.type_name,
-                needed=blocker.needed, covered=blocker.covered,
+                needed=blocker.needed, covered=blocker.covered, elsewhere=blocker.elsewhere,
             )
         else:
             prev.needed += blocker.needed
             prev.covered += blocker.covered
+            prev.elsewhere = min(prev.elsewhere + blocker.elsewhere, max(0.0, prev.needed - prev.covered))
     return sorted(combined.values(), key=lambda b: (-(b.needed - b.covered), b.type_name))
 
 
@@ -4026,10 +4180,22 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     capacity_on = bool(cfg.reaction_capacity_enabled)
     reaction_demand: dict[int, float] = {}
 
+    # Location mode: readiness only from stock at the structure set for the
+    # job's category (Logistics page); None = every location, also for a
+    # category without a structure (decided with the user 2026-11-04).
+    ready_at_location = bool(cfg.asset_plan_ready_at_build_location)
+    category_locations = storage.load_category_locations() if ready_at_location else {}
+
+    def _build_location(type_id: int) -> Optional[int]:
+        if not ready_at_location:
+            return None
+        category = job_category(type_id)
+        return category_locations.get(category) if category else None
+
     def _run_rounds(
         seed: dict[int, float], pass_base_runs: dict[int, float], excluded: set[int],
         byproduct_stock: dict[int, float], stock_used: dict[int, float],
-        stock_used_on_hand: dict[int, float], stock_coverage_by_id: dict[int, Optional[float]],
+        stock_used_on_hand: "_ReadinessLedger", stock_coverage_by_id: dict[int, Optional[float]],
         origins: Optional[dict[int, set[str]]] = None,
         buffered_parents: Optional[set[int]] = None,
     ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]]]:
@@ -4159,10 +4325,19 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 available = max(0.0, _current_stock(material_id, manual_stock, cfg, m_bp)
                                  + byproduct_stock.get(material_id, 0.0)
                                  - stock_used.get(material_id, 0.0))
-                available_on_hand = max(
-                    0.0, _stock_on_hand(material_id, manual_stock, cfg) - stock_used_on_hand.get(material_id, 0.0))
-                covered_by_parent = _allocate_scarce_stock(claims, available_on_hand)
-                stock_used_on_hand[material_id] = stock_used_on_hand.get(material_id, 0.0) + sum(covered_by_parent.values())
+                # Readiness per build location (one group with None unless
+                # location mode is on): each group shares only the stock
+                # its structure holds, smallest claim first.
+                claims_by_location: dict[Optional[int], list[tuple[int, float]]] = {}
+                for parent_type_id, qty in claims:
+                    claims_by_location.setdefault(_build_location(parent_type_id), []).append(
+                        (parent_type_id, qty))
+                covered_by_parent: dict[int, float] = {}
+                for location_id, group in claims_by_location.items():
+                    group_covered = _allocate_scarce_stock(
+                        group, stock_used_on_hand.available(material_id, location_id))
+                    stock_used_on_hand.claim(material_id, location_id, sum(group_covered.values()))
+                    covered_by_parent.update(group_covered)
 
                 sde_material = storage.get_sde_type(material_id)
                 material_name = sde_material[2] if sde_material else str(material_id)
@@ -4174,6 +4349,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     if covered + 1e-9 < qty:
                         blockers_this_round[parent_type_id].append(AssetPlanBlocker(
                             type_id=material_id, type_name=material_name, needed=qty, covered=covered,
+                            elsewhere=stock_used_on_hand.elsewhere(
+                                material_id, _build_location(parent_type_id), qty - covered),
                         ))
 
                 buffered_total = buffered_demand.get(material_id, 0.0)
@@ -4270,7 +4447,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         stock_used = dict(reserved)
         for type_id, qty in target_reserved.items():
             stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
-        stock_used_on_hand = dict(reserved_on_hand)
+        stock_used_on_hand = _ReadinessLedger(manual_stock, cfg, reserved_on_hand)
         stock_coverage_by_id = dict(seed_stock_coverage)
         origins = {type_id: set(ids) for type_id, ids in order_ids_by_type.items()}
         order_jobs, order_top_level = _run_rounds(
@@ -4372,7 +4549,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
         # On-hand units already counted as ready for an earlier recipe: two
         # recipes sharing an input (platinum) must not both claim the pile.
-        ready_claimed: dict[int, float] = {}
+        ready_claimed = _ReadinessLedger(manual_stock, cfg)
+        reaction_location = category_locations.get("Reactions") if ready_at_location else None
         # Stock coverage (GH #383): the walk's own available / buffered
         # demand when it reached the product, else on-hand stock against the
         # solver's gross need - external demand plus what the plan's other
@@ -4419,8 +4597,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 needed = float(per_run) * runs
                 if needed <= 0:
                     continue
-                on_hand = max(0.0, _stock_on_hand(mid, manual_stock, cfg)
-                              - ready_claimed.get(mid, 0.0))
+                on_hand = ready_claimed.available(mid, reaction_location)
                 covered = min(needed, on_hand)
                 frac = covered / needed if needed > 0 else 1.0
                 if frac < min_frac:
@@ -4431,10 +4608,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         type_id=mid,
                         type_name=sde_m[2] if sde_m else str(mid),
                         needed=needed, covered=covered,
+                        elsewhere=ready_claimed.elsewhere(mid, reaction_location, needed - covered),
                     ))
             ready = int(math.floor(runs * min_frac))
             for mid, per_run in recipe.inputs.items():
-                ready_claimed[mid] = ready_claimed.get(mid, 0.0) + float(per_run) * ready
+                ready_claimed.claim(mid, reaction_location, float(per_run) * ready)
             out_qty = float(recipe.outputs.get(recipe.product_type_id, 0.0)) or 1.0
             runs_per_job = max(1, int(round(alloc.runs_per_job))) if alloc.runs_per_job > 0 else 1
             # Recommend only as many jobs as can start now; formulas_needed
@@ -4486,7 +4664,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             stock_used = dict(reserved)
             for type_id, qty in target_reserved.items():
                 stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
-            stock_used_on_hand = dict(reserved_on_hand)
+            stock_used_on_hand = _ReadinessLedger(manual_stock, cfg, reserved_on_hand)
             stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
             # Same as plan_production: round-0 seeds are not netted inside.
             input_seed = _net_seed_against_stock(
@@ -4556,7 +4734,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 j.runs_per_slot * (j.job_time_seconds / j.job_runs) / 86400)
 
     result = {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True),
-              "order_progress": _asset_plan_order_progress(order_claims, order_top_level)}
+              "order_progress": _asset_plan_order_progress(order_claims, order_top_level),
+              "ready_at_build_location": ready_at_location}
     if reaction_block is not None:
         result["reaction_capacity"] = reaction_block
     return result

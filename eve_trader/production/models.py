@@ -250,6 +250,9 @@ class AssetPlanBlocker:
     type_name: str
     needed: float
     covered: float
+    # Location mode (ProductionConfig.asset_plan_ready_at_build_location):
+    # how much of needed - covered lies free at other locations.
+    elsewhere: float = 0.0
 
 
 @dataclass

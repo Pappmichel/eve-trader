@@ -901,7 +901,8 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
     refresh_resp = client.post("/api/production/asset-plan/refresh")
     assert refresh_resp.status_code == 200
     assert client.get("/api/production/asset-plan").json() == {
-        "jobs": [], "order_progress": [], "stale": False, "reaction_capacity": None}
+        "jobs": [], "order_progress": [], "stale": False, "reaction_capacity": None,
+        "ready_at_build_location": False}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
