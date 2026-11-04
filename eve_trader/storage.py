@@ -8292,6 +8292,47 @@ def upsert_alert_subscription(character_id: int, alert_type: str, enabled: bool,
         )
 
 
+_CONTRACT_FILTER_COLUMNS = (
+    "contract_min_interval_minutes", "contract_notify_finished", "contract_notify_expired",
+    "contract_doctrine_only", "contract_sold_out_only",
+)
+
+
+def list_contract_alert_filters() -> dict[int, tuple]:
+    """`{character_id: (min_interval_minutes, notify_finished, notify_expired,
+    doctrine_only, sold_out_only)}` of every contract_status subscription."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT character_id, " + ", ".join(_CONTRACT_FILTER_COLUMNS) + " FROM alert_subscriptions "
+            "WHERE alert_type = 'contract_status'"
+        ).fetchall()
+    return {int(r[0]): tuple(r[1:]) for r in rows}
+
+
+def get_contract_alert_filters(character_id: int) -> Optional[tuple]:
+    """Same tuple as `list_contract_alert_filters`, or None (never opted in)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT " + ", ".join(_CONTRACT_FILTER_COLUMNS) + " FROM alert_subscriptions "
+            "WHERE character_id = ? AND alert_type = 'contract_status'", (character_id,),
+        ).fetchone()
+    return tuple(row) if row else None
+
+
+def set_contract_alert_filters(character_id: int, min_interval_minutes: Optional[int], notify_finished: bool,
+                               notify_expired: bool, doctrine_only: bool, sold_out_only: bool) -> None:
+    """Store the filters on the character's contract_status row (created
+    switched off when it does not exist yet)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_subscriptions (character_id, alert_type, " + ", ".join(_CONTRACT_FILTER_COLUMNS)
+            + ") VALUES (?, 'contract_status', ?,?,?,?,?) ON CONFLICT (tenant_id, character_id, alert_type) "
+            "DO UPDATE SET " + ", ".join(f"{c} = excluded.{c}" for c in _CONTRACT_FILTER_COLUMNS)
+            + ", updated_at = now()",
+            (character_id, min_interval_minutes, notify_finished, notify_expired, doctrine_only, sold_out_only),
+        )
+
+
 def delete_alert_data_for_character(character_id: int) -> None:
     """Drop subscriptions and dedupe state of a character (removed owner)."""
     with connect() as conn:

@@ -207,8 +207,8 @@ def test_a_failed_send_or_poll_keeps_the_contract_for_later(env, monkeypatch):
 def test_a_sale_names_the_buyer_and_reports_sold_out_fittings_with_the_doctrine_grant(env, monkeypatch):
     from eve_trader.doctrine import engine
     calls = []
-    monkeypatch.setattr(engine, "sold_out_fittings", lambda sold, unavailable, now: calls.append(
-        (sold, unavailable)) or ["Typhoon DPS"])
+    monkeypatch.setattr(engine, "sold_out_by_contract", lambda sold, unavailable, now: calls.append(
+        (sold, unavailable)) or {2: "Typhoon DPS"})
     monkeypatch.setattr(runner.tenant_eligibility, "granted_tools", lambda tid: {"char_alerts", "doctrine"})
     aa.do_set_subscription(ALICE, "contract_status", True)
     fake = FakeClient([_contract(9, "outstanding", expires_in_h=-1)])
@@ -233,3 +233,149 @@ def test_opt_in_needs_contracts_shared_with_alerts(env):
         conn.execute("DELETE FROM esi_sharing")
     with pytest.raises(ActionError, match="Share contracts"):
         aa.do_set_subscription(ALICE, "contract_status", True)
+
+
+# ------------------------------------------------------------ filters (GH #382)
+def _kept_ids(events, f, matches=None, sold_out=None):
+    return [i for i, _e, _c in logic.filter_contract_events(events, f, matches, sold_out)[0]]
+
+
+def test_filters_split_events_by_type_doctrine_match_and_sell_out():
+    events = [(1, "finished", _contract(1, "finished")), (2, "expired", _contract(2)),
+              (3, "finished", _contract(3, "finished", type="courier")), (4, "finished", _contract(4, "finished"))]
+
+    assert _kept_ids(events, logic.ContractFilters()) == [1, 2, 3, 4]
+    assert _kept_ids(events, logic.ContractFilters(notify_expired=False)) == [1, 3, 4]
+    assert _kept_ids(events, logic.ContractFilters(notify_finished=False)) == [2]
+    assert _kept_ids(events, logic.ContractFilters(doctrine_only=True), {1: "Ferox", 2: "Ferox"}) == [1, 2]
+    assert _kept_ids(events, logic.ContractFilters(doctrine_only=True), None) == []   # no doctrine grant
+    assert _kept_ids(events, logic.ContractFilters(sold_out_only=True), None, {1: "Ferox", 3: "X"}) == [1]
+    kept, dropped = logic.filter_contract_events(events, logic.ContractFilters(sold_out_only=True), None, {})
+    assert kept == [] and len(dropped) == 4
+
+
+def test_filter_validation_and_interval():
+    assert logic.contract_filter_error(logic.ContractFilters()) is None
+    assert logic.contract_filter_error(logic.ContractFilters(min_interval_minutes=5))
+    assert logic.contract_filter_error(logic.ContractFilters(notify_finished=False, notify_expired=False))
+    assert logic.contract_filter_error(logic.ContractFilters(notify_finished=False, sold_out_only=True))
+    f = logic.ContractFilters(min_interval_minutes=60)
+    assert logic.contract_interval_open(f, None, NOW)
+    assert not logic.contract_interval_open(f, NOW - timedelta(minutes=59), NOW)
+    assert logic.contract_interval_open(f, NOW - timedelta(minutes=60), NOW)
+    assert logic.contract_interval_open(logic.ContractFilters(), NOW, NOW)
+
+
+def test_contract_doctrine_matches_only_valid_fits(monkeypatch):
+    from types import SimpleNamespace
+    from eve_trader.doctrine import engine
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [
+        SimpleNamespace(fitting=SimpleNamespace(fitting_id="f1", name="Ferox", hull_type_id=1),
+                        exact_soll={}, consume_soll={})])
+    monkeypatch.setattr(engine.storage, "list_doctrine_contracts", lambda: [
+        _doctrine_row(1, "f1"), _doctrine_row(2, "f1", validation="tolerable"),
+        _doctrine_row(3, "f1", validation="invalid"), _doctrine_row(4, "gone"), _doctrine_row(5, "f1")])
+
+    assert engine.contract_doctrine_matches({1, 2, 3, 4}) == {1: "Ferox", 2: "Ferox"}
+
+
+@pg_helpers.postgres_required()
+def test_finished_only_filter_marks_expired_seen_without_a_dm(env):
+    aa.do_set_subscription(ALICE, "contract_status", True,
+                           contract_filters={"notify_finished": True, "notify_expired": False})
+    fake = FakeClient()
+    _run(fake)
+    fake.contracts = [_contract(2, "outstanding", expires_in_h=-1)]
+
+    _run(fake, NOW + timedelta(minutes=20))
+
+    assert env == []
+    assert storage.seen_contract_alerts(ALICE) == {(2, "expired")}
+
+
+@pg_helpers.postgres_required()
+def test_min_interval_holds_events_and_sends_them_together(env):
+    aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"min_interval_minutes": 60})
+    fake = FakeClient()
+    _run(fake)
+    fake.contracts = [_contract(2, "finished")]
+    _run(fake, NOW + timedelta(minutes=20))
+    assert len(env) == 1
+
+    fake.contracts.append(_contract(3, "finished"))
+    _run(fake, NOW + timedelta(minutes=40))                  # 20 min after the last DM: held back
+    fake.contracts.append(_contract(4, "finished"))
+    _run(fake, NOW + timedelta(minutes=60))
+    assert len(env) == 1 and storage.seen_contract_alerts(ALICE) == {(2, "finished")}
+
+    _run(fake, NOW + timedelta(minutes=80))                  # 60 min passed: one DM with both
+    assert len(env) == 2 and env[1].startswith("Alice: 2 contracts finished.")
+
+
+def _grant_doctrine(monkeypatch):
+    def grants(tid):
+        return {"char_alerts", "doctrine"}
+    monkeypatch.setattr(runner.tenant_eligibility, "granted_tools", grants)
+    monkeypatch.setattr(aa.tenant_eligibility, "granted_tools", grants)
+
+
+@pg_helpers.postgres_required()
+def test_sold_out_only_sends_just_the_emptying_sale(env, monkeypatch):
+    from eve_trader.doctrine import engine
+    monkeypatch.setattr(engine, "sold_out_by_contract", lambda sold, unavailable, now: {3: "Ferox"})
+    _grant_doctrine(monkeypatch)
+    aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"sold_out_only": True})
+    fake = FakeClient()
+    _run(fake)
+    fake.contracts = [_contract(2, "finished", title="Rifter"), _contract(3, "finished", title="Ferox")]
+
+    _run(fake, NOW + timedelta(minutes=20))
+
+    assert len(env) == 1
+    assert '"Ferox"' in env[0] and '"Rifter"' not in env[0]
+    assert env[0].splitlines()[-1] == '- Sold out: fitting "Ferox" has no contract left'
+    assert storage.seen_contract_alerts(ALICE) == {(2, "finished"), (3, "finished")}
+
+
+@pg_helpers.postgres_required()
+def test_doctrine_only_keeps_events_while_the_lookup_fails(env, monkeypatch):
+    from eve_trader.doctrine import engine
+    _grant_doctrine(monkeypatch)
+    aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"doctrine_only": True})
+    fake = FakeClient()
+    _run(fake)
+    fake.contracts = [_contract(2, "finished"), _contract(3, "finished")]
+
+    def broken(ids):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(engine, "contract_doctrine_matches", broken)
+    monkeypatch.setattr(engine, "sold_out_by_contract", lambda *a: {})
+    _run(fake, NOW + timedelta(minutes=20))
+    assert env == [] and storage.seen_contract_alerts(ALICE) == set()
+
+    monkeypatch.setattr(engine, "contract_doctrine_matches", lambda ids: {3: "Ferox"})
+    _run(fake, NOW + timedelta(minutes=40))
+    assert len(env) == 1 and env[0].startswith("Alice: 1 contract finished.")
+    assert storage.seen_contract_alerts(ALICE) == {(2, "finished"), (3, "finished")}
+
+
+@pg_helpers.postgres_required()
+def test_filter_settings_round_trip_and_validation(env, monkeypatch):
+    monkeypatch.setattr(aa.tenant_eligibility, "granted_tools", lambda tid: {"char_alerts"})
+    with pytest.raises(ActionError, match="Doctrine"):
+        aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"doctrine_only": True})
+    with pytest.raises(ActionError, match="interval"):
+        aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"min_interval_minutes": 5})
+    with pytest.raises(ActionError, match="Only contract alerts"):
+        aa.do_set_subscription(ALICE, "mail_new", False, contract_filters={})
+
+    out = aa.do_set_subscription(ALICE, "contract_status", True,
+                                 contract_filters={"min_interval_minutes": 60, "notify_expired": False})
+    assert out["contract_filters"]["min_interval_minutes"] == 60
+    aa.do_set_subscription(ALICE, "contract_status", False)          # None keeps the stored filters
+    settings = aa.do_get_alert_settings()
+    alice = next(c for c in settings["characters"] if c["character_id"] == ALICE)
+    assert alice["alerts"]["contract_status"]["contract_filters"] == {
+        "min_interval_minutes": 60, "notify_finished": True, "notify_expired": False,
+        "doctrine_only": False, "sold_out_only": False}
+    assert settings["doctrine_granted"] is False
