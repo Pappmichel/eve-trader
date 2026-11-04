@@ -302,6 +302,9 @@ class AssetPlanBlocker(_Base):
     type_name: str
     needed: float
     covered: float
+    # Location mode only: units of the shortfall lying free at other
+    # locations (move them instead of buying/building).
+    elsewhere: float = 0.0
 
 
 class AssetPlanJob(_Base):
@@ -1067,6 +1070,9 @@ class AssetPlan(BaseModel):
     order_progress: list[AssetPlanOrderProgressRow] = []
     # Reaction capacity block, see ProductionPlan.reaction_capacity.
     reaction_capacity: Optional[dict] = None
+    # Whether readiness counted only stock at each category's build location
+    # (ProductionConfig.asset_plan_ready_at_build_location) when computed.
+    ready_at_build_location: bool = False
     # True once integrated special-order demand changed after this plan was
     # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
     # recompute hint.

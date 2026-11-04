@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput, SegmentedControl, Tooltip } from '@mantine/core'
+import { Alert, Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput, SegmentedControl, Switch, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -71,6 +71,17 @@ export default function AssetPlanList() {
     },
     [['production', 'settings']],
   )
+  const saveReadyAtLocation = useAction(
+    'Ready-now location rule saved',
+    async (value: boolean) => {
+      if (!settings) return
+      return productionApi.updateSettings({ ...settings, asset_plan_ready_at_build_location: value })
+    },
+    [['production', 'settings']],
+  )
+  const readyAtLocation = settings?.asset_plan_ready_at_build_location ?? false
+  const locationModeChanged = plan != null && settings != null
+    && (plan.ready_at_build_location ?? false) !== readyAtLocation
   // Local draft state so typing a multi-digit number doesn't fire a save
   // request per keystroke - only persisted on blur, same "edit locally,
   // commit explicitly" shape as ProductionSettings.tsx's form (just without
@@ -288,6 +299,17 @@ export default function AssetPlanList() {
             onChange={(v) => setDaysTargetDraft(v === '' ? '' : Number(v))}
             onBlur={() => saveDaysTarget.mutate(daysTargetDraft === '' ? null : Number(daysTargetDraft))}
           />
+          <Tooltip
+            multiline w={320}
+            label="Ready now only counts materials at the structure set for the job's category on the Logistics page (e.g. module inputs at the Equipment structure). Categories without a structure still count every location. How much gets built or bought does not change."
+          >
+            <Switch
+              label="Ready only with stock at the build location"
+              checked={readyAtLocation}
+              disabled={!settings || saveReadyAtLocation.isPending}
+              onChange={(e) => saveReadyAtLocation.mutate(e.currentTarget.checked)}
+            />
+          </Tooltip>
         </Group>
         <Tooltip label={refreshAssetPlan.tooltip} disabled={!refreshAssetPlan.tooltip} multiline w={280}>
           <Button variant="default" leftSection={refreshAssetPlan.tierIcon} onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
@@ -295,6 +317,11 @@ export default function AssetPlanList() {
           </Button>
         </Tooltip>
       </Group>
+      {locationModeChanged && (
+        <Alert color="yellow" variant="light">
+          This list was computed {plan?.ready_at_build_location ? 'with' : 'without'} the build-location rule. Click Recompute to apply the current setting.
+        </Alert>
+      )}
       <Text size="xs" c="dimmed">{filtered.length} of {jobs.length} jobs</Text>
       {filtered.length === 0 ? (
         <HintCard>No jobs match the selected filters.</HintCard>

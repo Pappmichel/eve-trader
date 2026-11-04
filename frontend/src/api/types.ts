@@ -569,6 +569,8 @@ export interface AssetPlanBlocker {
   type_name: string
   needed: number
   covered: number
+  // Location mode only: units of the shortfall lying free at other locations.
+  elsewhere?: number
 }
 
 export interface AssetPlanJob {
@@ -611,6 +613,8 @@ export interface AssetPlan {
   // computed (still shown, with a recompute hint).
   stale?: boolean
   reaction_capacity?: ReactionCapacityBlock
+  // Readiness counted only stock at each category's build location.
+  ready_at_build_location?: boolean
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -1057,6 +1061,7 @@ export interface ProductionSettings {
   component_cost_index_override: number | null
   manufacturing_cost_index_override: number | null
   asset_plan_slot_days_target: number | null
+  asset_plan_ready_at_build_location?: boolean
   alchemy_reactions_enabled: boolean
   reaction_capacity_enabled: boolean
   reaction_cycle_days: number

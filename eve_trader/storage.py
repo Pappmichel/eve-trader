@@ -3733,6 +3733,15 @@ def newest_esi_freshness_success_at() -> Optional[str]:
     return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
 
+def newest_esi_freshness_attempt_at() -> tuple:
+    """(newest `last_attempt_at`, row count) over this tenant's freshness
+    rows - a cheap change marker: every sync stamps an attempt, so a cache
+    keyed on this sees each new snapshot."""
+    with connect() as conn:
+        row = conn.execute("SELECT MAX(last_attempt_at), COUNT(*) FROM esi_freshness").fetchone()
+    return (row[0], int(row[1] or 0)) if row else (None, 0)
+
+
 def newest_esi_freshness_success_for_tool(
     tool_key: str, data_kinds: Optional[Iterable[str]] = None,
 ) -> Optional[str]:
@@ -5671,6 +5680,123 @@ def esi_incoming_industry_qty(product_type_id: int,
             runs += row[0]
             jobs += row[1]
     return {"runs": runs, "jobs": jobs}
+
+
+def _ledger_owner_clause(owner_character_ids: Optional[list[int]],
+                        owner_corporation_ids: Optional[list[int]],
+                        alias: str = "j") -> tuple[str, tuple]:
+    """AND clause restricting a ledger table (owner_type/owner_id columns) to
+    the given owners. Both None is no filter; an empty list excludes that
+    owner type (same convention as `_owner_id_clause`)."""
+    if owner_character_ids is None and owner_corporation_ids is None:
+        return "", ()
+    return (
+        f" AND (({alias}.owner_type = 'character' AND {alias}.owner_id = ANY(?)) "
+        f"OR ({alias}.owner_type = 'corporation' AND {alias}.owner_id = ANY(?)))",
+        ([int(i) for i in owner_character_ids or []], [int(i) for i in owner_corporation_ids or []]),
+    )
+
+
+# A job that is still in the live snapshot is already counted by
+# esi_incoming_industry_qty; this keeps the lag readers from counting it twice.
+_NOT_IN_JOB_SNAPSHOT = (
+    " AND NOT EXISTS (SELECT 1 FROM character_industry_jobs s WHERE s.job_id = j.job_id)"
+    " AND NOT EXISTS (SELECT 1 FROM corp_industry_jobs s WHERE s.job_id = j.job_id)"
+)
+
+
+def delivered_job_outputs_after_assets(
+        owner_character_ids: Optional[list[int]] = None,
+        owner_corporation_ids: Optional[list[int]] = None,
+        exclude_location_ids: Optional[list[int]] = None) -> dict[tuple[int, Optional[int]], float]:
+    """Output of Manufacturing/Reaction jobs that were delivered after the
+    owner's asset snapshot was generated: `{(product_type_id, station_id):
+    quantity}`.
+
+    ESI caches industry jobs ~5 min but assets ~60 min, so a fresh job sync
+    can drop a delivered job (the snapshot is `include_completed=false`)
+    while the asset snapshot does not show its output yet. Without this the
+    output is in neither source and lands on the Bauliste again. The job's
+    completion is compared with the same owner's `esi_freshness.data_as_of`
+    for `assets` (ESI `Last-Modified`); an owner without an asset sync is
+    left out. The job archive (`ledger_industry_jobs`) is read because it
+    keeps delivered jobs. Output lands in the job's own station/structure,
+    so `station_id` is the location."""
+    owner_clause, owner_params = _ledger_owner_clause(owner_character_ids, owner_corporation_ids)
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "j.station_id")
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT j.product_type_id, j.station_id, "
+            "SUM(COALESCE(j.successful_runs, j.runs) * p.quantity) "
+            "FROM ledger_industry_jobs j "
+            "JOIN esi_freshness f ON f.owner_type = j.owner_type AND f.owner_id = j.owner_id "
+            "AND f.data_kind = 'assets' "
+            "JOIN sde_blueprint_products p ON p.blueprint_type_id = j.blueprint_type_id "
+            "AND p.activity_id = j.activity_id AND p.product_type_id = j.product_type_id "
+            "WHERE j.activity_id IN (1, 11) AND j.status = 'delivered' "
+            "AND j.completed_date > COALESCE(f.data_as_of, f.last_success_at)"
+            f"{owner_clause}{loc_clause}{_NOT_IN_JOB_SNAPSHOT} "
+            "GROUP BY j.product_type_id, j.station_id",
+            (*owner_params, *loc_params),
+        ).fetchall()
+    return {
+        (int(r[0]), int(r[1]) if r[1] is not None else None): float(r[2] or 0)
+        for r in rows if r[0] is not None
+    }
+
+
+def started_job_inputs_after_assets(
+        owner_character_ids: Optional[list[int]] = None,
+        owner_corporation_ids: Optional[list[int]] = None,
+        exclude_location_ids: Optional[list[int]] = None) -> dict[tuple[int, Optional[int]], float]:
+    """Materials of jobs started after the owner's asset snapshot was
+    generated: `{(type_id, station_id): quantity}` from the frozen job inputs
+    (`ledger_job_inputs`). The asset snapshot still shows those materials in
+    the hangar although the job already consumed them. Every status counts:
+    a cancelled job does not return its materials."""
+    owner_clause, owner_params = _ledger_owner_clause(owner_character_ids, owner_corporation_ids)
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "j.station_id")
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT i.type_id, j.station_id, SUM(i.quantity) "
+            "FROM ledger_job_inputs i "
+            "JOIN ledger_industry_jobs j ON j.owner_type = i.owner_type "
+            "AND j.owner_id = i.owner_id AND j.job_id = i.job_id "
+            "JOIN esi_freshness f ON f.owner_type = j.owner_type AND f.owner_id = j.owner_id "
+            "AND f.data_kind = 'assets' "
+            "WHERE j.start_date > COALESCE(f.data_as_of, f.last_success_at)"
+            f"{owner_clause}{loc_clause} "
+            "GROUP BY i.type_id, j.station_id",
+            (*owner_params, *loc_params),
+        ).fetchall()
+    return {
+        (int(r[0]), int(r[1]) if r[1] is not None else None): float(r[2] or 0)
+        for r in rows
+    }
+
+
+def delivered_inventions_after_blueprints(
+        product_type_id: int,
+        owner_character_ids: Optional[list[int]] = None,
+        owner_corporation_ids: Optional[list[int]] = None) -> float:
+    """Invented BPCs (successful runs) for `product_type_id` from invention
+    jobs delivered after the owner's blueprint snapshot was generated - the
+    blueprints kind is synced rarely, so the copies are missing there while
+    the job already left the job snapshot. Same rule as
+    `delivered_job_outputs_after_assets`."""
+    owner_clause, owner_params = _ledger_owner_clause(owner_character_ids, owner_corporation_ids)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(j.successful_runs, 0)), 0) "
+            "FROM ledger_industry_jobs j "
+            "JOIN esi_freshness f ON f.owner_type = j.owner_type AND f.owner_id = j.owner_id "
+            "AND f.data_kind = 'blueprints' "
+            "WHERE j.activity_id = 8 AND j.product_type_id = ? AND j.status = 'delivered' "
+            "AND j.completed_date > COALESCE(f.data_as_of, f.last_success_at)"
+            f"{owner_clause}{_NOT_IN_JOB_SNAPSHOT}",
+            (product_type_id, *owner_params),
+        ).fetchone()
+    return float(row[0] or 0)
 
 
 def esi_expected_invention_successes(product_type_id: int, fallback_probability: float,

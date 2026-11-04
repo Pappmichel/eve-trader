@@ -1203,6 +1203,26 @@ Manager (which badges such rows instead) - an assembled ship still has
 value and still exists. A new stock reader must apply the
 same filter.
 
+**Asset lag (confirmed with the user 2026-11-04).** ESI caches industry
+jobs ~5 min but assets ~60 min, so the job snapshot can be newer than the
+asset snapshot. Per owner (jobs and assets both shared with Production),
+`engine._asset_lag_adjustments` reads the job archive against
+`esi_freshness.data_as_of`: output of a job delivered after the asset
+snapshot still counts (`storage.delivered_job_outputs_after_assets`), and
+materials of a job started after it are taken out
+(`started_job_inputs_after_assets`, frozen `ledger_job_inputs`). Invented
+copies delivered after the blueprint snapshot still count as BPC runs in
+progress. `_current_stock` / `_stock_on_hand` apply it; a new stock reader
+should go through them.
+
+**Ready at the build location (Asset-Optimized list, 2026-11-04).**
+`ProductionConfig.asset_plan_ready_at_build_location` (switch on that page)
+makes "Ready Now" count only stock at the structure set for the job's
+category on the Logistics page (`engine._ReadinessLedger`, capped by the
+type's total so a unit is never promised twice). A category without a
+structure counts every location. Sizing does not change. Blockers report
+`elsewhere`: the shortfall that lies free at other locations.
+
 **Excluded systems (Production Settings, confirmed with the user
 2026-11-04).** `ProductionConfig.excluded_system_ids` lists solar systems
 Production ignores completely. `engine.production_excluded_location_ids`

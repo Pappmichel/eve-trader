@@ -185,6 +185,12 @@ class ProductionConfig:
     # that don't fit wait for the next round. None (the default) = no cap. Edited on the Asset-Optimized
     # Build List page, not the general Settings tab.
     asset_plan_slot_days_target: Optional[float] = None
+    # When True, "Ready Now" (runs_ready_now, blockers) counts only stock at
+    # the structure set for the job's category on the Logistics page
+    # (job_category_locations); a category without a location still counts
+    # every location. Sizing is unchanged. Toggled on the Asset-Optimized
+    # Build List page.
+    asset_plan_ready_at_build_location: bool = False
 
     # -- Alchemy reaction alternatives --
     alchemy_reactions_enabled: bool = False   # off by default - see engine.py's

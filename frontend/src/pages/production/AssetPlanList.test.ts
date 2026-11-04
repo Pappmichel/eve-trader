@@ -30,6 +30,18 @@ function job(partial: Partial<AssetPlanJob>): AssetPlanJob {
 }
 
 describe('blockedRunsTitle', () => {
+  it('says how much of a shortfall lies at other locations', () => {
+    expect(blockedRunsTitle(job({
+      blockers: [
+        { type_id: 30389, type_name: 'Fulleroferrocene', needed: 100, covered: 40, elsewhere: 60 },
+        { type_id: 30390, type_name: 'Carbon Fiber', needed: 10, covered: 0, elsewhere: 0 },
+      ],
+    }))).toBe(
+      'Fulleroferrocene: 60 missing (40 of 100 on hand for this job) - 60 at other locations\n'
+      + 'Carbon Fiber: 10 missing',
+    )
+  })
+
   it('is undefined when every run is ready', () => {
     expect(blockedRunsTitle(job({ job_runs: 10, runs_ready_now: 10 }))).toBeUndefined()
   })
