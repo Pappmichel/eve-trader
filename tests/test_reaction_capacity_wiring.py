@@ -724,3 +724,36 @@ def test_w2_demand_falls_back_to_backlog_without_a_sales_ledger(monkeypatch, rea
     assert captured["window"].cycle_demand is None
     assert prod["reaction_capacity"]["w2_demand"]["source"] == "backlog"
     assert prod["reaction_capacity"]["w2_demand"]["reason"] == "no_ledger_run"
+
+
+@pg_helpers.postgres_required()
+def test_asset_plan_reports_stock_coverage_for_intermediate_reactions(monkeypatch, reaction_bom, tenant):
+    # GH #383: with capacity on, reaction rows are injected from the solver
+    # and used to read only the stock-target seed, so an intermediate
+    # reaction always showed "-".
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 10, 0, 0)]))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    asset = engine.plan_asset_optimized(cfg)
+
+    rx = [j for j in asset["jobs"] if j.activity == "Reaction"]
+    assert rx
+    assert all(j.stock_coverage == pytest.approx(0.0) for j in rx)
+
+
+@pg_helpers.postgres_required()
+def test_asset_plan_reaction_coverage_counts_stock(monkeypatch, reaction_bom, tenant):
+    stock = {10: 20.0}  # Component x10 needs 100 ReactionProd
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_PlanContext", _fake_ctx([(1, "Component", 10, 0, 0)]))
+    cfg = ProductionConfig(
+        component_overbuild=0.0, reaction_capacity_enabled=True, reaction_slot_override=5,
+    )
+
+    asset = engine.plan_asset_optimized(cfg)
+
+    job = next(j for j in asset["jobs"] if j.type_id == 10)
+    assert job.stock_coverage == pytest.approx(0.2)
