@@ -56,7 +56,7 @@ def test_hub_hangar_counts_buyers_in_hub_region_and_order_locations(monkeypatch)
     monkeypatch.setattr(buyer_sources, "read_esi", lambda kind, tool: rows)
     monkeypatch.setattr(buyer_sources.reader, "describe", _describe)
 
-    stock = buyer_sources.hub_hangar_stock([MODULE], {BUYER}, {FORGE}, {PERIMETER_TTT}, CJ)
+    stock = buyer_sources.hub_hangar_stock([MODULE], {BUYER}, {FORGE}, {PERIMETER_TTT}, {CJ})
 
     assert stock == {MODULE: 7.0}
 
@@ -138,7 +138,7 @@ def test_collect_passes_order_locations_and_stockpile_to_hangar(monkeypatch):
     result = buyer_sources.collect([MODULE], cfg)
 
     assert (result.hub_hangar, result.on_order, result.warnings) == ({MODULE: 1.0}, {MODULE: 2.0}, [])
-    assert seen == {"known": {PERIMETER_TTT}, "exclude": CJ, "regions": {FORGE}}
+    assert seen == {"known": {PERIMETER_TTT}, "exclude": {CJ}, "regions": {FORGE}}
 
 
 # ------------------------------------------------------------ engine split
@@ -165,6 +165,7 @@ def _stub_engine(monkeypatch, shortfalls: dict[int, float], buyer: BuyerStock | 
     monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _FakeESI)
     monkeypatch.setattr(engine.buyer_sources, "collect", lambda type_ids, cfg: buyer)
+    monkeypatch.setattr(engine.equivalents, "lookup", lambda: (lambda type_id: (type_id,)))
 
 
 def test_shopping_list_covers_shortfall_with_hangar_then_orders(monkeypatch):

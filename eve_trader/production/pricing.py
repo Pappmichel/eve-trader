@@ -72,6 +72,14 @@ def _goonmetrics_prices(market: str, type_ids: list[int]) -> dict[int, CurrentPr
     return {p.type_id: p for p in prices if p.type_id in wanted}
 
 
+def goonmetrics_quotes(market: str, type_ids: list[int]) -> dict[int, CurrentPrice]:
+    """Goonmetrics' current quotes for `type_ids` in `market` (one cached
+    dump for any number of items, empty on an outage). For read-only views
+    that price many items at once, where a live per-item ESI call would be
+    too slow (Doctrine's Equivalents tab)."""
+    return _goonmetrics_prices(market, type_ids)
+
+
 def _from_order_stats(stats: dict, type_ids: list[int]) -> dict[int, CurrentPrice]:
     # updated="" - nothing reads CurrentPrice.updated anywhere in the
     # codebase (confirmed repo-wide 2026-08-26), so a live ESI-sourced quote

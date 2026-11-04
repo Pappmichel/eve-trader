@@ -201,6 +201,27 @@ priced freight (reward, booked freight, gap), rewards whose courier is
 not archived, and failed couriers. A Trading contracts share supplies
 those couriers; item-exchange sales stay on Production and Doctrine shares.
 
+**Reprocessing (confirmed with the user 2026-11-04).** ESI has no
+reprocessing event, so ore that disappears counts as reprocessed. Every asset
+sync of an owner in the realized-profit asset scope writes the tenant-wide
+quantity of ore, ice, compressed ore and active Module Reprocessing shortlist
+types (`ledger_stock_observations`, changed rows only, per
+`access.assets_scope_hash`; everything counts, fitted and listed included).
+Costing (`costing._detect_reprocessing`, a quantity-only pre-pass) books a
+deficit against the ledger as a `reprocess` event in whole portions, placed
+at the previous observation: it consumes the ore FIFO, adds that window's
+`reprocessing_tax` journal entries as fees, and splits the cost over the
+outputs by reference value (`origin = reprocessed`). A raw deficit next to a
+compressed surplus is a compression (`origin = compressed`, ratio from SDE
+materials). A surplus within 14 days undoes an earlier deficit and the other
+way round (couriers, moves between owners). Yields come from Ore & Minerals /
+Module Reprocessing settings, so outputs are estimates; a wrong yield shows as
+inventory drift. Detection is switched off (warning `reprocess_detection_off`)
+while a wallet owner does not also share assets and market orders, or a
+contracts owner its assets. Opening is re-derived once when the first
+observation is used (`prod_ledger_runs.reprocess_baseline_at`). Other modules
+stay drift: they also vanish through losses and gifts.
+
 `ledger_job_planned_costs` is an archive table (not in the rebuild's replace
 set). The first time a job is archived, a cached planner cost/unit is frozen
 if one is already in memory (build plan, asset plan, ship-margin cache, or
@@ -1246,6 +1267,27 @@ deliver" hint; marking `done` stays manual. Cached Build / Asset plans
 are kept but flagged `stale` when integrated demand changes (D9). Schema change is
 `ADD COLUMN IF NOT EXISTS` on the existing `docs/special_orders_schema.sql`.
 
+## Equivalent module variants (Doctrine, confirmed with the user 2026-11-04)
+
+Items with the same group, dogma effects and dogma attributes (fitting cost
+included; only metaLevel/metaGroupID ignored) are interchangeable, e.g. True
+Sansha / Dark Blood Thermal Armor Hardener. `eve_trader/sde_equivalence.py`
+computes the classes from the SDE on every fetch (modules, charges, drones,
+fighters, subsystems; published and market-listed; abyssal templates and
+fireworks excluded) into the global `sde_type_equivalents`
+(`docs/doctrine_schema.sql`); class id = smallest member, so it changes when
+the SDE changes membership. Tenant edits from Doctrine's Equivalents tab
+(`doctrine/equivalents.py`: exclude an item, add an item of the same group,
+switch a group off) are stored **per item, never per class id**
+(`doctrine_equivalent_overrides`, `doctrine_equivalent_disabled_groups`), so
+they survive SDE updates. With `DoctrineConfig.accept_equivalent_variants`
+(default on): a contract with the twin stays valid (info row kind
+`equivalent_variant`), stockpile and Max assemblable pool the twins' stock
+(exact stock first, then twins; one unit never serves two lines), and the
+Shopping List buys the cheapest twin (`buy_type_id`). Every edit, the
+settings switch, and an SDE apply that changes the classes re-validate the
+stored contracts (no ESI call).
+
 ## Max buildable now (Special Orders page)
 
 `production/max_buildable.py` (`do_max_buildable`, `POST /api/production/
@@ -1261,6 +1303,26 @@ owned copies (`storage.list_blueprint_copies`), each copy its own job with its
 own ME and rounding. The result is a binary search over a pooled,
 `_expand_all`-shaped walk; the bottleneck is what is short at max + 1. When no
 original is owned it also reports what materials alone would allow.
+
+## Max assemblable fits (Doctrine)
+
+`doctrine/engine.py` `fitting_assemblable` / `assemblable_for_fitting`
+(`GET /api/doctrine/fittings/{id}/assemblable`, CLI `eve-trader doctrine
+max-fit FITTING`, card on Fitting Detail, "Assemblable" column in the
+doctrine table via `FittingStatus.assemblable_now`) answers "how many
+complete fits can I put together right now". Confirmed with the user
+2026-11-04: only the Doctrine stockpile counts (`engine.stockpile_available`,
+the same filter path as the Stockpile page, summed over every stockpile
+location; assembled ships are not stock),
+consumables need their full quantity (no cargo tolerance; charges keep
+their floor of 1), and the checked fitting gets top priority - stock other
+fittings' stockpile allocation would claim still counts, and rows list
+those fittings as `also_needed_by`. Nothing is built or bought. For a
+bottleneck with a Production recipe the page asks Production's own
+`/api/production/max-buildable` on demand (button only with the
+`production` grant); there is no Doctrine-side cross-tool build path.
+The math is pure (`validation.max_assemblable`): per item
+`floor(on_hand / per_fit)`, the minimum is the answer.
 
 ## Mineral shopping lists respect market depth
 

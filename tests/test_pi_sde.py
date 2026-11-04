@@ -57,7 +57,8 @@ def test_split_attribute_rows_skill_and_pi_filters():
         _attr(2544, 1641),                         # empty value
         _attr(2544, 9999, value_float="1"),        # irrelevant attribute
     ]
-    skill, pi = sde.split_attribute_rows(rows, pi_types, pi_attrs)
+    skill, pi, equiv = sde.split_attribute_rows(rows, pi_types, pi_attrs)
+    assert equiv == {}
     assert skill == {3380: {275: 1.0}}
     assert pi == {2544: {49: 500.0, 1641: 3.0}}
 

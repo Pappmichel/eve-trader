@@ -14,7 +14,6 @@ from ...doctrine import actions
 from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
 from ...actions import ConflictError
-from ...doctrine.config import DOCTRINE_CONFIG
 
 router = APIRouter()
 
@@ -114,6 +113,11 @@ def get_fitting_detail(fitting_id: str):
 
 
 # ----------------------------------------------------------------------- sync
+@router.get("/fittings/{fitting_id}/assemblable")
+def get_fitting_assemblable(fitting_id: str):
+    return _wrap(actions.do_get_assemblable, fitting_id=fitting_id)
+
+
 @router.post("/sync")
 def sync_contracts():
     """Starts Doctrine contract sync as a background job and returns
@@ -156,8 +160,10 @@ def get_status(doctrine_id: Optional[str] = None):
 
 
 @router.get("/contracts", response_model=list[schemas.ContractRow])
-def list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None):
-    return _wrap(actions.do_list_contracts, fitting_id=fitting_id, status=status)["rows"]
+def list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None,
+                   location_id: Optional[int] = None):
+    return _wrap(actions.do_list_contracts, fitting_id=fitting_id, status=status,
+                 location_id=location_id)["rows"]
 
 
 @router.get("/contracts/history", response_model=list[schemas.ContractHistoryRow])
@@ -166,8 +172,45 @@ def get_contract_history():
 
 
 @router.get("/stockpile")
-def get_stockpile(doctrine_id: Optional[str] = None):
-    return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id)
+def get_stockpile(doctrine_id: Optional[str] = None, location_id: Optional[int] = None):
+    return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id, location_id=location_id)
+
+
+@router.get("/equivalents")
+def get_equivalents():
+    return _wrap(actions.do_list_equivalent_variants)
+
+
+class EquivalentExcluded(BaseModel):
+    excluded: bool
+
+
+class EquivalentClassDisabled(BaseModel):
+    disabled: bool
+
+
+class EquivalentAdd(BaseModel):
+    target_type_id: int
+
+
+@router.post("/equivalents/types/{type_id}/excluded")
+def set_equivalent_excluded(type_id: int, body: EquivalentExcluded):
+    return _wrap(actions.do_set_equivalent_excluded, type_id=type_id, excluded=body.excluded)
+
+
+@router.post("/equivalents/groups/{type_id}/disabled")
+def set_equivalent_group_disabled(type_id: int, body: EquivalentClassDisabled):
+    return _wrap(actions.do_set_equivalent_group_disabled, type_id=type_id, disabled=body.disabled)
+
+
+@router.post("/equivalents/types/{type_id}/group")
+def add_equivalent(type_id: int, body: EquivalentAdd):
+    return _wrap(actions.do_add_equivalent, type_id=type_id, target_type_id=body.target_type_id)
+
+
+@router.get("/equivalents/candidates")
+def search_equivalent_candidates(target_type_id: int, q: str = ""):
+    return _wrap(actions.do_search_equivalent_candidates, target_type_id=target_type_id, query=q)
 
 
 @router.get("/shopping-list")
@@ -206,24 +249,47 @@ def remove_doctrine_asset_character(role_key: str):
 
 # ------------------------------------------------------------------- settings
 class DoctrineSettings(BaseModel):
-    doctrine_structure_id: Optional[int] = None
-    stockpile_location_id: Optional[int] = None
+    # Several contract structures / stockpile locations; the legacy single
+    # ids are folded in by do_get_settings and cleared on save.
+    doctrine_structure_ids: tuple[int, ...] = ()
+    stockpile_location_ids: tuple[int, ...] = ()
     cargo_tolerance_pct: float
     strict_extras: bool
+    accept_equivalent_variants: bool = True
     import_cost_per_m3: float
     hub_region_id: int = 10000002
     stockpile_hangar_flags: tuple[str, ...] = ()
     buyer_character_ids: tuple[int, ...] = ()
 
 
-@router.get("/settings", response_model=DoctrineSettings)
+class LocationOption(BaseModel):
+    location_id: int
+    name: Optional[str] = None
+
+
+class DoctrineSettingsView(DoctrineSettings):
+    # Read-only: what the tool actually uses (Trading's structure when no
+    # contract structure is saved) and the names for the pickers/filters.
+    effective_structure_ids: list[int] = []
+    effective_stockpile_location_ids: list[int] = []
+    contract_structures: list[LocationOption] = []
+    stockpile_locations: list[LocationOption] = []
+
+
+@router.get("/settings", response_model=DoctrineSettingsView)
 def get_settings():
-    return DoctrineSettings(**{f: getattr(DOCTRINE_CONFIG, f) for f in DoctrineSettings.model_fields})
+    return _wrap(actions.do_get_settings)
 
 
 @router.post("/settings")
 def update_settings(updates: DoctrineSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+    body = updates.model_dump()
+    # A client that does not send the location lists (or the equivalents
+    # switch) must not reset them.
+    for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants"):
+        if key not in updates.model_fields_set:
+            body.pop(key)
+    return _wrap(actions.do_update_settings, updates=body)
 
 
 @router.get("/settings/buyer-character-options")

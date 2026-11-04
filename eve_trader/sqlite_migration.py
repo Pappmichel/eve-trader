@@ -124,6 +124,8 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "doctrine_contract_items": "Postgres-native (never existed in the pre-migration SQLite schema)",
     "doctrine_contract_deviations": "Postgres-native (never existed in the pre-migration SQLite schema)",
     "doctrine_contract_history": "Postgres-native (never existed in the pre-migration SQLite schema)",
+    "doctrine_equivalent_overrides": "Postgres-native (Doctrine Equivalents tab - never existed in the pre-migration SQLite schema)",
+    "doctrine_equivalent_disabled_groups": "Postgres-native (Doctrine Equivalents tab - never existed in the pre-migration SQLite schema)",
     "ore_shortlist": "Postgres-native (GitHub issue #91 - never existed in the pre-migration SQLite schema)",
     "ore_shortlist_snapshot": "Postgres-native (GitHub issue #91 - never existed in the pre-migration SQLite schema)",
     "mineral_requirements": "Postgres-native (GitHub issue #93 - never existed in the pre-migration SQLite schema)",
@@ -212,6 +214,9 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "prod_inventory_drift": "Postgres-native (Production realized profit inventory drift - never existed in the pre-migration SQLite schema)",
     "prod_opening_frozen": "Postgres-native (Production realized profit frozen opening quantities - never existed in the pre-migration SQLite schema)",
     "prod_opening_lines": "Postgres-native (Production realized profit opening inventory - never existed in the pre-migration SQLite schema)",
+    "ledger_stock_observation_runs": "Postgres-native (Production realized profit reprocessing detection - never existed in the pre-migration SQLite schema)",
+    "ledger_stock_observations": "Postgres-native (Production realized profit reprocessing detection - never existed in the pre-migration SQLite schema)",
+    "prod_reprocess_events": "Postgres-native (Production realized profit detected reprocessing - never existed in the pre-migration SQLite schema)",
 }
 
 

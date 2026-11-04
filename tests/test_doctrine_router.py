@@ -227,7 +227,7 @@ def test_get_status_passes_optional_doctrine_id_query_param(monkeypatch):
 
 def test_list_contracts(monkeypatch):
     from eve_trader.doctrine.models import ContractRow
-    monkeypatch.setattr(doctrine_actions, "do_list_contracts", lambda fitting_id=None, status=None: {"rows": [
+    monkeypatch.setattr(doctrine_actions, "do_list_contracts", lambda fitting_id=None, status=None, location_id=None: {"rows": [
         ContractRow(contract_id=1, source_role="doctrine:1", for_corporation=False, status="outstanding",
                     validation_status="valid", issuer_id=None, start_location_id=None, title=None, price=None,
                     date_expired=None, matched_fitting_id=None, match_score=None, synced_at=None,
@@ -239,7 +239,7 @@ def test_list_contracts(monkeypatch):
 
 
 def test_get_stockpile(monkeypatch):
-    monkeypatch.setattr(doctrine_actions, "do_get_stockpile_status", lambda doctrine_id=None: {"rows": []})
+    monkeypatch.setattr(doctrine_actions, "do_get_stockpile_status", lambda doctrine_id=None, location_id=None: {"rows": []})
     resp = client.get("/api/doctrine/stockpile")
     assert resp.status_code == 200
 
@@ -303,3 +303,104 @@ def test_buyer_character_options(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == options
+
+
+def test_settings_location_lists_only_saved_when_sent(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(doctrine_actions, "do_update_settings", lambda updates: seen.update(updates) or {})
+    base = {"cargo_tolerance_pct": 0.9, "strict_extras": False, "import_cost_per_m3": 900.0}
+
+    client.post("/api/doctrine/settings", json=base)
+    assert "doctrine_structure_ids" not in seen and "stockpile_location_ids" not in seen
+
+    client.post("/api/doctrine/settings", json={**base, "doctrine_structure_ids": [11, 12],
+                                               "stockpile_location_ids": [13]})
+    assert list(seen["doctrine_structure_ids"]) == [11, 12]
+    assert list(seen["stockpile_location_ids"]) == [13]
+
+
+def test_stockpile_and_contracts_pass_location_filter(monkeypatch):
+    seen = {}
+
+    def _stockpile(doctrine_id=None, location_id=None):
+        seen["stockpile"] = location_id
+        return {"rows": [], "aggregated_rows": [], "assets_available": True, "locations": []}
+
+    def _contracts(fitting_id=None, status=None, location_id=None):
+        seen["contracts"] = location_id
+        return {"rows": []}
+    monkeypatch.setattr(doctrine_actions, "do_get_stockpile_status", _stockpile)
+    monkeypatch.setattr(doctrine_actions, "do_list_contracts", _contracts)
+
+    assert client.get("/api/doctrine/stockpile?location_id=42").status_code == 200
+    assert client.get("/api/doctrine/contracts?location_id=43").status_code == 200
+    assert seen == {"stockpile": 42, "contracts": 43}
+
+
+# ---------------------------------------------------------------- assemblable
+def test_fitting_assemblable_passes_fitting_id(monkeypatch):
+    captured = {}
+
+    def _get(fitting_id):
+        captured["fitting_id"] = fitting_id
+        return {"fitting_id": fitting_id, "max_sets": 3, "bottlenecks": [], "requirements": []}
+    monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _get)
+
+    resp = client.get("/api/doctrine/fittings/f1/assemblable")
+
+    assert resp.status_code == 200
+    assert captured == {"fitting_id": "f1"}
+    assert resp.json()["max_sets"] == 3
+
+
+def test_fitting_assemblable_unknown_fitting_maps_to_400(monkeypatch):
+    def _raise(fitting_id):
+        raise ActionError(f"Fitting {fitting_id} not found.")
+    monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _raise)
+
+    resp = client.get("/api/doctrine/fittings/nope/assemblable")
+
+    assert resp.status_code == 400
+    assert "not found" in resp.json()["detail"]
+
+
+# ------------------------------------------------------------------ equivalents
+def test_equivalents_routes_reach_their_actions(monkeypatch):
+    seen = []
+    monkeypatch.setattr(doctrine_actions, "do_list_equivalent_variants", lambda: {"enabled": True, "classes": []})
+    monkeypatch.setattr(doctrine_actions, "do_set_equivalent_excluded",
+                        lambda type_id, excluded: seen.append(("excl", type_id, excluded)) or {})
+    monkeypatch.setattr(doctrine_actions, "do_set_equivalent_group_disabled",
+                        lambda type_id, disabled: seen.append(("group", type_id, disabled)) or {})
+    monkeypatch.setattr(doctrine_actions, "do_add_equivalent",
+                        lambda type_id, target_type_id: seen.append(("add", type_id, target_type_id)) or {})
+    monkeypatch.setattr(doctrine_actions, "do_search_equivalent_candidates",
+                        lambda target_type_id, query: [{"type_id": 2, "type_name": query}])
+
+    assert client.get("/api/doctrine/equivalents").json() == {"enabled": True, "classes": []}
+    assert client.post("/api/doctrine/equivalents/types/7/excluded", json={"excluded": True}).status_code == 200
+    assert client.post("/api/doctrine/equivalents/groups/7/disabled", json={"disabled": True}).status_code == 200
+    assert client.post("/api/doctrine/equivalents/types/8/group", json={"target_type_id": 7}).status_code == 200
+    resp = client.get("/api/doctrine/equivalents/candidates", params={"target_type_id": 7, "q": "Dark"})
+    assert resp.json() == [{"type_id": 2, "type_name": "Dark"}]
+    assert seen == [("excl", 7, True), ("group", 7, True), ("add", 8, 7)]
+
+
+def test_add_equivalent_action_error_maps_to_400(monkeypatch):
+    def _raise(type_id, target_type_id):
+        raise ActionError("different item groups")
+    monkeypatch.setattr(doctrine_actions, "do_add_equivalent", _raise)
+    resp = client.post("/api/doctrine/equivalents/types/8/group", json={"target_type_id": 7})
+    assert resp.status_code == 400
+
+
+def test_settings_without_equivalents_switch_leave_it_alone(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(doctrine_actions, "do_update_settings", lambda updates: seen.update(updates) or {})
+    client.post("/api/doctrine/settings", json={
+        "cargo_tolerance_pct": 0.9, "strict_extras": False, "import_cost_per_m3": 0})
+    assert "accept_equivalent_variants" not in seen
+    client.post("/api/doctrine/settings", json={
+        "cargo_tolerance_pct": 0.9, "strict_extras": False, "import_cost_per_m3": 0,
+        "accept_equivalent_variants": False})
+    assert seen["accept_equivalent_variants"] is False

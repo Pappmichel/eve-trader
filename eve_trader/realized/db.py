@@ -1063,6 +1063,8 @@ def replace_derived_costing(
     reset_frozen_opening: bool = False,
     owner_scope_hash: Optional[str] = None,
     costing_version: Optional[int] = None,
+    reprocess_events: Optional[list[tuple]] = None,
+    reprocess_baseline_at: Optional[datetime] = None,
 ) -> int:
     """Fully replace derived costing tables for this tenant (one rebuild).
 
@@ -1093,6 +1095,9 @@ def replace_derived_costing(
     an explicit reset).
     `costing_version` is stored on the run so the next rebuild can reset
     opening once after a costing change.
+    `reprocess_events`: (ref, kind, type_id, quantity, event_date,
+    detected_at, tax, six components, price_missing, outputs list).
+    `reprocess_baseline_at`: first stock observation this run used.
     Layer, result and draw tuples may end with `source` (market / contract).
     Returns the new prod_ledger_runs.run_id.
     """
@@ -1104,6 +1109,7 @@ def replace_derived_costing(
     drift = drift or []
     opening_lines = opening_lines or []
     frozen_opening = frozen_opening or []
+    reprocess_params = [(*row[:14], Jsonb(list(row[14]))) for row in (reprocess_events or [])]
     result_params = [
         (
             *row[:14],
@@ -1117,8 +1123,17 @@ def replace_derived_costing(
             "prod_cost_layers", "prod_realized_results", "prod_cost_draws",
             "prod_job_records", "prod_fee_lines", "prod_job_losses",
             "prod_capital_bpos", "prod_inventory_drift", "prod_opening_lines",
+            "prod_reprocess_events",
         ):
             conn.execute(f"DELETE FROM {table}")
+        if reprocess_params:
+            conn.executemany(
+                "INSERT INTO prod_reprocess_events (ref, kind, type_id, quantity, event_date, "
+                "detected_at, tax, cost_materials_bought, cost_materials_estimated, cost_freight, "
+                "cost_job, cost_invention, cost_fees, price_missing, outputs) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                reprocess_params,
+            )
         if layers:
             conn.executemany(
                 "INSERT INTO prod_cost_layers ("
@@ -1214,19 +1229,21 @@ def replace_derived_costing(
                 frozen_opening,
             )
         row = conn.execute(
-            "INSERT INTO prod_ledger_runs (cutover_t0, warnings, owner_scope_hash, costing_version) "
-            "VALUES (?, ?, ?, ?) RETURNING run_id",
-            (cutover_t0, Jsonb(list(warnings)), owner_scope_hash, costing_version),
+            "INSERT INTO prod_ledger_runs (cutover_t0, warnings, owner_scope_hash, costing_version, "
+            "reprocess_baseline_at) VALUES (?, ?, ?, ?, ?) RETURNING run_id",
+            (cutover_t0, Jsonb(list(warnings)), owner_scope_hash, costing_version,
+             reprocess_baseline_at),
         ).fetchone()
     return int(row[0])
 
 
 def latest_costing_version() -> Optional[tuple]:
-    """(run_id, costing_version) of the newest rebuild, or None when no run
-    exists. costing_version is None for a run written before Phase 5."""
+    """(run_id, costing_version, reprocess_baseline_at) of the newest
+    rebuild, or None when no run exists. costing_version is None for a run
+    written before Phase 5."""
     with storage.connect() as conn:
         return conn.execute(
-            "SELECT run_id, costing_version FROM prod_ledger_runs "
+            "SELECT run_id, costing_version, reprocess_baseline_at FROM prod_ledger_runs "
             "ORDER BY run_id DESC LIMIT 1",
         ).fetchone()
 
@@ -2224,3 +2241,136 @@ def produced_stock_value() -> float:
             "FROM prod_cost_layers WHERE origin = 'produced'",
         ).fetchone()
     return float(row[0] or 0.0)
+
+
+# ---------------------------------------------------------------- reprocessing detection
+# Ore/ice (SDE category 25, raw and compressed).
+ORE_ICE_CATEGORY_ID = 25
+
+
+def active_module_reprocessing_type_ids() -> list[int]:
+    """Active Module Reprocessing shortlist types: modules whose purpose is
+    reprocessing, so their disappearance counts as reprocessed."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT item_id FROM module_reprocessing_shortlist WHERE active",
+        ).fetchall()
+    return sorted(int(r[0]) for r in rows)
+
+
+def reprocessable_asset_totals(character_ids: list[int], corporation_ids: list[int],
+                               extra_type_ids: list[int]) -> dict[int, float]:
+    """Tenant-wide asset quantity of ore/ice and `extra_type_ids` for the
+    given owners. Every asset counts - fitted, assembled, Asset Safety and
+    deliveries too - because an item that still exists was not reprocessed."""
+    if not character_ids and not corporation_ids:
+        return {}
+    totals: dict[int, float] = {}
+    queries = (
+        ("character_assets", "owner_character_id", [int(c) for c in character_ids]),
+        ("corp_assets", "owner_corporation_id", [int(c) for c in corporation_ids]),
+    )
+    with storage.connect() as conn:
+        for table, column, ids in queries:
+            if not ids:
+                continue
+            rows = conn.execute(
+                f"SELECT a.type_id, COALESCE(SUM(a.quantity), 0) FROM {table} a "
+                "LEFT JOIN sde_types t ON t.type_id = a.type_id "
+                "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+                f"WHERE a.{column} = ANY(?) AND (g.category_id = ? OR a.type_id = ANY(?)) "
+                "GROUP BY a.type_id",
+                (ids, ORE_ICE_CATEGORY_ID, [int(t) for t in extra_type_ids]),
+            ).fetchall()
+            for type_id, qty in rows:
+                totals[int(type_id)] = totals.get(int(type_id), 0.0) + float(qty)
+    return totals
+
+
+def ore_ice_type_ids(type_ids: Iterable[int]) -> set[int]:
+    ids = sorted({int(t) for t in type_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_id = ANY(?) AND g.category_id = ?",
+            (ids, ORE_ICE_CATEGORY_ID),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def record_stock_observation(scope_hash: str, observed_at: datetime,
+                             quantities: dict[int, float]) -> int:
+    """Store one observation run plus a row for every type whose quantity
+    changed since this scope's previous run (a type no longer held gets a
+    0 row). Returns the number of quantity rows written."""
+    with storage.connect() as conn:
+        previous = {
+            int(r[0]): float(r[1])
+            for r in conn.execute(
+                "SELECT DISTINCT ON (type_id) type_id, quantity FROM ledger_stock_observations "
+                "WHERE scope_hash = ? ORDER BY type_id, observed_at DESC",
+                (scope_hash,),
+            ).fetchall()
+        }
+        rows = []
+        for type_id in sorted(set(previous) | {int(t) for t in quantities}):
+            qty = float(quantities.get(type_id, 0.0) or 0.0)
+            before = previous.get(type_id)
+            changed = abs(qty) > 1e-9 if before is None else abs(qty - before) > 1e-9
+            if changed:
+                rows.append((scope_hash, type_id, observed_at, qty))
+        conn.execute(
+            "INSERT INTO ledger_stock_observation_runs (scope_hash, observed_at) VALUES (?, ?) "
+            "ON CONFLICT DO NOTHING",
+            (scope_hash, observed_at),
+        )
+        if rows:
+            conn.executemany(
+                "INSERT INTO ledger_stock_observations (scope_hash, type_id, observed_at, quantity) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                rows,
+            )
+    return len(rows)
+
+
+def list_stock_observations(scope_hash: str) -> tuple[list[datetime], list[tuple]]:
+    """(run times ascending, [(type_id, observed_at, quantity)]) of one scope."""
+    with storage.connect() as conn:
+        runs = [r[0] for r in conn.execute(
+            "SELECT observed_at FROM ledger_stock_observation_runs WHERE scope_hash = ? "
+            "ORDER BY observed_at",
+            (scope_hash,),
+        ).fetchall()]
+        rows = conn.execute(
+            "SELECT type_id, observed_at, quantity FROM ledger_stock_observations "
+            "WHERE scope_hash = ? ORDER BY observed_at, type_id",
+            (scope_hash,),
+        ).fetchall()
+    return runs, [(int(r[0]), r[1], float(r[2])) for r in rows]
+
+
+def list_reprocess_events() -> list[tuple]:
+    """(ref, kind, type_id, quantity, event_date, detected_at, tax, six cost
+    components, price_missing, outputs) newest first."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT ref, kind, type_id, quantity, event_date, detected_at, tax, "
+            "cost_materials_bought, cost_materials_estimated, cost_freight, "
+            "cost_job, cost_invention, cost_fees, price_missing, outputs "
+            "FROM prod_reprocess_events ORDER BY event_date DESC, ref",
+        ).fetchall()
+
+
+def get_reprocess_events(refs: list[str]) -> list[tuple]:
+    if not refs:
+        return []
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT ref, kind, type_id, quantity, event_date, detected_at, tax, "
+            "cost_materials_bought, cost_materials_estimated, cost_freight, "
+            "cost_job, cost_invention, cost_fees, price_missing, outputs "
+            "FROM prod_reprocess_events WHERE ref = ANY(?)",
+            (list(refs),),
+        ).fetchall()

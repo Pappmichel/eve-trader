@@ -1373,6 +1373,7 @@ export interface DoctrineContractRow {
   validation_status: string
   issuer_id: number | null
   start_location_id: number | null
+  start_location_name?: string | null
   title: string | null
   price: number | null
   date_expired: string | null
@@ -1416,6 +1417,9 @@ export interface StockpileRow {
   available: number
   shortfall: number
   severity: string | null
+  // Part of `available` covered by equivalent variants (same stats).
+  variant_available: number
+  variant_names: string[]
 }
 
 export interface AggregatedStockpileRow {
@@ -1426,6 +1430,8 @@ export interface AggregatedStockpileRow {
   shortfall: number
   severity: string | null
   fitting_count: number
+  variant_available: number
+  variant_names: string[]
 }
 
 export interface ShoppingListRow {
@@ -1445,6 +1451,9 @@ export interface ShoppingListRow {
   hub_hangar: number
   on_order: number
   to_buy: number
+  // Set when an equivalent variant is the cheapest buy; prices are then its prices.
+  buy_type_id: number | null
+  buy_type_name: string | null
 }
 
 export interface ShoppingListResponse {
@@ -1477,6 +1486,37 @@ export interface FittingStatus {
   hull_name: string
   multibuy_cost: number | null
   multibuy_missing: string[]
+  // Complete fits the stockpile holds right now (null without shared assets)
+  assemblable_now?: number | null
+  assemblable_bottleneck?: string | null
+}
+
+export interface AssemblableRow {
+  type_id: number
+  type_name: string
+  slot_section: string
+  item_class: 'exact' | 'consume'
+  per_set: number
+  on_hand: number
+  // Part of on_hand from equivalent variants (same stats, Equivalents tab).
+  variant_on_hand?: number
+  sets: number
+  short_for_next: number
+  buildable: boolean
+  also_needed_by: string[]
+}
+
+export interface AssemblableResult {
+  fitting_id: string
+  fitting_name: string
+  hull_type_id: number
+  hull_name: string
+  assets_available: boolean
+  stockpile_locations: DoctrineLocationOption[]
+  max_sets: number | null
+  next_sets: number | null
+  bottlenecks: AssemblableRow[]
+  requirements: AssemblableRow[]
 }
 
 export interface DoctrineStatus {
@@ -1504,15 +1544,61 @@ export interface DoctrineSyncReport {
   item_fetch_errors: Record<string, string>
 }
 
+export interface DoctrineLocationOption {
+  location_id: number
+  name: string | null
+}
+
 export interface DoctrineSettings {
-  doctrine_structure_id: number | null
-  stockpile_location_id: number | null
+  // Several contract structures / stockpile locations. Empty contract list =
+  // Trading's structure; empty stockpile list = the contract structures.
+  doctrine_structure_ids: number[]
+  stockpile_location_ids: number[]
+  // Read-only (GET only): what Doctrine actually uses, with names.
+  effective_structure_ids?: number[]
+  effective_stockpile_location_ids?: number[]
+  contract_structures?: DoctrineLocationOption[]
+  stockpile_locations?: DoctrineLocationOption[]
   cargo_tolerance_pct: number
   strict_extras: boolean
+  accept_equivalent_variants: boolean
   import_cost_per_m3: number
   hub_region_id: number
   stockpile_hangar_flags: string[]
   buyer_character_ids: number[]
+}
+
+export interface EquivalentMember {
+  type_id: number
+  type_name: string
+  meta_group: string | null
+  in_fitting: boolean
+  excluded: boolean
+  manual: boolean
+  jita_sell: number | null
+  // null also when Goonmetrics only repeats the Jita price (home_repeats_jita).
+  home_sell: number | null
+  home_repeats_jita: boolean
+  cheapest_jita: boolean
+  cheapest_home: boolean
+}
+
+export interface EquivalentClass {
+  // Changes with SDE updates - edits go through anchor_type_id (a member).
+  class_id: number
+  anchor_type_id: number
+  group_name: string
+  disabled: boolean
+  manual: boolean
+  active: boolean
+  in_fitting: boolean
+  jita_saving: number
+  members: EquivalentMember[]
+}
+
+export interface EquivalentsResponse {
+  enabled: boolean
+  classes: EquivalentClass[]
 }
 
 export interface DoctrineCharacter {
@@ -3463,6 +3549,11 @@ export interface RealizedChainNode {
   cost_share: number | null
   sale_ref: string | null
   source: string | null
+  /** Reprocessing node: the ore the minerals came from. */
+  input_type_id?: number | null
+  input_type_name?: string | null
+  input_quantity?: number | null
+  tax?: number | null
   flags: RealizedFlags
   children: RealizedChainNode[]
 }
@@ -3565,6 +3656,34 @@ export interface RealizedInventoryRow {
 export interface RealizedInventoryList {
   needs_rebuild: boolean
   rows: RealizedInventoryRow[]
+}
+
+export interface RealizedReprocessOutput {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  unit_cost: number | null
+}
+
+export interface RealizedReprocessRow {
+  ref: string
+  kind: 'reprocess' | 'compress' | string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  date: string | null
+  detected_at: string | null
+  tax: number
+  cost: number
+  cost_per_unit: number | null
+  outputs: RealizedReprocessOutput[]
+  flags: RealizedFlags
+}
+
+export interface RealizedReprocessList {
+  needs_rebuild: boolean
+  observed_since: string | null
+  rows: RealizedReprocessRow[]
 }
 
 export interface RealizedWarningGroup {

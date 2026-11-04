@@ -1427,7 +1427,7 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
-    regions: list[tuple] = (),
+    regions: list[tuple] = (), type_equivalents: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
     pi_schematics: list[tuple] = (), pi_schematic_types: list[tuple] = (),
@@ -1485,6 +1485,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
+        conn.execute("DELETE FROM sde_type_equivalents")
         conn.execute("DELETE FROM sde_type_materials")
         conn.execute("DELETE FROM sde_blueprint_skills")
         conn.execute("DELETE FROM sde_skill_requirements")
@@ -1501,6 +1502,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
+        conn.executemany("INSERT INTO sde_type_equivalents VALUES (?,?)", type_equivalents)
         conn.executemany("INSERT INTO sde_type_materials VALUES (?,?,?)", type_materials)
         conn.executemany("INSERT INTO sde_blueprint_skills VALUES (?,?,?,?)", blueprint_skills)
         conn.executemany("INSERT INTO sde_skill_requirements VALUES (?,?,?)", skill_requirements)
@@ -1515,6 +1517,9 @@ def replace_sde_data(
     get_station_ids_in_system.cache_clear()
     get_station_ids_in_region.cache_clear()
     get_type_slot.cache_clear()
+    _sde_equivalence_class_map.cache_clear()
+    from .doctrine import equivalents as doctrine_equivalents  # lazy: doctrine imports storage
+    doctrine_equivalents.invalidate()
     get_type_materials.cache_clear()
     get_invention_recipe.cache_clear()
     get_blueprint_skills.cache_clear()
@@ -1529,7 +1534,7 @@ SDE_TABLES = (
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
     "sde_blueprint_skills",
     "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
-    "sde_type_materials",
+    "sde_type_equivalents", "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
     "sde_pi_schematics", "sde_pi_schematic_types", "sde_pi_schematic_pins",
     "sde_pi_type_attributes", "sde_pi_planets",
@@ -7077,6 +7082,84 @@ def get_type_slot(type_id: int) -> Optional[str]:
     with connect() as conn:
         row = conn.execute("SELECT slot FROM sde_type_slots WHERE type_id = ?", (type_id,)).fetchone()
     return row[0] if row else None
+
+
+@functools.lru_cache(maxsize=1)
+def _sde_equivalence_class_map() -> dict[int, int]:
+    with connect() as conn:
+        rows = conn.execute("SELECT type_id, class_id FROM sde_type_equivalents").fetchall()
+    return {int(t): int(c) for t, c in rows}
+
+
+def get_sde_equivalence_class_map() -> dict[int, int]:
+    """{type_id: class_id} of the SDE's functionally identical variants
+    (eve_trader/sde_equivalence.py) - ~1.2k rows, read once and cached until
+    the next SDE apply. A copy, so callers may modify it. Doctrine applies
+    the tenant's own edits on top (doctrine/equivalents.py)."""
+    return dict(_sde_equivalence_class_map())
+
+
+def list_doctrine_equivalent_overrides() -> list[tuple[int, Optional[int], bool]]:
+    """(type_id, anchor_type_id, excluded) - the tenant's Equivalents-tab
+    edits (doctrine/equivalents.py), keyed by item so they survive an SDE
+    update."""
+    with connect() as conn:
+        return [(int(t), (int(a) if a is not None else None), bool(x)) for t, a, x in conn.execute(
+            "SELECT type_id, anchor_type_id, excluded FROM doctrine_equivalent_overrides").fetchall()]
+
+
+def set_doctrine_equivalent_override(type_id: int, anchor_type_id: Optional[int], excluded: bool) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO doctrine_equivalent_overrides (type_id, anchor_type_id, excluded) VALUES (?, ?, ?) "
+            "ON CONFLICT (tenant_id, type_id) DO UPDATE SET anchor_type_id = EXCLUDED.anchor_type_id, "
+            "excluded = EXCLUDED.excluded",
+            (int(type_id), anchor_type_id, bool(excluded)))
+
+
+def delete_doctrine_equivalent_override(type_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrine_equivalent_overrides WHERE type_id = ?", (int(type_id),))
+
+
+def list_doctrine_disabled_equivalent_groups() -> set[int]:
+    """Type ids whose equivalence group the tenant switched off."""
+    with connect() as conn:
+        return {int(r[0]) for r in conn.execute(
+            "SELECT type_id FROM doctrine_equivalent_disabled_groups").fetchall()}
+
+
+def set_doctrine_equivalent_group_disabled(type_ids: Iterable[int], disabled: bool) -> None:
+    """Switching a group off records every current member, so the group
+    stays off even when an SDE update removes one of them; switching it on
+    clears all of them."""
+    ids = sorted({int(t) for t in type_ids})
+    with connect() as conn:
+        if disabled:
+            conn.executemany("INSERT INTO doctrine_equivalent_disabled_groups (type_id) VALUES (?) "
+                             "ON CONFLICT DO NOTHING", [(t,) for t in ids])
+        else:
+            conn.execute("DELETE FROM doctrine_equivalent_disabled_groups WHERE type_id = ANY(?)", (ids,))
+
+
+def search_published_types_in_group(group_id: int, query: str, limit: int = 20) -> list[tuple[int, str]]:
+    """(type_id, name) of published, market-listed types in one SDE group
+    whose name contains `query` (case-insensitive), by name."""
+    pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    with connect() as conn:
+        return [(int(t), n) for t, n in conn.execute(
+            "SELECT type_id, type_name FROM sde_types WHERE group_id = ? AND published = 1 "
+            "AND market_group_id IS NOT NULL AND type_name ILIKE ? ORDER BY type_name LIMIT ?",
+            (int(group_id), pattern, int(limit))).fetchall()]
+
+
+def get_group_names(group_ids: Iterable[int]) -> dict[int, str]:
+    ids = sorted({int(g) for g in group_ids if g is not None})
+    if not ids:
+        return {}
+    with connect() as conn:
+        return {int(g): n for g, n in conn.execute(
+            "SELECT group_id, group_name FROM sde_groups WHERE group_id = ANY(?)", (ids,)).fetchall()}
 
 
 def get_cached_packaged_volume(type_id: int) -> Optional[float]:

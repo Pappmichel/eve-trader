@@ -233,9 +233,8 @@ def _check_and_run_due_jobs_for_tenant(
             else:
                 archive_tools = set(grants) & set(tenant_eligibility.REALIZED_RETENTION_TOOLS)
             if esi_orchestrator.pending_due(granted_tools=archive_tools, kinds=archive_kinds):
-                from .doctrine.config import DOCTRINE_CONFIG
-                structure_id = DOCTRINE_CONFIG.effective_structure_id
-                extra = {"structure_id": structure_id} if structure_id is not None else None
+                from .doctrine.config import DOCTRINE_CONFIG, fetcher_extra
+                extra = fetcher_extra(DOCTRINE_CONFIG)
                 _run_job(
                     tenant_id, "esi_data_sync",
                     lambda: esi_orchestrator.do_sync_due(
@@ -258,9 +257,8 @@ def _check_and_run_due_jobs_for_tenant(
         # Doctrine's structure filter for the contracts fetcher, the same
         # extra the Doctrine syncs pass - without it a scheduled sync stores
         # (and records history for) contracts at every location.
-        from .doctrine.config import DOCTRINE_CONFIG
-        structure_id = DOCTRINE_CONFIG.effective_structure_id
-        extra = {"structure_id": structure_id} if structure_id is not None else None
+        from .doctrine.config import DOCTRINE_CONFIG, fetcher_extra
+        extra = fetcher_extra(DOCTRINE_CONFIG)
         _run_job(
             tenant_id, "esi_data_sync",
             lambda: esi_orchestrator.do_sync_due(granted_tools=grants, extra=extra),

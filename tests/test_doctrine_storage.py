@@ -563,3 +563,148 @@ def test_list_doctrine_contracts_fitting_ids_is_one_query(tenant, monkeypatch):
     assert calls["n"] == 1
     assert {r[0] for r in rows} == {1, 2}
     assert storage.list_doctrine_contracts(fitting_ids=[]) == []
+
+
+def test_stockpile_sums_every_stockpile_location_and_filters_one(tenant, monkeypatch):
+    """Several stockpile locations (2026-11-04): Ist is the sum over all of
+    them; the Stockpile page's structure filter counts only one, while
+    Required stays the whole need."""
+    type_id, loc_a, loc_b, elsewhere = 34, 1000000000001, 1000000000002, 1000000000003
+    char = 9001
+    storage.replace_assets(
+        "character_assets",
+        [(1, type_id, loc_a, "Hangar", 100, 0, "pilot"),
+         (2, type_id, loc_b, "Hangar", 60, 0, "pilot"),
+         (3, type_id, elsewhere, "Hangar", 500, 0, "pilot")],
+        owner_character_id=char, owner_name="pilot",
+    )
+    _share("character", char, "assets", "doctrine")
+
+    fitting = Fitting(
+        fitting_id="f1", doctrine_id="d1", name="Fit 1", hull_type_id=1000,
+        raw_eft="", contract_target=0, stockpile_target=200,
+    )
+    items = [FittingItem("f1", 1, "low", type_id, 1)]
+    from eve_trader.doctrine.validation import build_contract_soll
+    exact, consume = build_contract_soll(items)
+    cand = _Candidate(fitting=fitting, exact_soll=exact, consume_soll=consume, items=items)
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [cand])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
+    monkeypatch.setattr(
+        storage, "get_sde_types_bulk",
+        lambda type_ids: {tid: (tid, 1, "Module", 1.0, 1, 1, 0, None) for tid in type_ids},
+    )
+    monkeypatch.setattr(storage, "get_type_slot", lambda type_id: "low")
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [])
+    cfg = DoctrineConfig(stockpile_location_ids=(loc_a, loc_b), doctrine_structure_ids=(loc_a,))
+
+    rows, _ = engine.stockpile_rows_for_doctrine(cfg=cfg)
+    row = next(r for r in rows if r.type_id == type_id)
+    assert (row.required_total, row.available, row.shortfall) == (200, 160, 40)
+
+    rows, _ = engine.stockpile_rows_for_doctrine(cfg=cfg, location_id=loc_b)
+    row = next(r for r in rows if r.type_id == type_id)
+    assert (row.required_total, row.available, row.shortfall) == (200, 60, 140)
+
+
+# ------------------------------------------------------------------ equivalent variants
+_EQ_GROUP = 900201
+_EQ_A, _EQ_B, _EQ_C, _EQ_D = 900301, 900302, 900303, 900304
+
+
+@pytest.fixture
+def _fake_equivalents_sde():
+    from eve_trader.doctrine import equivalents
+    with pg_helpers.psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO sde_groups (group_id, category_id, group_name) VALUES (%s, 7, 'Fake Hardener') "
+            "ON CONFLICT (group_id) DO NOTHING", (_EQ_GROUP,))
+        for type_id, name in ((_EQ_A, "Fake A Hardener"), (_EQ_B, "Fake B Hardener"),
+                              (_EQ_C, "Fake C Hardener"), (_EQ_D, "Fake D Hardener")):
+            conn.execute(
+                "INSERT INTO sde_types (type_id, group_id, type_name, published, market_group_id, meta_group_id) "
+                "VALUES (%s, %s, %s, 1, 1, 4) ON CONFLICT (type_id) DO UPDATE SET group_id = excluded.group_id",
+                (type_id, _EQ_GROUP, name))
+        conn.execute("DELETE FROM sde_type_equivalents WHERE type_id = ANY(%s)", ([_EQ_A, _EQ_B, _EQ_C, _EQ_D],))
+        conn.execute("INSERT INTO sde_type_equivalents VALUES (%s, %s), (%s, %s)", (_EQ_A, _EQ_A, _EQ_B, _EQ_A))
+    storage._sde_equivalence_class_map.cache_clear()
+    storage.get_sde_type.cache_clear()
+    equivalents.invalidate()
+    yield
+    with pg_helpers.psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("DELETE FROM sde_type_equivalents WHERE type_id = ANY(%s)", ([_EQ_A, _EQ_B, _EQ_C, _EQ_D],))
+    storage._sde_equivalence_class_map.cache_clear()
+    equivalents.invalidate()
+
+
+def test_equivalent_edits_round_trip_and_change_the_lookup(tenant, _fake_equivalents_sde, monkeypatch):
+    from eve_trader.doctrine import equivalents
+    monkeypatch.setattr(actions, "do_validate_contracts", lambda cfg=None: {"revalidated": 0})
+
+    assert equivalents.lookup()(_EQ_A) == (_EQ_A, _EQ_B)
+
+    actions.do_add_equivalent(_EQ_C, _EQ_A)
+    assert equivalents.lookup()(_EQ_B) == (_EQ_A, _EQ_B, _EQ_C)
+
+    actions.do_set_equivalent_excluded(_EQ_B, True)
+    assert equivalents.lookup()(_EQ_A) == (_EQ_A, _EQ_C)
+    actions.do_set_equivalent_excluded(_EQ_B, False)
+    assert equivalents.lookup()(_EQ_A) == (_EQ_A, _EQ_B, _EQ_C)
+
+    actions.do_set_equivalent_group_disabled(_EQ_C, True)
+    assert equivalents.lookup()(_EQ_A) == (_EQ_A,)
+    actions.do_set_equivalent_group_disabled(_EQ_A, False)
+    assert equivalents.lookup()(_EQ_A) == (_EQ_A, _EQ_B, _EQ_C)
+
+    # Two items without an SDE group form a new manual group.
+    with pg_helpers.psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("DELETE FROM sde_type_equivalents WHERE type_id = ANY(%s)", ([_EQ_A, _EQ_B],))
+    storage._sde_equivalence_class_map.cache_clear()
+    equivalents.invalidate()
+    # C still sits in A's group by its own edit; A has no SDE group now, so
+    # A and C form a manual group.
+    assert equivalents.lookup()(_EQ_C) == (_EQ_A, _EQ_C)
+    actions.do_add_equivalent(_EQ_D, _EQ_C)
+    assert equivalents.lookup()(_EQ_C) == (_EQ_A, _EQ_C, _EQ_D)
+    assert equivalents.effective_class_of(_EQ_D) == -_EQ_A
+
+
+def test_add_equivalent_rejects_a_different_group(tenant, _fake_equivalents_sde, _fake_capital_sde):
+    from eve_trader.actions import ActionError
+    with pytest.raises(ActionError):
+        actions.do_add_equivalent(_FAKE_HULL_TYPE_ID, _EQ_A)
+
+
+def test_list_equivalent_variants_marks_cheapest_and_excluded(tenant, _fake_equivalents_sde, monkeypatch):
+    from eve_trader.goonmetrics_client import CurrentPrice
+    from eve_trader.production import pricing
+    monkeypatch.setattr(actions, "do_validate_contracts", lambda cfg=None: {"revalidated": 0})
+    monkeypatch.setattr(pricing, "goonmetrics_quotes", lambda market, ids: {
+        _EQ_A: CurrentPrice(_EQ_A, "", 0, 40.0), _EQ_B: CurrentPrice(_EQ_B, "", 0, 25.0),
+        _EQ_C: CurrentPrice(_EQ_C, "", 0, 10.0)})
+    monkeypatch.setattr(pricing, "home_prices", lambda cfg, ids: {
+        _EQ_A: CurrentPrice(_EQ_A, "", 0, 40.0), _EQ_B: CurrentPrice(_EQ_B, "", 0, 7.0)})
+    actions.do_add_equivalent(_EQ_C, _EQ_A)
+    actions.do_set_equivalent_excluded(_EQ_B, True)
+
+    result = actions.do_list_equivalent_variants()
+
+    cls = next(c for c in result["classes"] if c["class_id"] == _EQ_A)
+    by_id = {m["type_id"]: m for m in cls["members"]}
+    assert cls["active"] is True and cls["manual"] is True
+    assert by_id[_EQ_C]["manual"] and by_id[_EQ_C]["cheapest_jita"]
+    assert by_id[_EQ_A]["home_sell"] is None and by_id[_EQ_A]["home_repeats_jita"]
+    # The excluded member is listed but never the cheapest.
+    assert by_id[_EQ_B]["excluded"] and not by_id[_EQ_B]["cheapest_jita"] and not by_id[_EQ_B]["cheapest_home"]
+    assert cls["jita_saving"] == pytest.approx(30.0)
+
+
+def test_replace_sde_data_stores_type_equivalents(tenant):
+    storage.replace_sde_data(types=[], groups=[], market_groups=[], blueprint_time=[], blueprint_materials=[],
+                             blueprint_products=[], type_equivalents=[(5, 5), (6, 5)])
+    try:
+        assert storage.get_sde_equivalence_class_map() == {5: 5, 6: 5}
+    finally:
+        storage.replace_sde_data(types=[], groups=[], market_groups=[], blueprint_time=[],
+                                 blueprint_materials=[], blueprint_products=[])

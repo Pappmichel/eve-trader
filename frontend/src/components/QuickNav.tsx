@@ -64,6 +64,7 @@ const ACTIONS: SpotlightActionData[] = [
   { id: 'doctrine-contracts-history', label: 'Doctrine — Contract History', description: 'Doctrine', onClick: () => {} },
   { id: 'doctrine-stockpile', label: 'Doctrine — Stockpile', description: 'Doctrine', onClick: () => {} },
   { id: 'doctrine-shopping-list', label: 'Doctrine — Shopping List', description: 'Doctrine', onClick: () => {} },
+  { id: 'doctrine-equivalents', label: 'Doctrine — Equivalents', description: 'Doctrine', onClick: () => {} },
   { id: 'doctrine-settings', label: 'Doctrine — Settings', description: 'Doctrine', onClick: () => {} },
 
   { id: 'station-trading', label: 'Station Trading — Overview', description: 'Station Trading', onClick: () => {} },
@@ -108,6 +109,7 @@ const PATHS: Record<string, string> = {
   'production-settings': '/production/settings',
   doctrine: '/doctrine/doctrines', 'doctrine-contracts': '/doctrine/contracts', 'doctrine-contracts-history': '/doctrine/contracts/history',
   'doctrine-stockpile': '/doctrine/stockpile', 'doctrine-shopping-list': '/doctrine/shopping-list',
+  'doctrine-equivalents': '/doctrine/equivalents',
   'doctrine-settings': '/doctrine/settings',
   'station-trading': '/station-trading', 'station-trading-shortlist': '/station-trading/shortlist',
   'station-trading-undercut': '/station-trading/undercut', 'station-trading-settings': '/station-trading/settings',

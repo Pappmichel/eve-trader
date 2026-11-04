@@ -483,6 +483,7 @@ export const productionApi = {
   realizedJobs: (search = '') =>
     get<T.RealizedJobList>(`/api/production/realized/jobs${search ? `?${search}` : ''}`),
   realizedInventory: () => get<T.RealizedInventoryList>('/api/production/realized/inventory'),
+  realizedReprocessing: () => get<T.RealizedReprocessList>('/api/production/realized/reprocessing'),
   realizedWarnings: () => get<T.RealizedWarningList>('/api/production/realized/warnings'),
   realizedOpening: () => get<T.RealizedOpeningList>('/api/production/realized/opening'),
   realizedEntries: () => get<T.RealizedLedgerEntryList>('/api/production/realized/entries'),
@@ -576,6 +577,8 @@ export const doctrineApi = {
     }),
   deleteFitting: (fittingId: string) => del(`/api/doctrine/fittings/${fittingId}`),
   fittingDetail: (fittingId: string) => get<T.FittingDetail>(`/api/doctrine/fittings/${fittingId}`),
+  assemblable: (fittingId: string) =>
+    get<T.AssemblableResult>(`/api/doctrine/fittings/${fittingId}/assemblable`),
 
   syncContracts: () => post<T.PipelineRunStatus>('/api/doctrine/sync'),
   syncContractsStatus: () => get<T.PipelineRunStatus>('/api/doctrine/sync/status'),
@@ -587,20 +590,38 @@ export const doctrineApi = {
 
   status: (doctrineId?: string) =>
     get<{ doctrines: T.DoctrineStatus[] }>(`/api/doctrine/status${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
-  contracts: (fittingId?: string, status?: string) => {
+  contracts: (fittingId?: string, status?: string, locationId?: number) => {
     const params = new URLSearchParams()
     if (fittingId) params.set('fitting_id', fittingId)
     if (status) params.set('status', status)
+    if (locationId != null) params.set('location_id', String(locationId))
     const qs = params.toString()
     return get<T.DoctrineContractRow[]>(`/api/doctrine/contracts${qs ? `?${qs}` : ''}`)
   },
   contractHistory: () => get<T.ContractHistoryRow[]>('/api/doctrine/contracts/history'),
-  stockpile: (doctrineId?: string) =>
-    get<{ rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean }>(
-      `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,
-    ),
+  stockpile: (doctrineId?: string, locationId?: number) => {
+    const params = new URLSearchParams()
+    if (doctrineId) params.set('doctrine_id', doctrineId)
+    if (locationId != null) params.set('location_id', String(locationId))
+    const qs = params.toString()
+    return get<{
+      rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean
+      locations: T.DoctrineLocationOption[]
+    }>(`/api/doctrine/stockpile${qs ? `?${qs}` : ''}`)
+  },
   shoppingList: (doctrineId?: string) =>
     get<T.ShoppingListResponse>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
+
+  equivalents: () => get<T.EquivalentsResponse>('/api/doctrine/equivalents'),
+  setEquivalentExcluded: (typeId: number, excluded: boolean) =>
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/types/${typeId}/excluded`, { excluded }),
+  setEquivalentGroupDisabled: (typeId: number, disabled: boolean) =>
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/groups/${typeId}/disabled`, { disabled }),
+  addEquivalent: (typeId: number, targetTypeId: number) =>
+    post<{ revalidated: number }>(`/api/doctrine/equivalents/types/${typeId}/group`, { target_type_id: targetTypeId }),
+  equivalentCandidates: (targetTypeId: number, q: string) =>
+    get<{ type_id: number; type_name: string }[]>(
+      `/api/doctrine/equivalents/candidates?target_type_id=${targetTypeId}&q=${encodeURIComponent(q)}`),
 
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
   removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),

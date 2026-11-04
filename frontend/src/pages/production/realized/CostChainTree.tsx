@@ -13,9 +13,11 @@ function when(iso: string | null | undefined): string {
   return dateTime(iso)
 }
 
-/** Line cost shown on a node. Jobs use the API's cost_share. Leaves use unit cost × the API quantity. */
+const REPROCESS_KINDS = new Set(['reprocess', 'compress'])
+
+/** Line cost shown on a node. Jobs and reprocessing use the API's cost_share. Leaves use unit cost × the API quantity. */
 function chainLineCost(node: RealizedChainNode): number | null {
-  if (node.kind === 'job') return node.cost_share
+  if (node.kind === 'job' || REPROCESS_KINDS.has(node.kind)) return node.cost_share
   if (node.unit_cost == null || node.quantity == null) return null
   return node.unit_cost * node.quantity
 }
@@ -74,6 +76,14 @@ export function CostChainTree({ node, locationNames, depth = 0 }: {
         {node.kind === 'job' && node.runs != null && <Text size="xs" c="dimmed">{qty(node.runs)} runs</Text>}
         {node.kind === 'job' && <Text size="xs" c="dimmed">{when(node.date)}{node.end_date ? ` – ${when(node.end_date)}` : ''}</Text>}
         {node.kind === 'job' && node.job_cost != null && <Text size="xs">Job cost {isk(node.job_cost)}</Text>}
+        {REPROCESS_KINDS.has(node.kind) && (
+          <Text size="xs" c="dimmed" data-reprocess-input={node.input_type_id ?? ''}>
+            {node.kind === 'compress' ? 'Compressed from' : 'Reprocessed from'}{' '}
+            {node.input_type_name || (node.input_type_id != null ? `Type ${node.input_type_id}` : '–')}
+            {node.input_quantity != null ? ` × ${qty(node.input_quantity)}` : ''} · {when(node.date)}
+            {node.tax ? ` · tax ${isk(node.tax)}` : ''}
+          </Text>
+        )}
         {node.kind === 'job' && (
           <Text size="xs" c="dimmed">Facility {locationLabel(node.facility_id, locationNames)}</Text>
         )}

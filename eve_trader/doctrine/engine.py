@@ -16,7 +16,7 @@ from .. import hubs, storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
-from . import buyer_sources, parser, validation
+from . import buyer_sources, equivalents, parser, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
@@ -38,7 +38,7 @@ log = logging.getLogger("eve_trader.doctrine.engine")
 # actually protecting against.
 from ..production.config import PRODUCTION_CONFIG
 from ..production import pricing as production_pricing
-from ..production.engine import _PlanContext, _haul_volume, unit_cost_detail
+from ..production.engine import _PlanContext, _haul_volume, classify_activity, unit_cost_detail
 
 
 # ---------------------------------------------------------------- parsing entry point
@@ -106,6 +106,22 @@ def load_fitting_with_items(fitting_id: str) -> tuple[Fitting, list[FittingItem]
     fitting = fitting_from_row(row)
     items = items_from_rows(fitting_id, storage.load_fitting_items(fitting_id))
     return fitting, items
+
+
+def equivalents_of(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> Optional[validation.EquivalentsOf]:
+    """The equivalence lookup Doctrine validation uses (functionally
+    identical variants, eve_trader/sde_equivalence.py), or None when
+    DoctrineConfig.accept_equivalent_variants is off."""
+    return equivalents.lookup() if cfg.accept_equivalent_variants else None
+
+
+def _with_equivalents(type_ids, lookup: Optional[validation.EquivalentsOf]) -> set[int]:
+    """`type_ids` plus every equivalent variant of each."""
+    out = set(type_ids)
+    if lookup is not None:
+        for type_id in list(out):
+            out.update(lookup(type_id))
+    return out
 
 
 def effective_cargo_tolerance(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> float:
@@ -224,11 +240,13 @@ def match_and_validate_contract(contract_id: int, contract_title: Optional[str],
     (matched_fitting_id, match_score, deviations, validation_status) -
     validation_status can be NO_HULL_MATCH (see its own docstring), never
     persisted as such."""
+    lookup = equivalents_of(cfg)
     scored: list[tuple[_Candidate, float]] = []
     for c in candidates:
         if not validation.hull_gate_satisfied(contract_items, c.fitting.hull_type_id):
             continue
         ist = validation.build_contract_ist(contract_items, c.fitting.hull_type_id)
+        ist, _subs = validation.substitute_equivalents(c.exact_soll, c.consume_soll, ist, lookup)
         score = validation.match_score(c.exact_soll, c.consume_soll, ist)
         scored.append((c, score))
 
@@ -249,7 +267,7 @@ def match_and_validate_contract(contract_id: int, contract_title: Optional[str],
     tolerance = effective_cargo_tolerance(winner.fitting, cfg)
     deviations = validation.compute_deviations(contract_id, winner.exact_soll, winner.consume_soll,
                                                 contract_items, winner.fitting.hull_type_id,
-                                                tolerance, cfg.strict_extras)
+                                                tolerance, cfg.strict_extras, equivalents_of=lookup)
     deviations = validation.pair_wrong_variants(deviations, _group_id_of, _slot_of)
     status = validation.contract_status(deviations, matched=True)
     return winner.fitting.fitting_id, max_score, deviations, status
@@ -268,16 +286,52 @@ def _slot_of(type_id: int) -> Optional[str]:
 def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                                  cfg: DoctrineConfig = DOCTRINE_CONFIG,
                                  pooled_contracts: Optional[dict[str, tuple[int, int]]] = None,
+                                 location_id: Optional[int] = None,
                                  ) -> tuple[list[StockpileRow], bool]:
     """Phase 3 spec C - returns (rows, assets_available). Only ever computed
     live (never persisted, Phase 2 B.2's own note on StockpileRow).
     Asset Ist is the rows `read_esi("assets", "doctrine")` returns, filtered
     with the same location / hangar / intake rules Production uses — never
     an unfiltered read of the shared tables.
+
+    `location_id` (the Stockpile page's structure filter) counts only that
+    stockpile location; Soll stays the tenant-wide need either way.
     """
+    rows, assets_available, _available = _stockpile_rows(doctrine_id, cfg, pooled_contracts,
+                                                          location_id=location_id)
+    return rows, assets_available
+
+
+def stockpile_available(asset_rows: list[dict], type_ids, cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                        location_id: Optional[int] = None) -> dict[int, float]:
+    """Raw stockpile stock per type (before any priority allocation): the
+    asset rows filtered to the stockpile locations, hangar divisions and
+    without Sorting intake stacks. The one filter path for Stockpile and
+    Max assemblable. Summed over every stockpile location
+    (cfg.effective_stockpile_location_ids), or only `location_id` when given;
+    no location configured at all counts every location."""
+    type_ids = list(type_ids)
+    locations: tuple[Optional[int], ...] = (
+        (location_id,) if location_id is not None else cfg.effective_stockpile_location_ids) or (None,)
+    totals: dict[int, float] = {t: 0.0 for t in type_ids}
+    for loc in locations:
+        at_loc = storage.esi_stock_from_asset_rows(
+            asset_rows, type_ids, loc,
+            allowed_flags=cfg.stockpile_hangar_flags,
+            exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
+        for type_id, qty in at_loc.items():
+            totals[type_id] = totals.get(type_id, 0.0) + qty
+    return totals
+
+
+def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
+                    pooled_contracts: Optional[dict[str, tuple[int, int]]],
+                    location_id: Optional[int] = None,
+                    ) -> tuple[list[StockpileRow], bool, dict[int, float]]:
+    """stockpile_rows_for_doctrine plus the raw stock it read, so callers
+    that also need unallocated stock (Max assemblable) do not read twice."""
     asset_rows = read_esi("assets", "doctrine")
     assets_available = bool(asset_rows)
-    location_id = cfg.effective_stockpile_location_id
 
     candidates = load_match_candidates()
     # Pool active contracts across all fittings (tenant-wide) before the
@@ -287,7 +341,7 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
     if doctrine_id is not None:
         candidates = [c for c in candidates if c.fitting.doctrine_id == doctrine_id]
     if not candidates or not assets_available:
-        return [], assets_available
+        return [], assets_available, {}
 
     # {doctrine_id: name} - used below so each row carries its doctrine's own
     # name (not a fitting's, which Stockpile.tsx used as a stand-in for the
@@ -307,18 +361,18 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                                                 valid_contracts=valid_contracts)
         ordered_soll.append((c.fitting.fitting_id, soll))
 
-    type_ids = {t for _fid, soll in ordered_soll for t in soll}
-    available_by_type = storage.esi_stock_from_asset_rows(
-        asset_rows, list(type_ids), location_id,
-        allowed_flags=cfg.stockpile_hangar_flags,
-        exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
+    lookup = equivalents_of(cfg)
+    type_ids = _with_equivalents({t for _fid, soll in ordered_soll for t in soll}, lookup)
+    available_by_type = stockpile_available(asset_rows, type_ids, cfg, location_id=location_id)
     sde_by_id = storage.get_sde_types_bulk(list(type_ids))
-    allocation = validation.allocate_stockpile(ordered_soll, available_by_type)
+    allocation, variants_used = validation.allocate_stockpile_with_equivalents(
+        ordered_soll, available_by_type, lookup)
 
     rows: list[StockpileRow] = []
     for c in candidates:
         soll = dict(next(s for fid, s in ordered_soll if fid == c.fitting.fitting_id))
         alloc = allocation[c.fitting.fitting_id]
+        used = variants_used.get(c.fitting.fitting_id, {})
         for type_id, (required, item_class) in soll.items():
             allocated = alloc.get(type_id, 0.0)
             tolerance = effective_cargo_tolerance(c.fitting, cfg)
@@ -333,8 +387,111 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                 doctrine_name=doctrine_name_by_id.get(c.fitting.doctrine_id, c.fitting.doctrine_id),
                 type_id=type_id, type_name=type_name, slot_section=slot_section, required_total=required,
                 available=allocated, shortfall=shortfall, severity=severity,
+                variant_available=sum(used.get(type_id, {}).values()),
+                variant_names=[_name_of(v, sde_by_id) for v in sorted(used.get(type_id, {}))],
             ))
-    return rows, assets_available
+    return rows, assets_available, available_by_type
+
+
+# ------------------------------------------------------------ max assemblable
+def _per_set_soll(candidate: _Candidate) -> dict[int, tuple[float, str]]:
+    return validation.build_stockpile_soll(candidate.items, candidate.fitting.hull_type_id, 1)
+
+
+def _assemblable_summary(candidate: _Candidate, available_by_type: dict[int, float],
+                         lookup: Optional[validation.EquivalentsOf] = None) -> tuple[int, Optional[str]]:
+    """(max_sets, name of the first bottleneck) for the Doctrine table."""
+    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type, lookup)
+    if not details:
+        return 0, None
+    bottleneck = min(details, key=lambda t: (details[t]["sets"], t))
+    row = storage.get_sde_types_bulk([bottleneck]).get(bottleneck)
+    return max_sets, (row[2] if row else str(bottleneck))
+
+
+def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, float],
+                        all_candidates: list[_Candidate],
+                        lookup: Optional[validation.EquivalentsOf] = None) -> dict:
+    """How many complete fits of `candidate` the Doctrine stockpile holds
+    right now, the items that stop one more and the full requirement table.
+
+    Rules (confirmed with the user 2026-11-04): stockpile only (same filters
+    as the Stockpile page), consumables at full quantity, top priority for
+    this fitting (stock other fittings would claim still counts). Nothing is
+    built or bought; `buildable` only says Production has a recipe, the page
+    asks Production's own Max buildable for the real number.
+
+    With `lookup` (accept_equivalent_variants), stock of equivalent variants
+    counts too (validation.max_assemblable); each row then carries
+    `variant_on_hand` (part of on_hand from variants)."""
+    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type, lookup)
+    sde_by_id = storage.get_sde_types_bulk(list(details))
+    hull_id = candidate.fitting.hull_type_id
+
+    needed_by: dict[int, list[str]] = defaultdict(list)
+    for other in all_candidates:
+        if other.fitting.fitting_id == candidate.fitting.fitting_id:
+            continue
+        types = set(other.exact_soll) | set(other.consume_soll) | {other.fitting.hull_type_id}
+        for type_id in types & set(details):
+            if other.fitting.name not in needed_by[type_id]:
+                needed_by[type_id].append(other.fitting.name)
+
+    rows = []
+    for type_id, d in details.items():
+        sde = sde_by_id.get(type_id)
+        rows.append({
+            "type_id": type_id,
+            "type_name": sde[2] if sde else str(type_id),
+            "slot_section": "hull" if type_id == hull_id else (
+                "low/med/high/rig/subsystem/service" if d["item_class"] == "exact" else "drone/cargo/charge"),
+            "item_class": d["item_class"],
+            "per_set": d["per_set"],
+            "on_hand": d["on_hand"],
+            "variant_on_hand": d.get("variant_on_hand", 0.0),
+            "sets": d["sets"],
+            "short_for_next": d["short_for_next"],
+            "buildable": classify_activity(type_id)[1] is not None,
+            "also_needed_by": sorted(needed_by.get(type_id, [])),
+        })
+    rows.sort(key=lambda r: (r["slot_section"] != "hull", r["type_name"].lower()))
+    bottlenecks = sorted((r for r in rows if r["short_for_next"] > 1e-9),
+                         key=lambda r: (r["sets"], r["type_name"].lower()))
+    return {"max_sets": max_sets, "next_sets": max_sets + 1,
+            "bottlenecks": bottlenecks, "requirements": rows}
+
+
+def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """fitting_assemblable for one stored fitting (an inactive one too),
+    reading the stockpile once. Raises LookupError for an unknown id."""
+    fitting, items = load_fitting_with_items(fitting_id)
+    all_candidates = load_match_candidates()
+    candidate = next((c for c in all_candidates if c.fitting.fitting_id == fitting.fitting_id), None)
+    if candidate is None:
+        exact_soll, consume_soll = validation.build_contract_soll(items)
+        candidate = _Candidate(fitting=fitting, exact_soll=exact_soll, consume_soll=consume_soll, items=items)
+    asset_rows = read_esi("assets", "doctrine")
+    location_ids = list(cfg.effective_stockpile_location_ids)
+    names = storage.get_location_names(location_ids) if location_ids else {}
+    hull_row = storage.get_sde_type(fitting.hull_type_id)
+    result = {
+        "fitting_id": fitting.fitting_id,
+        "fitting_name": fitting.name,
+        "hull_type_id": fitting.hull_type_id,
+        "hull_name": hull_row[2] if hull_row else str(fitting.hull_type_id),
+        "assets_available": bool(asset_rows),
+        "stockpile_locations": [{"location_id": i, "name": names.get(i)} for i in location_ids],
+    }
+    if not asset_rows:
+        return {**result, "max_sets": None, "next_sets": None, "bottlenecks": [], "requirements": []}
+    lookup = equivalents_of(cfg)
+    available = stockpile_available(asset_rows, _with_equivalents(_per_set_soll(candidate), lookup), cfg)
+    return {**result, **fitting_assemblable(candidate, available, all_candidates, lookup)}
+
+
+def _name_of(type_id: int, sde_by_id: dict) -> str:
+    row = sde_by_id.get(type_id)
+    return row[2] if row else str(type_id)
 
 
 def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpileRow]:
@@ -360,6 +517,8 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
             shortfall=sum(r.shortfall for r in group),
             severity=validation.worst_severity([r.severity for r in group]),
             fitting_count=len(group),
+            variant_available=sum(r.variant_available for r in group),
+            variant_names=sorted({n for r in group for n in r.variant_names}),
         )
         for type_id, group in by_type.items()
     ]
@@ -472,7 +631,11 @@ def shopping_list(doctrine_id: Optional[str] = None,
     # fetched at all, showing "-" for C-J/Jita even when a real price exists.
     # Same mechanism plan_special_order already relies on for its own
     # never-a-stock-target line items.
-    type_ids = [row.type_id for row in aggregated]
+    # Equivalent variants (accept_equivalent_variants): every variant is
+    # priced too and the row buys the cheapest one.
+    lookup = equivalents_of(cfg)
+    variants_by_row = {row.type_id: (lookup(row.type_id) if lookup else (row.type_id,)) for row in aggregated}
+    type_ids = sorted({t for vs in variants_by_row.values() for t in vs})
     buyer = buyer_sources.collect(type_ids, cfg)
     all_hubs = cfg.hub_region_id == hubs.ALL_HUBS
     # Build-cost material quotes need one real region; ALL_HUBS must never
@@ -491,7 +654,7 @@ def shopping_list(doctrine_id: Optional[str] = None,
     # it's always attempted; the C-J leg reuses Trading's own "seller" token
     # (esi-markets.structure_markets.v1 isn't a scope Doctrine/Production
     # characters have) since Doctrine's structure defaults to Trading's own
-    # sell structure anyway (DoctrineConfig.effective_structure_id) - best
+    # sell structure anyway (DoctrineConfig.effective_structure_ids) - best
     # effort, degrades to trusting Goonmetrics for whichever leg it can't
     # verify rather than failing the whole page.
     esi = ESIClient()
@@ -503,7 +666,6 @@ def shopping_list(doctrine_id: Optional[str] = None,
         hub_prices = hubs.HubPricing()
     jita_stats = hub_prices.stats
     home_stats: dict[int, OrderStats] = {}
-    structure_id = cfg.effective_structure_id
     # Group 3 ("structure_market_book"), not a "seller:" prefix scan
     # (docs/ESI_ACCESS_PLAN.md Known gap 4 - this call site was missed when
     # the rest of Doctrine moved to sharing/capability lookups, confirmed
@@ -515,50 +677,92 @@ def shopping_list(doctrine_id: Optional[str] = None,
     # back to trusting Goonmetrics even with a perfectly good token
     # available. Iterate-and-try-each, exactly as production/pricing.py's
     # home_prices does for the same structure_order_stats_bulk call.
-    if structure_id is not None:
+    # Several contract structures: an item counts as listed when any of them
+    # lists it (only sell_volume is read), so keep the stats with the most
+    # listed volume per type.
+    structure_ids = cfg.effective_structure_ids
+    if structure_ids:
         from ..production import esi_sync as production_esi_sync
-        for role, _character_id, _name in production_esi_sync.list_capability_characters(
-                "structure_market_book"):
-            try:
-                home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=role)
-            except ESIError:
-                continue  # no docking access for this one - try the next
-            break
+        capable = production_esi_sync.list_capability_characters("structure_market_book")
+        for structure_id in structure_ids:
+            for role, _character_id, _name in capable:
+                try:
+                    stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=role)
+                except ESIError:
+                    continue  # no docking access for this one - try the next
+                for type_id, st in stats.items():
+                    if type_id not in home_stats or st.sell_volume > home_stats[type_id].sell_volume:
+                        home_stats[type_id] = st
+                break
 
-    result = []
-    for row in aggregated:
-        _, build_cost, _ = unit_cost_detail(row.type_id, PRODUCTION_CONFIG, ctx.home, ctx.jita, cost_memo,
+    def _variant_quote(type_id: int) -> dict:
+        _, build_cost, _ = unit_cost_detail(type_id, PRODUCTION_CONFIG, ctx.home, ctx.jita, cost_memo,
                                              ctx.selected_decryptors, t2_memo, ctx.cost_indices, ctx.adjusted_prices)
         # _haul_volume (not raw sde_type volume) so ships/capital modules use
         # their packaged volume for the Jita haul leg, not the much larger
         # flight/assembled volume - GitHub issue #11.
-        volume = _haul_volume(row.type_id, PRODUCTION_CONFIG)
+        volume = _haul_volume(type_id, PRODUCTION_CONFIG)
         cj_price, jita_landed_price = _shopping_prices(
-            row.type_id, ctx.home, ctx.jita, volume, cfg,
-            home_stats.get(row.type_id), jita_stats.get(row.type_id),
-            hub_landed=hub_prices.landed(row.type_id, volume or 0.0, TRADING_CONFIG.jita_buy_broker_fee)
+            type_id, ctx.home, ctx.jita, volume, cfg,
+            home_stats.get(type_id), jita_stats.get(type_id),
+            hub_landed=hub_prices.landed(type_id, volume or 0.0, TRADING_CONFIG.jita_buy_broker_fee)
             if all_hubs else None)
-        hub_id = hub_prices.hub_by_type.get(row.type_id) if jita_landed_price is not None else None
-
         candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
         priced = {k: v for k, v in candidates.items() if v is not None}
-        recommended_source = min(priced, key=priced.get) if priced else None
+        source = min(priced, key=priced.get) if priced else None
+        return {"type_id": type_id, "build": build_cost, "cj": cj_price, "jita": jita_landed_price,
+                "source": source, "price": priced[source] if source else None}
+
+    # Buyer hangar / buy-order cover is drawn from one shared pool, so a
+    # variant held by a buyer covers at most one shortfall row.
+    hangar_left = dict(buyer.hub_hangar) if buyer is not None else {}
+    orders_left = dict(buyer.on_order) if buyer is not None else {}
+
+    def _draw(pool: dict, variants: tuple[int, ...], own: int, need: float) -> float:
+        got = 0.0
+        for t in (own, *[v for v in variants if v != own]):
+            take = min(need - got, pool.get(t, 0.0))
+            if take > 0:
+                pool[t] -= take
+                got += take
+            if got >= need:
+                break
+        return got
+
+    result = []
+    for row in aggregated:
+        variants = variants_by_row[row.type_id]
+        quotes = [_variant_quote(t) for t in variants]
+        own = next(q for q in quotes if q["type_id"] == row.type_id)
+        # Cheapest variant; the fitted type wins ties and is kept when no
+        # variant has any price.
+        best = min((q for q in quotes if q["price"] is not None),
+                   key=lambda q: (q["price"], q["type_id"] != row.type_id), default=own)
+        hub_id = hub_prices.hub_by_type.get(best["type_id"]) if best["jita"] is not None else None
         hub_hangar = on_order = 0.0
         if buyer is not None:
-            hub_hangar = min(row.shortfall, buyer.hub_hangar.get(row.type_id, 0.0))
-            on_order = min(row.shortfall - hub_hangar, buyer.on_order.get(row.type_id, 0.0))
+            hub_hangar = _draw(hangar_left, variants, row.type_id, row.shortfall)
+            on_order = _draw(orders_left, variants, row.type_id, row.shortfall - hub_hangar)
         to_buy = row.shortfall - hub_hangar - on_order
-        total_cost = priced[recommended_source] * to_buy if recommended_source else None
+        total_cost = best["price"] * to_buy if best["source"] else None
+        swapped = best["type_id"] != row.type_id
 
         result.append(ShoppingListRow(
             type_id=row.type_id, type_name=row.type_name, shortfall=row.shortfall,
-            build_cost=build_cost, cj_price=cj_price, jita_landed_price=jita_landed_price,
-            recommended_source=recommended_source, total_cost=total_cost,
+            build_cost=best["build"], cj_price=best["cj"], jita_landed_price=best["jita"],
+            recommended_source=best["source"], total_cost=total_cost,
             hub_region_id=hub_id, hub_name=hubs.hub_name(hub_id) if hub_id is not None else None,
             required_total=row.required_total, available=row.available,
             hub_hangar=hub_hangar, on_order=on_order, to_buy=to_buy,
+            buy_type_id=best["type_id"] if swapped else None,
+            buy_type_name=_type_name(best["type_id"]) if swapped else None,
         ))
     return result, (buyer.warnings if buyer is not None else [])
+
+
+def _type_name(type_id: int) -> str:
+    row = storage.get_sde_type(type_id)
+    return row[2] if row else str(type_id)
 
 
 # ---------------------------------------------------------------- status / ampel
@@ -579,7 +783,9 @@ def contract_rows_from_db(rows: list[tuple]) -> list[ContractRow]:
 def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                     stockpile_rows: Optional[list[StockpileRow]] = None,
                     assets_available: bool = True, home: Optional[dict] = None,
-                    pooled_contracts: Optional[dict[str, tuple[int, int]]] = None) -> FittingStatus:
+                    pooled_contracts: Optional[dict[str, tuple[int, int]]] = None,
+                    available_by_type: Optional[dict[int, float]] = None,
+                    candidate: Optional[_Candidate] = None) -> FittingStatus:
     """`home` (Goonmetrics current-price dict, production_pricing.home_prices'
     own return shape) is an optional passthrough for multibuy_cost, same
     "compute once in doctrine_status' loop, don't refetch per fitting"
@@ -590,7 +796,11 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     is the shared active-contract pool: a contract of a shared fit counts for
     every doctrine that fields it. None computes it on demand (standalone
     callers); doctrine_status passes one computed once for the whole pass.
-    Expired contracts never count (handled inside pooled_contract_counts)."""
+    Expired contracts never count (handled inside pooled_contract_counts).
+
+    `available_by_type` (raw stockpile stock, _stockpile_rows) and
+    `candidate` feed the "assemblable now" figure; the standalone path
+    reads both itself."""
     if pooled_contracts is None:
         pooled_contracts = pooled_contract_counts()
     last_synced_at = storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",))
@@ -598,8 +808,19 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     contract_ampel = validation.contract_ampel(last_synced_at, fitting.contract_target, valid, tolerable)
 
     if stockpile_rows is None:
-        all_rows, assets_available = stockpile_rows_for_doctrine(fitting.doctrine_id, cfg)
+        all_rows, assets_available, available_by_type = _stockpile_rows(
+            fitting.doctrine_id, cfg, pooled_contracts)
         stockpile_rows = [r for r in all_rows if r.fitting_id == fitting.fitting_id]
+
+    assemblable_now: Optional[int] = None
+    assemblable_bottleneck: Optional[str] = None
+    if assets_available and available_by_type is not None:
+        if candidate is None:
+            candidate = next((c for c in load_match_candidates()
+                              if c.fitting.fitting_id == fitting.fitting_id), None)
+        if candidate is not None:
+            assemblable_now, assemblable_bottleneck = _assemblable_summary(
+                candidate, available_by_type, equivalents_of(cfg))
 
     worst_shortfall_pct = 0.0
     worst_severity = None
@@ -645,7 +866,8 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                           worst_stockpile_shortfall_pct=worst_shortfall_pct, last_synced_at=last_synced_at,
                           assets_available=assets_available, hull_type_id=fitting.hull_type_id,
                           hull_name=hull_name, multibuy_cost=multibuy_cost,
-                          multibuy_missing=multibuy_missing)
+                          multibuy_missing=multibuy_missing, assemblable_now=assemblable_now,
+                          assemblable_bottleneck=assemblable_bottleneck)
 
 
 def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> DoctrineStatus:
@@ -653,8 +875,9 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
     fitting_rows = storage.list_fittings_for_doctrine(doctrine.doctrine_id)
     # Shared active-contract pool, computed once tenant-wide for this pass.
     pooled_contracts = pooled_contract_counts()
-    stockpile_rows, assets_available = stockpile_rows_for_doctrine(
-        doctrine.doctrine_id, cfg, pooled_contracts=pooled_contracts)
+    stockpile_rows, assets_available, available_by_type = _stockpile_rows(
+        doctrine.doctrine_id, cfg, pooled_contracts)
+    candidate_by_id = {c.fitting.fitting_id: c for c in load_match_candidates()}
 
     # Fetched once for every fitting's multibuy_cost below, not per-fitting -
     # matches this function's existing stockpile_rows-computed-once
@@ -680,7 +903,9 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
             continue
         own_rows = [r for r in stockpile_rows if r.fitting_id == fitting.fitting_id]
         statuses.append(fitting_status(fitting, cfg, stockpile_rows=own_rows, assets_available=assets_available,
-                                        home=home, pooled_contracts=pooled_contracts))
+                                        home=home, pooled_contracts=pooled_contracts,
+                                        available_by_type=available_by_type,
+                                        candidate=candidate_by_id.get(fitting.fitting_id)))
 
     contract_rollup = validation.worst_ampel([s.contract_status for s in statuses]) if statuses else AMPEL_GRAY
     stockpile_rollup = validation.worst_ampel([s.stockpile_status for s in statuses]) if statuses else AMPEL_GRAY

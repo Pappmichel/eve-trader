@@ -731,6 +731,7 @@ class ContractRow(_Base):
     validation_status: str
     issuer_id: Optional[int] = None
     start_location_id: Optional[int] = None
+    start_location_name: Optional[str] = None
     title: Optional[str] = None
     price: Optional[float] = None
     date_expired: Optional[str] = None
@@ -770,6 +771,8 @@ class StockpileRow(_Base):
     available: float
     shortfall: float
     severity: Optional[str] = None
+    variant_available: float = 0.0
+    variant_names: list[str] = []
 
 
 class AggregatedStockpileRow(_Base):
@@ -780,6 +783,8 @@ class AggregatedStockpileRow(_Base):
     shortfall: float
     severity: Optional[str] = None
     fitting_count: int
+    variant_available: float = 0.0
+    variant_names: list[str] = []
 
 
 class ShoppingListRow(_Base):
@@ -798,6 +803,8 @@ class ShoppingListRow(_Base):
     hub_hangar: float = 0.0
     on_order: float = 0.0
     to_buy: float = 0.0
+    buy_type_id: Optional[int] = None
+    buy_type_name: Optional[str] = None
 
 
 class FittingStatus(_Base):
@@ -817,6 +824,8 @@ class FittingStatus(_Base):
     hull_name: str = ""
     multibuy_cost: Optional[float] = None
     multibuy_missing: list[str] = []
+    assemblable_now: Optional[int] = None
+    assemblable_bottleneck: Optional[str] = None
 
 
 class DoctrineStatus(_Base):

@@ -12,7 +12,8 @@ from typing import Callable, Optional
 
 from .constants import (
     AMPEL_GRAY, AMPEL_GREEN, AMPEL_RED, AMPEL_SEVERITY_ORDER, AMPEL_YELLOW, CHARGE_CATEGORY_ID,
-    CONSUME_SECTIONS, DEVIATION_KIND_EXTRA, DEVIATION_KIND_MISSING, DEVIATION_KIND_SHORT,
+    CONSUME_SECTIONS, DEVIATION_KIND_EQUIVALENT_VARIANT, DEVIATION_KIND_EXTRA, DEVIATION_KIND_MISSING,
+    DEVIATION_KIND_SHORT,
     DEVIATION_KIND_WRONG_VARIANT, EXACT_SECTIONS, MATCH_THRESHOLD, MATCH_WEIGHT_CONSUME, MATCH_WEIGHT_EXACT,
     SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_TOLERABLE, VALIDATION_INVALID, VALIDATION_TOLERABLE,
     VALIDATION_UNMATCHED, VALIDATION_VALID,
@@ -20,6 +21,10 @@ from .constants import (
 from .models import ContractItemRow, DeviationRow, FittingItem
 
 _SEVERITY_RANK = {SEVERITY_CRITICAL: 2, SEVERITY_TOLERABLE: 1, SEVERITY_INFO: 0}
+
+#: type_id -> every type of its equivalence class, itself included
+#: (doctrine/equivalents.lookup); None means exact matching only.
+EquivalentsOf = Callable[[int], tuple[int, ...]]
 
 
 # ---------------------------------------------------------------- Soll construction (B.2/C.1)
@@ -115,17 +120,69 @@ def build_contract_ist(contract_items: list[ContractItemRow], hull_type_id: int)
     return dict(ist)
 
 
+# ---------------------------------------------------------------- Equivalent variants
+def substitute_equivalents(exact_soll: dict[int, float], consume_soll: dict[int, float],
+                           ist: dict[int, float], equivalents_of: Optional[EquivalentsOf],
+                           ) -> tuple[dict[int, float], list[tuple[int, int, float]]]:
+    """Moves delivered units of a functionally identical variant onto a Soll
+    type the contract is short of (True Sansha hardener expected, Dark Blood
+    delivered). Only a variant's *surplus* moves - units its own Soll line
+    needs stay put - and every unit moves at most once, so one delivered
+    module never covers two positions. Deterministic: Soll types and donors
+    in type_id order.
+
+    Returns (adjusted Ist, [(wanted_type, used_type, qty), ...])."""
+    if equivalents_of is None:
+        return dict(ist), []
+    adjusted = dict(ist)
+    need = {t: exact_soll.get(t, 0.0) + consume_soll.get(t, 0.0) for t in set(exact_soll) | set(consume_soll)}
+    surplus = {t: max(0.0, q - need.get(t, 0.0)) for t, q in ist.items()}
+    substitutions: list[tuple[int, int, float]] = []
+    for wanted in sorted(need):
+        deficit = need[wanted] - adjusted.get(wanted, 0.0)
+        if deficit <= 0:
+            continue
+        for donor in equivalents_of(wanted):
+            if donor == wanted or surplus.get(donor, 0.0) <= 0:
+                continue
+            moved = min(deficit, surplus[donor])
+            surplus[donor] -= moved
+            adjusted[donor] -= moved
+            adjusted[wanted] = adjusted.get(wanted, 0.0) + moved
+            substitutions.append((wanted, donor, moved))
+            deficit -= moved
+            if deficit <= 0:
+                break
+    return {t: q for t, q in adjusted.items() if q > 0}, substitutions
+
+
 # ---------------------------------------------------------------- Deviations (B.4)
 def compute_deviations(contract_id: int, exact_soll: dict[int, float], consume_soll: dict[int, float],
                         contract_items: list[ContractItemRow], hull_type_id: int,
-                        cargo_tolerance_pct: float, strict_extras: bool = False) -> list[DeviationRow]:
+                        cargo_tolerance_pct: float, strict_extras: bool = False,
+                        equivalents_of: Optional[EquivalentsOf] = None) -> list[DeviationRow]:
     """B.4's full deviation table, plus B.3's is_included=False "requested
     consideration" extras. Returns at most one DeviationRow per (type_id,
     kind) pair - see this module's own docstring on why exact/consume are
     merged defensively before emitting (a type_id could in principle appear
-    in both classes across different fitting lines)."""
-    ist = build_contract_ist(contract_items, hull_type_id)
+    in both classes across different fitting lines).
+
+    With `equivalents_of`, delivered equivalent variants first cover the
+    Soll lines they can stand in for (substitute_equivalents). Each pair is
+    reported as two info rows of kind equivalent_variant - the fitted type
+    (expected qty, units the twin covered as actual) and the delivered twin
+    (0 expected, units used) - so the contract status is unaffected."""
+    ist, substitutions = substitute_equivalents(
+        exact_soll, consume_soll, build_contract_ist(contract_items, hull_type_id), equivalents_of)
     rows: dict[tuple[int, str], DeviationRow] = {}
+    for wanted, used, qty in substitutions:
+        wanted_expected = exact_soll.get(wanted, 0.0) + consume_soll.get(wanted, 0.0)
+        for type_id, expected in ((wanted, wanted_expected), (used, 0.0)):
+            key = (type_id, DEVIATION_KIND_EQUIVALENT_VARIANT)
+            prev = rows.get(key)
+            actual = qty + (prev.actual_qty if prev is not None else 0.0)
+            rows[key] = DeviationRow(contract_id=contract_id, type_id=type_id, kind=DEVIATION_KIND_EQUIVALENT_VARIANT,
+                                     severity=SEVERITY_INFO, expected_qty=expected, actual_qty=actual)
 
     def _add(type_id: int, kind: str, severity: str, expected: float, actual: float) -> None:
         key = (type_id, kind)
@@ -248,6 +305,21 @@ def allocate_stockpile(ordered_fitting_soll: list[tuple[str, dict[int, tuple[flo
     [(fitting_id, {type_id: (required_total, item_class)}), ...] in
     doctrine list order (= priority, highest first). Returns
     {fitting_id: {type_id: allocated_qty}}."""
+    return allocate_stockpile_with_equivalents(ordered_fitting_soll, available_by_type, None)[0]
+
+
+def allocate_stockpile_with_equivalents(
+        ordered_fitting_soll: list[tuple[str, dict[int, tuple[float, str]]]],
+        available_by_type: dict[int, float], equivalents_of: Optional[EquivalentsOf],
+) -> tuple[dict[str, dict[int, float]], dict[str, dict[int, dict[int, float]]]]:
+    """allocate_stockpile plus equivalent variants. Pass 1 is the exact
+    allocation (every fitting takes its own types, in priority order); pass 2
+    fills what is still short from the leftover stock of equivalent variants,
+    again in priority order. Two passes, so a twin's stock goes to another
+    fitting only after every fitting that names that twin exactly had its turn.
+
+    Returns (allocation incl. variants {fitting_id: {type_id: qty}},
+    variants used {fitting_id: {type_id: {variant_type_id: qty}}})."""
     remaining = dict(available_by_type)
     allocation: dict[str, dict[int, float]] = {}
     for fitting_id, soll in ordered_fitting_soll:
@@ -257,7 +329,26 @@ def allocate_stockpile(ordered_fitting_soll: list[tuple[str, dict[int, tuple[flo
             take = min(required, have)
             allocation[fitting_id][type_id] = take
             remaining[type_id] = have - take
-    return allocation
+    variants: dict[str, dict[int, dict[int, float]]] = {fid: {} for fid, _ in ordered_fitting_soll}
+    if equivalents_of is None:
+        return allocation, variants
+    for fitting_id, soll in ordered_fitting_soll:
+        for type_id, (required, _cls) in soll.items():
+            short = required - allocation[fitting_id][type_id]
+            if short <= 0:
+                continue
+            for other in equivalents_of(type_id):
+                if other == type_id or remaining.get(other, 0.0) <= 0:
+                    continue
+                take = min(short, remaining[other])
+                remaining[other] -= take
+                allocation[fitting_id][type_id] += take
+                used = variants[fitting_id].setdefault(type_id, {})
+                used[other] = used.get(other, 0.0) + take
+                short -= take
+                if short <= 0:
+                    break
+    return allocation, variants
 
 
 def stockpile_deviation(type_id: int, required_total: float, allocated: float, item_class: str,
@@ -275,6 +366,86 @@ def stockpile_deviation(type_id: int, required_total: float, allocated: float, i
     if allocated < threshold:
         return shortfall, SEVERITY_CRITICAL
     return shortfall, SEVERITY_TOLERABLE
+
+
+def max_assemblable(per_set: dict[int, tuple[float, str]],
+                    available_by_type: dict[int, float],
+                    equivalents_of: Optional[EquivalentsOf] = None) -> tuple[int, dict[int, dict]]:
+    """How many complete sets of one fitting the stock covers right now.
+
+    `per_set` is build_stockpile_soll(..., stockpile_target=1): one hull, the
+    exact modules and every consumable at its full quantity (no cargo
+    tolerance - confirmed with the user 2026-11-04). The fitting gets top
+    priority: the whole stock counts for it, whatever other fittings'
+    stockpile allocation would claim. Returns (max_sets, {type_id: detail})
+    where detail has per_set, item_class, on_hand, sets (how many sets this
+    item alone allows) and short_for_next (missing for max_sets + 1).
+    An empty requirement allows 0 sets.
+
+    With `equivalents_of`, the stock of every equivalent variant counts:
+    the lines of one equivalence class share one pool (their own stock plus
+    every other variant's), so `on_hand` includes `variant_on_hand` and one
+    unit never serves two lines."""
+    if equivalents_of is not None:
+        return _max_assemblable_pooled(per_set, available_by_type, equivalents_of)
+    details: dict[int, dict] = {}
+    for type_id, (qty, item_class) in per_set.items():
+        if qty <= 0:
+            continue
+        on_hand = max(0.0, float(available_by_type.get(type_id, 0.0)))
+        details[type_id] = {"per_set": qty, "item_class": item_class, "on_hand": on_hand,
+                            "sets": int(math.floor(on_hand / qty + 1e-9))}
+    max_sets = min((d["sets"] for d in details.values()), default=0)
+    for d in details.values():
+        d["short_for_next"] = max(0.0, (max_sets + 1) * d["per_set"] - d["on_hand"])
+    return max_sets, details
+
+
+def _max_assemblable_pooled(per_set: dict[int, tuple[float, str]], available_by_type: dict[int, float],
+                            equivalents_of: EquivalentsOf) -> tuple[int, dict[int, dict]]:
+    stock = {t: max(0.0, float(q)) for t, q in available_by_type.items()}
+    lines = {t: v for t, v in per_set.items() if v[0] > 0}
+    groups: dict[tuple[int, ...], list[int]] = {}
+    for type_id in sorted(lines):
+        groups.setdefault(tuple(sorted(equivalents_of(type_id))), []).append(type_id)
+
+    def _allocate(group_types: tuple[int, ...], line_types: list[int], sets: int) -> dict[int, float]:
+        """Pool split over the lines for `sets` sets: own stock first, then
+        the shared rest. Whatever is left over stays with the line whose own
+        stock it is (as far as it goes), the rest goes to the last line."""
+        pool = sum(stock.get(t, 0.0) for t in group_types)
+        target = {t: lines[t][0] * sets for t in line_types}
+        alloc = {t: min(stock.get(t, 0.0), target[t]) for t in line_types}
+        left = pool - sum(alloc.values())
+        for t in line_types:
+            take = min(max(0.0, target[t] - alloc[t]), left)
+            alloc[t] += take
+            left -= take
+        for t in line_types:
+            back = min(max(0.0, stock.get(t, 0.0) - alloc[t]), left)
+            alloc[t] += back
+            left -= back
+        alloc[line_types[-1]] += max(0.0, left)
+        return alloc
+
+    group_sets: dict[tuple[int, ...], int] = {}
+    for group_types, line_types in groups.items():
+        pool = sum(stock.get(t, 0.0) for t in group_types)
+        group_sets[group_types] = int(math.floor(pool / sum(lines[t][0] for t in line_types) + 1e-9))
+    max_sets = min(group_sets.values(), default=0)
+
+    details: dict[int, dict] = {}
+    for group_types, line_types in groups.items():
+        sets = group_sets[group_types]
+        now = _allocate(group_types, line_types, sets)
+        nxt = _allocate(group_types, line_types, max_sets + 1)
+        for t in line_types:
+            qty, item_class = lines[t]
+            own = stock.get(t, 0.0)
+            details[t] = {"per_set": qty, "item_class": item_class, "on_hand": now[t],
+                          "variant_on_hand": max(0.0, now[t] - own), "sets": sets,
+                          "short_for_next": max(0.0, (max_sets + 1) * qty - nxt[t])}
+    return max_sets, details
 
 
 # ---------------------------------------------------------------- Aggregation / ampel (B.8)

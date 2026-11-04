@@ -519,7 +519,21 @@ def test_esi_job_passes_the_doctrine_structure(monkeypatch):
         scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
     finally:
         _doctrine_config_var.reset(token)
-    assert calls[0][1]["extra"] == {"structure_id": 1049588174021}
+    assert calls[0][1]["extra"] == {"structure_ids": [1049588174021]}
+
+
+def test_esi_job_passes_every_doctrine_structure(monkeypatch):
+    from eve_trader.doctrine.config import DoctrineConfig, _doctrine_config_var
+
+    calls = _due_env(monkeypatch, sync_time=_hours_ago(1))
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "contracts", "doctrine")])
+    token = _doctrine_config_var.set(DoctrineConfig(doctrine_structure_id=1,
+                                                    doctrine_structure_ids=(1049588174021, 1035466617946)))
+    try:
+        scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
+    finally:
+        _doctrine_config_var.reset(token)
+    assert calls[0][1]["extra"] == {"structure_ids": [1049588174021, 1035466617946]}
 
 
 def test_pipeline_needs_the_trading_grant(monkeypatch):

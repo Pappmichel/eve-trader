@@ -220,6 +220,7 @@ _OTHER_TABLES = (
     "sde_stations",
     "sde_categories",
     "sde_type_slots",
+    "sde_type_equivalents",
     "sde_type_materials",
     "sde_invention_probability",
     "sde_blueprint_skills",

@@ -27,6 +27,8 @@ def _no_candidates_by_default(monkeypatch):
     (shared contract pool). These storage-free unit tests default it to empty;
     tests that need a candidate set override it afterwards."""
     monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
+    # Storage-free tests: no equivalent variants unless a test adds some.
+    monkeypatch.setattr(engine.equivalents, "lookup", lambda: (lambda type_id: (type_id,)))
 
 
 class _FakeTokens:
@@ -667,3 +669,59 @@ def test_pooled_contract_counts_shares_contract_across_identical_fits(monkeypatc
     assert pooled["f1"] == (1, 0)
     assert pooled["f2"] == (1, 0)   # same contract counts for the identical fit in d2
     assert pooled["f3"] == (0, 0)   # different fit, not shared
+
+
+# ---------------------------------------------------------------- max assemblable
+def _asset(type_id, qty, location=60003760, flag="CorpSAG1", assembled=False):
+    return {"type_id": type_id, "quantity": qty, "resolved_location_id": location,
+            "resolved_hangar_flag": flag, "assembled_or_fitted": assembled}
+
+
+def _assemblable_setup(monkeypatch, asset_rows):
+    monkeypatch.setattr(engine, "read_esi", lambda *a, **k: asset_rows)
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [])
+    monkeypatch.setattr(storage, "get_sde_types_bulk",
+                        lambda type_ids: {t: (t, 1, f"Type {t}", 1.0, 1, 1, 0, None) for t in type_ids})
+    monkeypatch.setattr(storage, "get_sde_type", lambda t: (t, 1, f"Type {t}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_location_names", lambda ids: {i: "Stockpile" for i in ids})
+    monkeypatch.setattr(engine, "classify_activity",
+                        lambda t: ("Tech I", (t + 1, 1, 1.0)) if t == HULL_A else ("Tech I", None))
+    first = _candidate("f1", HULL_A, [FittingItem("f1", 1, "low", MODULE, 2)])
+    # Higher stockpile priority would take the modules first; top priority ignores that.
+    second = _candidate("f2", HULL_B, [FittingItem("f2", 1, "low", MODULE, 2)])
+    first.fitting.stockpile_target = second.fitting.stockpile_target = 5
+    monkeypatch.setattr(engine, "load_fitting_with_items",
+                        lambda fid: ({"f1": first, "f2": second}[fid].fitting, {"f1": first, "f2": second}[fid].items))
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [first, second])
+    return DoctrineConfig(stockpile_location_ids=(60003760,), stockpile_hangar_flags=("CorpSAG1",))
+
+
+def test_assemblable_for_fitting_counts_stockpile_with_top_priority(monkeypatch):
+    cfg = _assemblable_setup(monkeypatch, [
+        _asset(HULL_A, 2), _asset(HULL_B, 3), _asset(MODULE, 5),
+        _asset(MODULE, 50, flag="CorpSAG2"),           # other division: not stockpile
+        _asset(HULL_A, 4, location=1),                # other location
+        _asset(HULL_A, 1, assembled=True),            # assembled ship is not stock
+    ])
+
+    result = engine.assemblable_for_fitting("f2", cfg)
+
+    assert result["assets_available"] is True
+    assert result["max_sets"] == 2  # 5 modules / 2 per fit, f1's priority claim ignored
+    assert [b["type_id"] for b in result["bottlenecks"]] == [MODULE]
+    module = next(r for r in result["requirements"] if r["type_id"] == MODULE)
+    assert module["on_hand"] == 5 and module["short_for_next"] == 1
+    assert module["also_needed_by"] == ["f1"]
+    assert result["stockpile_locations"] == [{"location_id": 60003760, "name": "Stockpile"}]
+
+    f1 = engine.assemblable_for_fitting("f1", cfg)
+    hull = next(r for r in f1["requirements"] if r["type_id"] == HULL_A)
+    assert hull["on_hand"] == 2 and hull["slot_section"] == "hull" and hull["buildable"] is True
+    assert f1["max_sets"] == 2
+
+
+def test_assemblable_for_fitting_without_assets(monkeypatch):
+    cfg = _assemblable_setup(monkeypatch, [])
+    result = engine.assemblable_for_fitting("f1", cfg)
+    assert result["assets_available"] is False
+    assert result["max_sets"] is None and result["requirements"] == []

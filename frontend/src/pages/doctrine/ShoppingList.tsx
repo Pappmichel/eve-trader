@@ -30,6 +30,15 @@ export default function ShoppingList() {
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     {
+      // An equivalent variant (same stats, Equivalents tab) is cheaper - the
+      // price columns are that variant's.
+      header: 'Buy as', id: 'buy_as', size: 220,
+      accessorFn: (r) => r.buy_type_name ?? r.type_name,
+      cell: (i) => (i.row.original.buy_type_name
+        ? <Badge size="sm" color="accent" variant="light" style={{ textTransform: 'none' }}>{i.row.original.buy_type_name}</Badge>
+        : <Text size="sm" c="dimmed">same</Text>),
+    },
+    {
       // Counts what the buyers' hangars and open buy orders already cover
       // (#354): not in stock yet, but nothing left to buy for it.
       header: 'Stock %', id: 'stock_pct', size: 90,
@@ -75,6 +84,7 @@ export default function ShoppingList() {
       <Text size="sm" c="dimmed">
         Everything currently short across every doctrine (same combined shortfall as the Stockpile tab), with
         whichever of Build / buy at C-J / buy at {allHubs ? 'the best hub' : hub} (landed, including freight) is cheapest right now.
+        {' '}"Buy as" names a cheaper equivalent variant (identical stats, see the Equivalents tab) when there is one.
         {buyers && ` The buyer characters' hangars and open buy orders in the ${allHubs ? 'hub regions' : `${hub} region`} cover the shortfall first; Total Cost prices only what is left to buy.`}
       </Text>
       {warnings.length > 0 && (

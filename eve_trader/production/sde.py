@@ -20,7 +20,7 @@ from typing import Optional
 
 import requests
 
-from .. import storage
+from .. import sde_equivalence, storage
 from ..pi import constants as pi_constants
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
@@ -143,9 +143,12 @@ def _attr_value(row: dict) -> Optional[float]:
 
 def _fetch_skill_attributes(
     session: requests.Session, base_url: str, pi_type_ids: frozenset[int] = frozenset(),
-) -> tuple[dict[int, dict[int, float]], dict[int, dict[int, float]]]:
+    equivalence_type_ids: frozenset[int] = frozenset(),
+) -> tuple[dict[int, dict[int, float]], dict[int, dict[int, float]], dict[int, dict[int, float]]]:
     """({typeID: {attributeID: value}} for `_KEPT_SKILL_ATTRS`, the same shape
-    for the PI attributes of `pi_type_ids`), read as one stream. The PI
+    for the PI attributes of `pi_type_ids`, and every attribute of
+    `equivalence_type_ids` - ~100k rows for ~5k modules/charges/drones, see
+    sde_equivalence), read as one stream. The PI
     filter is by type as well as by attribute: generic attributes such as
     cpuLoad/powerLoad exist on thousands of ships and modules (P-08).
     Same retry policy as _fetch_csv, wrapped around the *whole* stream - a
@@ -159,6 +162,7 @@ def _fetch_skill_attributes(
                 resp.raise_for_status()
                 return split_attribute_rows(
                     csv.DictReader(_decode_lines(resp.iter_lines())), pi_type_ids, pi_attrs,
+                    equivalence_type_ids,
                 )
         except requests.RequestException as e:
             last_exc = e
@@ -167,18 +171,20 @@ def _fetch_skill_attributes(
     raise last_exc
 
 
-def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[int]):
-    """dgmTypeAttributes rows -> (skill attribute map, PI attribute map)."""
+def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[int],
+                         equivalence_type_ids: frozenset[int] = frozenset()):
+    """dgmTypeAttributes rows -> (skill attribute map, PI attribute map,
+    full attribute map of `equivalence_type_ids`)."""
     kept: dict[int, dict[int, float]] = {}
     pi_kept: dict[int, dict[int, float]] = {}
+    equiv_kept: dict[int, dict[int, float]] = {}
     for row in rows:
         attr_id = int(row["attributeID"])
-        is_skill = attr_id in _KEPT_SKILL_ATTRS
-        if not is_skill and attr_id not in pi_attrs:
-            continue
         type_id = int(row["typeID"])
+        is_equiv = type_id in equivalence_type_ids
+        is_skill = attr_id in _KEPT_SKILL_ATTRS
         is_pi = attr_id in pi_attrs and type_id in pi_type_ids
-        if not is_skill and not is_pi:
+        if not is_skill and not is_pi and not is_equiv:
             continue
         value = _attr_value(row)
         if value is None:
@@ -187,7 +193,9 @@ def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[
             kept.setdefault(type_id, {})[attr_id] = value
         if is_pi:
             pi_kept.setdefault(type_id, {})[attr_id] = value
-    return kept, pi_kept
+        if is_equiv:
+            equiv_kept.setdefault(type_id, {})[attr_id] = value
+    return kept, pi_kept, equiv_kept
 
 
 def _fetch_pi_planets(session: requests.Session, base_url: str) -> list[tuple]:
@@ -375,6 +383,8 @@ class FetchedSde:
     stations: list[tuple] = field(default_factory=list)
     categories: list[tuple] = field(default_factory=list)
     type_slots: list[tuple] = field(default_factory=list)
+    # (type_id, class_id): functionally identical variants (sde_equivalence).
+    type_equivalents: list[tuple] = field(default_factory=list)
     type_materials: list[tuple] = field(default_factory=list)
     blueprint_skills: list[tuple] = field(default_factory=list)
     # From dgmTypeAttributes.csv (Character Management) - see skill_rows_from_attributes.
@@ -414,13 +424,17 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         })
         fetched[filename] = _fetch_csv(session, base, filename)
     pi_type_ids = pi_type_ids_from(fetched["invTypes.csv"], fetched["invGroups.csv"])
+    meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in fetched["invMetaTypes.csv"]}
+    equivalence_type_ids = sde_equivalence.candidate_type_ids(
+        fetched["invTypes.csv"], fetched["invGroups.csv"], meta_group_by_type)
     _emit_progress(progress_callback, {
         "phase": "run",
         "batch": total - 1,
         "total_batches": total,
-        "message": f"Fetching {_SKILL_ATTRIBUTES_FILE} (filtered to skill and PI attributes)",
+        "message": f"Fetching {_SKILL_ATTRIBUTES_FILE} (filtered to skill, PI and module attributes)",
     })
-    skill_attrs, pi_attrs = _fetch_skill_attributes(session, base, pi_type_ids)
+    skill_attrs, pi_attrs, equivalence_attrs = _fetch_skill_attributes(
+        session, base, pi_type_ids, equivalence_type_ids)
     skill_requirement_rows, skill_meta_rows = skill_rows_from_attributes(skill_attrs)
     _emit_progress(progress_callback, {
         "phase": "run",
@@ -470,7 +484,6 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     inv_type_materials = fetched["invTypeMaterials.csv"]
     activity_skills = fetched["industryActivitySkills.csv"]
 
-    meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in inv_meta_types}
     types_rows = [
         (
             int(r["typeID"]), _int_or_none(r["groupID"]), r["typeName"],
@@ -537,6 +550,16 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         if slot is not None:
             type_slot_by_id[int(r["typeID"])] = slot
     type_slot_rows = list(type_slot_by_id.items())
+    effects_by_type: dict[int, set[int]] = {}
+    for r in type_effects:
+        type_id = int(r["typeID"])
+        if type_id in equivalence_type_ids:
+            effects_by_type.setdefault(type_id, set()).add(int(r["effectID"]))
+    group_by_type = {
+        int(r["typeID"]): int(r["groupID"]) for r in inv_types if int(r["typeID"]) in equivalence_type_ids
+    }
+    type_equivalent_rows = sorted(
+        sde_equivalence.equivalence_classes(group_by_type, equivalence_attrs, effects_by_type).items())
 
     return FetchedSde(
         types=types_rows, groups=groups_rows, market_groups=market_groups_rows,
@@ -544,6 +567,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         blueprint_products=product_rows, invention_probability=probability_rows,
         solar_systems=solar_system_rows, regions=region_rows, stations=station_rows,
         categories=category_rows, type_slots=type_slot_rows,
+        type_equivalents=type_equivalent_rows,
         type_materials=type_materials_rows, blueprint_skills=blueprint_skill_rows,
         skill_requirements=skill_requirement_rows, skill_meta=skill_meta_rows,
         pi_schematics=pi_schematic_rows, pi_schematic_types=pi_schematic_type_rows,
@@ -602,6 +626,7 @@ def apply_sde(fetched: FetchedSde) -> dict:
         invention_probability=fetched.invention_probability, solar_systems=fetched.solar_systems,
         regions=fetched.regions,
         categories=fetched.categories, type_slots=fetched.type_slots,
+        type_equivalents=fetched.type_equivalents,
         type_materials=fetched.type_materials, blueprint_skills=fetched.blueprint_skills,
         skill_requirements=fetched.skill_requirements, skill_meta=fetched.skill_meta,
         pi_schematics=fetched.pi_schematics, pi_schematic_types=fetched.pi_schematic_types,

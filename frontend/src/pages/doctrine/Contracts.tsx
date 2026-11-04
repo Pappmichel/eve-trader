@@ -13,10 +13,15 @@ const STATUS_COLOR: Record<string, string> = { valid: 'accent', tolerable: 'warn
 
 export default function Contracts() {
   const [status, setStatus] = useState<string | null>(null)
+  const [locationId, setLocationId] = useState<number | null>(null)
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
-    queryKey: ['doctrine', 'contracts', status],
-    queryFn: () => doctrineApi.contracts(undefined, status ?? undefined),
+    queryKey: ['doctrine', 'contracts', status, locationId],
+    queryFn: () => doctrineApi.contracts(undefined, status ?? undefined, locationId ?? undefined),
   })
+  const { data: settings } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
+  const structureOptions = (settings?.contract_structures ?? []).map((o) => ({
+    value: String(o.location_id), label: o.name ?? String(o.location_id),
+  }))
 
   const columns = useMemo<ColumnDef<DoctrineContractRow, any>[]>(() => [
     { header: 'Contract', accessorKey: 'title', size: 220, cell: (i) => i.getValue() ?? `#${i.row.original.contract_id}` },
@@ -32,6 +37,9 @@ export default function Contracts() {
         </Group>
       ) },
     { header: 'Hull', accessorKey: 'hull_name', size: 160, cell: (i) => i.getValue() ?? '–' },
+    { header: 'Structure', id: 'structure', size: 200,
+      accessorFn: (r) => r.start_location_name ?? (r.start_location_id != null ? String(r.start_location_id) : null),
+      cell: (i) => i.getValue() ?? '–' },
     // source_role is an ESI-token role key ("doctrine:<character_id>") -
     // show the resolved character name where known, falling back to the
     // raw key only if that character was since removed/never resolved.
@@ -47,7 +55,14 @@ export default function Contracts() {
     <Stack>
       <Group justify="space-between">
         <Title order={4}>Contracts</Title>
-        <Select placeholder="All statuses" data={STATUS_OPTIONS} value={status} onChange={setStatus} clearable w={200} />
+        <Group gap="xs">
+          {structureOptions.length > 1 && (
+            <Select placeholder="All structures" data={structureOptions} clearable w={280}
+              value={locationId != null ? String(locationId) : null}
+              onChange={(v) => setLocationId(v ? Number(v) : null)} />
+          )}
+          <Select placeholder="All statuses" data={STATUS_OPTIONS} value={status} onChange={setStatus} clearable w={200} />
+        </Group>
       </Group>
       <DataTable rowDetail data={data ?? []} columns={columns} isLoading={isLoading} isError={isError} onRetry={() => refetch()} maxHeight={640} dataUpdatedAt={dataUpdatedAt} />
     </Stack>

@@ -180,6 +180,10 @@ class StockpileRow:
     available: float
     shortfall: float
     severity: Optional[str]   # None when shortfall == 0 (no deviation at all)
+    # Part of `available` covered by equivalent variants (same stats, e.g.
+    # Dark Blood for a True Sansha hardener) and their names.
+    variant_available: float = 0.0
+    variant_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -195,6 +199,8 @@ class AggregatedStockpileRow:
     shortfall: float
     severity: Optional[str]
     fitting_count: int
+    variant_available: float = 0.0
+    variant_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -220,6 +226,10 @@ class ShoppingListRow:
     hub_hangar: float = 0.0              # shortfall covered by the buyers' hangars in the hub region
     on_order: float = 0.0                # covered by their open buy orders in the hub region
     to_buy: Optional[float] = None       # shortfall - hub_hangar - on_order
+    # Set when an equivalent variant (same stats) is the cheapest buy; the
+    # three price columns are then that variant's prices.
+    buy_type_id: Optional[int] = None
+    buy_type_name: Optional[str] = None
 
     def __post_init__(self):
         if self.to_buy is None:
@@ -253,6 +263,11 @@ class FittingStatus:
     # UI can show the figure together with a warning.
     multibuy_cost: Optional[float] = None
     multibuy_missing: list[str] = field(default_factory=list)
+    # Complete fits the Doctrine stockpile holds right now (top priority,
+    # consumables at full quantity - engine.fitting_assemblable) and the
+    # first item that stops one more. None while no assets are shared.
+    assemblable_now: Optional[int] = None
+    assemblable_bottleneck: Optional[str] = None
 
 
 @dataclass

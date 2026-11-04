@@ -15,6 +15,14 @@ from eve_trader.doctrine.config import DoctrineConfig
 from eve_trader.doctrine.models import ParsedFitting
 
 
+@pytest.fixture(autouse=True)
+def _no_location_names(monkeypatch):
+    """Contract/stockpile location names go through the location reader
+    (DB); these unit tests run without a tenant."""
+    from eve_trader.locations import reader
+    monkeypatch.setattr(reader, "describe", lambda ids: {})
+
+
 def _contract_db_row(**overrides) -> tuple:
     base = dict(contract_id=1, source_role="doctrine:1560510246", for_corporation=False, issuer_id=42,
                 start_location_id=1, status="outstanding", title="t", price=1.0, date_expired=None,
@@ -220,7 +228,7 @@ def test_do_get_shopping_list_wraps_engine_result(monkeypatch):
         "type_id": 100, "type_name": "Widget", "shortfall": 5.0, "build_cost": 10.0, "cj_price": 12.0,
         "jita_landed_price": 15.0, "recommended_source": "Build", "total_cost": 50.0,
         "hub_region_id": None, "hub_name": None, "required_total": 0.0, "available": 0.0,
-        "hub_hangar": 0.0, "on_order": 0.0, "to_buy": 5.0,
+        "hub_hangar": 0.0, "on_order": 0.0, "to_buy": 5.0, "buy_type_id": None, "buy_type_name": None,
     }]
     assert result["warnings"] == ["a warning"]
     assert result["buyers_configured"] is False
@@ -451,7 +459,8 @@ def test_doctrine_reads_match_pending_contracts_first(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(actions, "match_pending_contracts", lambda cfg=None: calls.append("match") or 0)
     monkeypatch.setattr(storage, "list_doctrines", lambda: [])
-    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id: ([], False))
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine",
+                        lambda doctrine_id, cfg=None, location_id=None: ([], False))
     monkeypatch.setattr(engine, "shopping_list", lambda doctrine_id, cfg: ([], []))
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])

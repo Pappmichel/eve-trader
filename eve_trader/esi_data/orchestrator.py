@@ -659,7 +659,7 @@ def do_sync_for_tool(
 ) -> dict:
     """Refresh every (owner, kind) shared with `tool_key`.
 
-    `extra` is forwarded to fetchers (Doctrine passes `structure_id` so
+    `extra` is forwarded to fetchers (Doctrine passes `structure_ids` so
     the contracts fetcher can pre-filter before the per-contract items
     call). Kinds still run once per owner; `_kinds_for_owner` unique's
     them.

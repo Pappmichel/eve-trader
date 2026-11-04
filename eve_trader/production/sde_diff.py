@@ -160,6 +160,11 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
             (("slot", 1, False),),
         ),
         (
+            "sde_type_equivalents", fetched.type_equivalents,
+            lambda row: int(row[0]), lambda row: type_label(row[0]),
+            (("class_id", 1, False),),
+        ),
+        (
             "sde_type_materials", fetched.type_materials,
             lambda row: (int(row[0]), int(row[1])),
             lambda row: f"{type_label(row[0])} → {type_label(row[1])}",

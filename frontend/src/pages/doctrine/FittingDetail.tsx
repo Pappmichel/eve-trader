@@ -13,6 +13,7 @@ import { DataTable } from '../../components/DataTable'
 import { useAction } from '../../hooks/useAction'
 import { isk, dateTime } from '../../format'
 import { EftFittingForm } from './EftFittingForm'
+import { AssemblablePanel } from './AssemblablePanel'
 
 function EditFittingModal({ fittingId, initialRawEft, initialFuelBayText, initialShipMaintenanceBayText,
   opened, onClose }: {
@@ -49,7 +50,11 @@ const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 
 
 const DEVIATION_COLUMNS: ColumnDef<DoctrineDeviation, any>[] = [
   { header: 'Item', accessorKey: 'type_name', size: 200 },
-  { header: 'Kind', accessorKey: 'kind', size: 110, meta: { filterable: true } },
+  {
+    header: 'Kind', accessorKey: 'kind', size: 140, meta: { filterable: true },
+    // equivalent_variant: a twin with identical stats stood in (Equivalents tab) - info only.
+    cell: (i) => (i.getValue() === 'equivalent_variant' ? 'equivalent variant' : i.getValue()),
+  },
   {
     header: 'Quantity', id: 'qty', size: 190,
     accessorFn: (d) => `${d.expected_qty} expected / ${d.actual_qty} actual`,
@@ -206,6 +211,7 @@ export default function FittingDetail() {
           </Card>
         </Grid.Col>
       </Grid>
+      <AssemblablePanel fittingId={fittingId} />
       <Button variant="subtle" size="xs" onClick={() => refetch()}>Refresh</Button>
     </Stack>
   )

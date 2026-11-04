@@ -20,25 +20,25 @@ def _contract(**overrides) -> dict:
 
 # ------------------------------------------------------------- _passes_prefilter
 def test_passes_prefilter_accepts_outstanding_item_exchange_at_structure():
-    assert esi_sync._passes_prefilter(_contract(), STRUCTURE_ID) is True
+    assert esi_sync._passes_prefilter(_contract(), (STRUCTURE_ID,)) is True
 
 
 def test_passes_prefilter_accepts_expired_status_now():
     # Widened for issue #3c - an expired contract must still be synced (so
     # it can be shown with an Expired badge instead of silently vanishing).
-    assert esi_sync._passes_prefilter(_contract(status="expired"), STRUCTURE_ID) is True
+    assert esi_sync._passes_prefilter(_contract(status="expired"), (STRUCTURE_ID,)) is True
 
 
 def test_passes_prefilter_rejects_wrong_type():
-    assert esi_sync._passes_prefilter(_contract(type="courier"), STRUCTURE_ID) is False
+    assert esi_sync._passes_prefilter(_contract(type="courier"), (STRUCTURE_ID,)) is False
 
 
 def test_passes_prefilter_rejects_unsyncable_status():
-    assert esi_sync._passes_prefilter(_contract(status="cancelled"), STRUCTURE_ID) is False
+    assert esi_sync._passes_prefilter(_contract(status="cancelled"), (STRUCTURE_ID,)) is False
 
 
 def test_passes_prefilter_rejects_wrong_location():
-    assert esi_sync._passes_prefilter(_contract(start_location_id=999), STRUCTURE_ID) is False
+    assert esi_sync._passes_prefilter(_contract(start_location_id=999), (STRUCTURE_ID,)) is False
 
 
 def test_passes_prefilter_rejects_when_structure_not_configured():
@@ -52,27 +52,27 @@ def test_passes_history_filter_accepts_finished_item_exchange_at_structure():
     # SYNCABLE_CONTRACT_STATUSES (a finished contract has nothing left to
     # validate/match against), but must still be caught here before it drops
     # out of the active snapshot with no record left anywhere.
-    assert esi_sync._passes_history_filter(_contract(status="finished"), STRUCTURE_ID) is True
+    assert esi_sync._passes_history_filter(_contract(status="finished"), (STRUCTURE_ID,)) is True
 
 
 def test_passes_history_filter_accepts_finished_issuer_and_contractor_variants():
-    assert esi_sync._passes_history_filter(_contract(status="finished_issuer"), STRUCTURE_ID) is True
-    assert esi_sync._passes_history_filter(_contract(status="finished_contractor"), STRUCTURE_ID) is True
+    assert esi_sync._passes_history_filter(_contract(status="finished_issuer"), (STRUCTURE_ID,)) is True
+    assert esi_sync._passes_history_filter(_contract(status="finished_contractor"), (STRUCTURE_ID,)) is True
 
 
 def test_passes_history_filter_rejects_still_outstanding():
     # The inverse of _passes_prefilter's own acceptance of "outstanding" -
     # an outstanding contract isn't history yet, it's still active.
-    assert esi_sync._passes_history_filter(_contract(status="outstanding"), STRUCTURE_ID) is False
+    assert esi_sync._passes_history_filter(_contract(status="outstanding"), (STRUCTURE_ID,)) is False
 
 
 def test_passes_history_filter_rejects_wrong_type():
-    assert esi_sync._passes_history_filter(_contract(type="courier", status="finished"), STRUCTURE_ID) is False
+    assert esi_sync._passes_history_filter(_contract(type="courier", status="finished"), (STRUCTURE_ID,)) is False
 
 
 def test_passes_history_filter_rejects_wrong_location():
     assert esi_sync._passes_history_filter(
-        _contract(status="finished", start_location_id=999), STRUCTURE_ID) is False
+        _contract(status="finished", start_location_id=999), (STRUCTURE_ID,)) is False
 
 
 def test_passes_history_filter_rejects_when_structure_not_configured():
@@ -171,3 +171,9 @@ def test_doctrine_sync_matches_finished_contract_missing_from_snapshot(monkeypat
     assert esi_sync._record_unmatched_finished(finished, tm=None) == 1
     assert client.item_calls == [("corporation", 500, 10)]
     assert [(r[0], r[1], r[2], r[8]) for r in written] == [(10, "corp-role", "fit-1", "name7")]
+
+
+def test_passes_prefilter_accepts_any_configured_structure():
+    second = STRUCTURE_ID + 1
+    assert esi_sync._passes_prefilter(_contract(start_location_id=second), (STRUCTURE_ID, second)) is True
+    assert esi_sync._passes_prefilter(_contract(start_location_id=999), (STRUCTURE_ID, second)) is False
