@@ -253,6 +253,11 @@ class FittingStatus:
     # UI can show the figure together with a warning.
     multibuy_cost: Optional[float] = None
     multibuy_missing: list[str] = field(default_factory=list)
+    # Complete fits the Doctrine stockpile holds right now (top priority,
+    # consumables at full quantity - engine.fitting_assemblable) and the
+    # first item that stops one more. None while no assets are shared.
+    assemblable_now: Optional[int] = None
+    assemblable_bottleneck: Optional[str] = None
 
 
 @dataclass

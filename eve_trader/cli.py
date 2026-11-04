@@ -590,6 +590,48 @@ def production_max_build(item: str, mode: str, target_quantity: int | None, tena
                    f"{row['built']:>12,.0f} {row['short']:>12,.0f}")
 
 
+@main.group("doctrine")
+def doctrine_group():
+    """Doctrine fittings and stockpile."""
+
+
+@doctrine_group.command("max-fit")
+@click.argument("fitting")
+@_tenant_id_option
+def doctrine_max_fit(fitting: str, tenant_id: str | None):
+    """How many complete fits of FITTING (id or name) the Doctrine stockpile
+    holds right now and what stops one more. The fitting gets top priority;
+    consumables count at full quantity. Nothing is built or bought."""
+    from .doctrine import actions as doctrine_actions
+
+    def run():
+        matches = doctrine_actions.do_find_fittings(fitting)
+        if not matches:
+            raise actions.ActionError(f"No fitting matches {fitting!r}.")
+        if len(matches) > 1:
+            names = "\n".join(f"  {m['fitting_id']}  {m['name']}" for m in matches)
+            raise actions.ActionError(f"{fitting!r} matches several fittings, pass the id:\n{names}")
+        return doctrine_actions.do_get_assemblable(matches[0]["fitting_id"])
+
+    result = _targets_call(tenant_id, run)
+    location = ", ".join(str(loc["name"] or loc["location_id"]) for loc in result["stockpile_locations"]) or "not set"
+    click.echo(f"{result['fitting_name']} ({result['hull_name']}), stockpile: {location}")
+    if not result["assets_available"]:
+        click.echo("No assets are shared with Doctrine - nothing to count.")
+        return
+    click.echo(f"Fits assemblable now: {result['max_sets']:,}")
+    if result["bottlenecks"]:
+        click.echo(f"Stops fit {result['next_sets']:,}:")
+        for row in result["bottlenecks"]:
+            build = "  (Production has a recipe)" if row["buildable"] else ""
+            click.echo(f"  {row['type_name']:<40} short {row['short_for_next']:>12,.0f}  "
+                       f"on hand {row['on_hand']:>12,.0f}{build}")
+    click.echo(f"  {'item':<40} {'per fit':>10} {'on hand':>12} {'fits':>8}  also needed by")
+    for row in result["requirements"]:
+        click.echo(f"  {row['type_name'][:40]:<40} {row['per_set']:>10,.0f} {row['on_hand']:>12,.0f} "
+                   f"{row['sets']:>8,}  {', '.join(row['also_needed_by'])}")
+
+
 @production_group.group("facilities")
 def facilities_group():
     """Structure type and ME rig per job category (Logistics page)."""

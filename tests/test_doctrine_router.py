@@ -335,3 +335,30 @@ def test_stockpile_and_contracts_pass_location_filter(monkeypatch):
     assert client.get("/api/doctrine/stockpile?location_id=42").status_code == 200
     assert client.get("/api/doctrine/contracts?location_id=43").status_code == 200
     assert seen == {"stockpile": 42, "contracts": 43}
+
+
+# ---------------------------------------------------------------- assemblable
+def test_fitting_assemblable_passes_fitting_id(monkeypatch):
+    captured = {}
+
+    def _get(fitting_id):
+        captured["fitting_id"] = fitting_id
+        return {"fitting_id": fitting_id, "max_sets": 3, "bottlenecks": [], "requirements": []}
+    monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _get)
+
+    resp = client.get("/api/doctrine/fittings/f1/assemblable")
+
+    assert resp.status_code == 200
+    assert captured == {"fitting_id": "f1"}
+    assert resp.json()["max_sets"] == 3
+
+
+def test_fitting_assemblable_unknown_fitting_maps_to_400(monkeypatch):
+    def _raise(fitting_id):
+        raise ActionError(f"Fitting {fitting_id} not found.")
+    monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _raise)
+
+    resp = client.get("/api/doctrine/fittings/nope/assemblable")
+
+    assert resp.status_code == 400
+    assert "not found" in resp.json()["detail"]

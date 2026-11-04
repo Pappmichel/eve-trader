@@ -354,3 +354,35 @@ def test_worst_severity_prefers_non_none_and_worst_of_remaining():
     assert v.worst_severity([None, None]) is None
     assert v.worst_severity([SEVERITY_INFO, SEVERITY_TOLERABLE]) == SEVERITY_TOLERABLE
     assert v.worst_severity([]) is None
+
+
+# ---------------------------------------------------------------- max assemblable
+def test_max_assemblable_min_over_items_and_short_for_next():
+    per_set = v.build_stockpile_soll([FittingItem("f", 1, "low", 100, 2),
+                                      FittingItem("f", 2, "cargo", 200, 500)], hull_type_id=1, stockpile_target=1)
+    max_sets, details = v.max_assemblable(per_set, {1: 5, 100: 7, 200: 1400})
+    assert max_sets == 2  # cargo allows 2 (1400 / 500), modules 3, hulls 5
+    assert details[200]["sets"] == 2 and details[100]["sets"] == 3 and details[1]["sets"] == 5
+    assert details[200]["short_for_next"] == 100  # 3 x 500 - 1400
+    assert details[100]["short_for_next"] == 0
+    assert details[1]["item_class"] == "exact"
+
+
+def test_max_assemblable_consumables_need_full_quantity():
+    per_set = v.build_stockpile_soll([FittingItem("f", 1, "cargo", 200, 100)], hull_type_id=1, stockpile_target=1)
+    # 99 of 100 would pass the cargo tolerance on a contract; here it is not a fit.
+    max_sets, details = v.max_assemblable(per_set, {1: 3, 200: 99})
+    assert max_sets == 0
+    assert details[200]["short_for_next"] == 1
+
+
+def test_max_assemblable_charge_floor_of_one():
+    per_set = v.build_stockpile_soll([FittingItem("f", 1, "charge", 300, 1)], hull_type_id=1, stockpile_target=1)
+    max_sets, _details = v.max_assemblable(per_set, {1: 2, 300: 1})
+    assert max_sets == 1
+
+
+def test_max_assemblable_empty_stock_and_empty_requirement():
+    per_set = v.build_stockpile_soll([], hull_type_id=1, stockpile_target=1)
+    assert v.max_assemblable(per_set, {})[0] == 0
+    assert v.max_assemblable({}, {1: 10}) == (0, {})

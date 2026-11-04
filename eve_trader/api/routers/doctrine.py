@@ -113,6 +113,11 @@ def get_fitting_detail(fitting_id: str):
 
 
 # ----------------------------------------------------------------------- sync
+@router.get("/fittings/{fitting_id}/assemblable")
+def get_fitting_assemblable(fitting_id: str):
+    return _wrap(actions.do_get_assemblable, fitting_id=fitting_id)
+
+
 @router.post("/sync")
 def sync_contracts():
     """Starts Doctrine contract sync as a background job and returns

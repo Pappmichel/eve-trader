@@ -139,6 +139,19 @@ export default function DoctrineDetail() {
       },
     },
     {
+      header: 'Assemblable', accessorKey: 'assemblable_now', size: 120,
+      cell: (i) => {
+        const f = i.row.original
+        if (f.assemblable_now == null) return '–'
+        return (
+          <Tooltip withArrow disabled={!f.assemblable_bottleneck}
+            label={`Complete fits in the stockpile now. Next one stopped by ${f.assemblable_bottleneck}`}>
+            <Text size="sm" c={f.assemblable_now > 0 ? undefined : 'danger'}>{f.assemblable_now}</Text>
+          </Tooltip>
+        )
+      },
+    },
+    {
       header: 'Targets (Contract / Stockpile)', id: 'targets', size: 190,
       cell: (i) => {
         const f = i.row.original

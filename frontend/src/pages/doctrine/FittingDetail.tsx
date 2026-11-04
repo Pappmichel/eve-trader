@@ -13,6 +13,7 @@ import { DataTable } from '../../components/DataTable'
 import { useAction } from '../../hooks/useAction'
 import { isk, dateTime } from '../../format'
 import { EftFittingForm } from './EftFittingForm'
+import { AssemblablePanel } from './AssemblablePanel'
 
 function EditFittingModal({ fittingId, initialRawEft, initialFuelBayText, initialShipMaintenanceBayText,
   opened, onClose }: {
@@ -206,6 +207,7 @@ export default function FittingDetail() {
           </Card>
         </Grid.Col>
       </Grid>
+      <AssemblablePanel fittingId={fittingId} />
       <Button variant="subtle" size="xs" onClick={() => refetch()}>Refresh</Button>
     </Stack>
   )

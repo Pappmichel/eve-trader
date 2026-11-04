@@ -818,6 +818,8 @@ class FittingStatus(_Base):
     hull_name: str = ""
     multibuy_cost: Optional[float] = None
     multibuy_missing: list[str] = []
+    assemblable_now: Optional[int] = None
+    assemblable_bottleneck: Optional[str] = None
 
 
 class DoctrineStatus(_Base):
