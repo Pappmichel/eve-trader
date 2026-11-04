@@ -14,7 +14,6 @@ from ...doctrine import actions
 from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
 from ...actions import ConflictError
-from ...doctrine.config import DOCTRINE_CONFIG
 
 router = APIRouter()
 
@@ -156,8 +155,10 @@ def get_status(doctrine_id: Optional[str] = None):
 
 
 @router.get("/contracts", response_model=list[schemas.ContractRow])
-def list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None):
-    return _wrap(actions.do_list_contracts, fitting_id=fitting_id, status=status)["rows"]
+def list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None,
+                   location_id: Optional[int] = None):
+    return _wrap(actions.do_list_contracts, fitting_id=fitting_id, status=status,
+                 location_id=location_id)["rows"]
 
 
 @router.get("/contracts/history", response_model=list[schemas.ContractHistoryRow])
@@ -166,8 +167,8 @@ def get_contract_history():
 
 
 @router.get("/stockpile")
-def get_stockpile(doctrine_id: Optional[str] = None):
-    return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id)
+def get_stockpile(doctrine_id: Optional[str] = None, location_id: Optional[int] = None):
+    return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id, location_id=location_id)
 
 
 @router.get("/shopping-list")
@@ -206,8 +207,10 @@ def remove_doctrine_asset_character(role_key: str):
 
 # ------------------------------------------------------------------- settings
 class DoctrineSettings(BaseModel):
-    doctrine_structure_id: Optional[int] = None
-    stockpile_location_id: Optional[int] = None
+    # Several contract structures / stockpile locations; the legacy single
+    # ids are folded in by do_get_settings and cleared on save.
+    doctrine_structure_ids: tuple[int, ...] = ()
+    stockpile_location_ids: tuple[int, ...] = ()
     cargo_tolerance_pct: float
     strict_extras: bool
     import_cost_per_m3: float
@@ -216,14 +219,33 @@ class DoctrineSettings(BaseModel):
     buyer_character_ids: tuple[int, ...] = ()
 
 
-@router.get("/settings", response_model=DoctrineSettings)
+class LocationOption(BaseModel):
+    location_id: int
+    name: Optional[str] = None
+
+
+class DoctrineSettingsView(DoctrineSettings):
+    # Read-only: what the tool actually uses (Trading's structure when no
+    # contract structure is saved) and the names for the pickers/filters.
+    effective_structure_ids: list[int] = []
+    effective_stockpile_location_ids: list[int] = []
+    contract_structures: list[LocationOption] = []
+    stockpile_locations: list[LocationOption] = []
+
+
+@router.get("/settings", response_model=DoctrineSettingsView)
 def get_settings():
-    return DoctrineSettings(**{f: getattr(DOCTRINE_CONFIG, f) for f in DoctrineSettings.model_fields})
+    return _wrap(actions.do_get_settings)
 
 
 @router.post("/settings")
 def update_settings(updates: DoctrineSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+    body = updates.model_dump()
+    # A client that does not send the location lists must not clear them.
+    for key in ("doctrine_structure_ids", "stockpile_location_ids"):
+        if key not in updates.model_fields_set:
+            body.pop(key)
+    return _wrap(actions.do_update_settings, updates=body)
 
 
 @router.get("/settings/buyer-character-options")

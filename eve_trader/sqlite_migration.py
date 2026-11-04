@@ -212,6 +212,9 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "prod_inventory_drift": "Postgres-native (Production realized profit inventory drift - never existed in the pre-migration SQLite schema)",
     "prod_opening_frozen": "Postgres-native (Production realized profit frozen opening quantities - never existed in the pre-migration SQLite schema)",
     "prod_opening_lines": "Postgres-native (Production realized profit opening inventory - never existed in the pre-migration SQLite schema)",
+    "ledger_stock_observation_runs": "Postgres-native (Production realized profit reprocessing detection - never existed in the pre-migration SQLite schema)",
+    "ledger_stock_observations": "Postgres-native (Production realized profit reprocessing detection - never existed in the pre-migration SQLite schema)",
+    "prod_reprocess_events": "Postgres-native (Production realized profit detected reprocessing - never existed in the pre-migration SQLite schema)",
 }
 
 

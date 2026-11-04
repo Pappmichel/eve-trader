@@ -227,7 +227,7 @@ def test_get_status_passes_optional_doctrine_id_query_param(monkeypatch):
 
 def test_list_contracts(monkeypatch):
     from eve_trader.doctrine.models import ContractRow
-    monkeypatch.setattr(doctrine_actions, "do_list_contracts", lambda fitting_id=None, status=None: {"rows": [
+    monkeypatch.setattr(doctrine_actions, "do_list_contracts", lambda fitting_id=None, status=None, location_id=None: {"rows": [
         ContractRow(contract_id=1, source_role="doctrine:1", for_corporation=False, status="outstanding",
                     validation_status="valid", issuer_id=None, start_location_id=None, title=None, price=None,
                     date_expired=None, matched_fitting_id=None, match_score=None, synced_at=None,
@@ -239,7 +239,7 @@ def test_list_contracts(monkeypatch):
 
 
 def test_get_stockpile(monkeypatch):
-    monkeypatch.setattr(doctrine_actions, "do_get_stockpile_status", lambda doctrine_id=None: {"rows": []})
+    monkeypatch.setattr(doctrine_actions, "do_get_stockpile_status", lambda doctrine_id=None, location_id=None: {"rows": []})
     resp = client.get("/api/doctrine/stockpile")
     assert resp.status_code == 200
 
@@ -303,3 +303,35 @@ def test_buyer_character_options(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == options
+
+
+def test_settings_location_lists_only_saved_when_sent(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(doctrine_actions, "do_update_settings", lambda updates: seen.update(updates) or {})
+    base = {"cargo_tolerance_pct": 0.9, "strict_extras": False, "import_cost_per_m3": 900.0}
+
+    client.post("/api/doctrine/settings", json=base)
+    assert "doctrine_structure_ids" not in seen and "stockpile_location_ids" not in seen
+
+    client.post("/api/doctrine/settings", json={**base, "doctrine_structure_ids": [11, 12],
+                                               "stockpile_location_ids": [13]})
+    assert list(seen["doctrine_structure_ids"]) == [11, 12]
+    assert list(seen["stockpile_location_ids"]) == [13]
+
+
+def test_stockpile_and_contracts_pass_location_filter(monkeypatch):
+    seen = {}
+
+    def _stockpile(doctrine_id=None, location_id=None):
+        seen["stockpile"] = location_id
+        return {"rows": [], "aggregated_rows": [], "assets_available": True, "locations": []}
+
+    def _contracts(fitting_id=None, status=None, location_id=None):
+        seen["contracts"] = location_id
+        return {"rows": []}
+    monkeypatch.setattr(doctrine_actions, "do_get_stockpile_status", _stockpile)
+    monkeypatch.setattr(doctrine_actions, "do_list_contracts", _contracts)
+
+    assert client.get("/api/doctrine/stockpile?location_id=42").status_code == 200
+    assert client.get("/api/doctrine/contracts?location_id=43").status_code == 200
+    assert seen == {"stockpile": 42, "contracts": 43}

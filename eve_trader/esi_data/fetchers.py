@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, Collection, Optional
 
 from .. import storage
 from ..config import WALLET_DIVISION_IDS
@@ -351,6 +351,19 @@ def _archive_contracts_pass(
 
 
 # ------------------------------------------------------------------ assets
+def _archive_stock_observation(owner_type: str, owner_id: int) -> None:
+    """Reprocessing detection (realized/costing.py): after an asset sync of
+    an owner in the realized-profit asset scope, store the tenant-wide
+    quantity of reprocessable types. Never fails the snapshot sync."""
+    if not _archive_for_production("assets", owner_type, owner_id):
+        return
+    try:
+        from ..realized import ingest as ledger_ingest
+        ledger_ingest.archive_stock_observation()
+    except Exception:  # noqa: BLE001
+        log.exception("stock observation failed for %s %s", owner_type, owner_id)
+
+
 def _nameable_item_ids(assets: list[dict]) -> list[int]:
     """Singleton ships and containers: ESI names only singletons, and the ones
     worth a name are the hulls and whatever holds other assets (a container is
@@ -414,6 +427,7 @@ def fetch_character_assets(
         "character_assets", _asset_rows(assets, owner_name, names),
         owner_character_id=owner_id, owner_name=owner_name,
     )
+    _archive_stock_observation("character", owner_id)
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
 
 
@@ -429,6 +443,7 @@ def fetch_corporation_assets(
         "corp_assets", _asset_rows(assets, owner_name, names),
         owner_corporation_id=owner_id, owner_name=owner_name,
     )
+    _archive_stock_observation("corporation", owner_id)
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
 
 
@@ -803,14 +818,25 @@ def fetch_character_planets(
 
 
 # ---------------------------------------------------------------- contracts
-def _at_structure(contracts: list[dict], structure_id: Optional[int]) -> list[dict]:
+def _at_structure(contracts: list[dict], structure_ids: Optional[Collection[int]]) -> list[dict]:
     """Doctrine's original pre-filter: items are 1 ESI call per contract,
-    so off-structure contracts never reach the items fetch. `structure_id`
-    is passed via orchestrator extra, not imported from the doctrine
-    package."""
-    if structure_id is None:
+    so off-structure contracts never reach the items fetch. `structure_ids`
+    (Doctrine's contract structures) is passed via orchestrator extra, not
+    imported from the doctrine package. None = no filter."""
+    if structure_ids is None:
         return contracts
-    return [c for c in contracts if c.get("start_location_id") == structure_id]
+    wanted = {int(s) for s in structure_ids}
+    return [c for c in contracts if c.get("start_location_id") in wanted]
+
+
+def _structure_filter(kwargs: dict) -> Optional[set[int]]:
+    """`structure_ids` from the fetcher extra; a lone legacy `structure_id`
+    still filters."""
+    ids = kwargs.get("structure_ids")
+    if ids is not None:
+        return {int(s) for s in ids}
+    single = kwargs.get("structure_id")
+    return {int(single)} if single is not None else None
 
 
 def _issued_by_character(contract: dict, character_id: int, corporation_id: Optional[int]) -> bool:
@@ -966,14 +992,14 @@ def fetch_character_contracts(
         except ESIError:
             corporation_id = None
     own = [c for c in raw_list if _issued_by_character(c, owner_id, corporation_id)]
-    structure_id = kwargs.get("structure_id")
+    structure_ids = _structure_filter(kwargs)
     syncable = _at_structure(
         [
             c for c in own
             if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
             and c.get("status") in _SYNCABLE_CONTRACT_STATUSES
         ],
-        structure_id,
+        structure_ids,
     )
     finished = _at_structure(
         [
@@ -981,7 +1007,7 @@ def fetch_character_contracts(
             if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
             and c.get("status") in _FINISHED_CONTRACT_STATUSES
         ],
-        structure_id,
+        structure_ids,
     )
     items_info = _fetch_contract_items_for(
         client, [(c, False, None) for c in syncable],
@@ -1008,14 +1034,14 @@ def fetch_corporation_contracts(
     raw_list = client.corporation_contracts(owner_id, auth_role=auth_role)
     # Contracts this corp issued, not merely assigned to it.
     own = [c for c in raw_list if c.get("issuer_corporation_id") == owner_id]
-    structure_id = kwargs.get("structure_id")
+    structure_ids = _structure_filter(kwargs)
     syncable = _at_structure(
         [
             c for c in own
             if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
             and c.get("status") in _SYNCABLE_CONTRACT_STATUSES
         ],
-        structure_id,
+        structure_ids,
     )
     finished = _at_structure(
         [
@@ -1023,7 +1049,7 @@ def fetch_corporation_contracts(
             if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
             and c.get("status") in _FINISHED_CONTRACT_STATUSES
         ],
-        structure_id,
+        structure_ids,
     )
     items_info = _fetch_contract_items_for(
         client, [(c, True, owner_id) for c in syncable],

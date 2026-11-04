@@ -25,10 +25,10 @@ class DoctrineConfig:
     # No sane default across installs - falls back to Trading's own
     # structure_id (the C-J structure) at read time if unset, since almost
     # every operator running Doctrine also runs Trading against the same
-    # structure (Phase 2 E.3) - see effective_structure_id below.
+    # structure (Phase 2 E.3) - see effective_structure_ids below.
     doctrine_structure_id: Optional[int] = None
     # Where stockpile Ist is counted from (storage.esi_stock_at_location) -
-    # falls back to effective_structure_id if unset, same reasoning.
+    # falls back to effective_structure_ids if unset, same reasoning.
     stockpile_location_id: Optional[int] = None
     # Consumables (drones/cargo/charges) only need to clear this fraction of
     # their Soll to count as "tolerable" rather than "critical" (Phase 3
@@ -53,7 +53,7 @@ class DoctrineConfig:
     # Market hub (region id) Doctrine prices its shopping list against -
     # its own setting, no longer TradingConfig.jita_region_id (#222). Default Jita.
     hub_region_id: int = 10000002
-    # Which hangar/office division(s) at effective_stockpile_location_id count
+    # Which hangar/office division(s) at effective_stockpile_location_ids count
     # as Doctrine's own stockpile Ist (storage.esi_stock_at_location's
     # allowed_flags - see production/constants.py HANGAR_DIVISION_FLAGS).
     # Same hangar-sorting reasoning as ProductionConfig.stock_hangar_flags
@@ -70,14 +70,39 @@ class DoctrineConfig:
     # stockpile location. Each one must share Assets / Market Orders with
     # Doctrine on the Characters page. Empty = off.
     buyer_character_ids: tuple[int, ...] = ()
+    # Several contract structures / stockpile locations (user request
+    # 2026-11-04). Targets stay one per fitting, pooled across all of them.
+    # The singular fields above are the legacy form (config.yaml, older
+    # tenant_settings rows) and only apply while the matching list is empty.
+    doctrine_structure_ids: tuple[int, ...] = ()
+    stockpile_location_ids: tuple[int, ...] = ()
 
     @property
-    def effective_structure_id(self) -> Optional[int]:
-        return self.doctrine_structure_id or TRADING_CONFIG.structure_id
+    def effective_structure_ids(self) -> tuple[int, ...]:
+        """Contract structures: the list, else the legacy id, else Trading's
+        own structure_id, else none."""
+        if self.doctrine_structure_ids:
+            return tuple(dict.fromkeys(int(s) for s in self.doctrine_structure_ids))
+        single = self.doctrine_structure_id or TRADING_CONFIG.structure_id
+        return (int(single),) if single else ()
 
     @property
-    def effective_stockpile_location_id(self) -> Optional[int]:
-        return self.stockpile_location_id or self.effective_structure_id
+    def effective_stockpile_location_ids(self) -> tuple[int, ...]:
+        """Stockpile locations: the list, else the legacy id, else the
+        contract structures."""
+        if self.stockpile_location_ids:
+            return tuple(dict.fromkeys(int(s) for s in self.stockpile_location_ids))
+        if self.stockpile_location_id:
+            return (int(self.stockpile_location_id),)
+        return self.effective_structure_ids
+
+
+def fetcher_extra(cfg) -> Optional[dict]:
+    """The contracts fetcher's structure filter (esi_data.fetchers
+    `_at_structure`), passed as orchestrator `extra` by every sync path.
+    None when no structure is known (no filter)."""
+    ids = cfg.effective_structure_ids
+    return {"structure_ids": list(ids)} if ids else None
 
 
 def validate_doctrine_overrides(overrides: dict) -> None:
@@ -88,6 +113,11 @@ def validate_doctrine_overrides(overrides: dict) -> None:
     a typo doesn't silently pass here and only fail later as "counts
     everything except a division that doesn't exist" (esi_stock_at_location's
     allowed_flags is a plain IN-list filter with no validation of its own)."""
+    for key in ("doctrine_structure_ids", "stockpile_location_ids"):
+        values = overrides.get(key) or ()
+        bad = [v for v in values if isinstance(v, bool) or not isinstance(v, int) or v <= 0]
+        if bad:
+            raise ConfigError(f"{key}: {bad!r} are not valid location ids.")
     if "stockpile_hangar_flags" in overrides:
         bad = [f for f in overrides["stockpile_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:

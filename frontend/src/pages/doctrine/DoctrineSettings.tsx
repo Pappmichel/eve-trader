@@ -8,7 +8,11 @@ import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
-import { StructureIdField } from '../../components/StructureIdField'
+import { StructureIdListField } from '../../components/StructureIdListField'
+
+function locationLabel(o: { location_id: number; name: string | null }) {
+  return o.name ? `${o.name} (${o.location_id})` : String(o.location_id)
+}
 
 export default function DoctrineSettings() {
   const { data } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
@@ -33,6 +37,11 @@ export default function DoctrineSettings() {
       ...(o.market_orders_shared ? [] : [`${o.character_name}: Market Orders`]),
     ])
 
+  const fallbackStructures = (data?.contract_structures ?? []).map(locationLabel).join(', ')
+  const fallbackStockpile = form.doctrine_structure_ids.length > 0
+    ? 'the contract structures above'
+    : (data?.stockpile_locations ?? []).map(locationLabel).join(', ')
+
   const set = <K extends keyof DoctrineSettingsT>(key: K, value: DoctrineSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
 
@@ -42,10 +51,16 @@ export default function DoctrineSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Structure &amp; Stockpile</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <StructureIdField label="Contract structure ID (blank = use Trading's)" value={form.doctrine_structure_id ?? null}
-          onChange={(v) => set('doctrine_structure_id', v)} structureNames={structureNames} />
-        <StructureIdField label="Stockpile location ID (blank = same as structure)" value={form.stockpile_location_id ?? null}
-          onChange={(v) => set('stockpile_location_id', v)} structureNames={structureNames} />
+        <StructureIdListField label="Contract structures" value={form.doctrine_structure_ids}
+          description={form.doctrine_structure_ids.length === 0
+            ? `None set - using Trading's structure${fallbackStructures ? `: ${fallbackStructures}` : ''}.`
+            : "Contracts at any of these count toward each fitting's contract target."}
+          onChange={(v) => set('doctrine_structure_ids', v)} structureNames={structureNames} />
+        <StructureIdListField label="Stockpile locations" value={form.stockpile_location_ids}
+          description={form.stockpile_location_ids.length === 0
+            ? `None set - using ${fallbackStockpile || 'the contract structures'}.`
+            : "Stock at any of these counts toward each fitting's stockpile target."}
+          onChange={(v) => set('stockpile_location_ids', v)} structureNames={structureNames} />
       </SimpleGrid>
       <Text size="xs" c="dimmed">
         Jita imports for every tool land in one shared corp intake division first (EVE has no API to move
@@ -93,7 +108,17 @@ export default function DoctrineSettings() {
         </Text>
       )}
 
-      <Button mt="md" w={200} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={200} loading={save.isPending} onClick={() => save.mutate({
+        // Only the editable fields - the effective/name lists are read-only.
+        doctrine_structure_ids: form.doctrine_structure_ids,
+        stockpile_location_ids: form.stockpile_location_ids,
+        cargo_tolerance_pct: form.cargo_tolerance_pct,
+        strict_extras: form.strict_extras,
+        import_cost_per_m3: form.import_cost_per_m3,
+        hub_region_id: form.hub_region_id,
+        stockpile_hangar_flags: form.stockpile_hangar_flags,
+        buyer_character_ids: form.buyer_character_ids,
+      })}>
         Save Settings
       </Button>
     </Stack>

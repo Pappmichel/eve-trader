@@ -674,6 +674,35 @@ def _job_node(job_row, draw_row, children: list, scale: float = 1.0,
     }
 
 
+def _event_cost(event) -> float:
+    return sum(_num(v) for v in event[7:13])
+
+
+def _reprocess_node(event, draw_row, children: list, scale: float, share: Optional[float]) -> dict:
+    """A draw from a reprocessed (or compressed) layer: the ore it came
+    from, with that ore's own draws as children. `share` is the part of the
+    event's cost this sale carries."""
+    total = _event_cost(event)
+    return {
+        "kind": str(event[1]),
+        "origin": str(draw_row[6]),
+        "type_id": int(draw_row[3]),
+        "quantity": _num(draw_row[5]) * scale,
+        "unit": str(draw_row[4]),
+        "unit_cost": _num(draw_row[14]),
+        "date": _iso(event[4]),
+        "source_ref": str(event[0]),
+        "input_type_id": int(event[2]),
+        "input_quantity": _num(event[3]),
+        "tax": _num(event[6]),
+        "flags": _draw_flags(draw_row),
+        "cost_total": total,
+        "share": share,
+        "cost_share": None if share is None else total * share,
+        "children": children,
+    }
+
+
 def _children(draws: list[tuple], depth: int, stack: set[str], scale: float = 1.0) -> list[dict]:
     """Expand draws into nodes. A job's draws are the whole job's inputs;
     `scale` (the share of that job this sale accounts for) brings them down
@@ -695,8 +724,34 @@ def _children(draws: list[tuple], depth: int, stack: set[str], scale: float = 1.
     grouped: dict[str, list] = defaultdict(list)
     for draw in db.list_draws("job", next_refs):
         grouped[str(draw[0])].append(draw)
+    reprocess_refs = sorted({str(row[7]) for row in draws if str(row[6]) in _REPROCESS_ORIGINS and row[7]})
+    events = {str(e[0]): e for e in db.get_reprocess_events(reprocess_refs)}
+    reprocess_draws: dict[str, list] = defaultdict(list)
+    for draw in db.list_draws("reprocess", [r for r in reprocess_refs if r not in stack]):
+        reprocess_draws[str(draw[0])].append(draw)
     nodes = []
     for row in draws:
+        if str(row[6]) in _REPROCESS_ORIGINS:
+            event = events.get(str(row[7]))
+            if event is None:
+                nodes.append(_leaf(row, scale))
+                continue
+            ref = str(event[0])
+            total = _event_cost(event)
+            draw_cost = _num(row[14]) * _num(row[5]) * scale
+            share = (draw_cost / total) if total > _EPS else None
+            if ref in stack:
+                node = _reprocess_node(event, row, [], scale, share)
+                node["flags"]["detail_missing"] = True
+                nodes.append(node)
+                continue
+            inputs = _children(reprocess_draws.get(ref, []), depth + 1, stack | {ref},
+                               share if share is not None else scale)
+            if share is None:
+                for child in inputs:
+                    child["flags"]["detail_missing"] = True
+            nodes.append(_reprocess_node(event, row, inputs, scale, share))
+            continue
         if str(row[6]) != "produced":
             nodes.append(_leaf(row, scale))
             continue
@@ -740,12 +795,18 @@ def sale_chain(sale_ref: str) -> Optional[dict]:
             node["type_name"] = names.get(int(tid)) if int(tid) in names else node.get("type_name")
     # Names for inputs discovered deeper than the first sale draws.
     missing = {int(node["type_id"]) for node in _walk(children) if node.get("type_id") is not None} - set(names)
+    missing |= {int(node["input_type_id"]) for node in _walk(children)
+                if node.get("input_type_id") is not None} - set(names)
     if missing:
         extra = _names(missing)
         for node in _walk(children):
             tid = node.get("type_id")
             if tid is not None and node.get("type_name") is None:
                 node["type_name"] = extra.get(int(tid))
+    for node in _walk(children):
+        tid = node.get("input_type_id")
+        if tid is not None:
+            node["input_type_name"] = names.get(int(tid)) or (extra.get(int(tid)) if missing else None)
     tree = {
         "kind": "product",
         "origin": None,
@@ -939,6 +1000,14 @@ def _job_groups(rows: list[dict]) -> list[dict]:
     return out
 
 
+_REPROCESS_ORIGINS = ("reprocessed", "compressed")
+
+
+def _empty_origin_mix() -> dict[str, float]:
+    return {"bought": 0.0, "produced": 0.0, "opening": 0.0, "unknown": 0.0,
+            "reprocessed": 0.0, "compressed": 0.0}
+
+
 def inventory() -> dict:
     with storage.batch_session():
         run, _t0, changed = _run_state()
@@ -956,7 +1025,7 @@ def inventory() -> dict:
                     "unit": str(row[1]),
                     "quantity": 0.0,
                     "total": 0.0,
-                    "origin_mix": {"bought": 0.0, "produced": 0.0, "opening": 0.0, "unknown": 0.0},
+                    "origin_mix": _empty_origin_mix(),
                     "assumed_me": False,
                     "assumed_decryptor": False,
                     "estimated_origin": False,
@@ -981,7 +1050,7 @@ def inventory() -> dict:
                     "unit": "item",
                     "quantity": 0.0,
                     "total": 0.0,
-                    "origin_mix": {"bought": 0.0, "produced": 0.0, "opening": 0.0, "unknown": 0.0},
+                    "origin_mix": _empty_origin_mix(),
                     "assumed_me": False,
                     "assumed_decryptor": False,
                     "estimated_origin": False,
@@ -1118,6 +1187,51 @@ def warnings() -> dict:
     with storage.batch_session():
         display_names.label_warnings(ordered, job_map)
     return {"needs_rebuild": hidden, "groups": ordered}
+
+
+def reprocessing() -> dict:
+    """Reprocessing and compression the latest rebuild detected (newest
+    first), with the cost each one carried to its outputs. `observed_since`
+    is the first stock observation detection used (None: nothing observed
+    yet, so nothing can be detected)."""
+    with storage.batch_session():
+        run, _t0, changed = _run_state()
+        if run is None or changed:
+            return {"needs_rebuild": True, "observed_since": None, "rows": []}
+        version = db.latest_costing_version()
+        rows = db.list_reprocess_events()
+        type_ids = {int(r[2]) for r in rows}
+        for r in rows:
+            type_ids.update(int(o["type_id"]) for o in (r[14] or []))
+        names = _names(type_ids)
+    out = []
+    for r in rows:
+        cost = _event_cost(r)
+        qty = _num(r[3])
+        out.append({
+            "ref": str(r[0]),
+            "kind": str(r[1]),
+            "type_id": int(r[2]),
+            "type_name": names.get(int(r[2])),
+            "quantity": qty,
+            "date": _iso(r[4]),
+            "detected_at": _iso(r[5]),
+            "tax": _num(r[6]),
+            "cost": cost,
+            "cost_per_unit": cost / qty if qty > _EPS else None,
+            "outputs": [
+                {
+                    "type_id": int(o["type_id"]),
+                    "type_name": names.get(int(o["type_id"])),
+                    "quantity": _num(o["quantity"]),
+                    "unit_cost": None if o.get("unit_cost") is None else _num(o["unit_cost"]),
+                }
+                for o in (r[14] or [])
+            ],
+            "flags": _flags(estimated=_num(r[8]) > _EPS or bool(r[13]), price_missing=bool(r[13])),
+        })
+    observed = None if version is None or len(version) < 3 else version[2]
+    return {"needs_rebuild": False, "observed_since": _iso(observed), "rows": out}
 
 
 def opening() -> dict:

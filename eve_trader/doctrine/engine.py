@@ -268,16 +268,52 @@ def _slot_of(type_id: int) -> Optional[str]:
 def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                                  cfg: DoctrineConfig = DOCTRINE_CONFIG,
                                  pooled_contracts: Optional[dict[str, tuple[int, int]]] = None,
+                                 location_id: Optional[int] = None,
                                  ) -> tuple[list[StockpileRow], bool]:
     """Phase 3 spec C - returns (rows, assets_available). Only ever computed
     live (never persisted, Phase 2 B.2's own note on StockpileRow).
     Asset Ist is the rows `read_esi("assets", "doctrine")` returns, filtered
     with the same location / hangar / intake rules Production uses — never
     an unfiltered read of the shared tables.
+
+    `location_id` (the Stockpile page's structure filter) counts only that
+    stockpile location; Soll stays the tenant-wide need either way.
     """
+    rows, assets_available, _available = _stockpile_rows(doctrine_id, cfg, pooled_contracts,
+                                                          location_id=location_id)
+    return rows, assets_available
+
+
+def stockpile_available(asset_rows: list[dict], type_ids, cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                        location_id: Optional[int] = None) -> dict[int, float]:
+    """Raw stockpile stock per type (before any priority allocation): the
+    asset rows filtered to the stockpile locations, hangar divisions and
+    without Sorting intake stacks. The one filter path for Stockpile and
+    Max assemblable. Summed over every stockpile location
+    (cfg.effective_stockpile_location_ids), or only `location_id` when given;
+    no location configured at all counts every location."""
+    type_ids = list(type_ids)
+    locations: tuple[Optional[int], ...] = (
+        (location_id,) if location_id is not None else cfg.effective_stockpile_location_ids) or (None,)
+    totals: dict[int, float] = {t: 0.0 for t in type_ids}
+    for loc in locations:
+        at_loc = storage.esi_stock_from_asset_rows(
+            asset_rows, type_ids, loc,
+            allowed_flags=cfg.stockpile_hangar_flags,
+            exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
+        for type_id, qty in at_loc.items():
+            totals[type_id] = totals.get(type_id, 0.0) + qty
+    return totals
+
+
+def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
+                    pooled_contracts: Optional[dict[str, tuple[int, int]]],
+                    location_id: Optional[int] = None,
+                    ) -> tuple[list[StockpileRow], bool, dict[int, float]]:
+    """stockpile_rows_for_doctrine plus the raw stock it read, so callers
+    that also need unallocated stock (Max assemblable) do not read twice."""
     asset_rows = read_esi("assets", "doctrine")
     assets_available = bool(asset_rows)
-    location_id = cfg.effective_stockpile_location_id
 
     candidates = load_match_candidates()
     # Pool active contracts across all fittings (tenant-wide) before the
@@ -287,7 +323,7 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
     if doctrine_id is not None:
         candidates = [c for c in candidates if c.fitting.doctrine_id == doctrine_id]
     if not candidates or not assets_available:
-        return [], assets_available
+        return [], assets_available, {}
 
     # {doctrine_id: name} - used below so each row carries its doctrine's own
     # name (not a fitting's, which Stockpile.tsx used as a stand-in for the
@@ -308,10 +344,7 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
         ordered_soll.append((c.fitting.fitting_id, soll))
 
     type_ids = {t for _fid, soll in ordered_soll for t in soll}
-    available_by_type = storage.esi_stock_from_asset_rows(
-        asset_rows, list(type_ids), location_id,
-        allowed_flags=cfg.stockpile_hangar_flags,
-        exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
+    available_by_type = stockpile_available(asset_rows, type_ids, cfg, location_id=location_id)
     sde_by_id = storage.get_sde_types_bulk(list(type_ids))
     allocation = validation.allocate_stockpile(ordered_soll, available_by_type)
 
@@ -334,7 +367,8 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                 type_id=type_id, type_name=type_name, slot_section=slot_section, required_total=required,
                 available=allocated, shortfall=shortfall, severity=severity,
             ))
-    return rows, assets_available
+    return rows, assets_available, available_by_type
+
 
 
 def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpileRow]:
@@ -491,7 +525,7 @@ def shopping_list(doctrine_id: Optional[str] = None,
     # it's always attempted; the C-J leg reuses Trading's own "seller" token
     # (esi-markets.structure_markets.v1 isn't a scope Doctrine/Production
     # characters have) since Doctrine's structure defaults to Trading's own
-    # sell structure anyway (DoctrineConfig.effective_structure_id) - best
+    # sell structure anyway (DoctrineConfig.effective_structure_ids) - best
     # effort, degrades to trusting Goonmetrics for whichever leg it can't
     # verify rather than failing the whole page.
     esi = ESIClient()
@@ -503,7 +537,6 @@ def shopping_list(doctrine_id: Optional[str] = None,
         hub_prices = hubs.HubPricing()
     jita_stats = hub_prices.stats
     home_stats: dict[int, OrderStats] = {}
-    structure_id = cfg.effective_structure_id
     # Group 3 ("structure_market_book"), not a "seller:" prefix scan
     # (docs/ESI_ACCESS_PLAN.md Known gap 4 - this call site was missed when
     # the rest of Doctrine moved to sharing/capability lookups, confirmed
@@ -515,15 +548,23 @@ def shopping_list(doctrine_id: Optional[str] = None,
     # back to trusting Goonmetrics even with a perfectly good token
     # available. Iterate-and-try-each, exactly as production/pricing.py's
     # home_prices does for the same structure_order_stats_bulk call.
-    if structure_id is not None:
+    # Several contract structures: an item counts as listed when any of them
+    # lists it (only sell_volume is read), so keep the stats with the most
+    # listed volume per type.
+    structure_ids = cfg.effective_structure_ids
+    if structure_ids:
         from ..production import esi_sync as production_esi_sync
-        for role, _character_id, _name in production_esi_sync.list_capability_characters(
-                "structure_market_book"):
-            try:
-                home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=role)
-            except ESIError:
-                continue  # no docking access for this one - try the next
-            break
+        capable = production_esi_sync.list_capability_characters("structure_market_book")
+        for structure_id in structure_ids:
+            for role, _character_id, _name in capable:
+                try:
+                    stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=role)
+                except ESIError:
+                    continue  # no docking access for this one - try the next
+                for type_id, st in stats.items():
+                    if type_id not in home_stats or st.sell_volume > home_stats[type_id].sell_volume:
+                        home_stats[type_id] = st
+                break
 
     result = []
     for row in aggregated:

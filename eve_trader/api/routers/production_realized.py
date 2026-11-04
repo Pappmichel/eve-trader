@@ -199,6 +199,11 @@ class ChainNode(BaseModel):
     cost_share: Optional[float] = None
     sale_ref: Optional[str] = None
     source: Optional[str] = None
+    # Reprocessing node: the ore the minerals came from.
+    input_type_id: Optional[int] = None
+    input_type_name: Optional[str] = None
+    input_quantity: Optional[float] = None
+    tax: Optional[float] = None
     flags: RealizedFlags
     children: list["ChainNode"] = []
 
@@ -302,6 +307,34 @@ class InventoryRow(BaseModel):
 class InventoryList(BaseModel):
     needs_rebuild: bool = False
     rows: list[InventoryRow]
+
+
+class ReprocessOutput(BaseModel):
+    type_id: int
+    type_name: Optional[str] = None
+    quantity: float
+    unit_cost: Optional[float] = None
+
+
+class ReprocessRow(BaseModel):
+    ref: str
+    kind: str
+    type_id: int
+    type_name: Optional[str] = None
+    quantity: float
+    date: Optional[str] = None
+    detected_at: Optional[str] = None
+    tax: float
+    cost: float
+    cost_per_unit: Optional[float] = None
+    outputs: list[ReprocessOutput]
+    flags: RealizedFlags
+
+
+class ReprocessList(BaseModel):
+    needs_rebuild: bool = False
+    observed_since: Optional[str] = None
+    rows: list[ReprocessRow]
 
 
 class WarningGroup(BaseModel):
@@ -431,6 +464,11 @@ def realized_jobs(days: Optional[int] = None, start: Optional[str] = None,
 @router.get("/realized/inventory", response_model=InventoryList)
 def realized_inventory():
     return _wrap(actions.do_get_realized_inventory)
+
+
+@router.get("/realized/reprocessing", response_model=ReprocessList)
+def realized_reprocessing():
+    return _wrap(actions.do_get_realized_reprocessing)
 
 
 @router.get("/realized/warnings", response_model=WarningList)

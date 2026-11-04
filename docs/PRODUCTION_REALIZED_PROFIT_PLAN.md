@@ -537,8 +537,9 @@ Trading's).
   as a wrong-looking number.
 - Losses (destroyed ships/cargo), fitted ships, gifts, and transfers between
   characters of different tenants are invisible unless entered manually.
-- Mined, refined and PI materials have no cost of their own; they are valued
-  at market price like any item without a purchase.
+- Mined and PI materials have no cost of their own; they are valued at market
+  price like any item without a purchase. Reprocessed materials carry the
+  cost of the ore or shortlisted module they came from (section 12).
 - History before Phase 1 goes live is limited to what ESI still holds at that
   moment; everything before T0 is opening inventory.
 - Corp jobs in a corp shared with other tenants may use materials another
@@ -1042,3 +1043,22 @@ spell out):
   running jobs). The cost structure is titled "Cost of goods sold
   breakdown" and `materials_estimated` reads "Opening / unknown stock
   (planner value)".
+
+## 12. Reprocessing (added 2026-11-04)
+
+Revises D5 for reprocessing only. ESI has no reprocessing event; the user's
+rule is that ore which disappears was reprocessed, whether or not the
+minerals are still in stock. Implementation and rules: `realized/costing.py`
+module docstring ("Reprocessing") and CLAUDE.md "Production realized profit".
+
+- Archive: `ledger_stock_observation_runs` / `ledger_stock_observations`,
+  written after every asset sync of an owner in the realized asset scope.
+- Detection: deficit against the ledger in whole portions; compression when
+  the compressed type appears instead; a surplus within 14 days undoes a
+  deficit (courier, owner move) and the other way round.
+- Cost: ore draws FIFO plus `reprocessing_tax`, split over outputs by
+  reference value (like D4). Outputs use the configured yield (estimate).
+- Modules: only active Module Reprocessing shortlist types. Other modules
+  also disappear through losses and gifts, which ESI cannot tell apart.
+- Report: `GET /api/production/realized/reprocessing`, the Inventory tab's
+  Reprocessing section, and a reprocess node in the sale cost chain.

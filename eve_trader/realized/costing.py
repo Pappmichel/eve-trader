@@ -11,10 +11,37 @@ Events at or after the cutover `t0` are sorted by
 ``(timestamp, KIND_RANK, id, owner_type, owner_id, division)``:
 
     buy=10, contract_buy=10, job_start=20, job_cancel=30, job_end=40,
-    contract_give=48, sell=50
+    reprocess=45, compress=45, contract_give=48, sell=50
 
 So at the same second a purchase is available to a job that starts, a job's
 output is available to a sale, and a sale never consumes a job's inputs.
+
+Reprocessing
+------------
+ESI has no reprocessing event. The loader passes tenant-wide stock
+observations (one per asset sync) of every reprocessable type; a quantity
+the ledger expects but the observation no longer shows was reprocessed (the
+user's rule: ore that disappears was reprocessed, whether or not the
+minerals are still there). `_detect_reprocessing` finds those quantities in
+a quantity-only pre-pass before costing. Per observation:
+
+1. a raw ore deficit next to a surplus of its compressed type is a
+   compression (the cost moves to the compressed type);
+2. a surplus first reverses this type's reprocess candidates from the last
+   `REPROCESS_MATCH_WINDOW` (a courier in transit, a move between owners
+   whose syncs ran in between); what is left is held as pending stock;
+3. a deficit first offsets pending stock from that window (the same move
+   seen in the other order); the rest, in whole portions, is reprocessed.
+
+Pending stock older than the window becomes ledger stock without a layer
+(mined, looted): a later consumption draws it as unknown origin.
+
+A reprocess event is placed at the previous observation, or this type's
+last inflow after it, so a job in between can already use the minerals. It
+consumes the input FIFO, adds the window's `reprocessing_tax` journal
+entries as fees, and splits the cost over the outputs by reference value
+on that day (like D4). Output quantities come from the configured yield
+and are an estimate; a wrong yield shows up as inventory drift.
 
 Passes
 ------
@@ -67,11 +94,12 @@ Inputs the loader must prepare (not checked here)
 """
 from __future__ import annotations
 
-from bisect import bisect_right
+import math
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 # Same numbers as production.constants / ESI; not imported to keep this pure.
 ACTIVITY_MANUFACTURING = 1
@@ -93,15 +121,21 @@ KIND_JOB_CANCEL = "job_cancel"
 KIND_JOB_END = "job_end"
 KIND_CONTRACT_GIVE = "contract_give"
 KIND_SELL = "sell"
+KIND_REPROCESS = "reprocess"
+KIND_COMPRESS = "compress"
 KIND_RANK = {
     KIND_BUY: 10,
     KIND_CONTRACT_BUY: 10,
     KIND_JOB_START: 20,
     KIND_JOB_CANCEL: 30,
     KIND_JOB_END: 40,
+    KIND_REPROCESS: 45,
+    KIND_COMPRESS: 45,
     KIND_CONTRACT_GIVE: 48,
     KIND_SELL: 50,
 }
+# A stock observation sorts after every event of the same second.
+_OBSERVATION_RANK = 100
 
 SOURCE_MARKET = "market"
 SOURCE_CONTRACT = "contract"
@@ -126,6 +160,8 @@ ORIGIN_BOUGHT = "bought"
 ORIGIN_PRODUCED = "produced"
 ORIGIN_OPENING = "opening"
 ORIGIN_UNKNOWN = "unknown"
+ORIGIN_REPROCESSED = "reprocessed"
+ORIGIN_COMPRESSED = "compressed"
 
 ESTIMATED_COVERAGE_THRESHOLD = 0.70
 
@@ -136,6 +172,10 @@ COMPLETED_STATUSES = frozenset({"delivered", "ready"})
 FEE_REF_TYPES = frozenset({"brokers_fee", "market_provider_tax"})
 MARKET_TRANSACTION_REF_TYPE = "market_transaction"
 TRANSACTION_TAX_REF_TYPE = "transaction_tax"
+REPROCESSING_TAX_REF_TYPE = "reprocessing_tax"
+# How long a stock surplus may still undo an earlier deficit (and the other
+# way round): longer than a courier normally takes.
+REPROCESS_MATCH_WINDOW = timedelta(days=14)
 # Same plausibility band as trade_reconciliation: id+1 can land on another
 # same-second sale's tax entry.
 MAX_PLAUSIBLE_TAX_RATE = 0.15
@@ -452,6 +492,52 @@ class FreightRate:
 
 
 @dataclass(frozen=True)
+class StockObservation:
+    """Tenant-wide quantity of every reprocessable type at one asset sync:
+    assets of every shared owner (fitted and assembled included, so fitting
+    a module is not a disappearance), plus listed sell orders and
+    outstanding item-exchange contracts. A type missing from `quantities`
+    was held at 0."""
+    observed_at: datetime
+    quantities: Mapping[int, float]
+
+
+@dataclass(frozen=True)
+class ReprocessRecipe:
+    """What one portion of `type_id` yields at the configured yield."""
+    type_id: int
+    portion_size: int
+    materials: tuple  # ((material_type_id, quantity_per_portion), ...)
+    yield_pct: float
+
+    def whole_quantity(self, quantity: float) -> float:
+        portion = max(1, int(self.portion_size))
+        return float(math.floor(float(quantity) / portion + _EPS) * portion)
+
+    def outputs(self, quantity: float) -> dict[int, float]:
+        """Same rounding as refining.engine.apply_reprocessing_yield: whole
+        portions first, then each material floored on its own."""
+        portions = math.floor(float(quantity) / max(1, int(self.portion_size)) + _EPS)
+        if portions <= 0:
+            return {}
+        out: dict[int, float] = {}
+        for material, per_portion in self.materials:
+            qty = math.floor(portions * float(per_portion) * float(self.yield_pct) + _EPS)
+            if qty > 0:
+                out[int(material)] = out.get(int(material), 0.0) + float(qty)
+        return out
+
+
+@dataclass(frozen=True)
+class CompressionLink:
+    """Raw ore/ice and its compressed type; `ratio` = compressed units per
+    raw unit (same reprocessing output per unit of ore)."""
+    raw_type_id: int
+    compressed_type_id: int
+    ratio: float
+
+
+@dataclass(frozen=True)
 class LedgerSnapshot:
     t0: datetime
     reference_prices: dict = field(default_factory=dict)  # (type_id, date) -> ISK/unit
@@ -486,9 +572,16 @@ class LedgerSnapshot:
     station_trading_station_id: Optional[int] = None
     # (owner_type, owner_id) whose wallet is shared with Station Trading.
     station_trading_wallet_owners: frozenset = frozenset()
-    doctrine_structure_id: Optional[int] = None
+    doctrine_structure_ids: frozenset = frozenset()
     # (owner_type, owner_id) whose contracts are shared with Doctrine.
     doctrine_contract_owners: frozenset = frozenset()
+    # Reprocessing detection (module docstring). Without observations or
+    # recipes nothing is detected. `reprocess_detection_blocked` is the
+    # loader's reason to switch detection off (warned, nothing detected).
+    stock_observations: Sequence[StockObservation] = ()
+    reprocess_recipes: Mapping[int, ReprocessRecipe] = field(default_factory=dict)
+    compression_links: Sequence[CompressionLink] = ()
+    reprocess_detection_blocked: Optional[str] = None
 
 
 # ====================================================================== outputs
@@ -658,6 +751,24 @@ class OpeningLine:
 
 
 @dataclass
+class ReprocessRecord:
+    """One detected reprocessing (or compression) of `quantity` x `type_id`."""
+    ref: str
+    kind: str  # reprocess | compress
+    type_id: int
+    quantity: float
+    when: datetime
+    detected_at: datetime
+    outputs: dict  # output type_id -> quantity
+    tax: float = 0.0
+    draws: list = field(default_factory=list)
+    components: CostComponents = CostComponents()
+    # (type_id, quantity, layer_id)
+    output_layers: list = field(default_factory=list)
+    price_missing: bool = False
+
+
+@dataclass
 class CostingResult:
     t0: datetime
     layers: list  # remaining (quantity_left > 0)
@@ -679,6 +790,7 @@ class CostingResult:
     # type_id -> opening quantity before clamping, for every type evaluated
     # (frozen or computed in this run). The loader freezes the new ones.
     opening_raw: dict = field(default_factory=dict)
+    reprocess_records: list = field(default_factory=list)
 
     @property
     def work_in_progress(self) -> list:
@@ -1124,6 +1236,7 @@ class _Costing:
         self.contract_fee_by_ref: dict[str, float] = {}
         self.price_requests: set[tuple] = set()
         self._rates: dict = {}
+        self.reprocess_records: list[ReprocessRecord] = []
 
     # ---------------------------------------------------------------- helpers
     def warn(self, msg: str) -> None:
@@ -1354,51 +1467,64 @@ class _Costing:
             self.warn(warning)
         return view
 
+    def _event_item_deltas(self, ev: tuple) -> list[tuple[int, float]]:
+        """(type_id, signed item quantity) one event moves. Blueprints and
+        BPC runs are not items."""
+        kind, obj = ev[6], ev[7]
+        out: list[tuple[int, float]] = []
+        if kind in (KIND_BUY, KIND_SELL):
+            if int(obj.type_id) not in self.ledger.bpo_type_ids:
+                sign = 1.0 if kind == KIND_BUY else -1.0
+                out.append((int(obj.type_id), sign * float(obj.quantity)))
+        elif kind == KIND_JOB_START:
+            for inp in obj.inputs:
+                if self._input_unit(obj, inp) == UNIT_ITEM:
+                    out.append((int(inp.type_id), -float(inp.quantity)))
+        elif kind == KIND_JOB_END and obj.activity in _BUILD_ACTIVITIES and obj.product_type_id is not None:
+            out.append((int(obj.product_type_id), self._build_output_qty(obj)))
+        elif kind == KIND_CONTRACT_BUY:
+            for item in obj.received:
+                if not item.is_blueprint:
+                    out.append((int(item.type_id), float(item.quantity)))
+        elif kind == KIND_CONTRACT_GIVE:
+            for item in obj.given:
+                if not item.is_blueprint:
+                    out.append((int(item.type_id), -float(item.quantity)))
+        return out
+
     def _net_item_flows(self, events: list[tuple]) -> dict[int, float]:
         flows: dict[int, float] = defaultdict(float)
-        bpo = self.ledger.bpo_type_ids
         for ev in events:
-            kind, obj = ev[6], ev[7]
-            if kind in (KIND_BUY, KIND_SELL):
-                if int(obj.type_id) in bpo:
-                    continue
-                sign = 1.0 if kind == KIND_BUY else -1.0
-                flows[int(obj.type_id)] += sign * float(obj.quantity)
-            elif kind == KIND_JOB_START:
-                for inp in obj.inputs:
-                    if self._input_unit(obj, inp) == UNIT_ITEM:
-                        flows[int(inp.type_id)] -= float(inp.quantity)
-            elif kind == KIND_JOB_END and obj.activity in _BUILD_ACTIVITIES and obj.product_type_id is not None:
-                flows[int(obj.product_type_id)] += self._build_output_qty(obj)
-            elif kind == KIND_CONTRACT_BUY:
-                for item in obj.received:
-                    if not item.is_blueprint:
-                        flows[int(item.type_id)] += float(item.quantity)
-            elif kind == KIND_CONTRACT_GIVE:
-                for item in obj.given:
-                    if not item.is_blueprint:
-                        flows[int(item.type_id)] -= float(item.quantity)
+            for type_id, delta in self._event_item_deltas(ev):
+                flows[type_id] += delta
         return flows
 
-    def _seed_opening(self, flows: dict[int, float]) -> None:
+    def _raw_opening(self, type_id: int, flows: dict[int, float]) -> float:
+        frozen = self.ledger.frozen_opening or {}
+        if type_id in frozen:
+            return float(frozen[type_id])
+        return float(self.ledger.esi_stock_by_type.get(type_id, 0) or 0) - flows.get(type_id, 0.0)
+
+    def _seed_opening(self, flows: dict[int, float], explained: Optional[dict[int, float]] = None) -> None:
         """Opening quantity per type = ESI stock minus net flows since T0,
         computed the first time a type is seen and then frozen (the loader
         stores `opening_raw`). A frozen quantity is reused as is, so a later
         loss or untracked move shows up as inventory drift instead of being
-        folded silently into the opening."""
+        folded silently into the opening. `explained`: quantity per type
+        that detected reprocessing consumed; a negative opening it covers is
+        not warned (the quantity itself stays, the pre-pass relied on it)."""
+        explained = explained or {}
         stock = self.ledger.esi_stock_by_type
         frozen = self.ledger.frozen_opening or {}
         price_day = _day(self.t0)
         for type_id in sorted(set(int(t) for t in stock) | set(flows) | set(int(t) for t in frozen)):
             if type_id in self.ledger.bpo_type_ids:
                 continue
-            if type_id in frozen:
-                raw = float(frozen[type_id])
-            else:
-                raw = float(stock.get(type_id, 0) or 0) - flows.get(type_id, 0.0)
+            raw = self._raw_opening(type_id, flows)
             self.opening_raw[type_id] = raw
             if raw < -_EPS:
-                self.warn(f"negative_opening: type {type_id} opening {raw:g} clamped to 0")
+                if raw + explained.get(type_id, 0.0) < -_EPS:
+                    self.warn(f"negative_opening: type {type_id} opening {raw:g} clamped to 0")
                 self.opening_lines.append(OpeningLine(type_id, raw, 0.0, 0.0, "none", None))
                 continue
             if raw <= _EPS:
@@ -1908,6 +2034,234 @@ class _Costing:
         rec.output_quantity = qty
         rec.output_unit = unit
 
+    # ---------------------------------------------------------------- reprocessing
+    def _tracked_types(self) -> tuple[dict[int, ReprocessRecipe], dict[int, CompressionLink], set[int]]:
+        recipes = {int(t): r for t, r in (self.ledger.reprocess_recipes or {}).items()}
+        links = {int(link.raw_type_id): link for link in self.ledger.compression_links
+                 if float(link.ratio) > _EPS}
+        tracked = set(recipes) | set(links) | {int(link.compressed_type_id) for link in links.values()}
+        return recipes, links, tracked
+
+    def _detect_reprocessing(self, events: list[tuple], flows: dict[int, float]) -> list[ReprocessRecord]:
+        """Quantity-only pre-pass (module docstring, "Reprocessing"). The
+        simulated quantity per type follows the ledger exactly: opening,
+        then every event, an outflow beyond the stock clamped at 0 (costing
+        draws that shortfall as unknown origin)."""
+        recipes, links, tracked = self._tracked_types()
+        if not tracked or not self.ledger.stock_observations:
+            return []
+        if self.ledger.reprocess_detection_blocked:
+            self.warn(f"reprocess_detection_off: {self.ledger.reprocess_detection_blocked}")
+            return []
+        observations = sorted(
+            (o for o in self.ledger.stock_observations if o.observed_at >= self.t0),
+            key=lambda o: o.observed_at,
+        )
+        if not observations:
+            return []
+        qty: dict[int, float] = {t: max(0.0, self._raw_opening(t, flows)) for t in tracked}
+        last_inflow: dict[int, datetime] = {}
+        pending: dict[int, list[list]] = defaultdict(list)  # type -> [[observed_at, qty], ...]
+        candidates: dict[int, list[dict]] = defaultdict(list)
+        ordered: list[dict] = []
+        timeline = [(ev[:2], 0, ev) for ev in events if ev[6] in (
+            KIND_BUY, KIND_SELL, KIND_JOB_START, KIND_JOB_END, KIND_CONTRACT_BUY, KIND_CONTRACT_GIVE)]
+        timeline += [((o.observed_at, _OBSERVATION_RANK), 1, o) for o in observations]
+        timeline.sort(key=lambda item: (item[0], item[1]))
+        prev_obs = self.t0
+        for _key, is_obs, item in timeline:
+            if not is_obs:
+                when = item[0]
+                for type_id, delta in self._event_item_deltas(item):
+                    if type_id not in tracked:
+                        continue
+                    if delta > 0:
+                        qty[type_id] += delta
+                        last_inflow[type_id] = when
+                    else:
+                        qty[type_id] = max(0.0, qty[type_id] + delta)
+                continue
+            now = item.observed_at
+            window_start = now - REPROCESS_MATCH_WINDOW
+            # Pending stock older than the window is real stock without a layer.
+            for type_id, entries in pending.items():
+                keep = []
+                for entry in entries:
+                    if entry[0] < window_start:
+                        qty[type_id] += entry[1]
+                    else:
+                        keep.append(entry)
+                entries[:] = keep
+            deficit: dict[int, float] = {}
+            surplus: dict[int, float] = {}
+            for type_id in sorted(tracked):
+                expected = qty[type_id] + sum(e[1] for e in pending.get(type_id, ()))
+                observed = float(item.quantities.get(type_id, 0) or 0)
+                if expected - observed > _EPS:
+                    deficit[type_id] = expected - observed
+                elif observed - expected > _EPS:
+                    surplus[type_id] = observed - expected
+
+            def place(type_id: int) -> datetime:
+                inflow = last_inflow.get(type_id)
+                return max(prev_obs, inflow) if inflow is not None and inflow <= now else prev_obs
+
+            # 1. Compression: raw deficit + compressed surplus in one observation.
+            for raw, link in sorted(links.items()):
+                comp = int(link.compressed_type_id)
+                if deficit.get(raw, 0.0) <= _EPS or surplus.get(comp, 0.0) <= _EPS:
+                    continue
+                ratio = float(link.ratio)
+                raw_units = min(deficit[raw], surplus[comp] / ratio, qty[raw])
+                comp_units = math.floor(raw_units * ratio + 1e-6)
+                if comp_units <= 0:
+                    continue
+                raw_units = comp_units / ratio
+                cand = {"kind": KIND_COMPRESS, "type_id": raw, "qty": raw_units, "when": place(raw),
+                        "detected_at": now, "compressed": comp, "compressed_qty": float(comp_units)}
+                ordered.append(cand)
+                qty[raw] -= raw_units
+                qty[comp] += comp_units
+                deficit[raw] -= raw_units
+                surplus[comp] -= comp_units
+            # 2. Surplus: undo recent reprocessing of this type, hold the rest.
+            for type_id, s in sorted(surplus.items()):
+                for cand in reversed(candidates[type_id]):
+                    if s <= _EPS:
+                        break
+                    if cand["detected_at"] < window_start or cand["qty"] <= _EPS:
+                        continue
+                    back = min(s, cand["qty"])
+                    cand["qty"] -= back
+                    qty[type_id] += back
+                    s -= back
+                if s > _EPS:
+                    pending[type_id].append([now, s])
+            # 3. Deficit: offset pending stock, reprocess the rest in whole portions.
+            for type_id, d in sorted(deficit.items()):
+                if d <= _EPS:
+                    continue
+                for entry in reversed(pending.get(type_id, [])):
+                    if d <= _EPS:
+                        break
+                    take = min(d, entry[1])
+                    entry[1] -= take
+                    d -= take
+                if type_id in pending:
+                    pending[type_id] = [e for e in pending[type_id] if e[1] > _EPS]
+                recipe = recipes.get(type_id)
+                if d <= _EPS or recipe is None:
+                    continue
+                whole = recipe.whole_quantity(min(d, qty[type_id]))
+                if whole <= _EPS:
+                    self.warn(f"reprocess_partial_portion: type {type_id} less than one portion missing, not booked")
+                    continue
+                cand = {"kind": KIND_REPROCESS, "type_id": type_id, "qty": whole, "when": place(type_id),
+                        "detected_at": now}
+                candidates[type_id].append(cand)
+                ordered.append(cand)
+                qty[type_id] -= whole
+            prev_obs = now
+        return self._reprocess_records(ordered, recipes, [o.observed_at for o in observations])
+
+    def _reprocess_records(self, ordered: list[dict], recipes: dict, obs_times: list[datetime]) -> list[ReprocessRecord]:
+        records: list[ReprocessRecord] = []
+        by_obs: dict[datetime, list[ReprocessRecord]] = defaultdict(list)
+        for cand in ordered:
+            type_id = int(cand["type_id"])
+            if cand["kind"] == KIND_COMPRESS:
+                comp = int(cand["compressed"])
+                records.append(ReprocessRecord(
+                    ref=f"compress:{type_id}:{cand['detected_at'].isoformat()}", kind=KIND_COMPRESS,
+                    type_id=type_id, quantity=float(cand["qty"]), when=cand["when"],
+                    detected_at=cand["detected_at"], outputs={comp: float(cand["compressed_qty"])},
+                ))
+                continue
+            recipe = recipes[type_id]
+            qty = recipe.whole_quantity(cand["qty"])
+            outputs = recipe.outputs(qty)
+            if qty <= _EPS:
+                continue
+            if not outputs:
+                self.warn(f"reprocess_without_output: type {type_id} {qty:g} yields nothing, not booked")
+                continue
+            rec = ReprocessRecord(
+                ref=f"reprocess:{type_id}:{cand['detected_at'].isoformat()}", kind=KIND_REPROCESS,
+                type_id=type_id, quantity=qty, when=cand["when"], detected_at=cand["detected_at"],
+                outputs=outputs,
+            )
+            records.append(rec)
+            by_obs[rec.detected_at].append(rec)
+        self._attribute_reprocessing_tax(by_obs, obs_times)
+        return records
+
+    def _attribute_reprocessing_tax(self, by_obs: dict, obs_times: list[datetime]) -> None:
+        """Each `reprocessing_tax` entry belongs to the observation window it
+        falls in (previous observation, this one]; it is split over that
+        window's reprocessing by output reference value. An entry after the
+        last observation waits for the next rebuild."""
+        pools: dict[datetime, float] = defaultdict(float)
+        for entry in self.ledger.journal_entries:
+            if entry.ref_type != REPROCESSING_TAX_REF_TYPE or entry.date < self.t0:
+                continue
+            idx = bisect_left(obs_times, entry.date)
+            if idx >= len(obs_times):
+                continue
+            pools[obs_times[idx]] += abs(float(entry.amount))
+        unmatched = 0.0
+        for at, amount in sorted(pools.items()):
+            recs = by_obs.get(at, [])
+            if not recs:
+                unmatched += amount
+                continue
+            weights = [self._output_value(rec) for rec in recs]
+            if sum(weights) <= _EPS:
+                weights = [float(rec.quantity) for rec in recs]
+            for rec, share in zip(recs, split_exact(amount, weights)):
+                rec.tax += share
+        if unmatched > _EPS:
+            self.warn(f"reprocessing_tax_unmatched: {unmatched:,.2f} ISK without detected reprocessing")
+
+    def _output_value(self, rec: ReprocessRecord) -> float:
+        total = 0.0
+        for type_id, qty in rec.outputs.items():
+            price = self._reference_price(int(type_id), UNIT_ITEM, rec.when)
+            total += float(qty) * float(price or 0.0)
+        return total
+
+    def _on_reprocess(self, rec: ReprocessRecord) -> None:
+        """Consume the input FIFO and carry its cost (plus tax) onto the
+        outputs, split by reference value on that day (quantity when no
+        output has a price). The split sums exactly to the cost."""
+        draws, consumed = self._consume(rec.type_id, UNIT_ITEM, rec.quantity, rec.when, rec.ref)
+        total = consumed.add(CostComponents(fees=float(rec.tax)))
+        rec.draws = draws
+        rec.components = total
+        rec.price_missing = any(d.price_missing for d in draws)
+        outputs = sorted((int(t), float(q)) for t, q in rec.outputs.items() if float(q) > _EPS)
+        if not outputs:
+            return
+        weights = []
+        for type_id, qty in outputs:
+            price = self._reference_price(type_id, UNIT_ITEM, rec.when)
+            weights.append(qty * float(price or 0.0))
+        if sum(weights) <= _EPS:
+            weights = [qty for _t, qty in outputs]
+        fractions = split_exact(1.0, weights)
+        freight_source, shipment_ref, freight_rate = _uniform_freight(draws)
+        estimated = bool(draws) and all(d.estimated_origin for d in draws)
+        origin = ORIGIN_COMPRESSED if rec.kind == KIND_COMPRESS else ORIGIN_REPROCESSED
+        for (type_id, qty), fraction in zip(outputs, fractions):
+            layer = self._new_layer(
+                type_id=type_id, unit=UNIT_ITEM, quantity=qty,
+                unit_components=total.scale(fraction / qty), origin=origin,
+                source_ref=rec.ref, layer_date=rec.when, estimated_origin=estimated,
+                price_missing=rec.price_missing, freight_source=freight_source,
+                shipment_ref=shipment_ref, freight_rate_per_m3=freight_rate,
+            )
+            rec.output_layers.append((type_id, qty, layer.layer_id))
+        self.reprocess_records.append(rec)
+
     # ---------------------------------------------------------------- run
     def _attribute_contract_broker_fees(self) -> None:
         """U6: contract_brokers_fee. ESI links the entry to its contract
@@ -1966,7 +2320,26 @@ class _Costing:
         for type_id in bought_types:
             if type_id in self.ledger.production_type_ids:
                 self.warn(f"trading_overlap: Production type {type_id} is also bought on the market")
-        self._seed_opening(self._net_item_flows(events))
+        flows = self._net_item_flows(events)
+        records = self._detect_reprocessing(events, flows)
+        explained: dict[int, float] = defaultdict(float)
+        if records:
+            _recipes, _links, tracked = self._tracked_types()
+            for rec in records:
+                explained[int(rec.type_id)] += float(rec.quantity)
+                for type_id, qty in rec.outputs.items():
+                    # Ore and compressed ore keep their own opening (the
+                    # pre-pass needs it first); outputs like minerals count.
+                    if int(type_id) not in tracked:
+                        flows[int(type_id)] += float(qty)
+            events = sorted(
+                events + [
+                    (rec.when, KIND_RANK[rec.kind], seq, "tenant", 0, 0, rec.kind, rec)
+                    for seq, rec in enumerate(records)
+                ],
+                key=lambda e: e[:6],
+            )
+        self._seed_opening(flows, explained)
         for ev in events:
             when, kind, obj = ev[0], ev[6], ev[7]
             if kind == KIND_BUY:
@@ -1983,6 +2356,8 @@ class _Costing:
                 self._on_job_cancel(obj, when)
             elif kind == KIND_JOB_END:
                 self._on_job_end(obj, when)
+            elif kind in (KIND_REPROCESS, KIND_COMPRESS):
+                self._on_reprocess(obj)
         return CostingResult(
             t0=self.t0,
             layers=[l for l in self.all_layers if l.quantity_left > _EPS],
@@ -2001,4 +2376,5 @@ class _Costing:
             price_requests=frozenset(self.price_requests),
             other_trading_fees=list(self.other_trading_fees),
             opening_raw=dict(self.opening_raw),
+            reprocess_records=list(self.reprocess_records),
         )

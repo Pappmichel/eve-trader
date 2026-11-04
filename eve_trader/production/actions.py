@@ -2313,6 +2313,13 @@ def do_reapply_freight_rate(dry_run: bool = False) -> dict:
     }
 
 
+def do_get_realized_reprocessing() -> dict:
+    """Reprocessing and compression detected from stock observations by
+    the latest rebuild, with the ore cost carried to each output."""
+    from .realized import report
+    return report.reprocessing()
+
+
 def do_get_realized_opening() -> dict:
     """Opening inventory of the latest rebuild (section 9a Ledger tab):
     quantity, reference price on T0, the unit cost used, and the override."""

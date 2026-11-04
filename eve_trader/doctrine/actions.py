@@ -453,14 +453,33 @@ def do_get_doctrine_status(doctrine_id: Optional[str] = None) -> dict:
     return {"doctrines": [asdict(engine.doctrine_status(row)) for row in storage.list_doctrines()]}
 
 
-def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
-    match_pending_contracts()
-    rows, assets_available = engine.stockpile_rows_for_doctrine(doctrine_id)
+def _location_options(location_ids: Iterable[int]) -> list[dict]:
+    """[{location_id, name}] in the given order, names through the one
+    location reader (None when unknown)."""
+    ids = [int(i) for i in location_ids]
+    if not ids:
+        return []
+    from ..locations import reader
+    info = reader.describe(ids)
+    return [{"location_id": i, "name": info[i].name if i in info else None} for i in ids]
+
+
+def do_get_stockpile_status(doctrine_id: Optional[str] = None, location_id: Optional[int] = None,
+                            cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """`location_id` narrows Available to one stockpile location; Required
+    stays the whole need (user decision 2026-11-04)."""
+    locations = cfg.effective_stockpile_location_ids
+    if location_id is not None and location_id not in locations:
+        raise ActionError(f"Location {location_id} is not a Doctrine stockpile location.")
+    match_pending_contracts(cfg)
+    rows, assets_available = engine.stockpile_rows_for_doctrine(doctrine_id, cfg, location_id=location_id)
     aggregated_rows = engine.aggregate_stockpile_rows(rows)
     return {
         "rows": [asdict(r) for r in rows],
         "aggregated_rows": [asdict(r) for r in aggregated_rows],
         "assets_available": assets_available,
+        "location_id": location_id,
+        "locations": _location_options(locations),
     }
 
 
@@ -471,9 +490,15 @@ def do_get_shopping_list(doctrine_id: Optional[str] = None, cfg: DoctrineConfig 
             "buyers_configured": bool(cfg.buyer_character_ids)}
 
 
-def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:
+def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None,
+                      location_id: Optional[int] = None) -> dict:
+    """`location_id` keeps only contracts issued at that structure."""
     match_pending_contracts()
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id, status=status))
+    if location_id is not None:
+        contracts = [c for c in contracts if c.start_location_id == location_id]
+    location_names = {o["location_id"]: o["name"] for o in _location_options(
+        sorted({c.start_location_id for c in contracts if c.start_location_id is not None}))}
 
     # source_role is an ESI-token role key - resolve it to the character's
     # actual name for display rather than leaving the raw string on screen.
@@ -494,7 +519,8 @@ def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = 
             continue
         hull_type_id, hull_name = hull_by_fitting_id.get(c.matched_fitting_id, (None, None))
         rows.append({**asdict(c), "source_character_name": character_names.get(c.source_role),
-                     "hull_type_id": hull_type_id, "hull_name": hull_name})
+                     "hull_type_id": hull_type_id, "hull_name": hull_name,
+                     "start_location_name": location_names.get(c.start_location_id)})
     return {"rows": rows}
 
 
@@ -561,7 +587,39 @@ def do_list_buyer_character_options() -> list[dict]:
     ]
 
 
+def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """Settings page values. The two location lists come back *effective*,
+    so a legacy single id shows up pre-filled; Trading's structure is only a
+    fallback and is reported separately, never as a saved entry."""
+    stored_structures = cfg.doctrine_structure_ids or (
+        (cfg.doctrine_structure_id,) if cfg.doctrine_structure_id else ())
+    stored_stockpile = cfg.stockpile_location_ids or (
+        (cfg.stockpile_location_id,) if cfg.stockpile_location_id else ())
+    return {
+        "doctrine_structure_ids": [int(s) for s in stored_structures],
+        "stockpile_location_ids": [int(s) for s in stored_stockpile],
+        "effective_structure_ids": list(cfg.effective_structure_ids),
+        "effective_stockpile_location_ids": list(cfg.effective_stockpile_location_ids),
+        "contract_structures": _location_options(cfg.effective_structure_ids),
+        "stockpile_locations": _location_options(cfg.effective_stockpile_location_ids),
+        "cargo_tolerance_pct": cfg.cargo_tolerance_pct,
+        "strict_extras": cfg.strict_extras,
+        "import_cost_per_m3": cfg.import_cost_per_m3,
+        "hub_region_id": cfg.hub_region_id,
+        "stockpile_hangar_flags": list(cfg.stockpile_hangar_flags),
+        "buyer_character_ids": list(cfg.buyer_character_ids),
+    }
+
+
 def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    updates = dict(updates)
+    # Saving a list moves the tenant off the legacy single id for good.
+    if "doctrine_structure_ids" in updates:
+        updates["doctrine_structure_ids"] = list(dict.fromkeys(updates["doctrine_structure_ids"] or ()))
+        updates["doctrine_structure_id"] = None
+    if "stockpile_location_ids" in updates:
+        updates["stockpile_location_ids"] = list(dict.fromkeys(updates["stockpile_location_ids"] or ()))
+        updates["stockpile_location_id"] = None
     if updates.get("buyer_character_ids"):
         known = {o["character_id"] for o in do_list_buyer_character_options()}
         unknown = [c for c in updates["buyer_character_ids"] if c not in known]

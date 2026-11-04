@@ -104,4 +104,30 @@ describe('CostChainTree', () => {
     )
     expect(screen.getByText('Freight 800 ISK (Courier 236650353, 236650362 · 800 ISK/m3)')).toBeInTheDocument()
   })
+
+  it('traces reprocessed minerals back to the ore and uses the cost share as line cost', () => {
+    const tree = node({
+      kind: 'product', type_name: 'Widget', quantity: 1,
+      children: [
+        node({
+          kind: 'reprocess', origin: 'reprocessed', type_name: 'Tritanium', quantity: 1000, unit: 'item',
+          unit_cost: 5, share: 0.5, cost_share: 5000, input_type_id: 1230, input_type_name: 'Veldspar',
+          input_quantity: 1000, tax: 0,
+          children: [
+            node({ kind: 'purchase', origin: 'bought', type_name: 'Veldspar', quantity: 500, unit_cost: 10 }),
+          ],
+        }),
+      ],
+    })
+    render(
+      <MantineProvider>
+        <CostChainTree node={tree} locationNames={{}} />
+      </MantineProvider>,
+    )
+    const direct = document.querySelectorAll('[data-depth="1"]')
+    expect(direct[0]).toHaveAttribute('data-chain-kind', 'reprocess')
+    expect(direct[0]).toHaveAttribute('data-line-cost', '5000')
+    expect(document.querySelector('[data-reprocess-input="1230"]')?.textContent).toContain('Reprocessed from Veldspar × 1,000')
+    expect(screen.getAllByText('Veldspar').length).toBeGreaterThan(0)
+  })
 })

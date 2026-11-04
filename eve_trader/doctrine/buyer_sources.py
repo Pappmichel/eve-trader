@@ -63,15 +63,15 @@ def _character_name(tm: TokenManager, character_id: int) -> str:
 
 
 def hub_hangar_stock(type_ids: list[int], buyer_ids: set[int], regions: set[int],
-                     known_hub_locations: set[int], exclude_location_id: Optional[int]) -> dict[int, float]:
+                     known_hub_locations: set[int], exclude_location_ids: set[int]) -> dict[int, float]:
     """{type_id: qty} the buyers hold in the hub regions (containers counted at
     their structure, assembled ships and fitted items excluded -
-    storage.esi_stock_from_asset_rows). `exclude_location_id` (the stockpile
-    location) is skipped, it is already counted as stockpile."""
+    storage.esi_stock_from_asset_rows). `exclude_location_ids` (the stockpile
+    locations) are skipped, they are already counted as stockpile."""
     rows = [r for r in read_esi("assets", "doctrine")
             if r.get("owner_type") == "character" and r.get("owner_id") in buyer_ids
             and r.get("resolved_location_id") is not None
-            and r.get("resolved_location_id") != exclude_location_id]
+            and r.get("resolved_location_id") not in exclude_location_ids]
     locations = {int(r["resolved_location_id"]) for r in rows}
     info = reader.describe(locations - known_hub_locations)
     in_hub = {loc for loc in locations
@@ -123,7 +123,7 @@ def collect(type_ids: list[int], cfg: DoctrineConfig) -> Optional[BuyerStock]:
     orders = open_buy_orders(type_ids, buyer_ids, regions, tm)
     result = BuyerStock(on_order=orders.by_type, warnings=list(orders.warnings))
     result.hub_hangar = hub_hangar_stock(type_ids, buyer_ids, regions, orders.hub_locations,
-                                         cfg.effective_stockpile_location_id)
+                                         set(cfg.effective_stockpile_location_ids))
     for character_id in sorted(buyer_ids):
         if not is_shared("assets", "doctrine", "character", character_id):
             result.warnings.append(f"{_character_name(tm, character_id)}: Assets are not shared with "

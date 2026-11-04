@@ -731,6 +731,7 @@ class ContractRow(_Base):
     validation_status: str
     issuer_id: Optional[int] = None
     start_location_id: Optional[int] = None
+    start_location_name: Optional[str] = None
     title: Optional[str] = None
     price: Optional[float] = None
     date_expired: Optional[str] = None

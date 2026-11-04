@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Badge, Text, Divider } from '@mantine/core'
+import { useMemo, useState } from 'react'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { Stack, Title, Badge, Text, Divider, Group, Select } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
@@ -25,7 +25,15 @@ function stockPctColumn<T extends { required_total: number; available: number }>
 }
 
 export default function Stockpile() {
-  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['doctrine', 'stockpile'], queryFn: () => doctrineApi.stockpile() })
+  const [locationId, setLocationId] = useState<number | null>(null)
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
+    queryKey: ['doctrine', 'stockpile', locationId],
+    queryFn: () => doctrineApi.stockpile(undefined, locationId ?? undefined),
+    placeholderData: keepPreviousData,
+  })
+  const locationOptions = (data?.locations ?? []).map((o) => ({
+    value: String(o.location_id), label: o.name ?? String(o.location_id),
+  }))
 
   const rows = data?.rows ?? []
   const aggregatedRows = data?.aggregated_rows ?? []
@@ -66,7 +74,18 @@ export default function Stockpile() {
 
   return (
     <Stack>
-      <Title order={4}>Stockpile</Title>
+      <Group justify="space-between">
+        <Title order={4}>Stockpile</Title>
+        {locationOptions.length > 1 && (
+          <Select placeholder="All stockpile locations" data={locationOptions} clearable w={320}
+            value={locationId != null ? String(locationId) : null}
+            onChange={(v) => setLocationId(v ? Number(v) : null)} />
+        )}
+      </Group>
+
+      {locationId != null && (
+        <HintCard>Required is the whole need of every fitting; Available counts only the stock at this location.</HintCard>
+      )}
 
       {isError && (
         <DataTable
