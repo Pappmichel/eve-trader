@@ -4387,8 +4387,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 internal_use[mid] = internal_use.get(mid, 0.0) + float(per_run) * alloc.runs
 
         def _reaction_coverage(product_id: int) -> Optional[float]:
+            # Capped at 1: the walk records available / demand even when stock
+            # already covers it (the solver may still queue runs for the
+            # buffer or the next window), like a stock target's 1 - missing/target.
             if final_coverage.get(product_id) is not None:
-                return final_coverage[product_id]
+                return min(1.0, max(0.0, final_coverage[product_id]))
             gross = solver_demand.get(product_id, 0.0) + internal_use.get(product_id, 0.0)
             if gross <= 1e-9:
                 return None
