@@ -15,8 +15,7 @@ from ..actions import ActionError, list_shared_trading_characters, structure_boo
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
-from .. import hubs
-from .. import hubs
+from .. import hubs, market_depth
 from ..goonmetrics_client import GoonmetricsClient
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
@@ -335,7 +334,8 @@ def do_save_mineral_requirements(requirements: list[dict]) -> dict:
 
 def _ore_option(candidate, jita_stats, refining_cfg: RefiningConfig,
                  trading_cfg: TradingConfig, hub_region_id: Optional[int] = None,
-                 freight_per_m3: Optional[float] = None) -> Optional[OreOption]:
+                 freight_per_m3: Optional[float] = None,
+                 orders: Optional[list[dict]] = None) -> Optional[OreOption]:
     """Prices one compressed ore/ice candidate and pre-refines one whole
     portion of it, producing a single LP column. Returns None when the type
     can't be used at all (not listed in Jita right now, no SDE portion size,
@@ -352,10 +352,18 @@ def _ore_option(candidate, jita_stats, refining_cfg: RefiningConfig,
     yield_per_portion = apply_reprocessing_yield(candidate.type_id, portion_size, effective_yield)
     if not yield_per_portion:
         return None
+    # Listed depth up to the acceptable price (market_depth); None keeps the
+    # old uncapped column for callers that pass no order book.
+    tiers = None
+    if orders is not None:
+        tiers = market_depth.supply_tiers(
+            orders, jita_sell, refining_cfg.shopping_price_tolerance,
+            lambda price: landed_cost_per_unit(price, candidate.volume_m3, trading_cfg, freight_per_m3),
+            source=_hub_label(hub_region_id), hub_region_id=hub_region_id)
     return OreOption(type_id=candidate.type_id, item=candidate.item, family=candidate.family,
                       is_ice=candidate.is_ice, volume_m3=candidate.volume_m3, portion_size=portion_size,
                       landed_cost_per_unit=unit_cost, yield_per_portion=yield_per_portion,
-                      hub_region_id=hub_region_id)
+                      hub_region_id=hub_region_id, tiers=tiers)
 
 
 def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
@@ -424,10 +432,13 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
         # propagates out of the thread pool, and without this would surface as
         # a bare 500 instead of the app's one user-facing error type.
         raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
+    # Same order books the stats came from (cached) - for the listed depth.
+    orders_by_id = market_depth.sell_orders_by_type(client, dict(pricing.hub_by_type))
 
     ore_options = [o for o in (_ore_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg,
                                            pricing.hub_by_type.get(c.type_id),
-                                           pricing.freight_by_type.get(c.type_id))
+                                           pricing.freight_by_type.get(c.type_id),
+                                           orders_by_id.get(c.type_id, []))
                                for c in candidates) if o is not None]
 
     # Best-effort - a Goonmetrics outage shouldn't break the whole shopping
@@ -464,6 +475,8 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
         mineral_options[req.type_id] = MineralOption(
             type_id=req.type_id, name=req.name, landed_cost_per_unit=cost, source=source,
             hub_region_id=mineral_hub,
+            tiers=_mineral_tiers(req.type_id, stats, volume, orders_by_id, pricing, home_cost,
+                                 refining_cfg.shopping_price_tolerance, trading_cfg),
         )
 
     try:
@@ -471,6 +484,21 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
     except OptimizationError as e:
         raise ActionError(str(e)) from e
     return _plan_to_dict(plan)
+
+
+def _mineral_tiers(type_id: int, stats, volume: float, orders_by_id: dict, pricing, home_cost: Optional[float],
+                   tolerance: float, trading_cfg: TradingConfig) -> list:
+    """Every way to buy a mineral directly: the hub's listed depth up to the
+    acceptable price, plus the home-market quote as one uncapped tier
+    (Goonmetrics has no volume, so its depth is not checked)."""
+    hub = pricing.hub_by_type.get(type_id)
+    tiers = market_depth.supply_tiers(
+        orders_by_id.get(type_id, []), stats.sell_percentile if stats else None, tolerance,
+        lambda price: landed_cost_per_unit(price, volume, trading_cfg, pricing.freight_by_type.get(type_id)),
+        source=_hub_label(hub) or "Jita", hub_region_id=hub)
+    if home_cost is not None:
+        tiers.append(market_depth.SupplyTier(unit_cost=home_cost, max_units=None, source="Home"))
+    return tiers
 
 
 def _hub_label(hub_region_id: Optional[int]) -> Optional[str]:
@@ -485,6 +513,7 @@ def _plan_to_dict(plan: ShoppingListPlan) -> dict:
         "ore_cost": plan.ore_cost, "direct_cost": plan.direct_cost, "total_cost": plan.total_cost,
         "lp_cost": plan.lp_cost, "all_direct_cost": plan.all_direct_cost,
         "savings_vs_all_direct": plan.savings_vs_all_direct, "total_volume_m3": plan.total_volume_m3,
+        "shortfall": plan.shortfall,
     }
 
 

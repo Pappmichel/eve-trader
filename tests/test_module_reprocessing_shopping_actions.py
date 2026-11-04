@@ -37,6 +37,13 @@ _MATERIALS = {
 }
 
 
+def _deep_book(stats, type_ids):
+    """One huge sell order at each type's reference price: depth never binds
+    in the tests that predate market depth."""
+    return {t: [{"price": stats[t].sell_percentile, "volume_remain": 10**12, "is_buy_order": False}]
+            for t in type_ids if t in stats and stats[t].sell_percentile is not None}
+
+
 @pytest.fixture
 def sde(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: _SDE.get(type_id))
@@ -80,6 +87,9 @@ def esi(monkeypatch):
         def region_order_stats_bulk(self, region_id, type_ids, **kw):
             calls.append((region_id, list(type_ids)))
             return {tid: stats[tid] for tid in type_ids if tid in stats}
+
+        def region_orders_raw_bulk(self, region_id, type_ids, **kw):
+            return _deep_book(stats, type_ids)
 
     class _TM:
         def __init__(self, *a, **kw):
@@ -279,11 +289,12 @@ def test_optimize_with_no_sources_at_all_raises(monkeypatch, sde, esi, cfgs):
         _optimize(cfgs, [{"type_id": TRIT, "name": "Tritanium", "required_qty": 10}])
 
 
-def test_optimize_surfaces_an_unsourceable_mineral_as_an_action_error(monkeypatch, sde, candidates, esi, cfgs):
+def test_optimize_reports_an_unsourceable_mineral_as_shortfall(monkeypatch, sde, candidates, esi, cfgs):
     monkeypatch.setattr(storage, "get_sde_type",
                         lambda type_id: _SDE.get(type_id) or (type_id, 18, "Morphite", 0.01, 1, None, 0, None, 1))
-    with pytest.raises(ActionError, match="No way to source"):
-        _optimize(cfgs, [{"type_id": 11399, "name": "Morphite", "required_qty": 10}])
+    plan = _optimize(cfgs, [{"type_id": 11399, "name": "Morphite", "required_qty": 10}])
+    assert plan["shortfall"] is True
+    assert plan["coverage"][0]["short"] == 10
 
 
 def test_optimize_wraps_an_esi_transport_failure(monkeypatch, sde, candidates, esi, cfgs):
@@ -382,6 +393,9 @@ def test_optimize_all_hubs_prices_inputs_at_the_cheapest_landed_hub(monkeypatch,
         def region_order_stats_bulk(self, region_id, type_ids, **kw):
             calls.append((region_id, list(type_ids)))
             return {t: books.get(region_id, {})[t] for t in type_ids if t in books.get(region_id, {})}
+
+        def region_orders_raw_bulk(self, region_id, type_ids, **kw):
+            return _deep_book(books.get(region_id, {}), type_ids)
 
     monkeypatch.setattr(actions, "ESIClient", _Client)
     monkeypatch.setattr(actions, "TokenManager", lambda *a, **kw: None)

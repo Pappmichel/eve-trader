@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..market_depth import SupplyTier
+
 
 @dataclass
 class OreCandidate:
@@ -87,6 +89,9 @@ class OreOption:
     landed_cost_per_unit: float
     yield_per_portion: dict[int, int] = field(default_factory=dict)
     hub_region_id: Optional[int] = None
+    # Listed depth up to the acceptable price (market_depth). None: one
+    # uncapped tier at landed_cost_per_unit (depth not checked).
+    tiers: Optional[list[SupplyTier]] = None
 
     @property
     def landed_cost_per_portion(self) -> float:
@@ -106,6 +111,9 @@ class MineralOption:
     landed_cost_per_unit: Optional[float]
     source: Optional[str] = None
     hub_region_id: Optional[int] = None  # set when source is a trade hub (not "Home")
+    # Every way to buy it directly: hub depth tiers (capped) and the home
+    # quote (uncapped). None: one uncapped tier at landed_cost_per_unit.
+    tiers: Optional[list[SupplyTier]] = None
 
 
 @dataclass
@@ -119,9 +127,10 @@ class OrePurchase:
     portions: int
     units: int
     volume_m3: float          # total haul volume for `units`
-    landed_cost_per_unit: float
+    landed_cost_per_unit: float   # average over the tiers bought
     total_cost: float
     hub_region_id: Optional[int] = None
+    depth_checked: bool = True    # False: some units came from a tier with unknown depth
 
 
 @dataclass
@@ -136,6 +145,7 @@ class DirectMineralPurchase:
     total_cost: float
     source: Optional[str] = None
     hub_region_id: Optional[int] = None
+    depth_checked: bool = True    # False: the home-market quote has no volume
 
 
 @dataclass
@@ -150,6 +160,7 @@ class MineralCoverage:
     from_direct: int
     delivered: int
     surplus: float
+    short: int = 0                # not available at an acceptable price anywhere
 
 
 @dataclass
@@ -165,3 +176,4 @@ class ShoppingListPlan:
     all_direct_cost: Optional[float]     # baseline: buy every required mineral outright, no refining
     savings_vs_all_direct: Optional[float]
     total_volume_m3: float
+    shortfall: bool = False              # some requirement could not be fully covered

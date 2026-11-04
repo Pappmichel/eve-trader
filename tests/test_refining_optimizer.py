@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from eve_trader.market_depth import SupplyTier
 from eve_trader.refining.models import MineralOption, MineralRequirement, OreOption
 from eve_trader.refining.optimizer import OptimizationError, optimize_shopping_list
 
@@ -171,10 +172,57 @@ def test_repairs_a_gap_for_a_mineral_with_no_direct_price():
     assert {c.type_id: c.delivered for c in plan.coverage}[PYE] >= 1000
 
 
-def test_unsourceable_mineral_raises():
-    with pytest.raises(OptimizationError, match="No way to source Morphite"):
-        optimize_shopping_list([_req(11399, "Morphite", 10)], [_ore()],
-                                {11399: _mineral(11399, "Morphite", None)})
+def test_unsourceable_mineral_is_reported_as_shortfall():
+    plan = optimize_shopping_list([_req(11399, "Morphite", 10)], [_ore()],
+                                   {11399: _mineral(11399, "Morphite", None)})
+    assert plan.shortfall is True
+    assert plan.coverage[0].short == 10
+    assert plan.ore_purchases == [] and plan.direct_purchases == []
+
+
+def _tier(cost, units, source="Jita"):
+    return SupplyTier(unit_cost=cost, max_units=units, source=source, hub_region_id=10000002)
+
+
+def test_capped_cheap_ore_switches_to_the_next_cheapest_ore():
+    # Ore 1 is cheapest but only 5 portions are listed; ore 2 covers the rest.
+    cheap = _ore(type_id=1, landed_cost_per_unit=10.0, yields={TRIT: 400})
+    cheap.tiers = [_tier(10.0, 500)]
+    other = _ore(type_id=2, landed_cost_per_unit=12.0, yields={TRIT: 400})
+    plan = optimize_shopping_list([_req(TRIT, "Tritanium", 4000)], [cheap, other],
+                                   {TRIT: _mineral(TRIT, "Tritanium", 6.0)})
+    portions = {p.type_id: p.portions for p in plan.ore_purchases}
+    assert portions == {1: 5, 2: 5}
+    assert plan.shortfall is False
+
+
+def test_deeper_tier_is_used_only_while_it_still_beats_other_sources():
+    ore = _ore(type_id=1, landed_cost_per_unit=10.0, yields={TRIT: 400})
+    # 2.5 ISK/Trit for 3 portions, then 3.25 ISK/Trit - dearer than the 3.0 direct price.
+    ore.tiers = [_tier(10.0, 300), _tier(13.0, 10_000)]
+    plan = optimize_shopping_list([_req(TRIT, "Tritanium", 4000)], [ore],
+                                   {TRIT: _mineral(TRIT, "Tritanium", 3.0)})
+    assert plan.ore_purchases[0].portions == 3
+    assert plan.direct_purchases[0].quantity == 2800
+
+
+def test_listed_depth_shortfall_after_every_source_is_exhausted():
+    ore = _ore(type_id=1, yields={TRIT: 400})
+    ore.tiers = [_tier(10.0, 100)]
+    mineral = _mineral(TRIT, "Tritanium", 6.0)
+    mineral.tiers = [_tier(6.0, 1000)]
+    plan = optimize_shopping_list([_req(TRIT, "Tritanium", 2000)], [ore], {TRIT: mineral})
+    assert plan.coverage[0].delivered == 1400
+    assert plan.coverage[0].short == 600
+    assert plan.all_direct_cost is None
+
+
+def test_home_quote_without_depth_is_flagged():
+    mineral = _mineral(TRIT, "Tritanium", 6.0)
+    mineral.tiers = [_tier(5.0, 100), SupplyTier(unit_cost=5.5, max_units=None, source="Home")]
+    plan = optimize_shopping_list([_req(TRIT, "Tritanium", 300)], [], {TRIT: mineral})
+    lines = {p.source: (p.quantity, p.depth_checked) for p in plan.direct_purchases}
+    assert lines == {"Jita": (100, True), "Home": (200, False)}
 
 
 def test_empty_requirements_raises():

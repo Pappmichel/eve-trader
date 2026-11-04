@@ -1250,6 +1250,25 @@ own ME and rounding. The result is a binary search over a pooled,
 `_expand_all`-shaped walk; the bottleneck is what is short at max + 1. When no
 original is owned it also reports what materials alone would allow.
 
+## Mineral shopping lists respect market depth
+
+Both mineral shopping lists (Ore & Minerals `refining/optimizer.py`, Module
+Reprocessing `module_reprocessing/shopping_optimizer.py`) solve through one
+shared integer program, `eve_trader/mineral_supply_lp.py`. Every ore, module
+and directly bought mineral is split into supply tiers
+(`eve_trader/market_depth.py`): the hub's real sell orders up to the reference
+price (5th percentile) plus `shopping_price_tolerance` (default 5%, separate
+field in RefiningConfig and ModuleReprocessingConfig), in price bands starting
++1%, +2%, +4%... above the cheapest order, each at its volume-weighted price.
+Deeper bands are bought only while they still beat every other source; when a
+cheap source runs out the solver switches to other ores/modules, and what is
+still missing is reported as `MineralCoverage.short` / plan `shortfall`
+instead of an error (confirmed with the user 2026-11-04). The home-market
+quote (Goonmetrics) has no volume: it stays one uncapped tier and its lines
+carry `depth_checked: false` ("qty unchecked" in the UI). Order books come
+from the same cached `region_orders_raw` the prices came from, so depth costs
+no extra ESI calls.
+
 ## Structure rigs per job category (Logistics page)
 
 Every structure/rig bonus goes through `engine._facility_mults` /

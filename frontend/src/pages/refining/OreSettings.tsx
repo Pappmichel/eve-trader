@@ -125,6 +125,10 @@ export default function OreSettings() {
           allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
         <NumberInput label="Refining tax" suffix="%" decimalScale={2} value={form.refining_tax_rate * 100}
           min={0} max={100} step={1} onChange={(v) => set('refining_tax_rate', Number(v) / 100)} />
+        <NumberInput label="Shopping list price tolerance" suffix="%" decimalScale={2}
+          description="Buy along sell orders up to this much above the reference price"
+          value={form.shopping_price_tolerance * 100} min={0} max={100} step={1}
+          onChange={(v) => set('shopping_price_tolerance', Number(v) / 100)} />
       </SimpleGrid>
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>

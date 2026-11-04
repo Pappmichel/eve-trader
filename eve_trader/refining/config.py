@@ -86,6 +86,9 @@ class RefiningConfig:
     # cost, not overstates it - check this before trusting a Buy/Import
     # decision that's close to its margin threshold.
     refining_tax_rate: float = 0.0
+    # Mineral Shopping List: buy along the hub's sell orders up to this much
+    # above the reference (5th-percentile) price - see market_depth.py.
+    shopping_price_tolerance: float = 0.05
 
 
 def validate_refining_overrides(overrides: dict) -> None:

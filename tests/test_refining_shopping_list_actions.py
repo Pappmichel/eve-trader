@@ -42,6 +42,13 @@ def candidates(monkeypatch):
     return universe
 
 
+def _deep_book(stats, type_ids):
+    """One huge sell order at each type's reference price: depth never binds
+    in the tests that predate market depth."""
+    return {t: [{"price": stats[t].sell_percentile, "volume_remain": 10**12, "is_buy_order": False}]
+            for t in type_ids if t in stats and stats[t].sell_percentile is not None}
+
+
 @pytest.fixture
 def esi(monkeypatch):
     """Stubs both the token manager and the Jita regional order book. The
@@ -59,6 +66,9 @@ def esi(monkeypatch):
 
         def region_order_stats_bulk(self, region_id, type_ids, **kw):
             return {tid: stats[tid] for tid in type_ids if tid in stats}
+
+        def region_orders_raw_bulk(self, region_id, type_ids, **kw):
+            return _deep_book(stats, type_ids)
 
     class _TM:
         def __init__(self, *a, **kw):
@@ -215,14 +225,45 @@ def test_optimize_with_an_empty_sde_candidate_universe_raises(monkeypatch, sde, 
             trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
 
 
-def test_optimize_surfaces_an_unsourceable_mineral_as_an_action_error(monkeypatch, sde, candidates, esi, cfgs):
+def test_optimize_reports_an_unsourceable_mineral_as_shortfall(monkeypatch, sde, candidates, esi, cfgs):
     trading_cfg, refining_cfg, production_cfg = cfgs
     monkeypatch.setattr(storage, "get_sde_type",
                         lambda type_id: _SDE.get(type_id) or (type_id, 18, "Morphite", 0.01, 1, None, 0, None, 1))
-    with pytest.raises(ActionError, match="No way to source"):
-        actions.do_optimize_mineral_shopping_list(
-            requirements=[{"type_id": 11399, "name": "Morphite", "required_qty": 10}],
-            trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
+    result = actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": 11399, "name": "Morphite", "required_qty": 10}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
+    assert result["shortfall"] is True
+    assert result["coverage"][0]["short"] == 10
+
+
+def test_optimize_caps_a_mineral_at_its_listed_depth_within_the_tolerance(monkeypatch, sde, candidates, esi, cfgs):
+    """Only 500 Tritanium are listed within 5% of the reference price; the
+    rest comes from ore even though buying it outright looked cheaper."""
+    trading_cfg, refining_cfg, production_cfg = cfgs
+    book = {TRIT: [{"price": 1.0, "volume_remain": 500, "is_buy_order": False},
+                   {"price": 1.2, "volume_remain": 10**9, "is_buy_order": False}],
+            VELDSPAR: [{"price": 10.0, "volume_remain": 10**9, "is_buy_order": False}]}
+    esi[TRIT] = OrderStats(sell_percentile=1.0, sell_volume=1e9, buy_percentile=None, buy_volume=0.0)
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def region_order_stats_bulk(self, region_id, type_ids, **kw):
+            return {tid: esi[tid] for tid in type_ids if tid in esi}
+
+        def region_orders_raw_bulk(self, region_id, type_ids, **kw):
+            return {tid: book.get(tid, []) for tid in type_ids}
+    monkeypatch.setattr(actions, "ESIClient", _Client)
+
+    result = actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": TRIT, "name": "Tritanium", "required_qty": 4500}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
+
+    direct = sum(p["quantity"] for p in result["direct_purchases"] if p["source"] != "Home")
+    assert direct <= 500
+    assert result["ore_purchases"], "the rest must come from ore"
+    assert result["shortfall"] is False
 
 
 def test_optimize_includes_haul_cost_in_both_ore_and_mineral_prices(monkeypatch, sde, candidates, esi):
@@ -317,6 +358,9 @@ def test_optimize_prices_ore_and_minerals_at_the_refining_hub(monkeypatch, sde, 
         def region_order_stats_bulk(self, region_id, type_ids, **kw):
             seen.append(region_id)
             return {tid: esi[tid] for tid in type_ids if tid in esi}
+
+        def region_orders_raw_bulk(self, region_id, type_ids, **kw):
+            return _deep_book(esi, type_ids)
     monkeypatch.setattr(actions, "ESIClient", _Client)
     trading_cfg, _, production_cfg = cfgs
     trading_cfg.jita_region_id = 10000043
@@ -354,6 +398,9 @@ def hub_esi(monkeypatch):
         def region_order_stats_bulk(self, region_id, type_ids, **kw):
             regions.append(region_id)
             return {t: books.get(region_id, {})[t] for t in type_ids if t in books.get(region_id, {})}
+
+        def region_orders_raw_bulk(self, region_id, type_ids, **kw):
+            return _deep_book(books.get(region_id, {}), type_ids)
 
     monkeypatch.setattr(actions, "ESIClient", _Client)
     monkeypatch.setattr(actions, "TokenManager", lambda *a, **kw: None)
