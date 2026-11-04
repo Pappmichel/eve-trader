@@ -325,6 +325,29 @@ def do_get_fitting_detail(fitting_id: str) -> dict:
     }
 
 
+def do_get_assemblable(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """How many complete fits of one fitting the Doctrine stockpile holds
+    right now and what stops one more (engine.fitting_assemblable)."""
+    if storage.get_fitting(fitting_id) is None:
+        raise ActionError(f"Fitting {fitting_id} not found.")
+    return engine.assemblable_for_fitting(fitting_id, cfg)
+
+
+def do_find_fittings(query: str) -> list[dict]:
+    """Fittings whose id equals `query` or whose name contains it (case
+    insensitive); an exact name match wins over partial ones. CLI lookup."""
+    rows = [engine.fitting_from_row(r) for d in storage.list_doctrines()
+            for r in storage.list_fittings_for_doctrine(str(d[0]))]
+    by_id = [f for f in rows if f.fitting_id == query]
+    if by_id:
+        found = by_id
+    else:
+        q = query.strip().lower()
+        exact = [f for f in rows if f.name.lower() == q]
+        found = exact or [f for f in rows if q in f.name.lower()]
+    return [{"fitting_id": f.fitting_id, "name": f.name, "doctrine_id": f.doctrine_id} for f in found]
+
+
 # --------------------------------------------------------------------- sync
 def do_sync_contracts(progress_callback=None) -> dict:
     return esi_sync.sync_contracts(progress_callback=progress_callback)

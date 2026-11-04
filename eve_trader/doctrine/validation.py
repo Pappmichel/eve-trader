@@ -277,6 +277,31 @@ def stockpile_deviation(type_id: int, required_total: float, allocated: float, i
     return shortfall, SEVERITY_TOLERABLE
 
 
+def max_assemblable(per_set: dict[int, tuple[float, str]],
+                    available_by_type: dict[int, float]) -> tuple[int, dict[int, dict]]:
+    """How many complete sets of one fitting the stock covers right now.
+
+    `per_set` is build_stockpile_soll(..., stockpile_target=1): one hull, the
+    exact modules and every consumable at its full quantity (no cargo
+    tolerance - confirmed with the user 2026-11-04). The fitting gets top
+    priority: the whole stock counts for it, whatever other fittings'
+    stockpile allocation would claim. Returns (max_sets, {type_id: detail})
+    where detail has per_set, item_class, on_hand, sets (how many sets this
+    item alone allows) and short_for_next (missing for max_sets + 1).
+    An empty requirement allows 0 sets."""
+    details: dict[int, dict] = {}
+    for type_id, (qty, item_class) in per_set.items():
+        if qty <= 0:
+            continue
+        on_hand = max(0.0, float(available_by_type.get(type_id, 0.0)))
+        details[type_id] = {"per_set": qty, "item_class": item_class, "on_hand": on_hand,
+                            "sets": int(math.floor(on_hand / qty + 1e-9))}
+    max_sets = min((d["sets"] for d in details.values()), default=0)
+    for d in details.values():
+        d["short_for_next"] = max(0.0, (max_sets + 1) * d["per_set"] - d["on_hand"])
+    return max_sets, details
+
+
 # ---------------------------------------------------------------- Aggregation / ampel (B.8)
 def contract_ampel(last_synced_at: Optional[str], contract_target: int,
                     valid_contracts: int, tolerable_contracts: int) -> str:

@@ -1478,6 +1478,35 @@ export interface FittingStatus {
   hull_name: string
   multibuy_cost: number | null
   multibuy_missing: string[]
+  // Complete fits the stockpile holds right now (null without shared assets)
+  assemblable_now?: number | null
+  assemblable_bottleneck?: string | null
+}
+
+export interface AssemblableRow {
+  type_id: number
+  type_name: string
+  slot_section: string
+  item_class: 'exact' | 'consume'
+  per_set: number
+  on_hand: number
+  sets: number
+  short_for_next: number
+  buildable: boolean
+  also_needed_by: string[]
+}
+
+export interface AssemblableResult {
+  fitting_id: string
+  fitting_name: string
+  hull_type_id: number
+  hull_name: string
+  assets_available: boolean
+  stockpile_locations: DoctrineLocationOption[]
+  max_sets: number | null
+  next_sets: number | null
+  bottlenecks: AssemblableRow[]
+  requirements: AssemblableRow[]
 }
 
 export interface DoctrineStatus {

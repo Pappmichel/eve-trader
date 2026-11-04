@@ -38,7 +38,7 @@ log = logging.getLogger("eve_trader.doctrine.engine")
 # actually protecting against.
 from ..production.config import PRODUCTION_CONFIG
 from ..production import pricing as production_pricing
-from ..production.engine import _PlanContext, _haul_volume, unit_cost_detail
+from ..production.engine import _PlanContext, _haul_volume, classify_activity, unit_cost_detail
 
 
 # ---------------------------------------------------------------- parsing entry point
@@ -370,6 +370,94 @@ def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
     return rows, assets_available, available_by_type
 
 
+# ------------------------------------------------------------ max assemblable
+def _per_set_soll(candidate: _Candidate) -> dict[int, tuple[float, str]]:
+    return validation.build_stockpile_soll(candidate.items, candidate.fitting.hull_type_id, 1)
+
+
+def _assemblable_summary(candidate: _Candidate,
+                         available_by_type: dict[int, float]) -> tuple[int, Optional[str]]:
+    """(max_sets, name of the first bottleneck) for the Doctrine table."""
+    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type)
+    if not details:
+        return 0, None
+    bottleneck = min(details, key=lambda t: (details[t]["sets"], t))
+    row = storage.get_sde_types_bulk([bottleneck]).get(bottleneck)
+    return max_sets, (row[2] if row else str(bottleneck))
+
+
+def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, float],
+                        all_candidates: list[_Candidate]) -> dict:
+    """How many complete fits of `candidate` the Doctrine stockpile holds
+    right now, the items that stop one more and the full requirement table.
+
+    Rules (confirmed with the user 2026-11-04): stockpile only (same filters
+    as the Stockpile page), consumables at full quantity, top priority for
+    this fitting (stock other fittings would claim still counts). Nothing is
+    built or bought; `buildable` only says Production has a recipe, the page
+    asks Production's own Max buildable for the real number."""
+    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type)
+    sde_by_id = storage.get_sde_types_bulk(list(details))
+    hull_id = candidate.fitting.hull_type_id
+
+    needed_by: dict[int, list[str]] = defaultdict(list)
+    for other in all_candidates:
+        if other.fitting.fitting_id == candidate.fitting.fitting_id:
+            continue
+        types = set(other.exact_soll) | set(other.consume_soll) | {other.fitting.hull_type_id}
+        for type_id in types & set(details):
+            if other.fitting.name not in needed_by[type_id]:
+                needed_by[type_id].append(other.fitting.name)
+
+    rows = []
+    for type_id, d in details.items():
+        sde = sde_by_id.get(type_id)
+        rows.append({
+            "type_id": type_id,
+            "type_name": sde[2] if sde else str(type_id),
+            "slot_section": "hull" if type_id == hull_id else (
+                "low/med/high/rig/subsystem/service" if d["item_class"] == "exact" else "drone/cargo/charge"),
+            "item_class": d["item_class"],
+            "per_set": d["per_set"],
+            "on_hand": d["on_hand"],
+            "sets": d["sets"],
+            "short_for_next": d["short_for_next"],
+            "buildable": classify_activity(type_id)[1] is not None,
+            "also_needed_by": sorted(needed_by.get(type_id, [])),
+        })
+    rows.sort(key=lambda r: (r["slot_section"] != "hull", r["type_name"].lower()))
+    bottlenecks = sorted((r for r in rows if r["short_for_next"] > 1e-9),
+                         key=lambda r: (r["sets"], r["type_name"].lower()))
+    return {"max_sets": max_sets, "next_sets": max_sets + 1,
+            "bottlenecks": bottlenecks, "requirements": rows}
+
+
+def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """fitting_assemblable for one stored fitting (an inactive one too),
+    reading the stockpile once. Raises LookupError for an unknown id."""
+    fitting, items = load_fitting_with_items(fitting_id)
+    all_candidates = load_match_candidates()
+    candidate = next((c for c in all_candidates if c.fitting.fitting_id == fitting.fitting_id), None)
+    if candidate is None:
+        exact_soll, consume_soll = validation.build_contract_soll(items)
+        candidate = _Candidate(fitting=fitting, exact_soll=exact_soll, consume_soll=consume_soll, items=items)
+    asset_rows = read_esi("assets", "doctrine")
+    location_ids = list(cfg.effective_stockpile_location_ids)
+    names = storage.get_location_names(location_ids) if location_ids else {}
+    hull_row = storage.get_sde_type(fitting.hull_type_id)
+    result = {
+        "fitting_id": fitting.fitting_id,
+        "fitting_name": fitting.name,
+        "hull_type_id": fitting.hull_type_id,
+        "hull_name": hull_row[2] if hull_row else str(fitting.hull_type_id),
+        "assets_available": bool(asset_rows),
+        "stockpile_locations": [{"location_id": i, "name": names.get(i)} for i in location_ids],
+    }
+    if not asset_rows:
+        return {**result, "max_sets": None, "next_sets": None, "bottlenecks": [], "requirements": []}
+    available = stockpile_available(asset_rows, _per_set_soll(candidate), cfg)
+    return {**result, **fitting_assemblable(candidate, available, all_candidates)}
+
 
 def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpileRow]:
     """Combines the same item across every fitting/doctrine that needs it
@@ -620,7 +708,9 @@ def contract_rows_from_db(rows: list[tuple]) -> list[ContractRow]:
 def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                     stockpile_rows: Optional[list[StockpileRow]] = None,
                     assets_available: bool = True, home: Optional[dict] = None,
-                    pooled_contracts: Optional[dict[str, tuple[int, int]]] = None) -> FittingStatus:
+                    pooled_contracts: Optional[dict[str, tuple[int, int]]] = None,
+                    available_by_type: Optional[dict[int, float]] = None,
+                    candidate: Optional[_Candidate] = None) -> FittingStatus:
     """`home` (Goonmetrics current-price dict, production_pricing.home_prices'
     own return shape) is an optional passthrough for multibuy_cost, same
     "compute once in doctrine_status' loop, don't refetch per fitting"
@@ -631,7 +721,11 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     is the shared active-contract pool: a contract of a shared fit counts for
     every doctrine that fields it. None computes it on demand (standalone
     callers); doctrine_status passes one computed once for the whole pass.
-    Expired contracts never count (handled inside pooled_contract_counts)."""
+    Expired contracts never count (handled inside pooled_contract_counts).
+
+    `available_by_type` (raw stockpile stock, _stockpile_rows) and
+    `candidate` feed the "assemblable now" figure; the standalone path
+    reads both itself."""
     if pooled_contracts is None:
         pooled_contracts = pooled_contract_counts()
     last_synced_at = storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",))
@@ -639,8 +733,18 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     contract_ampel = validation.contract_ampel(last_synced_at, fitting.contract_target, valid, tolerable)
 
     if stockpile_rows is None:
-        all_rows, assets_available = stockpile_rows_for_doctrine(fitting.doctrine_id, cfg)
+        all_rows, assets_available, available_by_type = _stockpile_rows(
+            fitting.doctrine_id, cfg, pooled_contracts)
         stockpile_rows = [r for r in all_rows if r.fitting_id == fitting.fitting_id]
+
+    assemblable_now: Optional[int] = None
+    assemblable_bottleneck: Optional[str] = None
+    if assets_available and available_by_type is not None:
+        if candidate is None:
+            candidate = next((c for c in load_match_candidates()
+                              if c.fitting.fitting_id == fitting.fitting_id), None)
+        if candidate is not None:
+            assemblable_now, assemblable_bottleneck = _assemblable_summary(candidate, available_by_type)
 
     worst_shortfall_pct = 0.0
     worst_severity = None
@@ -686,7 +790,8 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                           worst_stockpile_shortfall_pct=worst_shortfall_pct, last_synced_at=last_synced_at,
                           assets_available=assets_available, hull_type_id=fitting.hull_type_id,
                           hull_name=hull_name, multibuy_cost=multibuy_cost,
-                          multibuy_missing=multibuy_missing)
+                          multibuy_missing=multibuy_missing, assemblable_now=assemblable_now,
+                          assemblable_bottleneck=assemblable_bottleneck)
 
 
 def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> DoctrineStatus:
@@ -694,8 +799,9 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
     fitting_rows = storage.list_fittings_for_doctrine(doctrine.doctrine_id)
     # Shared active-contract pool, computed once tenant-wide for this pass.
     pooled_contracts = pooled_contract_counts()
-    stockpile_rows, assets_available = stockpile_rows_for_doctrine(
-        doctrine.doctrine_id, cfg, pooled_contracts=pooled_contracts)
+    stockpile_rows, assets_available, available_by_type = _stockpile_rows(
+        doctrine.doctrine_id, cfg, pooled_contracts)
+    candidate_by_id = {c.fitting.fitting_id: c for c in load_match_candidates()}
 
     # Fetched once for every fitting's multibuy_cost below, not per-fitting -
     # matches this function's existing stockpile_rows-computed-once
@@ -721,7 +827,9 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
             continue
         own_rows = [r for r in stockpile_rows if r.fitting_id == fitting.fitting_id]
         statuses.append(fitting_status(fitting, cfg, stockpile_rows=own_rows, assets_available=assets_available,
-                                        home=home, pooled_contracts=pooled_contracts))
+                                        home=home, pooled_contracts=pooled_contracts,
+                                        available_by_type=available_by_type,
+                                        candidate=candidate_by_id.get(fitting.fitting_id)))
 
     contract_rollup = validation.worst_ampel([s.contract_status for s in statuses]) if statuses else AMPEL_GRAY
     stockpile_rollup = validation.worst_ampel([s.stockpile_status for s in statuses]) if statuses else AMPEL_GRAY

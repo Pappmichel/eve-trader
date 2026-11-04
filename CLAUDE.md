@@ -1283,6 +1283,26 @@ own ME and rounding. The result is a binary search over a pooled,
 `_expand_all`-shaped walk; the bottleneck is what is short at max + 1. When no
 original is owned it also reports what materials alone would allow.
 
+## Max assemblable fits (Doctrine)
+
+`doctrine/engine.py` `fitting_assemblable` / `assemblable_for_fitting`
+(`GET /api/doctrine/fittings/{id}/assemblable`, CLI `eve-trader doctrine
+max-fit FITTING`, card on Fitting Detail, "Assemblable" column in the
+doctrine table via `FittingStatus.assemblable_now`) answers "how many
+complete fits can I put together right now". Confirmed with the user
+2026-11-04: only the Doctrine stockpile counts (`engine.stockpile_available`,
+the same filter path as the Stockpile page, summed over every stockpile
+location; assembled ships are not stock),
+consumables need their full quantity (no cargo tolerance; charges keep
+their floor of 1), and the checked fitting gets top priority - stock other
+fittings' stockpile allocation would claim still counts, and rows list
+those fittings as `also_needed_by`. Nothing is built or bought. For a
+bottleneck with a Production recipe the page asks Production's own
+`/api/production/max-buildable` on demand (button only with the
+`production` grant); there is no Doctrine-side cross-tool build path.
+The math is pure (`validation.max_assemblable`): per item
+`floor(on_hand / per_fit)`, the minimum is the answer.
+
 ## Mineral shopping lists respect market depth
 
 Both mineral shopping lists (Ore & Minerals `refining/optimizer.py`, Module
