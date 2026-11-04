@@ -25,7 +25,7 @@ from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
 from .engine import apply_reprocessing_yield, ore_ice_yield
 from .models import MineralOption, MineralRequirement, OreOption, OreShortlistRow, ShoppingListPlan
 from .optimizer import OptimizationError, optimize_shopping_list
-from ..paste_parser import merge_duplicate_stacks, parse_paste
+from ..paste_parser import ParsedPasteLine, merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
 from .reprocessing import (
     REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,
@@ -153,6 +153,40 @@ def do_deactivate_ore_shortlist_items(item_ids: list[int]) -> dict:
 def do_activate_ore_shortlist_items(item_ids: list[int]) -> dict:
     storage.activate_ore_shortlist_items(item_ids)
     return {"activated": len(item_ids)}
+
+
+def reprocess_worthwhile_types(quantities: dict[int, float], trading_cfg: TradingConfig = TRADING_CONFIG,
+                               refining_cfg: RefiningConfig = REFINING_CONFIG,
+                               oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict[int, float]:
+    """{type_id: quantity} of the stacks in `quantities` that are worth more
+    reprocessed than sold as-is - the exact decision the Reprocessing page
+    makes for a paste (evaluate_reprocessing_line, C-J prices, this tenant's
+    yield and refining tax). Used by the Sorting tool's "reprocess" tag.
+    Raises ActionError when the C-J order book cannot be read."""
+    type_ids = sorted(t for t, qty in quantities.items() if qty >= 1)
+    if not type_ids:
+        return {}
+    tm = TokenManager(oauth_cfg)
+    client = ESIClient(trading_cfg, tm)
+    mineral_ids = mineral_type_ids_for_lines(type_ids)
+    ore_ice_by_type = ore_ice_families_for_types(type_ids)
+    try:
+        stats_by_id, _fallback = client.structure_order_stats_bulk_or_goonmetrics(
+            trading_cfg.structure_id, sorted(set(type_ids) | set(mineral_ids)), auth_roles=_seller_roles(tm),
+            goonmetrics_market_slug=trading_cfg.structure_market_slug)
+    except ESIError as e:
+        raise ActionError(f"Could not fetch the structure's order book ({e}).") from e
+    names = storage.get_sde_types_bulk(type_ids)
+    worthwhile: dict[int, float] = {}
+    for type_id in type_ids:
+        sde_row = names.get(type_id)
+        line = ParsedPasteLine(raw_line="", name=sde_row[2] if sde_row else str(type_id),
+                               quantity=int(quantities[type_id]), category="", volume_m3=None)
+        row = evaluate_reprocessing_line(line, stats_by_id.get(type_id), stats_by_id, trading_cfg, refining_cfg,
+                                         type_id=type_id, ore_ice_family=ore_ice_by_type.get(type_id))
+        if row.decision == REPROCESS_DECISION:
+            worthwhile[type_id] = quantities[type_id]
+    return worthwhile
 
 
 def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_CONFIG,

@@ -18,6 +18,7 @@ from eve_trader.doctrine.models import StockpileRow
 from eve_trader.esi_data import access as esi_access
 from eve_trader.production import engine as production_engine
 from eve_trader.production.config import ProductionConfig
+from eve_trader.refining import actions as refining_actions
 from eve_trader.sorting import engine as sorting_engine
 from eve_trader.sorting.actions import ActionError, do_add_intake_source
 
@@ -58,6 +59,8 @@ def _stub_everything(monkeypatch):
     # storage.manual_listed_stock_qty - default to none, same no-real-
     # Postgres reasoning as the rest of this fixture.
     monkeypatch.setattr(storage, "manual_listed_stock_qty", lambda type_id, market: 0.0)
+    # The reprocess pot prices live; nothing is worth reprocessing by default.
+    monkeypatch.setattr(refining_actions, "reprocess_worthwhile_types", lambda intake: {})
     monkeypatch.setattr(sorting_engine, "stockpile_rows_for_doctrine", lambda cfg=None: ([], False))
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
@@ -68,7 +71,7 @@ def _stub_everything(monkeypatch):
 
 def test_no_intake_sources_returns_empty_list():
     result = sorting_engine.do_sorting_list()
-    assert result == {"rows": []}
+    assert result == {"rows": [], "reprocess_error": None}
 
 
 def test_empty_intake_returns_empty_list(monkeypatch):
@@ -77,7 +80,7 @@ def test_empty_intake_returns_empty_list(monkeypatch):
 
     result = sorting_engine.do_sorting_list()
 
-    assert result == {"rows": []}
+    assert result == {"rows": [], "reprocess_error": None}
 
 
 def test_item_nobody_wants_is_included_and_marked_unclaimed(monkeypatch):
@@ -521,3 +524,28 @@ def test_sorting_list_loads_sde_types_in_one_bulk_call(monkeypatch):
     assert len(bulk_calls) == 1
     assert sorted(bulk_calls[0]) == [34, 35]
     assert {r["type_id"] for r in result["rows"]} == {34, 35}
+
+
+def test_reprocess_tag_claims_stacks_worth_reprocessing(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None,
+                        **kwargs: [(2048, 5.0), (34, 100.0)])
+    monkeypatch.setattr(refining_actions, "reprocess_worthwhile_types",
+                        lambda intake: {t: q for t, q in intake.items() if t == 2048})
+    rows = {r["type_id"]: r for r in sorting_engine.do_sorting_list()["rows"]}
+    assert rows[2048]["wanted_by_tool"] == [{"tool": "reprocess", "wanted_qty": 5.0}]
+    assert rows[34]["unclaimed"] is True
+
+
+def test_reprocess_pricing_failure_keeps_the_list(monkeypatch):
+    from eve_trader.actions import ActionError
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None,
+                        **kwargs: [(2048, 5.0)])
+
+    def _fail(intake):
+        raise ActionError("Could not fetch the structure's order book (403).")
+    monkeypatch.setattr(refining_actions, "reprocess_worthwhile_types", _fail)
+    result = sorting_engine.do_sorting_list()
+    assert result["rows"][0]["unclaimed"] is True
+    assert "order book" in result["reprocess_error"]

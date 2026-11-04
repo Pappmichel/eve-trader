@@ -16,6 +16,7 @@ const TOOL_LABELS: Record<string, string> = {
   material: 'Material',
   doctrine: 'Doctrine',
   ore_minerals: 'Ore & Minerals',
+  reprocess: 'Reprocess',
 }
 
 function restQty(row: SortingRow): number {
@@ -115,8 +116,12 @@ export default function SortingOverview() {
       <HintCard>
         Read-only. EVE has no concept of reserving a stack for a tool — if several pots want more than is
         sitting in the intake, you still decide by hand where each unit goes. Configure intake hangars on
-        Settings.
+        Settings. &quot;Reprocess&quot; marks stacks worth more reprocessed than sold as-is at C-J (same check
+        as Ore &amp; Minerals&apos; Reprocessing page).
       </HintCard>
+      {data?.reprocess_error && (
+        <Text size="xs" c="warn">Reprocess check unavailable: {data.reprocess_error}</Text>
+      )}
       {(isLoading || isError || rows.length > 0) && (
         <Group align="flex-end">
           <MultiSelect

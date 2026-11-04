@@ -1120,6 +1120,8 @@ class SortingRow(_Base):
 
 class SortingList(BaseModel):
     rows: list[SortingRow]
+    # Why the "reprocess" pot is missing (live C-J pricing failed), else None.
+    reprocess_error: Optional[str] = None
 
 
 class SortingIntakeSource(_Base):

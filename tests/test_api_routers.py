@@ -2139,7 +2139,7 @@ def test_get_sorting_list_serializes_action_result(monkeypatch):
         {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
          "by_source": [{"source_label": "Alice (Hangar)", "qty": 500.0}],
          "wanted_by_tool": [{"tool": "market_listing", "wanted_qty": 100.0}], "unclaimed": False},
-    ]}
+    ], "reprocess_error": None}
 
 
 def test_get_sorting_list_action_error_maps_to_400(monkeypatch):
