@@ -78,7 +78,7 @@ export default function StrategicReserve() {
     <Stack>
       <Title order={4}>Strategic Reserve</Title>
       <Text size="sm" c="dimmed">
-        Fits to hold in one hangar. Production and Trading treat everything in that hangar as if it did not exist, and
+        Fits to hold in one hangar, or one container in it. Production and Trading treat everything in that hangar as if it did not exist, and
         it does not count as Doctrine stockpile. Fittings draw on it in doctrine order, so a shared module counts once.
       </Text>
 
@@ -95,11 +95,22 @@ export default function StrategicReserve() {
           Characters page. Production and Trading already ignore the hangar.
         </Alert>
       )}
+      {data?.state === 'container_missing' && (
+        <Alert color="warn" variant="light" title="Container not found">
+          The chosen container is no longer in the assets (repackaged, moved to another owner, or destroyed), so nothing
+          is hidden or counted right now. Choose another one in Settings.
+        </Alert>
+      )}
       {hangar && (
         <Group gap="xs">
           <Badge variant="outline" color="gray" style={{ textTransform: 'none' }}>
             {hangar.hangar_flag} at {hangar.location_name ?? hangar.location_id}
           </Badge>
+          {hangar.container_item_id && (
+            <Badge variant="outline" color="gray" style={{ textTransform: 'none' }}>
+              Container {hangar.container_name ?? hangar.container_item_id}
+            </Badge>
+          )}
           <Badge variant="outline" color="gray" style={{ textTransform: 'none' }}>
             Hulls {data?.include_hulls ? 'included' : 'not included'}
           </Badge>
@@ -119,7 +130,7 @@ export default function StrategicReserve() {
       )}
       {(data?.assembled_ships_not_counted ?? 0) > 0 && (
         <Text size="xs" c="dimmed">
-          {qty(data?.assembled_ships_not_counted)} assembled ship(s) in this hangar are not counted, only packaged hulls and loose items are.
+          {qty(data?.assembled_ships_not_counted)} assembled ship(s) in the reserve are not counted, only packaged hulls and loose items are.
         </Text>
       )}
 

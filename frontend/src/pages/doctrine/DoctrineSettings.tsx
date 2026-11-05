@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Alert, Stack, Title, Text, SimpleGrid, NumberInput, Select, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
 
 import { doctrineApi } from '../../api/client'
-import type { DoctrineSettings as DoctrineSettingsT, ReserveHangarOption } from '../../api/types'
+import type { DoctrineSettings as DoctrineSettingsT, ReserveContainerOption, ReserveHangarOption } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
@@ -16,6 +16,13 @@ function locationLabel(o: { location_id: number; name: string | null }) {
 
 function hangarKey(ownerType: string | null, ownerId: number | null, locationId: number | null, flag: string | null) {
   return ownerType && ownerId && locationId && flag ? `${ownerType}|${ownerId}|${locationId}|${flag}` : null
+}
+
+// Most containers have no name and many share a type: the item count and id
+// tell them apart.
+function containerLabel(c: ReserveContainerOption) {
+  const name = c.item_name ? `${c.item_name} (${c.type_name})` : c.type_name
+  return `${name} - ${c.item_rows} item${c.item_rows === 1 ? '' : 's'} - ${c.item_id}`
 }
 
 function hangarLabel(o: ReserveHangarOption) {
@@ -82,7 +89,18 @@ export default function DoctrineSettings() {
       strategic_reserve_owner_id: ownerId ? Number(ownerId) : null,
       strategic_reserve_location_id: locationId ? Number(locationId) : null,
       strategic_reserve_hangar_flag: flag,
+      strategic_reserve_container_id: null,   // a container belongs to one hangar
     } : f))
+  }
+  const selectedHangar = (reserveHangars ?? []).find(
+    (o) => hangarKey(o.owner_type, o.owner_id, o.location_id, o.hangar_flag) === reserveValue)
+  const containerOptions = (selectedHangar?.containers ?? []).map((c) => ({
+    value: String(c.item_id), label: containerLabel(c),
+  }))
+  // A saved container that is gone stays visible so it can be cleared.
+  const savedContainer = form.strategic_reserve_container_id
+  if (savedContainer && !containerOptions.some((o) => o.value === String(savedContainer))) {
+    containerOptions.unshift({ value: String(savedContainer), label: `${savedContainer} (not found)` })
   }
 
   return (
@@ -123,6 +141,12 @@ export default function DoctrineSettings() {
       <Select label="Reserve hangar" searchable clearable placeholder="None" data={reserveOptions}
         description="Production and Trading treat everything in this hangar as if it did not exist, and it does not count as Doctrine stockpile. Total Wealth and Realized still see it."
         value={reserveValue} onChange={setReserveHangar} />
+      {reserveValue && (
+        <Select label="Container in this hangar" searchable clearable placeholder="Whole hangar" data={containerOptions}
+          description="Optional. Only this container and what is nested in it is the reserve; the rest of the hangar stays visible to every tool."
+          value={savedContainer ? String(savedContainer) : null}
+          onChange={(v) => set('strategic_reserve_container_id', v ? Number(v) : null)} />
+      )}
       <Switch label="Reserve fits include the hull" checked={form.strategic_reserve_include_hulls}
         onChange={(e) => set('strategic_reserve_include_hulls', e.currentTarget.checked)} />
 
@@ -181,6 +205,7 @@ export default function DoctrineSettings() {
         strategic_reserve_owner_id: form.strategic_reserve_owner_id,
         strategic_reserve_location_id: form.strategic_reserve_location_id,
         strategic_reserve_hangar_flag: form.strategic_reserve_hangar_flag,
+        strategic_reserve_container_id: form.strategic_reserve_container_id,
         strategic_reserve_include_hulls: form.strategic_reserve_include_hulls,
       })}>
         Save Settings

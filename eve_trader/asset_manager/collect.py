@@ -236,8 +236,10 @@ def _enrich(rows: list[dict], division_names: dict[tuple[int, int], str]) -> Non
         if r["source"] == "esi":
             r["badges"] = labels.badges_for_asset(
                 r["flag"], r["hangar_flag"], r["assembled_or_fitted"], is_blueprint, r["is_copy"])
-            reserve_flag = storage.hangar_flag_for(reserve_hangar, r["owner_type"], r["owner_id"], r["location_id"])
-            if reserve_flag is not None and reserve_flag == r["hangar_flag"]:
+            if storage.is_in_hangar(
+                    {"item_id": r["item_id"], "resolved_location_id": r["location_id"],
+                     "resolved_hangar_flag": r["hangar_flag"]},
+                    r["owner_type"], r["owner_id"], reserve_hangar):
                 r["badges"].append("strategic_reserve")
         else:
             r["badges"] = [r["source"]]

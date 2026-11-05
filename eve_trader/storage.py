@@ -5084,6 +5084,12 @@ class ExcludedHangar:
     owner_id: int
     location_id: int
     flag: str
+    # With a container, only that container and everything nested in it is
+    # hidden, wherever it sits; the rest of the division stays. `item_ids` is
+    # that subtree (asset_subtree_item_ids). An item id cannot be matched by a
+    # flag: a nested row's own flag says "Unlocked", not the division.
+    container_item_id: Optional[int] = None
+    item_ids: frozenset = frozenset()
 
     @property
     def owner_column(self) -> str:
@@ -5105,6 +5111,8 @@ def _exclude_hangar_clause(table: str, hangar: Optional[ExcludedHangar]) -> tupl
     table needs no clause."""
     if hangar is None or table != hangar.asset_table:
         return "", ()
+    if hangar.container_item_id is not None:
+        return f" AND NOT ({table}.item_id = ANY(?))", (sorted(hangar.item_ids),)
     return (f" AND NOT COALESCE(resolved_location_id = ? AND resolved_hangar_flag = ? "
             f"AND {hangar.owner_column} = ?, FALSE)",
             (int(hangar.location_id), hangar.flag, int(hangar.owner_id)))
@@ -5115,6 +5123,8 @@ def _exclude_hangar_blueprint_clause(table: str, hangar: Optional[ExcludedHangar
     blueprint is also an asset row with the same item_id, so ask that row."""
     if hangar is None or table != hangar.blueprint_table:
         return "", ()
+    if hangar.container_item_id is not None:
+        return f" AND NOT ({table}.item_id = ANY(?))", (sorted(hangar.item_ids),)
     return (f" AND NOT EXISTS (SELECT 1 FROM {hangar.asset_table} a WHERE a.item_id = {table}.item_id "
             f"AND a.{hangar.owner_column} = ? AND a.resolved_location_id = ? AND a.resolved_hangar_flag = ?)",
             (int(hangar.owner_id), int(hangar.location_id), hangar.flag))
@@ -5124,8 +5134,11 @@ def hangar_flag_for(hangar: Optional[ExcludedHangar], owner_type: Optional[str],
                     location_id: Optional[int]) -> Optional[str]:
     """The flag to skip for this owner at this location, or None. For live ESI
     lists whose caller already narrowed to one location (a corp's rows sit
-    under its Office id there, so location_id cannot be compared per row)."""
-    if (hangar is None or owner_type != hangar.owner_type or owner_id is None or location_id is None
+    under its Office id there, so location_id cannot be compared per row).
+    None for a container reserve: no flag describes it, and these callers only
+    count items lying directly in a division, never a container's contents."""
+    if (hangar is None or hangar.container_item_id is not None
+            or owner_type != hangar.owner_type or owner_id is None or location_id is None
             or int(owner_id) != int(hangar.owner_id) or int(location_id) != int(hangar.location_id)):
         return None
     return hangar.flag
@@ -5136,9 +5149,38 @@ def is_in_hangar(row: dict, owner_type: Optional[str], owner_id: Optional[int],
     """One asset row, snapshot or live ESI (a live row has only the raw fields;
     a nested live row then does not match, and its callers do not count nested
     rows anyway)."""
+    if hangar is not None and hangar.container_item_id is not None:
+        return (owner_type == hangar.owner_type and owner_id is not None
+                and int(owner_id) == int(hangar.owner_id) and row.get("item_id") in hangar.item_ids)
     location_id = row.get("resolved_location_id") or row.get("location_id")
     flag = hangar_flag_for(hangar, owner_type, owner_id, location_id)
     return flag is not None and (row.get("resolved_hangar_flag") or row.get("location_flag")) == flag
+
+
+def asset_subtree_item_ids(owner_type: str, owner_id: int, root_item_id: int) -> frozenset:
+    """`root_item_id` and every asset of this owner nested in it, at any depth.
+    Empty when the root no longer exists (repackaged, sold, destroyed)."""
+    table, column = (("character_assets", "owner_character_id") if owner_type == "character"
+                     else ("corp_assets", "owner_corporation_id"))
+    with connect() as conn:
+        rows = conn.execute(f"SELECT item_id, location_id FROM {table} WHERE {column} = ?", (int(owner_id),)).fetchall()
+    children: dict[int, list[int]] = {}
+    known = set()
+    for item_id, location_id in rows:
+        known.add(int(item_id))
+        if location_id is not None:
+            children.setdefault(int(location_id), []).append(int(item_id))
+    root = int(root_item_id)
+    if root not in known:
+        return frozenset()
+    found = {root}
+    stack = [root]
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in found:
+                found.add(child)
+                stack.append(child)
+    return frozenset(found)
 
 
 def location_ids_in_systems(system_ids: list[int]) -> list[int]:

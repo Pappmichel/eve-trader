@@ -607,11 +607,16 @@ def doctrine_reserve(tenant_id: str | None):
         click.echo("No strategic reserve hangar set (Doctrine Settings).")
         return
     hangar = result["hangar"]
+    if hangar["container_item_id"]:
+        click.echo(f"Container: {hangar['container_name'] or hangar['container_item_id']}")
     click.echo(f"Hangar: {hangar['hangar_flag']} at {hangar['location_name'] or hangar['location_id']}"
                f" ({hangar['owner_type']} {hangar['owner_id']}), hulls "
                f"{'included' if result['include_hulls'] else 'not included'}")
     if result["state"] == "not_shared":
         click.echo("The hangar's owner does not share Assets with Doctrine - nothing to count.")
+        return
+    if result["state"] == "container_missing":
+        click.echo("The chosen container no longer exists - nothing is hidden or counted.")
         return
     if result["assembled_ships_not_counted"]:
         click.echo(f"Assembled ships in the hangar, not counted: {result['assembled_ships_not_counted']:,}")

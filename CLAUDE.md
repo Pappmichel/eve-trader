@@ -1362,7 +1362,12 @@ per row under the same rules (`validation.short_for_sets`).
 `doctrine_fittings.reserve_target`. One hangar, identified by owner, structure
 and division together (`DoctrineConfig.strategic_reserve_*`,
 `storage.ExcludedHangar`): a division flag alone repeats at every structure and
-for every owner. The tab allocates the hangar's stock in Doctrine priority order
+for every owner. A container in that hangar can narrow it
+(`strategic_reserve_container_id`, added on the user's request 2026-11-05): then
+only that container and everything nested in it is the reserve, matched by item
+id (`storage.asset_subtree_item_ids`, 60 s cache), and the rest of the division
+stays visible. A container that no longer exists hides nothing and the tab says
+so (`container_missing`). The tab allocates the hangar's stock in Doctrine priority order
 (`allocate_stockpile_with_equivalents`), so a shared module counts once; the
 hull switch is global. Only loose items and packaged hulls count: assembled
 ships and their fitting are not stock here either, and the tab says how many it

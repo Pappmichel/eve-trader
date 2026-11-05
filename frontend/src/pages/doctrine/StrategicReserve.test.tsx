@@ -42,6 +42,15 @@ describe('Doctrine StrategicReserve', () => {
     expect(await screen.findByText('Hangar owner not shared')).toBeTruthy()
   })
 
+  it('says when the chosen container is gone and names a chosen one', async () => {
+    renderPage({
+      ...BASE, state: 'container_missing',
+      hangar: { ...BASE.hangar, container_item_id: 555, container_name: 'Fleet Reserve' },
+    })
+    expect(await screen.findByText('Container not found')).toBeTruthy()
+    expect(screen.getByText('Container Fleet Reserve')).toBeTruthy()
+  })
+
   it('warns about fittings below their target', async () => {
     renderPage({
       ...BASE,

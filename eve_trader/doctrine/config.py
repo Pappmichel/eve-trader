@@ -90,6 +90,9 @@ class DoctrineConfig:
     strategic_reserve_owner_id: Optional[int] = None
     strategic_reserve_location_id: Optional[int] = None
     strategic_reserve_hangar_flag: Optional[str] = None
+    # Optional: only this container (and what is nested in it) is the reserve,
+    # the rest of the division stays visible to every tool.
+    strategic_reserve_container_id: Optional[int] = None
     # Whether a reserve fit needs its hull. A hull in the hangar stays hidden
     # from Production and Trading either way.
     strategic_reserve_include_hulls: bool = True
@@ -147,6 +150,8 @@ def validate_doctrine_overrides(overrides: dict) -> None:
             if values[3] not in HANGAR_DIVISION_FLAGS:
                 raise ConfigError(f"strategic_reserve_hangar_flag: {values[3]!r} is not a known hangar division. "
                                   f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
+        elif overrides.get("strategic_reserve_container_id") is not None:
+            raise ConfigError("Strategic reserve: a container needs its hangar.")
     if "stockpile_hangar_flags" in overrides:
         bad = [f for f in overrides["stockpile_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:

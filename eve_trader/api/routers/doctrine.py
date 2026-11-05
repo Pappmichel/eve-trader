@@ -275,6 +275,7 @@ class DoctrineSettings(BaseModel):
     strategic_reserve_owner_id: Optional[int] = None
     strategic_reserve_location_id: Optional[int] = None
     strategic_reserve_hangar_flag: Optional[str] = None
+    strategic_reserve_container_id: Optional[int] = None
     strategic_reserve_include_hulls: bool = True
 
 
@@ -304,7 +305,8 @@ def update_settings(updates: DoctrineSettings):
     # switch) must not reset them.
     for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants",
                 "strategic_reserve_owner_type", "strategic_reserve_owner_id", "strategic_reserve_location_id",
-                "strategic_reserve_hangar_flag", "strategic_reserve_include_hulls"):
+                "strategic_reserve_hangar_flag", "strategic_reserve_container_id",
+                "strategic_reserve_include_hulls"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)
