@@ -652,6 +652,7 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "strategic_reserve_owner_id": cfg.strategic_reserve_owner_id,
         "strategic_reserve_location_id": cfg.strategic_reserve_location_id,
         "strategic_reserve_hangar_flag": cfg.strategic_reserve_hangar_flag,
+        "strategic_reserve_container_id": cfg.strategic_reserve_container_id,
         "strategic_reserve_include_hulls": cfg.strategic_reserve_include_hulls,
     }
 
@@ -828,6 +829,22 @@ def _reject_intake_hangar(updates: dict) -> None:
             raise ActionError("This hangar is a Sorting intake source, so it cannot be the strategic reserve.")
 
 
+def _reject_foreign_container(updates: dict, cfg: DoctrineConfig) -> None:
+    """A newly chosen container must lie in the chosen hangar. An unchanged one
+    is not rechecked: once it is gone, other settings must stay saveable."""
+    container = updates.get("strategic_reserve_container_id")
+    if container is None or container == cfg.strategic_reserve_container_id:
+        return
+    for option in reserve.hangar_options():
+        if (option["owner_type"] == updates.get("strategic_reserve_owner_type")
+                and option["owner_id"] == updates.get("strategic_reserve_owner_id")
+                and option["location_id"] == updates.get("strategic_reserve_location_id")
+                and option["hangar_flag"] == updates.get("strategic_reserve_hangar_flag")
+                and any(c["item_id"] == container for c in option["containers"])):
+            return
+    raise ActionError("That container is not in the chosen hangar.")
+
+
 def _reserve_changed(updates: dict, cfg: DoctrineConfig) -> bool:
     return any(key in updates and updates[key] != getattr(cfg, key) for key in reserve.HANGAR_FIELDS)
 
@@ -863,6 +880,7 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
                       and bool(updates["accept_equivalent_variants"]) != cfg.accept_equivalent_variants)
     reserve_changed = _reserve_changed(updates, cfg)
     _reject_intake_hangar(updates)
+    _reject_foreign_container(updates, cfg)
     try:
         validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)

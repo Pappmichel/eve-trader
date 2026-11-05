@@ -1586,7 +1586,17 @@ export interface DoctrineSettings {
   strategic_reserve_owner_id: number | null
   strategic_reserve_location_id: number | null
   strategic_reserve_hangar_flag: string | null
+  // Optional: only this container in the hangar is the reserve.
+  strategic_reserve_container_id: number | null
   strategic_reserve_include_hulls: boolean
+}
+
+export interface ReserveContainerOption {
+  item_id: number
+  type_name: string
+  item_name: string | null
+  // Items inside it, nested ones included.
+  item_rows: number
 }
 
 export interface ReserveHangarOption {
@@ -1598,6 +1608,7 @@ export interface ReserveHangarOption {
   hangar_flag: string
   division_name: string | null
   item_rows: number
+  containers: ReserveContainerOption[]
 }
 
 export interface ReserveFittingRow {
@@ -1621,13 +1632,15 @@ export interface ReserveMissingRow {
 }
 
 export interface StrategicReserveStatus {
-  state: 'ok' | 'not_configured' | 'not_shared'
+  state: 'ok' | 'not_configured' | 'not_shared' | 'container_missing'
   hangar: {
     owner_type: string
     owner_id: number
     location_id: number
     location_name: string | null
     hangar_flag: string
+    container_item_id: number | null
+    container_name: string | null
   } | null
   include_hulls: boolean
   assembled_ships_not_counted: number

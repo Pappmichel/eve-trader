@@ -20,7 +20,13 @@ from ..production.constants import HANGAR_DIVISION_FLAGS
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 
 HANGAR_FIELDS = ("strategic_reserve_owner_type", "strategic_reserve_owner_id",
-                 "strategic_reserve_location_id", "strategic_reserve_hangar_flag")
+                 "strategic_reserve_location_id", "strategic_reserve_hangar_flag",
+                 "strategic_reserve_container_id")
+
+# Cargo Container, Secure Cargo Container, Audit Log Secure Container, Freight
+# Container. Ships also hold assets but are not offered: an assembled ship is
+# not stock.
+CONTAINER_GROUP_IDS = frozenset({12, 340, 448, 649})
 
 # tenant -> (checked_at, holds the doctrine grant). active_hangar runs once per
 # stock read, so the grant lookup must not be a query every time.
@@ -28,10 +34,31 @@ _GRANT_TTL_SECONDS = 60.0
 _grant_cache: dict[Optional[str], tuple[float, bool]] = {}
 _grant_lock = threading.Lock()
 
+# (tenant, owner_type, owner_id, container) -> (read_at, subtree). Short TTL plus
+# invalidation on a Settings save, same shape as Production's excluded locations:
+# configured_hangar runs once per stock read, and an asset sync shows up within
+# a minute.
+_SUBTREE_TTL_SECONDS = 60.0
+_subtree_cache: dict[tuple, tuple[float, frozenset]] = {}
+
 
 def invalidate_cache() -> None:
     with _grant_lock:
         _grant_cache.clear()
+        _subtree_cache.clear()
+
+
+def _container_items(owner_type: str, owner_id: int, container_id: int) -> frozenset:
+    key = (storage.get_current_tenant(), owner_type, owner_id, container_id)
+    now = time.time()
+    with _grant_lock:
+        cached = _subtree_cache.get(key)
+    if cached is not None and now - cached[0] < _SUBTREE_TTL_SECONDS:
+        return cached[1]
+    items = storage.asset_subtree_item_ids(owner_type, owner_id, container_id)
+    with _grant_lock:
+        _subtree_cache[key] = (now, items)
+    return items
 
 
 def _holds_doctrine_grant() -> bool:
@@ -55,9 +82,13 @@ def configured_hangar(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> Optional[storage
     if not (cfg.strategic_reserve_owner_type and cfg.strategic_reserve_owner_id
             and cfg.strategic_reserve_location_id and cfg.strategic_reserve_hangar_flag):
         return None
+    owner_type, owner_id = cfg.strategic_reserve_owner_type, int(cfg.strategic_reserve_owner_id)
+    container = int(cfg.strategic_reserve_container_id) if cfg.strategic_reserve_container_id else None
     return storage.ExcludedHangar(
-        owner_type=cfg.strategic_reserve_owner_type, owner_id=int(cfg.strategic_reserve_owner_id),
-        location_id=int(cfg.strategic_reserve_location_id), flag=cfg.strategic_reserve_hangar_flag)
+        owner_type=owner_type, owner_id=owner_id,
+        location_id=int(cfg.strategic_reserve_location_id), flag=cfg.strategic_reserve_hangar_flag,
+        container_item_id=container,
+        item_ids=_container_items(owner_type, owner_id, container) if container else frozenset())
 
 
 def active_hangar(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> Optional[storage.ExcludedHangar]:
@@ -150,6 +181,8 @@ def status(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         result["hangar"] = _describe_hangar(hangar)
         if not is_shared("assets", "doctrine", hangar.owner_type, hangar.owner_id):
             result["state"] = "not_shared"
+        elif hangar.container_item_id is not None and not hangar.item_ids:
+            result["state"] = "container_missing"
         else:
             result["state"] = "ok"
             rows = [r for r in read_esi("assets", "doctrine") if is_reserve_row(r, hangar)]
@@ -199,8 +232,13 @@ def status(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
 
 def _describe_hangar(hangar: storage.ExcludedHangar) -> dict:
     names = storage.get_location_names([hangar.location_id])
-    return {"owner_type": hangar.owner_type, "owner_id": hangar.owner_id, "location_id": hangar.location_id,
-            "location_name": names.get(hangar.location_id), "hangar_flag": hangar.flag}
+    described = {"owner_type": hangar.owner_type, "owner_id": hangar.owner_id, "location_id": hangar.location_id,
+                 "location_name": names.get(hangar.location_id), "hangar_flag": hangar.flag,
+                 "container_item_id": hangar.container_item_id, "container_name": None}
+    if hangar.container_item_id is not None:
+        described["container_name"] = storage.load_asset_item_names(
+            hangar.asset_table, hangar.owner_id).get(hangar.container_item_id)
+    return described
 
 
 def hangar_options() -> list[dict]:
@@ -209,7 +247,8 @@ def hangar_options() -> list[dict]:
     from ..esi_data.access import read_esi
 
     groups: dict[tuple, dict] = {}
-    for r in read_esi("assets", "doctrine"):
+    rows = read_esi("assets", "doctrine")
+    for r in rows:
         location_id, flag = r.get("resolved_location_id"), r.get("resolved_hangar_flag")
         if location_id is None or flag not in HANGAR_DIVISION_FLAGS:
             continue
@@ -221,9 +260,51 @@ def hangar_options() -> list[dict]:
     divisions = {(corp, f"CorpSAG{division}"): name
                  for corp, kind, division, name in storage.load_corp_divisions(corp_ids)
                  if kind == "hangar" and name}
+    containers = _containers_by_hangar(rows, groups)
     options = [{"owner_type": owner_type, "owner_id": owner_id, "owner_name": g["owner_name"],
                 "location_id": location_id, "location_name": names.get(location_id),
-                "hangar_flag": flag, "division_name": divisions.get((owner_id, flag)), "item_rows": g["item_rows"]}
+                "hangar_flag": flag, "division_name": divisions.get((owner_id, flag)), "item_rows": g["item_rows"],
+                "containers": containers.get((owner_type, owner_id, location_id, flag), [])}
                for (owner_type, owner_id, location_id, flag), g in groups.items()]
     options.sort(key=lambda o: (o["owner_name"] or "", o["location_name"] or "", o["hangar_flag"]))
     return options
+
+
+def _containers_by_hangar(rows: list[dict], hangars: dict[tuple, dict]) -> dict[tuple, list[dict]]:
+    """The containers in each hangar, nested ones too. Most have no name and
+    many share a type, so each carries how many items it holds."""
+    singletons = [r for r in rows if r.get("is_singleton")]
+    types = storage.get_sde_types_bulk(sorted({r["type_id"] for r in singletons})) if singletons else {}
+    found = [r for r in singletons
+             if r["type_id"] in types and types[r["type_id"]][1] in CONTAINER_GROUP_IDS
+             and (r["owner_type"], r["owner_id"], r.get("resolved_location_id"), r.get("resolved_hangar_flag")) in hangars]
+    if not found:
+        return {}
+    children: dict[tuple, list[int]] = defaultdict(list)
+    for r in rows:
+        children[(r["owner_type"], r["owner_id"], r["location_id"])].append(r["item_id"])
+
+    def _contents(owner_type: str, owner_id: int, item_id: int) -> int:
+        seen: set[int] = set()
+        stack = [item_id]
+        while stack:
+            for child in children.get((owner_type, owner_id, stack.pop()), ()):
+                if child not in seen:
+                    seen.add(child)
+                    stack.append(child)
+        return len(seen)
+
+    names: dict[tuple, dict[int, str]] = {}
+    result: dict[tuple, list[dict]] = defaultdict(list)
+    for r in found:
+        owner = (r["owner_type"], r["owner_id"])
+        if owner not in names:
+            table = "character_assets" if r["owner_type"] == "character" else "corp_assets"
+            names[owner] = storage.load_asset_item_names(table, r["owner_id"])
+        key = (*owner, r["resolved_location_id"], r["resolved_hangar_flag"])
+        result[key].append({"item_id": r["item_id"], "type_name": types[r["type_id"]][2],
+                            "item_name": names[owner].get(r["item_id"]),
+                            "item_rows": _contents(*owner, r["item_id"])})
+    for containers in result.values():
+        containers.sort(key=lambda c: (c["item_name"] is None, c["item_name"] or "", -c["item_rows"], c["item_id"]))
+    return result
