@@ -120,9 +120,9 @@ _run_mip = _solve_mip_in_child
 
 def _useful_portions(source: SupplySource, required: dict[int, float]) -> int:
     """Portions that already cover every requirement this source yields. Buying
-    more only adds cost, so this upper bound never cuts off an optimum. Finite
-    bounds also matter to HiGHS: with unbounded integer columns and large
-    requirements it hung on aarch64, ignoring its time limit (see mip_worker.py)."""
+    more only adds cost, so this upper bound never cuts off an optimum. The bound
+    size matters to HiGHS: with bounds in the billions (listed market depth) it
+    hung on aarch64, ignoring its time limit (see mip_worker.py and CLAUDE.md)."""
     return max((math.ceil(required[m] / qty) for m, qty in source.yield_per_portion.items()
                 if m in required and qty > 0), default=0)
 
