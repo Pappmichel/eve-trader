@@ -19,7 +19,7 @@ Python 3.12 cannot pin wheels that refuse 3.10/3.11 (P5-01: `numpy==2.5.3`,
 `websockets==17.1` requires Python >=3.11).
 
 Python 3.10 needs two extra packages that 3.11+ ships in the stdlib (or
-does not need). They are pinned in `requirements.lock` with environment
+does not need). They are pinned in `requirements.txt` with environment
 markers so 3.11/3.12 installs do not pull them:
 
 - `exceptiongroup==1.3.1; python_version < "3.11"` — runtime: `anyio`
@@ -34,8 +34,9 @@ marker lines back from the previous lock before committing.
 - `pyproject.toml` declares compatible ranges plus an **exact** pin for
   `itsdangerous==2.2.0` (session cookies:
   `URLSafeTimedSerializer.loads(..., return_timestamp=True)`).
-- `requirements.lock` pins every runtime and test package to the versions
-  last reviewed together. That is what production and CI install.
+- `requirements.txt` pins every runtime and test package to the versions
+  last reviewed together. Production and CI install it through
+  `requirements.lock`.
 
 ## Install (dev, CI, deploy, Windows `start.bat`)
 
@@ -48,17 +49,19 @@ Do not `pip install -e .[test]` on a gated deployment: that re-resolves
 ranges and can move session-signing code. `start.bat` is the Windows
 local-dev double-click helper; it uses this same lock strategy.
 
-`requirements.txt` is a compatibility shim (`-r requirements.lock`) for
-tools that still point at that filename. Prefer `requirements.lock`
-directly.
+`requirements.lock` only holds `-r requirements.txt`: it is the install
+command's entry point. The pins live in `requirements.txt` because Dependabot
+does not read a `.lock` file; with the pins there it failed every pip update
+run from 2026-09-14 to 2026-11-05 ("Could not open requirements file").
 
 Regenerate the lockfile **on Python 3.11** (one of the two CI versions),
-then confirm a clean 3.10 venv can also `pip install -r requirements.lock`
+then confirm a clean 3.10 venv can also `pip install -r requirements.txt`
 and restores the `exceptiongroup` / `tomli` marker pins.
 
 ## Vulnerability scanning
 
-CI runs `pip-audit -r requirements.lock` on every push/PR (backend job). A
+CI runs `pip-audit -r requirements.lock` (which includes the pins) on every
+push/PR (backend job). A
 finding is a failed check, not a silent log line. The frontend job mirrors
 this with `npm audit --omit dev` against `frontend/package-lock.json` (F-06,
 business-logic audit follow-up, 2026-09-26) - `--omit dev` matches
@@ -79,7 +82,7 @@ a tag moves - nothing extra to configure there.
 1. Review the changelog (for `itsdangerous`, re-read
    `access_gate.read_session_token` / `return_timestamp` behaviour).
 2. Install the new version in a venv, run `pytest`, run `pip-audit`.
-3. Rewrite `requirements.lock` from `pip freeze` (see the header comment in
+3. Rewrite `requirements.txt` from `pip freeze` (see the header comment in
    that file). Keep the `itsdangerous==` line in `pyproject.toml` in sync.
    Restore the Python 3.10 environment-marker pins if freeze dropped them.
 4. Open a PR. Dependabot PRs follow the same review; they are not
