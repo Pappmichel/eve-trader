@@ -170,6 +170,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
             ))
     direct_purchases.sort(key=lambda p: -p.total_cost)
 
+    landed_prices = supply.landed_price_by_mineral(solution, sources, mineral_ids, direct_tiers)
     coverage = []
     for mineral_id in mineral_ids:
         ore_qty = delivered.get(mineral_id, 0)
@@ -179,6 +180,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
             type_id=mineral_id, name=names[mineral_id], required=required[mineral_id],
             from_ore=ore_qty, from_direct=direct_qty, delivered=total,
             surplus=max(0.0, total - required[mineral_id]), short=solution.short.get(mineral_id, 0),
+            landed_price_per_unit=landed_prices[mineral_id],
         ))
     coverage.sort(key=lambda c: c.name)
 

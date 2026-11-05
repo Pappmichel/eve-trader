@@ -182,6 +182,8 @@ class MineralCoverage:
     delivered: int
     surplus: float
     short: int = 0                # not available at an acceptable price anywhere
+    # Effective cost per delivered unit (mineral_supply_lp.landed_price_by_mineral).
+    landed_price_per_unit: Optional[float] = None
 
 
 @dataclass

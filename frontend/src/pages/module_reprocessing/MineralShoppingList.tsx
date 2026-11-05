@@ -15,7 +15,7 @@ import { DataTable } from '../../components/DataTable'
 import { ApproximateAlert, DEPTH_HINT, ShortCell, ShortfallAlert, SourceBadge } from '../refining/shoppingDepth'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
-import { isk, qty } from '../../format'
+import { isk, iskUnit, qty } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 // Same feature and UX shape as Ore & Minerals' own Mineral Shopping List
@@ -118,7 +118,7 @@ export default function MineralShoppingList() {
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
-    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => isk(i.getValue()) },
+    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => iskUnit(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
   ], [allHubs, hub])
 
@@ -127,14 +127,14 @@ export default function MineralShoppingList() {
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m³)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
-    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => isk(i.getValue()) },
+    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => iskUnit(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
   ], [])
 
   const directColumns = useMemo<ColumnDef<DirectMineralPurchase, any>[]>(() => [
     { header: 'Buy Directly', accessorKey: 'name', size: 220 },
     { header: 'Quantity', accessorKey: 'quantity', size: 130, cell: (i) => qty(i.getValue()) },
-    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => isk(i.getValue()) },
+    { header: 'Avg Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 140, cell: (i) => iskUnit(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
     {
       header: 'Source', accessorKey: 'source', size: 170,
@@ -148,6 +148,7 @@ export default function MineralShoppingList() {
     { header: 'From Reprocessing', accessorKey: 'from_reprocessing', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Bought Directly', accessorKey: 'from_direct', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Delivered', accessorKey: 'delivered', size: 120, cell: (i) => qty(i.getValue()) },
+    { header: 'Landed / Unit', accessorKey: 'landed_price_per_unit', size: 120, cell: (i) => iskUnit(i.getValue()) },
     {
       header: 'Surplus', accessorKey: 'surplus', size: 120,
       cell: (i) => <Text size="sm" c={(i.getValue() as number) < 0 ? 'danger' : undefined}>{qty(i.getValue())}</Text>,
@@ -266,6 +267,10 @@ export default function MineralShoppingList() {
           )}
 
           <Title order={6} c="dimmed" tt="uppercase" mt="md">Coverage Check</Title>
+          <Text size="xs" c="dimmed">
+            Landed / Unit is what each delivered unit effectively costs in this plan. A source that yields several
+            listed minerals splits its cost by their value; minerals not on the list take no share.
+          </Text>
           <DataTable data={plan.coverage} columns={coverageColumns} maxHeight={300}
             getRowId={(r) => String(r.type_id)} />
         </>

@@ -1696,6 +1696,8 @@ export interface MineralCoverage {
   surplus: number
   // Not available at an acceptable price from any source.
   short: number
+  // Effective cost per delivered unit; null when nothing was delivered.
+  landed_price_per_unit: number | null
 }
 
 export interface ShoppingListPlan {
@@ -1903,6 +1905,8 @@ export interface ReprocessMineralCoverage {
   surplus: number
   // Not available at an acceptable price from any source.
   short: number
+  // Effective cost per delivered unit; null when nothing was delivered.
+  landed_price_per_unit: number | null
 }
 
 export interface ModuleShoppingListPlan {

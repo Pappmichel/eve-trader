@@ -305,3 +305,41 @@ def delivered_from_sources(solution: SupplySolution, sources: list[SupplySource]
             if mineral_id in delivered:
                 delivered[mineral_id] += bought * qty
     return delivered
+
+
+def landed_price_by_mineral(solution: SupplySolution, sources: list[SupplySource], mineral_ids: list[int],
+                            direct_tiers: dict[int, list[SupplyTier]]) -> dict[int, Optional[float]]:
+    """Effective landed cost per delivered unit of each requested mineral, so
+    price x delivered over all minerals adds up to the plan's total cost.
+
+    A direct purchase belongs to its mineral. A reprocessed source yields
+    several minerals at one price, so its cost is split over the requested ones
+    by value: quantity x the mineral's cheapest direct tier. A source yielding a
+    requested mineral without any direct tier splits by quantity instead.
+    Minerals nobody asked for take no share (surplus gets no credit, see the
+    optimizers' docstrings); a requested mineral's surplus is spread over its
+    delivered units. Refining tax is already in the reduced yields. None for a
+    mineral nothing delivers."""
+    reference = {m: min((t.unit_cost for t in direct_tiers.get(m, [])), default=None) for m in mineral_ids}
+    cost = {m: 0.0 for m in mineral_ids}
+    delivered = {m: 0 for m in mineral_ids}
+
+    for (i, t), bought in solution.portions.items():
+        source = sources[i]
+        line_cost = bought * source.portion_size * source.tiers[t].unit_cost
+        yields = {m: bought * qty for m, qty in source.yield_per_portion.items() if m in cost and qty > 0}
+        if not yields:
+            continue
+        for m, qty in yields.items():
+            delivered[m] += qty
+        by_value = all(reference[m] is not None and reference[m] > 0 for m in yields)
+        weights = {m: qty * reference[m] if by_value else float(qty) for m, qty in yields.items()}
+        weight_sum = sum(weights.values())
+        for m, weight in weights.items():
+            cost[m] += line_cost * weight / weight_sum
+
+    for (m, t), bought in solution.direct.items():
+        cost[m] += bought * direct_tiers[m][t].unit_cost
+        delivered[m] += bought
+
+    return {m: (cost[m] / delivered[m] if delivered[m] > 0 else None) for m in mineral_ids}

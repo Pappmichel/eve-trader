@@ -598,6 +598,7 @@ class MineralCoverage(_Base):
     delivered: int
     surplus: float
     short: int = 0
+    landed_price_per_unit: Optional[float] = None
 
 
 class ShoppingListPlan(_Base):
@@ -1219,6 +1220,7 @@ class ReprocessMineralCoverage(_Base):
     delivered: int
     surplus: float
     short: int = 0
+    landed_price_per_unit: Optional[float] = None
 
 
 class ModuleShoppingListPlan(_Base):
