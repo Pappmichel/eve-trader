@@ -109,8 +109,12 @@ def test_lockfile_pins_python310_conditional_runtime_and_test_deps():
         for line in (_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     ]
-    assert 'exceptiongroup==1.3.1; python_version < "3.11"' in lines
-    assert 'tomli==2.4.1; python_version < "3.11"' in lines
+    # Only the marker is the contract; Dependabot moves the versions.
+    for name in ("exceptiongroup", "tomli"):
+        assert any(
+            line.startswith(f"{name}==") and line.endswith('; python_version < "3.11"')
+            for line in lines
+        ), name
 
 
 def test_python310_lock_install_gets_the_conditional_pins():
@@ -123,8 +127,13 @@ def test_python310_lock_install_gets_the_conditional_pins():
 
     if sys.version_info >= (3, 11):
         return
-    assert metadata.version("exceptiongroup") == "1.3.1"
-    assert metadata.version("tomli") == "2.4.1"
+    pins = dict(
+        line.split(";", 1)[0].strip().split("==", 1)
+        for line in (_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.startswith(("exceptiongroup==", "tomli=="))
+    )
+    assert metadata.version("exceptiongroup") == pins["exceptiongroup"]
+    assert metadata.version("tomli") == pins["tomli"]
 
 
 def test_locked_scientific_stack_declares_support_for_ci_and_minimum_python():
