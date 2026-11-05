@@ -1710,6 +1710,7 @@ export interface ShoppingListPlan {
   savings_vs_all_direct: number | null
   total_volume_m3: number
   shortfall: boolean
+  approximate: boolean
 }
 
 export interface RefiningSettings {
@@ -1916,6 +1917,7 @@ export interface ModuleShoppingListPlan {
   savings_vs_all_direct: number | null
   total_volume_m3: number
   shortfall: boolean
+  approximate: boolean
 }
 
 export interface ModuleReprocessingSettings {
