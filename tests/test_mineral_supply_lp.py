@@ -72,7 +72,8 @@ def test_no_integer_answer_falls_back_within_the_tier_caps(monkeypatch):
 
 
 def test_every_column_has_a_finite_upper_bound(monkeypatch):
-    """Unbounded integer columns hung HiGHS on aarch64 with large requirements."""
+    """Bounds follow the requirement, not the listed depth: integer bounds in the
+    billions hung HiGHS on aarch64."""
     seen = {}
 
     def capture(kwargs):
