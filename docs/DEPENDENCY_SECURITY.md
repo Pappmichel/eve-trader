@@ -22,9 +22,9 @@ Python 3.10 needs two extra packages that 3.11+ ships in the stdlib (or
 does not need). They are pinned in `requirements.txt` with environment
 markers so 3.11/3.12 installs do not pull them:
 
-- `exceptiongroup==1.3.1; python_version < "3.11"` — runtime: `anyio`
+- `exceptiongroup==<version>; python_version < "3.11"` — runtime: `anyio`
   (Starlette → FastAPI) requires it below 3.11.
-- `tomli==2.4.1; python_version < "3.11"` — pytest's TOML reader below 3.11.
+- `tomli==<version>; python_version < "3.11"` — pytest's TOML reader below 3.11.
 
 A lockfile regenerated with `pip freeze` on 3.11 will omit both; copy the
 marker lines back from the previous lock before committing.
