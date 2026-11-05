@@ -1374,18 +1374,27 @@ from the same cached `region_orders_raw` the prices came from, so depth costs
 no extra ESI calls.
 
 **HiGHS can ignore its time limit (found 2026-11-05).** Production is aarch64
-with one CPU. With unbounded integer columns and large requirements (400M
+with one CPU. With integer column bounds in the billions (3.0B of listed
 Tritanium), HiGHS sat in `HighsRedcostFixing::addRootRedcost` for minutes on an
 input x86 solves in 0.3 s: nginx returned 504, and the thread kept a CPU until
-the service restarted. Two guards, keep both: every column has a finite upper
-bound (`mineral_supply_lp._useful_portions`, this alone stopped the hang), and
-the integer solve runs in a killable process (`eve_trader/mip_worker.py`,
-`MIP_PROCESS_DEADLINE_SECONDS`). A killed or failed solve returns the LP
-solution rounded up, flagged `approximate` and shown as such. Reproduce with a
-`linux/arm64` Python container; x86 does not show it. Other HiGHS callers
-(`production/reaction_capacity.py`, `pi/`) have neither guard yet. `tests/
-conftest.py` runs this solve in-process, `tests/test_mineral_supply_lp.py` tests
-the real worker.
+the service restarted. Two guards, keep both: `mineral_supply_lp.
+_useful_portions` lowers each bound to what the list needs, and the integer solve
+runs in a killable process (`eve_trader/mip_worker.py`,
+`MIP_PROCESS_DEADLINE_SECONDS`). A list needing over about 2B of one mineral can
+still get a bound that large; the killable process covers that. A killed or
+failed solve returns the LP solution rounded up, flagged `approximate` and shown
+as such. `tests/conftest.py` runs this solve in-process,
+`tests/test_mineral_supply_lp.py` tests the real worker.
+
+**The trigger is a large finite integer bound, not a missing one.** On emulated
+arm64 one real reaction model solved with no bound and with bounds up to 2.0B,
+and hung at 2,147,483,646 and above. Whether this is a 32-bit limit in HiGHS is
+not proven, and a large bound alone does not always hang. Do not add finite bounds
+to integer columns as a precaution: bounds derived from demand made `production/
+reaction_capacity.py` hang and slowed its solves, so its integer columns stay
+unbounded on purpose. The integer bounds in `pi/` are small. Keep any finite integer
+bound under 2B, and replay a bound change in a `linux/arm64` Python container
+before shipping it; x86 does not show the hang.
 
 ## Structure rigs per job category (Logistics page)
 
