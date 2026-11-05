@@ -562,6 +562,7 @@ export const doctrineApi = {
     ship_maintenance_bay_text?: string | null
   }) => post<{ fitting: T.Fitting; issues: T.DoctrineParseIssue[] }>(`/api/doctrine/doctrines/${doctrineId}/fittings`, req),
   updateFitting: (fittingId: string, req: {
+    reserve_target?: number | null
     raw_eft?: string | null
     name?: string | null
     variant_label?: string | null
@@ -577,8 +578,9 @@ export const doctrineApi = {
     }),
   deleteFitting: (fittingId: string) => del(`/api/doctrine/fittings/${fittingId}`),
   fittingDetail: (fittingId: string) => get<T.FittingDetail>(`/api/doctrine/fittings/${fittingId}`),
-  assemblable: (fittingId: string) =>
-    get<T.AssemblableResult>(`/api/doctrine/fittings/${fittingId}/assemblable`),
+  assemblable: (fittingId: string, targetSets?: number) =>
+    get<T.AssemblableResult>(
+      `/api/doctrine/fittings/${fittingId}/assemblable${targetSets ? `?target_sets=${targetSets}` : ''}`),
 
   syncContracts: () => post<T.PipelineRunStatus>('/api/doctrine/sync'),
   syncContractsStatus: () => get<T.PipelineRunStatus>('/api/doctrine/sync/status'),
@@ -611,6 +613,8 @@ export const doctrineApi = {
   },
   shoppingList: (doctrineId?: string) =>
     get<T.ShoppingListResponse>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
+  strategicReserve: () => get<T.StrategicReserveStatus>('/api/doctrine/strategic-reserve'),
+  reserveHangars: () => get<T.ReserveHangarOption[]>('/api/doctrine/strategic-reserve/hangars'),
 
   equivalents: () => get<T.EquivalentsResponse>('/api/doctrine/equivalents'),
   setEquivalentExcluded: (typeId: number, excluded: boolean) =>

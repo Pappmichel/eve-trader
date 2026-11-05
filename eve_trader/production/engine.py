@@ -2026,6 +2026,14 @@ def production_excluded_location_ids(cfg: ProductionConfig = PRODUCTION_CONFIG) 
     return ids
 
 
+def production_excluded_hangar():
+    """The Doctrine strategic reserve hangar, or None: its contents do not exist
+    for Production (GitHub issue #418, doctrine/reserve.py). Lazy import:
+    doctrine.engine imports this module."""
+    from ..doctrine.reserve import active_hangar
+    return active_hangar()
+
+
 def invalidate_excluded_locations_cache() -> None:
     with _excluded_locations_lock:
         _excluded_locations_cache.clear()
@@ -2066,7 +2074,8 @@ def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> fl
     char_ids, corp_ids = shared_production_owner_ids("assets")
     total = storage.esi_stock_at_location(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids(), **kwargs)
+        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar(),
+        **kwargs)
     if location_id is not None:
         total += storage.manual_stock_at_location(type_id, location_id)
     return total
@@ -2099,7 +2108,7 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     esi = storage.get_owned_bpo_best_me_te(
         blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids())
+        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
     manual = storage.manual_bpo_best_me_te(blueprint_type_id)
     if esi is None and manual is None:
         return None
@@ -2112,14 +2121,15 @@ def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> flo
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     esi_copies = storage.available_blueprint_copies(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids())
+        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
     return esi_copies + storage.manual_bpc_runs(type_id, location_id)
 
 
 def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     return storage.has_bpo_at_location(
-        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_hangar=production_excluded_hangar(),
     ) or storage.manual_has_bpo_at_location(type_id, location_id)
 
 
@@ -5836,14 +5846,15 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
     type_ids = [t[0] for t in targets]
     char_ids, corp_ids = shared_production_owner_ids("assets")
     excluded = production_excluded_location_ids(cfg)
+    reserve_hangar = production_excluded_hangar()
     all_hangars = storage.esi_stock_by_location_bulk(
         type_ids, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=excluded)
+        exclude_location_ids=excluded, exclude_hangar=reserve_hangar)
     stock_hangars = (
         storage.esi_stock_by_location_bulk(
             type_ids, allowed_flags=cfg.stock_hangar_flags,
             owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-            exclude_location_ids=excluded)
+            exclude_location_ids=excluded, exclude_hangar=reserve_hangar)
         if cfg.stock_hangar_flags else all_hangars
     )
     manual = storage.manual_stock_by_location_bulk(type_ids)

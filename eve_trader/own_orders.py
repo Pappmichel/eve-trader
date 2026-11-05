@@ -54,6 +54,14 @@ def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> l
     return storage.mark_assembled_or_fitted(client.character_assets(character_id, auth_role=auth_role))
 
 
+def _reserve_hangar():
+    """The Doctrine strategic reserve hangar, or None: its contents do not exist
+    for Trading (GitHub issue #418). Only a personal hangar can matter, Trading
+    reads character assets alone. Lazy import: this module loads early."""
+    from .doctrine.reserve import active_hangar
+    return active_hangar()
+
+
 def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
                            cfg: TradingConfig = TRADING_CONFIG) -> dict[int, float]:
     """Returns {item_id: remaining_volume} for open SELL orders at cfg.structure_id.
@@ -186,6 +194,7 @@ def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], clie
     one-level-flat asset limitation) - unchanged here, just pooled."""
     asset_qty: dict[int, float] = defaultdict(float)
     sell_remaining: dict[int, float] = defaultdict(float)
+    reserve_hangar = _reserve_hangar()
     for character_id, auth_role in sellers:
         assets = _character_assets(character_id, auth_role, client)
         for a in assets:
@@ -195,6 +204,8 @@ def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], clie
             if a.get("location_id") != cfg.structure_id:
                 continue
             if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS or a.get("assembled_or_fitted"):
+                continue
+            if storage.is_in_hangar(a, "character", character_id, reserve_hangar):
                 continue
             asset_qty[type_id] += a.get("quantity", 0)
         for type_id, remaining in fetch_own_sell_orders(character_id, auth_role, client, cfg).items():
@@ -268,8 +279,9 @@ def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESICl
 
     hub_stations = _hub_station_ids(cfg.jita_region_id)
     assets = _character_assets(character_id, auth_role, client)
+    reserve_hangar = _reserve_hangar()
     for a in assets:
-        if a.get("assembled_or_fitted"):
+        if a.get("assembled_or_fitted") or storage.is_in_hangar(a, "character", character_id, reserve_hangar):
             continue
         if a.get("location_id") in hub_stations or a.get("location_id") == cfg.structure_id:
             covered.add(a["type_id"])

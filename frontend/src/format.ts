@@ -10,6 +10,13 @@ export function isk(value: number | null | undefined): string {
   return `${nf.format(Math.round(value))} ISK`
 }
 
+// Per-unit prices of cheap items (minerals cost a few ISK), where whole ISK
+// would hide most of the difference.
+export function iskUnit(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '–'
+  return `${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`
+}
+
 export function qty(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '–'
   return nf.format(Math.round(value))

@@ -19,3 +19,13 @@
 - Cached Build / Asset-Optimized plans do not recompute themselves when an
   integrated order's inclusion/items/status change - they are kept, flagged
   `stale`, and the pages show a recompute hint (D9).
+
+# Known limitations — Strategic reserve (Doctrine)
+
+- A job delivering into the reserve hangar still counts as incoming for
+  Production until it is delivered: ESI gives a job only `output_location_id`,
+  no hangar flag.
+- Asset rows synced before `resolved_hangar_flag` existed stay visible to
+  Production until the owner's next asset sync.
+- Assembled ships in the reserve do not count as reserve fits; the tab only
+  reports how many it skipped.

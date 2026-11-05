@@ -598,6 +598,7 @@ class MineralCoverage(_Base):
     delivered: int
     surplus: float
     short: int = 0
+    landed_price_per_unit: Optional[float] = None
 
 
 class ShoppingListPlan(_Base):
@@ -704,6 +705,7 @@ class Fitting(_Base):
     updated_at: Optional[str] = None
     fuel_bay_text: Optional[str] = None
     ship_maintenance_bay_text: Optional[str] = None
+    reserve_target: int = 0
 
 
 class FittingItem(_Base):
@@ -781,6 +783,8 @@ class StockpileRow(_Base):
     severity: Optional[str] = None
     variant_available: float = 0.0
     variant_names: list[str] = []
+    reserve_on_hand: float = 0.0
+    reserve_pool: float = 0.0
 
 
 class AggregatedStockpileRow(_Base):
@@ -793,6 +797,7 @@ class AggregatedStockpileRow(_Base):
     fitting_count: int
     variant_available: float = 0.0
     variant_names: list[str] = []
+    reserve_on_hand: float = 0.0
 
 
 class ShoppingListRow(_Base):
@@ -813,6 +818,7 @@ class ShoppingListRow(_Base):
     to_buy: float = 0.0
     buy_type_id: Optional[int] = None
     buy_type_name: Optional[str] = None
+    reserve_on_hand: float = 0.0
 
 
 class FittingStatus(_Base):
@@ -1219,6 +1225,7 @@ class ReprocessMineralCoverage(_Base):
     delivered: int
     surplus: float
     short: int = 0
+    landed_price_per_unit: Optional[float] = None
 
 
 class ModuleShoppingListPlan(_Base):

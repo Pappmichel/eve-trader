@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Stack, Title, Text, SimpleGrid, NumberInput, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
+import { Alert, Stack, Title, Text, SimpleGrid, NumberInput, Select, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
 
 import { doctrineApi } from '../../api/client'
-import type { DoctrineSettings as DoctrineSettingsT } from '../../api/types'
+import type { DoctrineSettings as DoctrineSettingsT, ReserveHangarOption } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
@@ -14,8 +14,20 @@ function locationLabel(o: { location_id: number; name: string | null }) {
   return o.name ? `${o.name} (${o.location_id})` : String(o.location_id)
 }
 
+function hangarKey(ownerType: string | null, ownerId: number | null, locationId: number | null, flag: string | null) {
+  return ownerType && ownerId && locationId && flag ? `${ownerType}|${ownerId}|${locationId}|${flag}` : null
+}
+
+function hangarLabel(o: ReserveHangarOption) {
+  const division = o.division_name ? `${o.hangar_flag} (${o.division_name})` : o.hangar_flag
+  return `${o.owner_name ?? o.owner_id} - ${o.location_name ?? o.location_id} - ${division}`
+}
+
 export default function DoctrineSettings() {
   const { data } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
+  const { data: reserveHangars } = useQuery({
+    queryKey: ['doctrine', 'strategic-reserve', 'hangars'], queryFn: doctrineApi.reserveHangars,
+  })
   const { data: hangarOptions } = useQuery({
     queryKey: ['doctrine', 'hangar-division-options'], queryFn: doctrineApi.hangarDivisionOptions,
   })
@@ -26,7 +38,10 @@ export default function DoctrineSettings() {
   const [form, setForm] = useState<DoctrineSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
-  const save = useAction('Save Settings', doctrineApi.updateSettings, [['doctrine', 'settings'], ['doctrine', 'equivalents']])
+  const save = useAction('Save Settings', doctrineApi.updateSettings, [
+    ['doctrine', 'settings'], ['doctrine', 'equivalents'], ['doctrine', 'strategic-reserve'], ['doctrine', 'stockpile'],
+    ['doctrine', 'shopping-list'], ['doctrine', 'assemblable'],
+  ])
 
   if (!form) return <Center h={200}><Loader color="accent" /></Center>
 
@@ -46,6 +61,29 @@ export default function DoctrineSettings() {
 
   const set = <K extends keyof DoctrineSettingsT>(key: K, value: DoctrineSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
+
+  const reserveValue = hangarKey(form.strategic_reserve_owner_type, form.strategic_reserve_owner_id,
+    form.strategic_reserve_location_id, form.strategic_reserve_hangar_flag)
+  const reserveOptions = (reserveHangars ?? []).map((o) => ({
+    value: hangarKey(o.owner_type, o.owner_id, o.location_id, o.hangar_flag) as string, label: hangarLabel(o),
+  }))
+  // A saved hangar that holds nothing right now stays selectable.
+  if (reserveValue && !reserveOptions.some((o) => o.value === reserveValue)) {
+    reserveOptions.unshift({
+      value: reserveValue,
+      label: `${form.strategic_reserve_hangar_flag} at ${form.strategic_reserve_location_id} (empty or not shared)`,
+    })
+  }
+  const setReserveHangar = (value: string | null) => {
+    const [ownerType, ownerId, locationId, flag] = value ? value.split('|') : [null, null, null, null]
+    setForm((f) => (f ? {
+      ...f,
+      strategic_reserve_owner_type: ownerType as DoctrineSettingsT['strategic_reserve_owner_type'],
+      strategic_reserve_owner_id: ownerId ? Number(ownerId) : null,
+      strategic_reserve_location_id: locationId ? Number(locationId) : null,
+      strategic_reserve_hangar_flag: flag,
+    } : f))
+  }
 
   return (
     <Stack maw={700}>
@@ -80,6 +118,13 @@ export default function DoctrineSettings() {
       <MultiSelect label="Hangar divisions counted as Doctrine stockpile" data={hangarOptions?.hangar_division_flags ?? []}
         value={form.stockpile_hangar_flags} onChange={(v) => set('stockpile_hangar_flags', v)}
         placeholder="All divisions" clearable />
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Strategic Reserve</Title>
+      <Select label="Reserve hangar" searchable clearable placeholder="None" data={reserveOptions}
+        description="Production and Trading treat everything in this hangar as if it did not exist, and it does not count as Doctrine stockpile. Total Wealth and Realized still see it."
+        value={reserveValue} onChange={setReserveHangar} />
+      <Switch label="Reserve fits include the hull" checked={form.strategic_reserve_include_hulls}
+        onChange={(e) => set('strategic_reserve_include_hulls', e.currentTarget.checked)} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
@@ -132,6 +177,11 @@ export default function DoctrineSettings() {
         hub_region_id: form.hub_region_id,
         stockpile_hangar_flags: form.stockpile_hangar_flags,
         buyer_character_ids: form.buyer_character_ids,
+        strategic_reserve_owner_type: form.strategic_reserve_owner_type,
+        strategic_reserve_owner_id: form.strategic_reserve_owner_id,
+        strategic_reserve_location_id: form.strategic_reserve_location_id,
+        strategic_reserve_hangar_flag: form.strategic_reserve_hangar_flag,
+        strategic_reserve_include_hulls: form.strategic_reserve_include_hulls,
       })}>
         Save Settings
       </Button>

@@ -62,6 +62,7 @@ const ShoppingList = lazy(() => import('./pages/doctrine/ShoppingList'))
 const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
 const DoctrineEquivalents = lazy(() => import('./pages/doctrine/Equivalents'))
 const DoctrineRealized = lazy(() => import('./pages/doctrine/RealizedProfit'))
+const StrategicReserve = lazy(() => import('./pages/doctrine/StrategicReserve'))
 
 const OreLayout = lazy(() => import('./pages/refining/OreLayout'))
 const OreOverview = lazy(() => import('./pages/refining/Overview'))
@@ -299,6 +300,7 @@ function App() {
               <Route path="contracts/history" element={<ContractHistory />} />
               <Route path="stockpile" element={<Stockpile />} />
               <Route path="shopping-list" element={<ShoppingList />} />
+              <Route path="strategic-reserve" element={<StrategicReserve />} />
               <Route path="equivalents" element={<DoctrineEquivalents />} />
               <Route path="realized" element={<DoctrineRealized />} />
               <Route path="settings" element={<DoctrineSettings />} />

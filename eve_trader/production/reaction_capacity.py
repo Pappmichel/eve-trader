@@ -1699,6 +1699,7 @@ def build_layer(
     owner_character_ids: Optional[list[int]] = None,
     owner_corporation_ids: Optional[list[int]] = None,
     exclude_location_ids: Optional[list[int]] = None,
+    exclude_hangar: Optional[storage.ExcludedHangar] = None,
 ) -> ReactionLayer:
     """Build the reaction recipe set the solver may run for ``demand``.
 
@@ -1777,6 +1778,7 @@ def build_layer(
         owner_character_ids=owner_character_ids,
         owner_corporation_ids=owner_corporation_ids,
         exclude_location_ids=exclude_location_ids,
+        exclude_hangar=exclude_hangar,
     )
 
     recipes: list[ReactionRecipe] = []
@@ -2315,7 +2317,7 @@ def solve_cached(
     if cache is not None and cache[0] == demand_key:
         return cache[1]
 
-    from .engine import production_excluded_location_ids, shared_production_owner_ids
+    from .engine import production_excluded_hangar, production_excluded_location_ids, shared_production_owner_ids
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     # W2 may need products W1 does not (D16): recipes for both.
     layer_demand = dict(demand)
@@ -2330,6 +2332,7 @@ def solve_cached(
         owner_character_ids=char_ids,
         owner_corporation_ids=corp_ids,
         exclude_location_ids=production_excluded_location_ids(cfg),
+        exclude_hangar=production_excluded_hangar(),
     )
     window, state = build_window(
         cfg, demand, layer,

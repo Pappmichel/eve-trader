@@ -16,7 +16,7 @@ from .. import hubs, storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
-from . import buyer_sources, equivalents, parser, validation
+from . import buyer_sources, equivalents, parser, reserve, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
@@ -77,14 +77,15 @@ def parse_bay_items_text(text: str, slot_section: str,
 def fitting_from_row(row: tuple) -> Fitting:
     (fitting_id, doctrine_id, name, variant_label, hull_type_id, raw_eft, contract_target,
      stockpile_target, cargo_tolerance_pct, active, created_at, updated_at, fuel_bay_text,
-     ship_maintenance_bay_text) = row
+     ship_maintenance_bay_text, reserve_target) = row
     return Fitting(fitting_id=str(fitting_id), doctrine_id=str(doctrine_id), name=name,
                     variant_label=variant_label, hull_type_id=hull_type_id, raw_eft=raw_eft,
                     contract_target=contract_target, stockpile_target=stockpile_target,
                     cargo_tolerance_pct=cargo_tolerance_pct, active=active,
                     created_at=str(created_at) if created_at else None,
                     updated_at=str(updated_at) if updated_at else None,
-                    fuel_bay_text=fuel_bay_text, ship_maintenance_bay_text=ship_maintenance_bay_text)
+                    fuel_bay_text=fuel_bay_text, ship_maintenance_bay_text=ship_maintenance_bay_text,
+                    reserve_target=reserve_target or 0)
 
 
 def doctrine_from_row(row: tuple) -> Doctrine:
@@ -340,8 +341,10 @@ def stockpile_available(asset_rows: list[dict], type_ids, cfg: DoctrineConfig = 
     without Sorting intake stacks. The one filter path for Stockpile and
     Max assemblable. Summed over every stockpile location
     (cfg.effective_stockpile_location_ids), or only `location_id` when given;
-    no location configured at all counts every location."""
+    no location configured at all counts every location. The strategic reserve
+    is never stockpile, even at a stockpile location (reserve.py)."""
     type_ids = list(type_ids)
+    asset_rows = reserve.without_reserve(asset_rows, reserve.active_hangar(cfg))
     locations: tuple[Optional[int], ...] = (
         (location_id,) if location_id is not None else cfg.effective_stockpile_location_ids) or (None,)
     totals: dict[int, float] = {t: 0.0 for t in type_ids}
@@ -395,6 +398,7 @@ def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
     lookup = equivalents_of(cfg)
     type_ids = _with_equivalents({t for _fid, soll in ordered_soll for t in soll}, lookup)
     available_by_type = stockpile_available(asset_rows, type_ids, cfg, location_id=location_id)
+    reserve_stock = reserve.stock_by_type(asset_rows, type_ids, cfg)
     sde_by_id = storage.get_sde_types_bulk(list(type_ids))
     allocation, variants_used = validation.allocate_stockpile_with_equivalents(
         ordered_soll, available_by_type, lookup)
@@ -410,6 +414,7 @@ def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
             shortfall, severity = validation.stockpile_deviation(type_id, required, allocated, item_class, tolerance)
             type_row = sde_by_id.get(type_id)
             type_name = type_row[2] if type_row else str(type_id)
+            reserve_pool = reserve.shared_pool(reserve_stock, type_id, lookup)
             slot_section = "hull" if type_id == c.fitting.hull_type_id else (
                 "low/med/high/rig/subsystem/service" if item_class == "exact" else "drone/cargo/charge")
             rows.append(StockpileRow(
@@ -420,6 +425,7 @@ def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
                 available=allocated, shortfall=shortfall, severity=severity,
                 variant_available=sum(used.get(type_id, {}).values()),
                 variant_names=[_name_of(v, sde_by_id) for v in sorted(used.get(type_id, {}))],
+                reserve_on_hand=min(shortfall, reserve_pool), reserve_pool=reserve_pool,
             ))
     return rows, assets_available, available_by_type
 
@@ -442,7 +448,9 @@ def _assemblable_summary(candidate: _Candidate, available_by_type: dict[int, flo
 
 def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, float],
                         all_candidates: list[_Candidate],
-                        lookup: Optional[validation.EquivalentsOf] = None) -> dict:
+                        lookup: Optional[validation.EquivalentsOf] = None,
+                        target_sets: Optional[int] = None,
+                        reserve_stock: Optional[dict[int, float]] = None) -> dict:
     """How many complete fits of `candidate` the Doctrine stockpile holds
     right now, the items that stop one more and the full requirement table.
 
@@ -454,8 +462,16 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
 
     With `lookup` (accept_equivalent_variants), stock of equivalent variants
     counts too (validation.max_assemblable); each row then carries
-    `variant_on_hand` (part of on_hand from variants)."""
-    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type, lookup)
+    `variant_on_hand` (part of on_hand from variants).
+
+    With `target_sets`, each row's `short_for_target` says what is missing for
+    that many fits (GitHub issue #416), under the same rules. `reserve_on_hand`
+    is a hint only: how much of the larger of those two shortfalls the strategic
+    reserve holds (`reserve_stock`), which never counts as stockpile."""
+    per_set = _per_set_soll(candidate)
+    max_sets, details = validation.max_assemblable(per_set, available_by_type, lookup)
+    short_for_target = (validation.short_for_sets(per_set, available_by_type, target_sets, lookup)
+                        if target_sets is not None else None)
     sde_by_id = storage.get_sde_types_bulk(list(details))
     hull_id = candidate.fitting.hull_type_id
 
@@ -471,6 +487,7 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
     rows = []
     for type_id, d in details.items():
         sde = sde_by_id.get(type_id)
+        short_target = short_for_target[type_id] if short_for_target is not None else None
         rows.append({
             "type_id": type_id,
             "type_name": sde[2] if sde else str(type_id),
@@ -482,17 +499,21 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
             "variant_on_hand": d.get("variant_on_hand", 0.0),
             "sets": d["sets"],
             "short_for_next": d["short_for_next"],
+            "short_for_target": short_target,
+            "reserve_on_hand": min(max(d["short_for_next"], short_target or 0.0),
+                                   reserve.shared_pool(reserve_stock or {}, type_id, lookup)),
             "buildable": classify_activity(type_id)[1] is not None,
             "also_needed_by": sorted(needed_by.get(type_id, [])),
         })
     rows.sort(key=lambda r: (r["slot_section"] != "hull", r["type_name"].lower()))
     bottlenecks = sorted((r for r in rows if r["short_for_next"] > 1e-9),
                          key=lambda r: (r["sets"], r["type_name"].lower()))
-    return {"max_sets": max_sets, "next_sets": max_sets + 1,
+    return {"max_sets": max_sets, "next_sets": max_sets + 1, "target_sets": target_sets,
             "bottlenecks": bottlenecks, "requirements": rows}
 
 
-def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                            target_sets: Optional[int] = None) -> dict:
     """fitting_assemblable for one stored fitting (an inactive one too),
     reading the stockpile once. Raises LookupError for an unknown id."""
     fitting, items = load_fitting_with_items(fitting_id)
@@ -514,10 +535,13 @@ def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONF
         "stockpile_locations": [{"location_id": i, "name": names.get(i)} for i in location_ids],
     }
     if not asset_rows:
-        return {**result, "max_sets": None, "next_sets": None, "bottlenecks": [], "requirements": []}
+        return {**result, "max_sets": None, "next_sets": None, "target_sets": target_sets,
+                "bottlenecks": [], "requirements": []}
     lookup = equivalents_of(cfg)
-    available = stockpile_available(asset_rows, _with_equivalents(_per_set_soll(candidate), lookup), cfg)
-    return {**result, **fitting_assemblable(candidate, available, all_candidates, lookup)}
+    type_ids = _with_equivalents(_per_set_soll(candidate), lookup)
+    available = stockpile_available(asset_rows, type_ids, cfg)
+    reserve_stock = reserve.stock_by_type(asset_rows, type_ids, cfg)
+    return {**result, **fitting_assemblable(candidate, available, all_candidates, lookup, target_sets, reserve_stock)}
 
 
 def _name_of(type_id: int, sde_by_id: dict) -> str:
@@ -550,6 +574,8 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
             fitting_count=len(group),
             variant_available=sum(r.variant_available for r in group),
             variant_names=sorted({n for r in group for n in r.variant_names}),
+            # One physical pool: several fittings can each show it as a hint.
+            reserve_on_hand=min(sum(r.shortfall for r in group), max(r.reserve_pool for r in group)),
         )
         for type_id, group in by_type.items()
     ]
@@ -787,6 +813,7 @@ def shopping_list(doctrine_id: Optional[str] = None,
             hub_hangar=hub_hangar, on_order=on_order, to_buy=to_buy,
             buy_type_id=best["type_id"] if swapped else None,
             buy_type_name=_type_name(best["type_id"]) if swapped else None,
+            reserve_on_hand=row.reserve_on_hand,
         ))
     return result, (buyer.warnings if buyer is not None else [])
 

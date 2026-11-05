@@ -83,6 +83,16 @@ class DoctrineConfig:
     # tenant_settings rows) and only apply while the matching list is empty.
     doctrine_structure_ids: tuple[int, ...] = ()
     stockpile_location_ids: tuple[int, ...] = ()
+    # Strategic reserve (GitHub issue #418, doctrine/reserve.py): one hangar,
+    # all four set or none. A flag alone repeats at every structure and for
+    # every owner. Its contents do not exist for Production and Trading.
+    strategic_reserve_owner_type: Optional[str] = None      # "character" | "corporation"
+    strategic_reserve_owner_id: Optional[int] = None
+    strategic_reserve_location_id: Optional[int] = None
+    strategic_reserve_hangar_flag: Optional[str] = None
+    # Whether a reserve fit needs its hull. A hull in the hangar stays hidden
+    # from Production and Trading either way.
+    strategic_reserve_include_hulls: bool = True
 
     @property
     def effective_structure_ids(self) -> tuple[int, ...]:
@@ -125,6 +135,18 @@ def validate_doctrine_overrides(overrides: dict) -> None:
         bad = [v for v in values if isinstance(v, bool) or not isinstance(v, int) or v <= 0]
         if bad:
             raise ConfigError(f"{key}: {bad!r} are not valid location ids.")
+    reserve_keys = ("strategic_reserve_owner_type", "strategic_reserve_owner_id",
+                    "strategic_reserve_location_id", "strategic_reserve_hangar_flag")
+    if any(key in overrides for key in reserve_keys):
+        values = [overrides.get(key) for key in reserve_keys]
+        if any(v is not None for v in values):
+            if any(v is None for v in values):
+                raise ConfigError("Strategic reserve: owner, location and hangar must be set together.")
+            if values[0] not in ("character", "corporation"):
+                raise ConfigError(f"strategic_reserve_owner_type: {values[0]!r} is not valid.")
+            if values[3] not in HANGAR_DIVISION_FLAGS:
+                raise ConfigError(f"strategic_reserve_hangar_flag: {values[3]!r} is not a known hangar division. "
+                                  f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
     if "stockpile_hangar_flags" in overrides:
         bad = [f for f in overrides["stockpile_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:

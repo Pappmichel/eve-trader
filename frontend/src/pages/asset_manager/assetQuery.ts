@@ -15,6 +15,7 @@ export const BADGE_LABELS: Record<string, { label: string; color: string; hint: 
   corp_market: { label: 'Corp market', color: 'orange', hint: 'In the corp market hangar.' },
   assembled: { label: 'Assembled', color: 'grape', hint: 'An assembled ship - valued, but never counted as stock.' },
   fitted: { label: 'Fitted', color: 'grape', hint: 'Fitted to a ship, in a drone or fighter bay - not stock.' },
+  strategic_reserve: { label: 'Strategic reserve', color: 'yellow', hint: 'In the Doctrine strategic reserve hangar - valued, but Production and Trading do not count it.' },
   bpo: { label: 'BPO', color: 'blue', hint: 'Blueprint original.' },
   bpc: { label: 'BPC', color: 'cyan', hint: 'Blueprint copy - valued by manual price or invention cost per run.' },
   manual: { label: 'Manual', color: 'gray', hint: 'Manual stock entered in Production.' },

@@ -23,7 +23,7 @@ import { ShipDrawer, type ShipRef } from './ShipDrawer'
 import { TypeDetailDrawer } from './TypeDetailDrawer'
 
 const ALL_SOURCES = ['esi', 'manual', 'listed', 'contract', 'in_production']
-const HIDEABLE_BADGES = ['asset_safety', 'delivery', 'corp_market', 'assembled', 'fitted', 'bpc', 'bpo']
+const HIDEABLE_BADGES = ['asset_safety', 'delivery', 'corp_market', 'assembled', 'fitted', 'strategic_reserve', 'bpc', 'bpo']
 
 interface Column {
   key: string

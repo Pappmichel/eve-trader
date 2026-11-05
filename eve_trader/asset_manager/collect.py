@@ -185,8 +185,10 @@ def _virtual(source: str, owner_type: str, owner_id: int, owner_name: Optional[s
 
 
 def _enrich(rows: list[dict], division_names: dict[tuple[int, int], str]) -> None:
+    from ..doctrine.reserve import active_hangar
     from ..portfolio import price_items
 
+    reserve_hangar = active_hangar()
     type_ids = {r["type_id"] for r in rows if r["type_id"] is not None}
     for r in rows:
         type_ids.update(t for _i, t, _n in r["container_chain"] if t is not None)
@@ -234,6 +236,9 @@ def _enrich(rows: list[dict], division_names: dict[tuple[int, int], str]) -> Non
         if r["source"] == "esi":
             r["badges"] = labels.badges_for_asset(
                 r["flag"], r["hangar_flag"], r["assembled_or_fitted"], is_blueprint, r["is_copy"])
+            reserve_flag = storage.hangar_flag_for(reserve_hangar, r["owner_type"], r["owner_id"], r["location_id"])
+            if reserve_flag is not None and reserve_flag == r["hangar_flag"]:
+                r["badges"].append("strategic_reserve")
         else:
             r["badges"] = [r["source"]]
         r["stock"] = labels.is_stock(r["source"], r["badges"])

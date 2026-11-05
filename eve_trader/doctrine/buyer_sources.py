@@ -27,6 +27,7 @@ from ..esi_client import ESIClient, ESIError
 from ..esi_data.access import is_shared, read_esi
 from ..esi_data.selector import select_auth_role
 from ..locations import reader
+from . import reserve
 from .config import DoctrineConfig
 
 _ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
@@ -67,11 +68,14 @@ def hub_hangar_stock(type_ids: list[int], buyer_ids: set[int], regions: set[int]
     """{type_id: qty} the buyers hold in the hub regions (containers counted at
     their structure, assembled ships and fitted items excluded -
     storage.esi_stock_from_asset_rows). `exclude_location_ids` (the stockpile
-    locations) are skipped, they are already counted as stockpile."""
+    locations) are skipped, they are already counted as stockpile. So is the
+    strategic reserve: it must not reduce what the Shopping List buys."""
+    hangar = reserve.active_hangar()
     rows = [r for r in read_esi("assets", "doctrine")
             if r.get("owner_type") == "character" and r.get("owner_id") in buyer_ids
             and r.get("resolved_location_id") is not None
-            and r.get("resolved_location_id") not in exclude_location_ids]
+            and r.get("resolved_location_id") not in exclude_location_ids
+            and not reserve.is_reserve_row(r, hangar)]
     locations = {int(r["resolved_location_id"]) for r in rows}
     info = reader.describe(locations - known_hub_locations)
     in_hub = {loc for loc in locations

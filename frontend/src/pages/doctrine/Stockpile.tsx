@@ -8,6 +8,7 @@ import type { AggregatedStockpileRow, StockpileRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { qty, pct } from '../../format'
+import { ReserveHint } from './ReserveHint'
 
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn' }
 
@@ -63,6 +64,9 @@ export default function Stockpile() {
       cell: (i) => (i.getValue() > 0 ? qty(i.getValue()) : '–'),
     },
     {
+      header: 'Reserve', accessorKey: 'reserve_on_hand', size: 120, cell: (i) => <ReserveHint value={i.getValue()} />,
+    },
+    {
       header: 'Used in', accessorKey: 'fitting_count', size: 130,
       cell: (i) => `${i.getValue()} fitting${i.getValue() === 1 ? '' : 's'}`,
     },
@@ -80,6 +84,7 @@ export default function Stockpile() {
       header: 'Shortfall', accessorKey: 'shortfall', size: 110,
       cell: (i) => (i.getValue() > 0 ? qty(i.getValue()) : '–'),
     },
+    { header: 'Reserve', accessorKey: 'reserve_on_hand', size: 120, cell: (i) => <ReserveHint value={i.getValue()} /> },
     { header: 'Severity', accessorKey: 'severity', size: 110, cell: (i) => severityBadge(i.getValue()) },
   ], [])
 
