@@ -1394,6 +1394,17 @@ can reach the setting of. Asset rows with a NULL flag stay counted until the nex
 sync: `_exclude_hangar_clause` needs its `COALESCE`, a plain `NOT (a AND b)`
 would drop them.
 
+## Sorting paste
+
+`sorting.actions.do_sorting_paste` (`POST /api/sorting/sorting-paste`, tab
+`/sorting/paste`) sorts a pasted inventory window for stock the last asset sync
+has not seen yet. It stores nothing (POST only for the text body) and needs no
+intake source. Only the intake comes from the paste
+(`engine.rows_for_intake`): Doctrine and market-listing demand still use the
+last synced assets. Blueprints count, unlike the manual-stock paste, which
+needs ME/TE/runs (`paste_parser.resolve_paste(skip_blueprints=False)`). A line
+without a quantity stays a reported error and is never guessed as 1.
+
 ## Mineral shopping lists respect market depth
 
 The Coverage Check's `landed_price_per_unit` (GitHub issue #420) is the

@@ -85,6 +85,7 @@ const AssetLocations = lazy(() => import('./pages/asset_manager/AssetLocations')
 const AssetHistory = lazy(() => import('./pages/asset_manager/AssetHistory'))
 const AssetInsights = lazy(() => import('./pages/asset_manager/AssetInsights'))
 const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
+const SortingPaste = lazy(() => import('./pages/sorting/SortingPaste'))
 const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
 
 const ModuleReprocessingLayout = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingLayout'))
@@ -331,6 +332,7 @@ function App() {
 
             <Route path="/sorting" element={<SortingLayout />}>
               <Route index element={<SortingOverview />} />
+              <Route path="paste" element={<SortingPaste />} />
               <Route path="settings" element={<SortingSettings />} />
             </Route>
 

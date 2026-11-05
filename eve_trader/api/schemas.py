@@ -1150,6 +1150,21 @@ class SortingList(BaseModel):
     reprocess_error: Optional[str] = None
 
 
+class SortingPasteUnresolvedLine(BaseModel):
+    line: str
+    suggestion: Optional[str] = None
+
+
+class SortingPasteErrorLine(BaseModel):
+    line: str
+    error: str
+
+
+class SortingPasteResult(SortingList):
+    unresolved: list[SortingPasteUnresolvedLine]
+    errors: list[SortingPasteErrorLine]
+
+
 class SortingIntakeSource(_Base):
     id: int
     source_kind: str

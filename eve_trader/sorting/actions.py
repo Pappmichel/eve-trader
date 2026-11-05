@@ -8,12 +8,36 @@ from typing import Optional
 
 from .. import storage
 from ..actions import ActionError
+from ..paste_parser import resolve_paste
 from ..production.constants import INTAKE_HANGAR_FLAGS
 from . import engine
+
+PASTE_SOURCE_LABEL = "Pasted"
 
 
 def do_sorting_list() -> dict:
     return engine.do_sorting_list()
+
+
+def do_sorting_paste(text: str) -> dict:
+    """The sorting list for a pasted inventory, for stock the last asset sync
+    has not seen yet. Nothing is stored and no intake source is needed. Demand
+    is computed as usual, so the Doctrine and market-listing pots still reflect
+    the last synced assets. Blueprints stay in: this needs only type and
+    quantity, and the asset-based list shows them too."""
+    if not text or not text.strip():
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+    parsed = resolve_paste(text, skip_blueprints=False)
+    intake = {type_id: qty for type_id, (_name, qty) in parsed["resolved"].items()}
+    by_source = {
+        type_id: [{"source_label": PASTE_SOURCE_LABEL, "qty": qty}]
+        for type_id, qty in intake.items()
+    }
+    return {
+        **engine.rows_for_intake(intake, by_source),
+        "unresolved": parsed["unresolved"],
+        "errors": parsed["errors"],
+    }
 
 
 def do_list_intake_sources() -> dict:

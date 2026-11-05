@@ -17,7 +17,7 @@ from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
-from ..paste_parser import merge_duplicate_stacks, parse_paste
+from ..paste_parser import resolve_paste
 from . import dynamic_targets, esi_sync, invention, jobs, order_integrity, pricing, sde
 from .engine import production_excluded_hangar
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
@@ -473,52 +473,8 @@ def do_remove_manual_stock_entry(type_id: int, location_id: int = 0) -> dict:
 
 def _parse_asset_paste(text: str) -> dict:
     """Shared by do_preview_asset_paste and do_commit_asset_paste (docs/
-    MANUAL_TRACKING_PLAN.md phase 4) - parses an EVE inventory "Copy As"
-    paste (eve_trader.paste_parser, same format issue #92's Ore & Minerals
-    import uses), skips Blueprint-category lines (decision 10 - Phase 0
-    found no reliable ME/TE/Runs clipboard format for them, so they can
-    never be more than a name+quantity here), and resolves every remaining
-    name to a type_id via storage.resolve_type_names_exact/suggest_type_names
-    (decision 18's batch "Did you mean...?" pattern).
-
-    Returns {"resolved": {type_id: (type_name, quantity)}, "skipped_blueprints":
-    [name, ...], "unresolved": [{"line": raw_line, "suggestion": name|None}, ...],
-    "errors": [{"line": raw_line, "error": message}, ...]}. Two different
-    paste lines that both resolve to the same type_id (distinct names for
-    the same item is not a real case, but merge_duplicate_stacks only
-    merges identical names) have their quantities summed."""
-    all_lines = parse_paste(text)
-    error_lines = [line for line in all_lines if line.error]
-    parsed = merge_duplicate_stacks(all_lines)
-
-    skipped_blueprints = [line.name for line in parsed if line.category.strip().lower() == "blueprint"]
-    item_lines = [line for line in parsed if line.category.strip().lower() != "blueprint"]
-
-    exact = storage.resolve_type_names_exact([line.name for line in item_lines])
-    missing = [line.name for line in item_lines if line.name.strip().lower() not in exact]
-    suggestions = storage.suggest_type_names(missing) if missing else {}
-
-    resolved: dict[int, list] = {}
-    unresolved = []
-    for line in item_lines:
-        key = line.name.strip().lower()
-        hit = exact.get(key)
-        if hit is None:
-            suggestion = suggestions.get(key)
-            unresolved.append({"line": line.raw_line, "suggestion": suggestion[1] if suggestion else None})
-            continue
-        type_id, resolved_name, _category_id = hit
-        if type_id in resolved:
-            resolved[type_id][1] += line.quantity
-        else:
-            resolved[type_id] = [resolved_name, float(line.quantity)]
-
-    return {
-        "resolved": {type_id: (name, qty) for type_id, (name, qty) in resolved.items()},
-        "skipped_blueprints": skipped_blueprints,
-        "unresolved": unresolved,
-        "errors": [{"line": line.raw_line, "error": line.error} for line in error_lines],
-    }
+    MANUAL_TRACKING_PLAN.md phase 4); see paste_parser.resolve_paste."""
+    return resolve_paste(text)
 
 
 def _validate_asset_paste_args(text: str, mode: str) -> None:

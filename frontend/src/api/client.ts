@@ -1005,6 +1005,7 @@ export const errorsApi = {
 // ---------------------------------------------------------------- sorting
 export const sortingApi = {
   sortingList: () => get<T.SortingList>('/api/sorting/sorting-list'),
+  sortingPaste: (text: string) => post<T.SortingPasteResult>('/api/sorting/sorting-paste', { text }),
   intakeSources: () => get<T.SortingIntakeSourceList>('/api/sorting/intake-sources'),
   addIntakeSource: (body: {
     source_kind: string
