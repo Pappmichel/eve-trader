@@ -93,7 +93,9 @@ def badges_for_asset(location_flag: Optional[str], hangar_flag: Optional[str],
 
 def is_stock(source: str, badges: list[str]) -> bool:
     """The planners' notion of stock: ESI or manual rows that are not in a
-    non-stock flag and not an assembled ship or its fitting."""
+    non-stock flag, not an assembled ship or its fitting and not in the Doctrine
+    strategic reserve."""
     if source not in ("esi", "manual"):
         return False
-    return not ({"asset_safety", "delivery", "corp_market", "assembled", "fitted"} & set(badges))
+    return not ({"asset_safety", "delivery", "corp_market", "assembled", "fitted", "strategic_reserve"}
+                & set(badges))

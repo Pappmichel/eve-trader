@@ -1356,7 +1356,48 @@ The math is pure (`validation.max_assemblable`): per item
 (`?target_sets=N`, `--target N`, GitHub issue #416) adds `short_for_target`
 per row under the same rules (`validation.short_for_sets`).
 
+## Strategic reserve (Doctrine, GitHub issue #418)
+
+`doctrine/reserve.py`, tab `/doctrine/strategic-reserve`, per-fitting
+`doctrine_fittings.reserve_target`. One hangar, identified by owner, structure
+and division together (`DoctrineConfig.strategic_reserve_*`,
+`storage.ExcludedHangar`): a division flag alone repeats at every structure and
+for every owner. The tab allocates the hangar's stock in Doctrine priority order
+(`allocate_stockpile_with_equivalents`), so a shared module counts once; the
+hull switch is global. Only loose items and packaged hulls count: assembled
+ships and their fitting are not stock here either, and the tab says how many it
+skipped.
+
+Confirmed with the user 2026-11-05:
+- **Production and Trading** treat the contents as nonexistent. A new stock or
+  blueprint reader of theirs must pass `exclude_hangar`
+  (`production_excluded_hangar()`); a live ESI path uses
+  `storage.is_in_hangar` / `hangar_flag_for`. Trading reads character assets
+  only, so a corp hangar changes nothing there.
+- **Doctrine** does not count it as stockpile, even at a stockpile location, so
+  shortfalls stay and the Shopping List still buys them. `reserve_on_hand` on a
+  shortfall row is a hint only and enters no calculation. The tab warns when a
+  fitting is below its target.
+- **Realized and Portfolio deliberately do not filter.** The items still exist:
+  hiding them would read a move into the reserve as reprocessing or inventory
+  drift. The Asset Manager shows them with a `strategic_reserve` badge, and its
+  "stock only" filter leaves them out.
+
+A tenant without the `doctrine` grant has an inert reserve (`active_hangar`
+returns None, 60 s grant cache), so stock cannot stay hidden from a tool nobody
+can reach the setting of. Asset rows with a NULL flag stay counted until the next
+sync: `_exclude_hangar_clause` needs its `COALESCE`, a plain `NOT (a AND b)`
+would drop them.
+
 ## Mineral shopping lists respect market depth
+
+The Coverage Check's `landed_price_per_unit` (GitHub issue #420) is the
+effective cost per delivered unit, so price x delivered adds up to the plan's
+total cost (`mineral_supply_lp.landed_price_by_mineral`). The issue asked for a
+median; confirmed with the user 2026-11-05 that a weighted mean is what they
+want, since a median is just the largest source's price. A source yielding
+several listed minerals splits its cost by quantity x the mineral's cheapest
+direct tier; minerals not on the list take no share.
 
 Both mineral shopping lists (Ore & Minerals `refining/optimizer.py`, Module
 Reprocessing `module_reprocessing/shopping_optimizer.py`) solve through one

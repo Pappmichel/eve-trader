@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS doctrine_fittings (
 );
 ALTER TABLE doctrine_fittings ADD COLUMN IF NOT EXISTS fuel_bay_text TEXT;
 ALTER TABLE doctrine_fittings ADD COLUMN IF NOT EXISTS ship_maintenance_bay_text TEXT;
+-- GitHub issue #418: fits to hold in the strategic reserve hangar (doctrine/reserve.py).
+ALTER TABLE doctrine_fittings ADD COLUMN IF NOT EXISTS reserve_target INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_doctrine_fittings_doctrine ON doctrine_fittings (tenant_id, doctrine_id);
 ALTER TABLE doctrine_fittings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_fittings;

@@ -1334,6 +1334,7 @@ export interface Fitting {
   updated_at: string | null
   fuel_bay_text: string | null
   ship_maintenance_bay_text: string | null
+  reserve_target: number
 }
 
 export interface DoctrineFittingItem {
@@ -1425,6 +1426,8 @@ export interface StockpileRow {
   // Part of `available` covered by equivalent variants (same stats).
   variant_available: number
   variant_names: string[]
+  // Hint only: how much of the shortfall the Strategic Reserve holds.
+  reserve_on_hand?: number
 }
 
 export interface AggregatedStockpileRow {
@@ -1437,6 +1440,7 @@ export interface AggregatedStockpileRow {
   fitting_count: number
   variant_available: number
   variant_names: string[]
+  reserve_on_hand?: number
 }
 
 export interface ShoppingListRow {
@@ -1459,6 +1463,8 @@ export interface ShoppingListRow {
   // Set when an equivalent variant is the cheapest buy; prices are then its prices.
   buy_type_id: number | null
   buy_type_name: string | null
+  // Hint only: to_buy does not net the Strategic Reserve.
+  reserve_on_hand?: number
 }
 
 export interface ShoppingListResponse {
@@ -1509,6 +1515,8 @@ export interface AssemblableRow {
   short_for_next: number
   // Missing for AssemblableResult.target_sets fits; null without a target.
   short_for_target?: number | null
+  // Hint only: the reserve never counts as stockpile.
+  reserve_on_hand?: number
   buildable: boolean
   also_needed_by: string[]
 }
@@ -1574,6 +1582,58 @@ export interface DoctrineSettings {
   hub_region_id: number
   stockpile_hangar_flags: string[]
   buyer_character_ids: number[]
+  strategic_reserve_owner_type: 'character' | 'corporation' | null
+  strategic_reserve_owner_id: number | null
+  strategic_reserve_location_id: number | null
+  strategic_reserve_hangar_flag: string | null
+  strategic_reserve_include_hulls: boolean
+}
+
+export interface ReserveHangarOption {
+  owner_type: 'character' | 'corporation'
+  owner_id: number
+  owner_name: string | null
+  location_id: number
+  location_name: string | null
+  hangar_flag: string
+  division_name: string | null
+  item_rows: number
+}
+
+export interface ReserveFittingRow {
+  fitting_id: string
+  fitting_name: string
+  doctrine_name: string
+  hull_name: string
+  reserve_target: number
+  // Null while nothing can be counted or the fitting has no target.
+  complete_sets: number | null
+  missing_units: number | null
+}
+
+export interface ReserveMissingRow {
+  type_id: number
+  type_name: string
+  required: number
+  on_hand: number
+  missing: number
+  fitting_count: number
+}
+
+export interface StrategicReserveStatus {
+  state: 'ok' | 'not_configured' | 'not_shared'
+  hangar: {
+    owner_type: string
+    owner_id: number
+    location_id: number
+    location_name: string | null
+    hangar_flag: string
+  } | null
+  include_hulls: boolean
+  assembled_ships_not_counted: number
+  fittings: ReserveFittingRow[]
+  below_target: { fitting_id: string; fitting_name: string; complete_sets: number; reserve_target: number }[]
+  missing: ReserveMissingRow[]
 }
 
 export interface EquivalentMember {

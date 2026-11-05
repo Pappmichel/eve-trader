@@ -9,6 +9,7 @@ import type { AssemblableRow, MaxBuildableResult } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
+import { ReserveHint } from './ReserveHint'
 
 type ProductionCheck =
   | { state: 'loading' }
@@ -88,6 +89,7 @@ function MissingTable({ rows, canProduction }: { rows: AssemblableRow[]; canProd
     },
     { header: 'On Hand', accessorKey: 'on_hand', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Per Fit', accessorKey: 'per_set', size: 90, cell: (i) => qty(i.getValue()) },
+    { header: 'Reserve', accessorKey: 'reserve_on_hand', size: 120, cell: (i) => <ReserveHint value={i.getValue()} /> },
     {
       header: 'Also Needed By', id: 'also_needed_by', size: 220, enableSorting: false,
       accessorFn: (r) => r.also_needed_by.join(', '),
@@ -151,6 +153,7 @@ export function AssemblablePanel({ fittingId }: { fittingId: string }) {
                     {row.also_needed_by.length > 0 && (
                       <Text span size="sm" c="dimmed"> - also needed by {row.also_needed_by.join(', ')}</Text>
                     )}
+                    {(row.reserve_on_hand ?? 0) > 0 && <>{' '}<ReserveHint value={row.reserve_on_hand} /></>}
                     {row.buildable && canProduction && <ProductionHint row={row} needed={row.short_for_next} />}
                   </Text>
                 ))}

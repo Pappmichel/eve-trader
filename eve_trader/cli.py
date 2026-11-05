@@ -595,6 +595,33 @@ def doctrine_group():
     """Doctrine fittings and stockpile."""
 
 
+@doctrine_group.command("reserve")
+@_tenant_id_option
+def doctrine_reserve(tenant_id: str | None):
+    """Strategic reserve: per fitting its target, the complete fits the reserve
+    hangar holds, and what is missing."""
+    from .doctrine import actions as doctrine_actions
+
+    result = _targets_call(tenant_id, doctrine_actions.do_get_strategic_reserve)
+    if result["state"] == "not_configured":
+        click.echo("No strategic reserve hangar set (Doctrine Settings).")
+        return
+    hangar = result["hangar"]
+    click.echo(f"Hangar: {hangar['hangar_flag']} at {hangar['location_name'] or hangar['location_id']}"
+               f" ({hangar['owner_type']} {hangar['owner_id']}), hulls "
+               f"{'included' if result['include_hulls'] else 'not included'}")
+    if result["state"] == "not_shared":
+        click.echo("The hangar's owner does not share Assets with Doctrine - nothing to count.")
+        return
+    if result["assembled_ships_not_counted"]:
+        click.echo(f"Assembled ships in the hangar, not counted: {result['assembled_ships_not_counted']:,}")
+    for row in result["fittings"]:
+        if row["reserve_target"] > 0:
+            click.echo(f"  {row['fitting_name'][:40]:<40} {row['complete_sets']:>6,} / {row['reserve_target']:<6,}")
+    for row in result["missing"]:
+        click.echo(f"  missing {row['type_name'][:40]:<40} {row['missing']:>12,.0f}")
+
+
 @doctrine_group.command("max-fit")
 @click.argument("fitting")
 @click.option("--target", type=click.IntRange(1, 100_000), default=None,

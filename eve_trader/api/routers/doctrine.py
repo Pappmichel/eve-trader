@@ -95,6 +95,7 @@ class UpdateFittingRequest(BaseModel):
     active: Optional[bool] = None
     fuel_bay_text: Optional[str] = None
     ship_maintenance_bay_text: Optional[str] = None
+    reserve_target: Optional[int] = None
 
 
 @router.patch("/fittings/{fitting_id}")
@@ -174,6 +175,16 @@ def get_contract_history():
 @router.get("/stockpile")
 def get_stockpile(doctrine_id: Optional[str] = None, location_id: Optional[int] = None):
     return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id, location_id=location_id)
+
+
+@router.get("/strategic-reserve")
+def get_strategic_reserve():
+    return _wrap(actions.do_get_strategic_reserve)
+
+
+@router.get("/strategic-reserve/hangars")
+def get_strategic_reserve_hangars():
+    return _wrap(actions.do_list_reserve_hangars)
 
 
 @router.get("/equivalents")
@@ -260,6 +271,11 @@ class DoctrineSettings(BaseModel):
     hub_region_id: int = 10000002
     stockpile_hangar_flags: tuple[str, ...] = ()
     buyer_character_ids: tuple[int, ...] = ()
+    strategic_reserve_owner_type: Optional[str] = None
+    strategic_reserve_owner_id: Optional[int] = None
+    strategic_reserve_location_id: Optional[int] = None
+    strategic_reserve_hangar_flag: Optional[str] = None
+    strategic_reserve_include_hulls: bool = True
 
 
 class LocationOption(BaseModel):
@@ -286,7 +302,9 @@ def update_settings(updates: DoctrineSettings):
     body = updates.model_dump()
     # A client that does not send the location lists (or the equivalents
     # switch) must not reset them.
-    for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants"):
+    for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants",
+                "strategic_reserve_owner_type", "strategic_reserve_owner_id", "strategic_reserve_location_id",
+                "strategic_reserve_hangar_flag", "strategic_reserve_include_hulls"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)

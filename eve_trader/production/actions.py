@@ -19,6 +19,7 @@ from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from ..paste_parser import merge_duplicate_stacks, parse_paste
 from . import dynamic_targets, esi_sync, invention, jobs, order_integrity, pricing, sde
+from .engine import production_excluded_hangar
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES
 from .engine import (
@@ -1443,12 +1444,15 @@ def _fetch_unlisted_character_personal(client: ESIClient, role: str, character_i
     }
 
 
-def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dict[int, float]) -> None:
+def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dict[int, float],
+                                  skip_flag: Optional[str] = None) -> None:
     """In-memory equivalent of storage.esi_stock_at_location's per-location
     aggregation (same corp-office-unwrap + NON_STOCK_LOCATION_FLAGS exclusion
     logic - see that function's docstring for why both are needed), for
     live-fetched asset lists that were never written to the DB. Assembled
-    ships and their fittings don't count (storage.mark_assembled_or_fitted)."""
+    ships and their fittings don't count (storage.mark_assembled_or_fitted).
+    `skip_flag`: this owner's strategic reserve division here, if any
+    (storage.hangar_flag_for)."""
     storage.mark_assembled_or_fitted(assets)
     office_item_ids = {
         a["item_id"] for a in assets
@@ -1459,6 +1463,8 @@ def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dic
         if a.get("location_id") not in valid_locations:
             continue
         if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS or a["assembled_or_fitted"]:
+            continue
+        if skip_flag is not None and a.get("location_flag") == skip_flag:
             continue
         out[a["type_id"]] = out.get(a["type_id"], 0.0) + a.get("quantity", 0)
 
@@ -1515,8 +1521,11 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             characters,
         ))
 
+    reserve_hangar = production_excluded_hangar()
     for r in char_results:
-        _accumulate_stock_at_location(r["assets"], cfg.home_location_id, stock_qty)
+        _accumulate_stock_at_location(
+            r["assets"], cfg.home_location_id, stock_qty,
+            skip_flag=storage.hangar_flag_for(reserve_hangar, "character", r["character_id"], cfg.home_location_id))
         for o in r["orders"]:
             if not o.get("is_buy_order") and o.get("location_id") == cfg.home_location_id:
                 sell_qty[o["type_id"]] = sell_qty.get(o["type_id"], 0.0) + o.get("volume_remain", 0)
@@ -1533,7 +1542,10 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 pass  # missing Director role on this character - a later one might have it
             else:
                 seen_corp_assets.add(corporation_id)
-                _accumulate_stock_at_location(corp_assets, cfg.home_location_id, stock_qty)
+                _accumulate_stock_at_location(
+                    corp_assets, cfg.home_location_id, stock_qty,
+                    skip_flag=storage.hangar_flag_for(reserve_hangar, "corporation", corporation_id,
+                                                      cfg.home_location_id))
 
         if corporation_id not in seen_corp_orders:
             try:
@@ -1674,6 +1686,7 @@ def do_list_owned_blueprints() -> dict:
     grouped: dict[tuple, int] = {}
     for type_id, quantity, material_efficiency, time_efficiency, runs in storage.load_owned_blueprints(
         owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_hangar=production_excluded_hangar(),
     ):
         is_original = runs == -1
         key = (type_id, is_original, material_efficiency, time_efficiency, None if is_original else runs)

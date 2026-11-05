@@ -70,6 +70,7 @@ class Fitting:
     # they can be redisplayed/re-edited. None for a non-capital fit.
     fuel_bay_text: Optional[str] = None
     ship_maintenance_bay_text: Optional[str] = None
+    reserve_target: int = 0     # fits to hold in the strategic reserve (doctrine/reserve.py)
 
 
 @dataclass
@@ -184,6 +185,10 @@ class StockpileRow:
     # Dark Blood for a True Sansha hardener) and their names.
     variant_available: float = 0.0
     variant_names: list[str] = field(default_factory=list)
+    # Hint only, never part of available/shortfall: how much of the shortfall
+    # the strategic reserve holds, and everything it holds for this item.
+    reserve_on_hand: float = 0.0
+    reserve_pool: float = 0.0
 
 
 @dataclass
@@ -201,6 +206,7 @@ class AggregatedStockpileRow:
     fitting_count: int
     variant_available: float = 0.0
     variant_names: list[str] = field(default_factory=list)
+    reserve_on_hand: float = 0.0    # hint only, see StockpileRow
 
 
 @dataclass
@@ -230,6 +236,7 @@ class ShoppingListRow:
     # three price columns are then that variant's prices.
     buy_type_id: Optional[int] = None
     buy_type_name: Optional[str] = None
+    reserve_on_hand: float = 0.0         # hint only, to_buy does not net it
 
     def __post_init__(self):
         if self.to_buy is None:

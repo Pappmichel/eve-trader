@@ -115,7 +115,8 @@ class _Context:
         char_ids, corp_ids = engine.shared_production_owner_ids("blueprints")
         groups = storage.list_blueprint_copies(
             blueprint_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-            exclude_location_ids=engine.production_excluded_location_ids(self.cfg))
+            exclude_location_ids=engine.production_excluded_location_ids(self.cfg),
+            exclude_hangar=engine.production_excluded_hangar())
         if groups:
             struct = self._structure_me_mult(activity, type_id)
             recipe.copies = sorted(

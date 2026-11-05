@@ -15,7 +15,7 @@ from .. import storage
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
-from . import engine, equivalents, esi_sync
+from . import engine, equivalents, esi_sync, reserve
 from .config import DOCTRINE_CONFIG, DoctrineConfig, validate_doctrine_overrides
 from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
@@ -187,7 +187,8 @@ def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Opti
                        variant_label: Optional[str] = None, contract_target: Optional[int] = None,
                        stockpile_target: Optional[int] = None, cargo_tolerance_pct: Optional[float] = None,
                        active: Optional[bool] = None, fuel_bay_text: Optional[str] = None,
-                       ship_maintenance_bay_text: Optional[str] = None) -> dict:
+                       ship_maintenance_bay_text: Optional[str] = None,
+                       reserve_target: Optional[int] = None) -> dict:
     """Re-parses on a new raw_eft. Re-validates only contracts this change
     can actually affect (see match_and_validate_contract): already-matched
     rows for this fitting always, plus unmatched and same-hull competitors
@@ -198,7 +199,7 @@ def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Opti
     existing_row = storage.get_fitting(fitting_id)
     if existing_row is None:
         raise ActionError(f"Fitting {fitting_id} not found.")
-    if (contract_target is not None and contract_target < 0) or (stockpile_target is not None and stockpile_target < 0):
+    if any(t is not None and t < 0 for t in (contract_target, stockpile_target, reserve_target)):
         raise ActionError("Targets must be zero or greater.")
 
     issues = []
@@ -212,6 +213,8 @@ def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Opti
             updates["contract_target"] = contract_target
         if stockpile_target is not None:
             updates["stockpile_target"] = stockpile_target
+        if reserve_target is not None:
+            updates["reserve_target"] = reserve_target
         if cargo_tolerance_pct is not None:
             updates["cargo_tolerance_pct"] = cargo_tolerance_pct
         if active is not None:
@@ -335,6 +338,15 @@ def do_get_assemblable(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     if storage.get_fitting(fitting_id) is None:
         raise ActionError(f"Fitting {fitting_id} not found.")
     return engine.assemblable_for_fitting(fitting_id, cfg, target_sets=target_sets)
+
+
+def do_get_strategic_reserve(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """The Strategic Reserve tab (GitHub issue #418, reserve.status)."""
+    return reserve.status(cfg)
+
+
+def do_list_reserve_hangars() -> list[dict]:
+    return reserve.hangar_options()
 
 
 def do_find_fittings(query: str) -> list[dict]:
@@ -636,6 +648,11 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "hub_region_id": cfg.hub_region_id,
         "stockpile_hangar_flags": list(cfg.stockpile_hangar_flags),
         "buyer_character_ids": list(cfg.buyer_character_ids),
+        "strategic_reserve_owner_type": cfg.strategic_reserve_owner_type,
+        "strategic_reserve_owner_id": cfg.strategic_reserve_owner_id,
+        "strategic_reserve_location_id": cfg.strategic_reserve_location_id,
+        "strategic_reserve_hangar_flag": cfg.strategic_reserve_hangar_flag,
+        "strategic_reserve_include_hulls": cfg.strategic_reserve_include_hulls,
     }
 
 
@@ -795,6 +812,39 @@ def do_search_equivalent_candidates(target_type_id: int, query: str, limit: int 
             if t != target_type_id]
 
 
+def _reject_intake_hangar(updates: dict) -> None:
+    """The reserve must not be a Sorting intake source: that hangar is staging
+    for other tools, while the reserve's contents do not exist for them."""
+    from ..production.config import PRODUCTION_CONFIG
+
+    if (not updates.get("strategic_reserve_hangar_flag")
+            or updates.get("strategic_reserve_location_id") != PRODUCTION_CONFIG.home_location_id):
+        return
+    owner = next((o["owner_name"] for o in reserve.hangar_options()
+                  if o["owner_type"] == updates.get("strategic_reserve_owner_type")
+                  and o["owner_id"] == updates.get("strategic_reserve_owner_id")), None)
+    for _id, _kind, owner_name, flag, _label in storage.load_sorting_intake_sources():
+        if owner_name == owner and flag == updates["strategic_reserve_hangar_flag"]:
+            raise ActionError("This hangar is a Sorting intake source, so it cannot be the strategic reserve.")
+
+
+def _reserve_changed(updates: dict, cfg: DoctrineConfig) -> bool:
+    return any(key in updates and updates[key] != getattr(cfg, key) for key in reserve.HANGAR_FIELDS)
+
+
+def _invalidate_after_reserve_change() -> None:
+    """Everything derived from stock Production or the Asset Manager can read."""
+    from ..asset_manager.actions import invalidate_cache as invalidate_asset_cache
+    from ..production.actions import _mark_cached_production_plans_stale
+    from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
+
+    reserve.invalidate_cache()
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    invalidate_asset_cache(storage.get_current_tenant())
+    _mark_cached_production_plans_stale()
+
+
 def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     updates = dict(updates)
     # Saving a list moves the tenant off the legacy single id for good.
@@ -811,6 +861,8 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
             raise ActionError(f"buyer_character_ids: {unknown} are not characters of this tenant.")
     switch_changed = ("accept_equivalent_variants" in updates
                       and bool(updates["accept_equivalent_variants"]) != cfg.accept_equivalent_variants)
+    reserve_changed = _reserve_changed(updates, cfg)
+    _reject_intake_hangar(updates)
     try:
         validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)
@@ -818,4 +870,6 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
         raise ActionError(str(e)) from e
     if switch_changed:
         do_validate_contracts(cfg)  # stored contract statuses follow the switch at once
+    if reserve_changed:
+        _invalidate_after_reserve_change()
     return {"updated": list(updates.keys())}
