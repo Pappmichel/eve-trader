@@ -65,6 +65,14 @@ class ConfigProxy:
     def __repr__(self) -> str:
         return repr(self._var.get())
 
+    @property
+    def __dict__(self) -> dict:
+        # The fields live on the resolved instance, like every other read here.
+        # pytest >= 9.2 monkeypatch reads the old value from ``__dict__``: with
+        # the proxy's own dict it saw no field, then failed to delete it on undo
+        # and left the patched value in the config for later tests.
+        return vars(self._var.get())
+
 
 class ConfigError(Exception):
     """Raised when a config.yaml value (or a Settings-page update) doesn't
