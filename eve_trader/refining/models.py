@@ -177,3 +177,4 @@ class ShoppingListPlan:
     savings_vs_all_direct: Optional[float]
     total_volume_m3: float
     shortfall: bool = False              # some requirement could not be fully covered
+    approximate: bool = False            # rounded LP plan, the whole-unit solve gave no answer

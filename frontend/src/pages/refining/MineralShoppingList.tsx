@@ -10,7 +10,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { productionApi, refiningApi } from '../../api/client'
 import type { DirectMineralPurchase, MineralCoverage, MineralRequirement, OrePurchase, ShoppingListPlan } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
-import { DEPTH_HINT, ShortCell, ShortfallAlert, SourceBadge } from './shoppingDepth'
+import { ApproximateAlert, DEPTH_HINT, ShortCell, ShortfallAlert, SourceBadge } from './shoppingDepth'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
@@ -190,6 +190,7 @@ export default function MineralShoppingList() {
       {plan && (
         <>
           <ShortfallAlert show={plan.shortfall} tolerance={settings?.shopping_price_tolerance} />
+          <ApproximateAlert show={plan.approximate} />
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Total Cost</Text>

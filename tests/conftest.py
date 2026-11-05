@@ -72,6 +72,15 @@ def _no_real_http(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _mineral_mip_in_process(monkeypatch):
+    """A worker process per solve (mineral_supply_lp) would make the
+    brute-force optimizer tests take minutes. test_mineral_supply_lp.py puts
+    the real worker back for its own tests."""
+    from eve_trader import mineral_supply_lp as supply
+    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: supply.linprog(**kwargs).x)
+
+
+@pytest.fixture(autouse=True)
 def _reset_goonmetrics_region_coverage():
     """goonmetrics_client remembers per process which regions Goonmetrics
     tracks; a probe answered by one test's mocked session must not decide

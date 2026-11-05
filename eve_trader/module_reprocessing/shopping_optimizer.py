@@ -179,5 +179,5 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
         all_direct_cost=all_direct_cost,
         savings_vs_all_direct=(all_direct_cost - total_cost) if all_direct_cost is not None else None,
         total_volume_m3=sum(p.volume_m3 for p in reprocess_purchases),
-        shortfall=bool(solution.short),
+        shortfall=bool(solution.short), approximate=solution.approximate,
     )

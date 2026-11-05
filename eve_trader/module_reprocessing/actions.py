@@ -491,5 +491,5 @@ def _shopping_plan_to_dict(plan: ModuleShoppingListPlan) -> dict:
         "reprocess_cost": plan.reprocess_cost, "direct_cost": plan.direct_cost, "total_cost": plan.total_cost,
         "lp_cost": plan.lp_cost, "all_direct_cost": plan.all_direct_cost,
         "savings_vs_all_direct": plan.savings_vs_all_direct, "total_volume_m3": plan.total_volume_m3,
-        "shortfall": plan.shortfall,
+        "shortfall": plan.shortfall, "approximate": plan.approximate,
     }

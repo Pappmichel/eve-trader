@@ -1373,6 +1373,20 @@ carry `depth_checked: false` ("qty unchecked" in the UI). Order books come
 from the same cached `region_orders_raw` the prices came from, so depth costs
 no extra ESI calls.
 
+**HiGHS can ignore its time limit (found 2026-11-05).** Production is aarch64
+with one CPU. With unbounded integer columns and large requirements (400M
+Tritanium), HiGHS sat in `HighsRedcostFixing::addRootRedcost` for minutes on an
+input x86 solves in 0.3 s: nginx returned 504, and the thread kept a CPU until
+the service restarted. Two guards, keep both: every column has a finite upper
+bound (`mineral_supply_lp._useful_portions`, this alone stopped the hang), and
+the integer solve runs in a killable process (`eve_trader/mip_worker.py`,
+`MIP_PROCESS_DEADLINE_SECONDS`). A killed or failed solve returns the LP
+solution rounded up, flagged `approximate` and shown as such. Reproduce with a
+`linux/arm64` Python container; x86 does not show it. Other HiGHS callers
+(`production/reaction_capacity.py`, `pi/`) have neither guard yet. `tests/
+conftest.py` runs this solve in-process, `tests/test_mineral_supply_lp.py` tests
+the real worker.
+
 ## Structure rigs per job category (Logistics page)
 
 Every structure/rig bonus goes through `engine._facility_mults` /

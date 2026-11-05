@@ -33,6 +33,16 @@ export function ShortfallAlert({ show, tolerance }: { show: boolean; tolerance: 
   )
 }
 
+export function ApproximateAlert({ show }: { show: boolean }) {
+  if (!show) return null
+  return (
+    <Alert color="warn" variant="light" title="Approximate plan">
+      The whole-unit optimization did not finish in time, so this plan is the continuous optimum rounded up. It covers
+      the list but can cost slightly more than the best whole-unit plan.
+    </Alert>
+  )
+}
+
 export const DEPTH_HINT =
   'Quantities are capped at what sellers list within the price tolerance (Settings); deeper orders cost more and ' +
   'are used only while they still beat every other source.'

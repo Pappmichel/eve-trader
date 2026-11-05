@@ -569,6 +569,7 @@ class OrePurchase(_Base):
     total_cost: float
     hub_region_id: Optional[int] = None
     hub_name: Optional[str] = None
+    depth_checked: bool = True
 
 
 class DirectMineralPurchase(_Base):
@@ -585,6 +586,7 @@ class DirectMineralPurchase(_Base):
     # fell back to showing "-" for every row.
     source: Optional[str] = None
     hub_region_id: Optional[int] = None
+    depth_checked: bool = True
 
 
 class MineralCoverage(_Base):
@@ -595,6 +597,7 @@ class MineralCoverage(_Base):
     from_direct: int
     delivered: int
     surplus: float
+    short: int = 0
 
 
 class ShoppingListPlan(_Base):
@@ -608,6 +611,8 @@ class ShoppingListPlan(_Base):
     all_direct_cost: Optional[float]
     savings_vs_all_direct: Optional[float]
     total_volume_m3: float
+    shortfall: bool = False
+    approximate: bool = False
 
 
 class RefinableMineral(_Base):
@@ -1202,6 +1207,7 @@ class ReprocessPurchase(_Base):
     total_cost: float
     hub_region_id: Optional[int] = None
     hub_name: Optional[str] = None
+    depth_checked: bool = True
 
 
 class ReprocessMineralCoverage(_Base):
@@ -1212,6 +1218,7 @@ class ReprocessMineralCoverage(_Base):
     from_direct: int
     delivered: int
     surplus: float
+    short: int = 0
 
 
 class ModuleShoppingListPlan(_Base):
@@ -1225,6 +1232,8 @@ class ModuleShoppingListPlan(_Base):
     all_direct_cost: Optional[float]
     savings_vs_all_direct: Optional[float]
     total_volume_m3: float
+    shortfall: bool = False
+    approximate: bool = False
 
 
 class ModuleReprocessingSettings(_Base):

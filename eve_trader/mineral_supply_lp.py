@@ -23,8 +23,13 @@ Pure: callers pass every price, yield and cap.
 """
 from __future__ import annotations
 
+import logging
 import math
+import pickle
+import subprocess
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -32,12 +37,22 @@ from scipy.optimize import linprog
 
 from .market_depth import SupplyTier
 
+log = logging.getLogger(__name__)
+
 _EPS = 1e-9
 
 # See refining/optimizer.py's own comment: on a timeout HiGHS returns its best
 # feasible incumbent. Tier columns can triple the column count, so the cap
 # matters more here than before.
 MIP_TIME_LIMIT_SECONDS = 5.0
+
+# HiGHS does not always honour time_limit (see mip_worker.py), so the worker
+# process is killed at this deadline. It covers the solver's limit, importing
+# scipy on a one-CPU server and HiGHS' usual overrun, and stays far below
+# nginx's 60 s.
+MIP_PROCESS_DEADLINE_SECONDS = 20.0
+
+_APP_ROOT = Path(__file__).resolve().parent.parent
 
 
 class SolveError(Exception):
@@ -63,39 +78,84 @@ class SupplySolution:
     # mineral id -> units no source covers at an acceptable price
     short: dict[int, int] = field(default_factory=dict)
     lp_cost: float = 0.0
+    # True when the integer solve gave no answer and this plan is the
+    # continuous optimum rounded up: it covers the list but may cost slightly
+    # more than the best whole-unit plan.
+    approximate: bool = False
 
 
 def _tier_cap_portions(tier: SupplyTier, portion_size: int) -> Optional[int]:
     return None if tier.max_units is None else tier.max_units // portion_size
 
 
+def _solve_mip_in_child(kwargs: dict) -> Optional[np.ndarray]:
+    """The integer solution from a mip_worker process, or None when it found
+    none, failed or passed MIP_PROCESS_DEADLINE_SECONDS (subprocess.run kills
+    it then)."""
+    try:
+        done = subprocess.run([sys.executable, "-m", "eve_trader.mip_worker"], input=pickle.dumps(kwargs),
+                              capture_output=True, timeout=MIP_PROCESS_DEADLINE_SECONDS, cwd=_APP_ROOT)
+    except subprocess.TimeoutExpired:
+        log.warning("Mineral shopping list: integer solve killed after %.0f s, using the rounded LP plan.",
+                    MIP_PROCESS_DEADLINE_SECONDS)
+        return None
+    except OSError as e:
+        log.warning("Mineral shopping list: could not start the solver process (%s), using the rounded LP plan.", e)
+        return None
+    if done.returncode != 0:
+        log.warning("Mineral shopping list: solver process exited with %s, using the rounded LP plan: %s",
+                    done.returncode, done.stderr[-500:].decode(errors="replace"))
+        return None
+    try:
+        return pickle.loads(done.stdout)["x"]
+    except (pickle.UnpicklingError, EOFError, KeyError, AttributeError, ValueError) as e:
+        log.warning("Mineral shopping list: unreadable solver output (%s), using the rounded LP plan.", e)
+        return None
+
+
+# Module attribute so tests can run the solve in-process (a worker per solve
+# would make the brute-force tests take minutes).
+_run_mip = _solve_mip_in_child
+
+
+def _useful_portions(source: SupplySource, required: dict[int, float]) -> int:
+    """Portions that already cover every requirement this source yields. Buying
+    more only adds cost, so this upper bound never cuts off an optimum. Finite
+    bounds also matter to HiGHS: with unbounded integer columns and large
+    requirements it hung on aarch64, ignoring its time limit (see mip_worker.py)."""
+    return max((math.ceil(required[m] / qty) for m, qty in source.yield_per_portion.items()
+                if m in required and qty > 0), default=0)
+
+
 def solve(mineral_ids: list[int], required: dict[int, float], sources: list[SupplySource],
           direct_tiers: dict[int, list[SupplyTier]]) -> SupplySolution:
     columns: list[tuple[str, object, int]] = []   # (kind, key, tier index)
     costs: list[float] = []
-    upper: list[Optional[float]] = []
+    upper: list[float] = []
     for i, source in enumerate(sources):
+        useful = _useful_portions(source, required)
         for t, tier in enumerate(source.tiers):
             cap = _tier_cap_portions(tier, source.portion_size)
             if cap == 0:
                 continue
             columns.append(("source", i, t))
             costs.append(tier.unit_cost * source.portion_size)
-            upper.append(cap)
+            upper.append(useful if cap is None else min(cap, useful))
     for mineral_id in mineral_ids:
+        useful = math.ceil(required[mineral_id])
         for t, tier in enumerate(direct_tiers.get(mineral_id, [])):
             if tier.max_units == 0:
                 continue
             columns.append(("direct", mineral_id, t))
             costs.append(tier.unit_cost)
-            upper.append(tier.max_units)
+            upper.append(useful if tier.max_units is None else min(tier.max_units, useful))
     n_real = len(columns)
 
     # Shortfall columns: one unit must cost more than any real way to get a
     # unit of anything (a whole portion yields at least one unit).
     penalty = 10.0 * max(costs, default=1.0) + 1.0
     costs += [penalty] * len(mineral_ids)
-    upper += [None] * len(mineral_ids)
+    upper += [math.ceil(required[m]) for m in mineral_ids]
 
     row_of = {m: r for r, m in enumerate(mineral_ids)}
     a_ub = np.zeros((len(mineral_ids), len(costs)), dtype=float)
@@ -112,7 +172,8 @@ def solve(mineral_ids: list[int], required: dict[int, float], sources: list[Supp
     bounds = [(0, u) for u in upper]
     cost = np.array(costs, dtype=float)
 
-    relaxed = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    relaxed = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=bounds, method="highs",
+                      options={"time_limit": MIP_TIME_LIMIT_SECONDS})
     if not relaxed.success:
         raise SolveError(f"Could not solve the shopping list ({relaxed.message.strip()}).")
     relaxed_short = float(sum(relaxed.x[n_real:]))
@@ -121,15 +182,19 @@ def solve(mineral_ids: list[int], required: dict[int, float], sources: list[Supp
     # Shortfall is whole units too: a continuous one would cover a fractional
     # requirement remainder for a fraction of the penalty instead of buying a unit.
     integrality = np.array([1] * (n_real + len(mineral_ids)))
-    result = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=bounds, method="highs",
-                     integrality=integrality, options={"time_limit": MIP_TIME_LIMIT_SECONDS})
-    if result.x is None:
-        raise SolveError(f"Could not solve the shopping list as a whole-unit plan ({result.message.strip()}).")
+    x = _run_mip({"c": cost, "A_ub": a_ub, "b_ub": b_ub, "bounds": bounds, "method": "highs",
+                  "integrality": integrality, "options": {"time_limit": MIP_TIME_LIMIT_SECONDS}})
+    approximate = x is None
+    if approximate:
+        # Rounding up stays within every cap (caps are whole numbers) and still
+        # covers every requirement. At most one fractional column per mineral
+        # in a basic solution, so the extra cost is a few portions.
+        x = np.ceil(relaxed.x - _EPS)
 
-    solution = SupplySolution(lp_cost=lp_cost)
+    solution = SupplySolution(lp_cost=lp_cost, approximate=approximate)
     delivered = {m: 0 for m in mineral_ids}
     for col, (kind, key, t) in enumerate(columns):
-        value = max(0, round(result.x[col]))
+        value = max(0, round(x[col]))
         if value <= 0:
             continue
         if kind == "source":
