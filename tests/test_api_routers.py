@@ -2151,6 +2151,42 @@ def test_get_sorting_list_action_error_maps_to_400(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_sorting_paste_serializes_action_result(monkeypatch):
+    seen = {}
+
+    def _paste(text):
+        seen["text"] = text
+        return {
+            "rows": [{"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
+                      "by_source": [{"source_label": "Pasted", "qty": 500.0}],
+                      "wanted_by_tool": [], "unclaimed": True}],
+            "reprocess_error": None,
+            "unresolved": [{"line": "Tritanum\t5", "suggestion": "Tritanium"}],
+            "errors": [{"line": "free text", "error": "Not tab-separated"}],
+        }
+    monkeypatch.setattr(sorting_actions, "do_sorting_paste", _paste)
+    resp = client.post("/api/sorting/sorting-paste", json={"text": "Tritanium\t500"})
+    assert resp.status_code == 200
+    assert seen["text"] == "Tritanium\t500"
+    body = resp.json()
+    assert body["rows"][0]["by_source"] == [{"source_label": "Pasted", "qty": 500.0}]
+    assert body["unresolved"] == [{"line": "Tritanum\t5", "suggestion": "Tritanium"}]
+    assert body["errors"] == [{"line": "free text", "error": "Not tab-separated"}]
+
+
+def test_sorting_paste_action_error_maps_to_400(monkeypatch):
+    def _raise(text):
+        raise ActionError("Paste is empty")
+    monkeypatch.setattr(sorting_actions, "do_sorting_paste", _raise)
+    resp = client.post("/api/sorting/sorting-paste", json={"text": ""})
+    assert resp.status_code == 400
+
+
+def test_sorting_paste_rejects_oversized_text():
+    resp = client.post("/api/sorting/sorting-paste", json={"text": "x" * 500_001})
+    assert resp.status_code == 422
+
+
 def test_list_intake_sources_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_list_intake_sources", lambda: {"sources": [
         {"id": 1, "source_kind": "character", "owner_name": "Alice",

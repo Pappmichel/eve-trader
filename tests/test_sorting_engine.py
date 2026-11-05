@@ -20,7 +20,7 @@ from eve_trader.production import engine as production_engine
 from eve_trader.production.config import ProductionConfig
 from eve_trader.refining import actions as refining_actions
 from eve_trader.sorting import engine as sorting_engine
-from eve_trader.sorting.actions import ActionError, do_add_intake_source
+from eve_trader.sorting.actions import ActionError, do_add_intake_source, do_sorting_paste
 
 
 def _empty_snapshot_df() -> pd.DataFrame:
@@ -81,6 +81,57 @@ def test_empty_intake_returns_empty_list(monkeypatch):
     result = sorting_engine.do_sorting_list()
 
     assert result == {"rows": [], "reprocess_error": None}
+
+
+def _stub_paste_names(monkeypatch, exact, suggestions=None):
+    monkeypatch.setattr(storage, "resolve_type_names_exact", lambda names: exact)
+    monkeypatch.setattr(storage, "suggest_type_names", lambda names: suggestions or {})
+
+
+def test_paste_builds_rows_without_reading_sources_or_assets(monkeypatch):
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("a paste must not read intake sources or assets")
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _must_not_run)
+    monkeypatch.setattr(storage, "assets_at_flag", _must_not_run)
+    monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {34: 100.0})
+    _stub_paste_names(monkeypatch, {"tritanium": (34, "Tritanium", 4)})
+
+    result = do_sorting_paste(
+        "Tritanium\t1,000\tMineral\tMaterial\t\t\t10 m3\t\t\n"
+        "Tritanium\t500\tMineral\tMaterial\t\t\t5 m3\t\t")
+
+    assert result["unresolved"] == []
+    assert result["errors"] == []
+    assert result["reprocess_error"] is None
+    [row] = result["rows"]
+    assert row["type_id"] == 34
+    assert row["intake_qty"] == 1500.0
+    assert row["by_source"] == [{"source_label": "Pasted", "qty": 1500.0}]
+    assert row["wanted_by_tool"] == [{"tool": "material", "wanted_qty": 100.0}]
+
+
+def test_paste_keeps_blueprints(monkeypatch):
+    _stub_paste_names(monkeypatch, {"rifter blueprint": (691, "Rifter Blueprint", 9)})
+
+    result = do_sorting_paste("Rifter Blueprint\t1\tFrigate Blueprint\tBlueprint\t\t\t0.01 m3\t\t")
+
+    assert [row["type_id"] for row in result["rows"]] == [691]
+
+
+def test_paste_reports_lines_it_could_not_read(monkeypatch):
+    _stub_paste_names(monkeypatch, {}, {"tritanum": (34, "Tritanium")})
+
+    result = do_sorting_paste("Tritanum\t5\nfree text\nRifter\t\tFrigate\tShip")
+
+    assert result["rows"] == []
+    assert result["unresolved"] == [{"line": "Tritanum\t5", "suggestion": "Tritanium"}]
+    assert [e["line"] for e in result["errors"]] == ["free text", "Rifter\t\tFrigate\tShip"]
+
+
+@pytest.mark.parametrize("text", ["", "  \n\t "])
+def test_empty_paste_is_rejected(text):
+    with pytest.raises(ActionError, match="Paste is empty"):
+        do_sorting_paste(text)
 
 
 def test_item_nobody_wants_is_included_and_marked_unclaimed(monkeypatch):

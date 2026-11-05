@@ -5,6 +5,7 @@ import { ToolHeader } from '../../components/ToolHeader'
 
 const TABS = [
   { path: '/sorting', label: 'Overview' },
+  { path: '/sorting/paste', label: 'Paste' },
   { path: '/sorting/settings', label: 'Settings' },
 ]
 

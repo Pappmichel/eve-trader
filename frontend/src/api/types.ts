@@ -1914,6 +1914,11 @@ export interface SortingList {
   reprocess_error?: string | null
 }
 
+export interface SortingPasteResult extends SortingList {
+  unresolved: AssetPasteUnresolvedLine[]
+  errors: AssetPasteError[]
+}
+
 export interface SortingIntakeSource {
   id: number
   source_kind: string

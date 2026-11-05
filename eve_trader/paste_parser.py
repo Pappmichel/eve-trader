@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from . import storage
+
 _QUANTITY_CLEAN_RE = re.compile(r"[^\d]")  # EVE item quantities are always whole numbers -
                                              # any comma/period present is a thousands separator, never a decimal.
 _VOLUME_CLEAN_RE = re.compile(r"[^\d.]")   # volume IS fractional ("5.0 m3") - strip the " m3" suffix/commas only.
@@ -102,3 +104,56 @@ def merge_duplicate_stacks(lines: list[ParsedPasteLine]) -> list[ParsedPasteLine
             merged[key] = line
             order.append(key)
     return [merged[k] for k in order]
+
+
+def resolve_paste(text: str, skip_blueprints: bool = True) -> dict:
+    """Parses an inventory paste and resolves every name to a type_id via
+    storage.resolve_type_names_exact/suggest_type_names (the batch "Did you
+    mean...?" pattern, docs/MANUAL_TRACKING_PLAN.md decision 18).
+
+    `skip_blueprints` leaves Blueprint-category lines out and lists them
+    instead: manual stock needs that, because no reliable ME/TE/Runs clipboard
+    format exists (decision 10). A caller that only needs type and quantity
+    passes False.
+
+    Returns {"resolved": {type_id: (type_name, quantity)}, "skipped_blueprints":
+    [name, ...], "unresolved": [{"line": raw_line, "suggestion": name|None}, ...],
+    "errors": [{"line": raw_line, "error": message}, ...]}. Two different
+    paste lines that both resolve to the same type_id (distinct names for
+    the same item is not a real case, but merge_duplicate_stacks only
+    merges identical names) have their quantities summed."""
+    all_lines = parse_paste(text)
+    error_lines = [line for line in all_lines if line.error]
+    parsed = merge_duplicate_stacks(all_lines)
+
+    def is_skipped(line: ParsedPasteLine) -> bool:
+        return skip_blueprints and line.category.strip().lower() == "blueprint"
+
+    skipped_blueprints = [line.name for line in parsed if is_skipped(line)]
+    item_lines = [line for line in parsed if not is_skipped(line)]
+
+    exact = storage.resolve_type_names_exact([line.name for line in item_lines])
+    missing = [line.name for line in item_lines if line.name.strip().lower() not in exact]
+    suggestions = storage.suggest_type_names(missing) if missing else {}
+
+    resolved: dict[int, list] = {}
+    unresolved = []
+    for line in item_lines:
+        key = line.name.strip().lower()
+        hit = exact.get(key)
+        if hit is None:
+            suggestion = suggestions.get(key)
+            unresolved.append({"line": line.raw_line, "suggestion": suggestion[1] if suggestion else None})
+            continue
+        type_id, resolved_name, _category_id = hit
+        if type_id in resolved:
+            resolved[type_id][1] += line.quantity
+        else:
+            resolved[type_id] = [resolved_name, float(line.quantity)]
+
+    return {
+        "resolved": {type_id: (name, qty) for type_id, (name, qty) in resolved.items()},
+        "skipped_blueprints": skipped_blueprints,
+        "unresolved": unresolved,
+        "errors": [{"line": line.raw_line, "error": line.error} for line in error_lines],
+    }

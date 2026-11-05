@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import schemas
 from ...actions import ActionError
@@ -34,6 +34,17 @@ class AddIntakeSourceRequest(BaseModel):
 @router.get("/sorting-list", response_model=schemas.SortingList)
 def get_sorting_list():
     return _wrap(actions.do_sorting_list)
+
+
+class SortingPasteRequest(BaseModel):
+    # Same cap as Production's asset paste (api/routers/production.py).
+    text: str = Field(max_length=500_000)
+
+
+# POST only because of the text body: nothing is written.
+@router.post("/sorting-paste", response_model=schemas.SortingPasteResult)
+def sorting_paste(req: SortingPasteRequest):
+    return _wrap(actions.do_sorting_paste, text=req.text)
 
 
 @router.get("/intake-sources", response_model=schemas.SortingIntakeSourceList)

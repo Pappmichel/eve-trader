@@ -3,12 +3,33 @@ EVE "Copy As" clipboard format confirmed against evepraisal.com's own
 open-source evepaste library (evepaste/parsers/assets.py) during
 implementation - 9 tab-separated columns: Name, Quantity, Group, Category,
 Size, Slot, Volume, Meta Level, Tech Level, no header row."""
-from eve_trader.paste_parser import merge_duplicate_stacks, parse_paste
+from eve_trader import storage
+from eve_trader.paste_parser import merge_duplicate_stacks, parse_paste, resolve_paste
 
 # A real Tech I ammo line - Size/Slot/Meta Level/Tech Level empty (common for
 # non-fitted items), still real trailing tab characters in an actual paste.
 _AMMO_LINE = "Antimatter Charge S\t1000\tProjectile Ammo\tCharge\t\t\t5.0 m3\t\t"
 _MODULE_LINE = "Damage Control II\t3\tDamage Controls\tModule\tSmall\tLow\t5.0 m3\t5\t2"
+
+
+def _blueprint_paste(monkeypatch):
+    monkeypatch.setattr(storage, "resolve_type_names_exact", lambda names: {
+        "tritanium": (34, "Tritanium", 4), "rifter blueprint": (691, "Rifter Blueprint", 9),
+    })
+    monkeypatch.setattr(storage, "suggest_type_names", lambda names: {})
+    return "Tritanium\t100\tMineral\tMaterial\t\t\t1 m3\t\t\nRifter Blueprint\t1\tFrigate BP\tBlueprint\t\t\t0.01 m3\t\t"
+
+
+def test_resolve_paste_skips_blueprints_by_default(monkeypatch):
+    result = resolve_paste(_blueprint_paste(monkeypatch))
+    assert result["resolved"] == {34: ("Tritanium", 100.0)}
+    assert result["skipped_blueprints"] == ["Rifter Blueprint"]
+
+
+def test_resolve_paste_can_keep_blueprints(monkeypatch):
+    result = resolve_paste(_blueprint_paste(monkeypatch), skip_blueprints=False)
+    assert result["resolved"] == {34: ("Tritanium", 100.0), 691: ("Rifter Blueprint", 1.0)}
+    assert result["skipped_blueprints"] == []
 
 
 def test_parses_a_full_9_column_line():

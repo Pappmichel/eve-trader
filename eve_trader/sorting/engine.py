@@ -288,6 +288,15 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     configured - the feature is simply off until an operator adds at least
     one character/corp intake."""
     intake, by_source = _intake_from_sources(production_cfg)
+    return rows_for_intake(intake, by_source, production_cfg, doctrine_cfg)
+
+
+def rows_for_intake(intake: dict[int, float], by_source: dict[int, list[dict]],
+                    production_cfg: ProductionConfig = PRODUCTION_CONFIG,
+                    doctrine_cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """The sorting rows for any intake, wherever it was read from: synced
+    assets (do_sorting_list) or a pasted inventory (actions.do_sorting_paste).
+    Only the intake differs; every demand pot reads its usual data."""
     if not intake:
         return {"rows": [], "reprocess_error": None}
 
