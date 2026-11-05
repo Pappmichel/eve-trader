@@ -401,51 +401,78 @@ def max_assemblable(per_set: dict[int, tuple[float, str]],
     return max_sets, details
 
 
+def _equivalence_groups(lines: dict[int, tuple[float, str]],
+                        equivalents_of: EquivalentsOf) -> dict[tuple[int, ...], list[int]]:
+    """Lines that draw on one pool, keyed by the pool's types."""
+    groups: dict[tuple[int, ...], list[int]] = {}
+    for type_id in sorted(lines):
+        groups.setdefault(tuple(sorted(equivalents_of(type_id))), []).append(type_id)
+    return groups
+
+
+def _allocate_pool(stock: dict[int, float], lines: dict[int, tuple[float, str]], group_types: tuple[int, ...],
+                   line_types: list[int], sets: int) -> dict[int, float]:
+    """Pool split over the lines for `sets` sets: own stock first, then the
+    shared rest. Whatever is left over stays with the line whose own stock it
+    is (as far as it goes), the rest goes to the last line."""
+    pool = sum(stock.get(t, 0.0) for t in group_types)
+    target = {t: lines[t][0] * sets for t in line_types}
+    alloc = {t: min(stock.get(t, 0.0), target[t]) for t in line_types}
+    left = pool - sum(alloc.values())
+    for t in line_types:
+        take = min(max(0.0, target[t] - alloc[t]), left)
+        alloc[t] += take
+        left -= take
+    for t in line_types:
+        back = min(max(0.0, stock.get(t, 0.0) - alloc[t]), left)
+        alloc[t] += back
+        left -= back
+    alloc[line_types[-1]] += max(0.0, left)
+    return alloc
+
+
 def _max_assemblable_pooled(per_set: dict[int, tuple[float, str]], available_by_type: dict[int, float],
                             equivalents_of: EquivalentsOf) -> tuple[int, dict[int, dict]]:
     stock = {t: max(0.0, float(q)) for t, q in available_by_type.items()}
     lines = {t: v for t, v in per_set.items() if v[0] > 0}
-    groups: dict[tuple[int, ...], list[int]] = {}
-    for type_id in sorted(lines):
-        groups.setdefault(tuple(sorted(equivalents_of(type_id))), []).append(type_id)
-
-    def _allocate(group_types: tuple[int, ...], line_types: list[int], sets: int) -> dict[int, float]:
-        """Pool split over the lines for `sets` sets: own stock first, then
-        the shared rest. Whatever is left over stays with the line whose own
-        stock it is (as far as it goes), the rest goes to the last line."""
-        pool = sum(stock.get(t, 0.0) for t in group_types)
-        target = {t: lines[t][0] * sets for t in line_types}
-        alloc = {t: min(stock.get(t, 0.0), target[t]) for t in line_types}
-        left = pool - sum(alloc.values())
-        for t in line_types:
-            take = min(max(0.0, target[t] - alloc[t]), left)
-            alloc[t] += take
-            left -= take
-        for t in line_types:
-            back = min(max(0.0, stock.get(t, 0.0) - alloc[t]), left)
-            alloc[t] += back
-            left -= back
-        alloc[line_types[-1]] += max(0.0, left)
-        return alloc
+    groups = _equivalence_groups(lines, equivalents_of)
 
     group_sets: dict[tuple[int, ...], int] = {}
     for group_types, line_types in groups.items():
         pool = sum(stock.get(t, 0.0) for t in group_types)
         group_sets[group_types] = int(math.floor(pool / sum(lines[t][0] for t in line_types) + 1e-9))
     max_sets = min(group_sets.values(), default=0)
+    short_next = short_for_sets(per_set, available_by_type, max_sets + 1, equivalents_of)
 
     details: dict[int, dict] = {}
     for group_types, line_types in groups.items():
         sets = group_sets[group_types]
-        now = _allocate(group_types, line_types, sets)
-        nxt = _allocate(group_types, line_types, max_sets + 1)
+        now = _allocate_pool(stock, lines, group_types, line_types, sets)
         for t in line_types:
             qty, item_class = lines[t]
             own = stock.get(t, 0.0)
             details[t] = {"per_set": qty, "item_class": item_class, "on_hand": now[t],
                           "variant_on_hand": max(0.0, now[t] - own), "sets": sets,
-                          "short_for_next": max(0.0, (max_sets + 1) * qty - nxt[t])}
+                          "short_for_next": short_next[t]}
     return max_sets, details
+
+
+def short_for_sets(per_set: dict[int, tuple[float, str]], available_by_type: dict[int, float], sets: int,
+                   equivalents_of: Optional[EquivalentsOf] = None) -> dict[int, float]:
+    """{type_id: units missing} to assemble `sets` complete sets of one fitting
+    from this stock, same rules as max_assemblable (the fitting gets the whole
+    stock; with `equivalents_of`, lines of one class share one pool and one
+    unit never serves two lines). Every line with a quantity gets an entry."""
+    lines = {t: v for t, v in per_set.items() if v[0] > 0}
+    stock = {t: max(0.0, float(q)) for t, q in available_by_type.items()}
+    if equivalents_of is None:
+        return {t: max(0.0, qty * sets - stock.get(t, 0.0)) for t, (qty, _cls) in lines.items()}
+    short: dict[int, float] = {}
+    for group_types, line_types in _equivalence_groups(lines, equivalents_of).items():
+        alloc = _allocate_pool(stock, lines, group_types, line_types, sets)
+        for t in line_types:
+            short[t] = max(0.0, lines[t][0] * sets - alloc[t])
+    return short
 
 
 # ---------------------------------------------------------------- Aggregation / ampel (B.8)

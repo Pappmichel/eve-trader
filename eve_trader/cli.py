@@ -597,8 +597,10 @@ def doctrine_group():
 
 @doctrine_group.command("max-fit")
 @click.argument("fitting")
+@click.option("--target", type=click.IntRange(1, 100_000), default=None,
+              help="Also list what is missing for this many fits.")
 @_tenant_id_option
-def doctrine_max_fit(fitting: str, tenant_id: str | None):
+def doctrine_max_fit(fitting: str, target: int | None, tenant_id: str | None):
     """How many complete fits of FITTING (id or name) the Doctrine stockpile
     holds right now and what stops one more. The fitting gets top priority;
     consumables count at full quantity. Nothing is built or bought."""
@@ -611,7 +613,7 @@ def doctrine_max_fit(fitting: str, tenant_id: str | None):
         if len(matches) > 1:
             names = "\n".join(f"  {m['fitting_id']}  {m['name']}" for m in matches)
             raise actions.ActionError(f"{fitting!r} matches several fittings, pass the id:\n{names}")
-        return doctrine_actions.do_get_assemblable(matches[0]["fitting_id"])
+        return doctrine_actions.do_get_assemblable(matches[0]["fitting_id"], target_sets=target)
 
     result = _targets_call(tenant_id, run)
     location = ", ".join(str(loc["name"] or loc["location_id"]) for loc in result["stockpile_locations"]) or "not set"
@@ -626,6 +628,11 @@ def doctrine_max_fit(fitting: str, tenant_id: str | None):
             build = "  (Production has a recipe)" if row["buildable"] else ""
             click.echo(f"  {row['type_name']:<40} short {row['short_for_next']:>12,.0f}  "
                        f"on hand {row['on_hand']:>12,.0f}{build}")
+    if target is not None:
+        missing = [row for row in result["requirements"] if row["short_for_target"] > 1e-9]
+        click.echo(f"Missing for {target:,} fits: {'nothing' if not missing else ''}".rstrip())
+        for row in missing:
+            click.echo(f"  {row['type_name']:<40} {row['short_for_target']:>12,.0f}")
     click.echo(f"  {'item':<40} {'per fit':>10} {'on hand':>12} {'fits':>8}  also needed by")
     for row in result["requirements"]:
         click.echo(f"  {row['type_name'][:40]:<40} {row['per_set']:>10,.0f} {row['on_hand']:>12,.0f} "

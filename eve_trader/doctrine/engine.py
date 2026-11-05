@@ -442,7 +442,8 @@ def _assemblable_summary(candidate: _Candidate, available_by_type: dict[int, flo
 
 def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, float],
                         all_candidates: list[_Candidate],
-                        lookup: Optional[validation.EquivalentsOf] = None) -> dict:
+                        lookup: Optional[validation.EquivalentsOf] = None,
+                        target_sets: Optional[int] = None) -> dict:
     """How many complete fits of `candidate` the Doctrine stockpile holds
     right now, the items that stop one more and the full requirement table.
 
@@ -454,8 +455,14 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
 
     With `lookup` (accept_equivalent_variants), stock of equivalent variants
     counts too (validation.max_assemblable); each row then carries
-    `variant_on_hand` (part of on_hand from variants)."""
-    max_sets, details = validation.max_assemblable(_per_set_soll(candidate), available_by_type, lookup)
+    `variant_on_hand` (part of on_hand from variants).
+
+    With `target_sets`, each row's `short_for_target` says what is missing for
+    that many fits (GitHub issue #416), under the same rules."""
+    per_set = _per_set_soll(candidate)
+    max_sets, details = validation.max_assemblable(per_set, available_by_type, lookup)
+    short_for_target = (validation.short_for_sets(per_set, available_by_type, target_sets, lookup)
+                        if target_sets is not None else None)
     sde_by_id = storage.get_sde_types_bulk(list(details))
     hull_id = candidate.fitting.hull_type_id
 
@@ -482,17 +489,19 @@ def fitting_assemblable(candidate: _Candidate, available_by_type: dict[int, floa
             "variant_on_hand": d.get("variant_on_hand", 0.0),
             "sets": d["sets"],
             "short_for_next": d["short_for_next"],
+            "short_for_target": short_for_target[type_id] if short_for_target is not None else None,
             "buildable": classify_activity(type_id)[1] is not None,
             "also_needed_by": sorted(needed_by.get(type_id, [])),
         })
     rows.sort(key=lambda r: (r["slot_section"] != "hull", r["type_name"].lower()))
     bottlenecks = sorted((r for r in rows if r["short_for_next"] > 1e-9),
                          key=lambda r: (r["sets"], r["type_name"].lower()))
-    return {"max_sets": max_sets, "next_sets": max_sets + 1,
+    return {"max_sets": max_sets, "next_sets": max_sets + 1, "target_sets": target_sets,
             "bottlenecks": bottlenecks, "requirements": rows}
 
 
-def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                            target_sets: Optional[int] = None) -> dict:
     """fitting_assemblable for one stored fitting (an inactive one too),
     reading the stockpile once. Raises LookupError for an unknown id."""
     fitting, items = load_fitting_with_items(fitting_id)
@@ -514,10 +523,11 @@ def assemblable_for_fitting(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONF
         "stockpile_locations": [{"location_id": i, "name": names.get(i)} for i in location_ids],
     }
     if not asset_rows:
-        return {**result, "max_sets": None, "next_sets": None, "bottlenecks": [], "requirements": []}
+        return {**result, "max_sets": None, "next_sets": None, "target_sets": target_sets,
+                "bottlenecks": [], "requirements": []}
     lookup = equivalents_of(cfg)
     available = stockpile_available(asset_rows, _with_equivalents(_per_set_soll(candidate), lookup), cfg)
-    return {**result, **fitting_assemblable(candidate, available, all_candidates, lookup)}
+    return {**result, **fitting_assemblable(candidate, available, all_candidates, lookup, target_sets)}
 
 
 def _name_of(type_id: int, sde_by_id: dict) -> str:

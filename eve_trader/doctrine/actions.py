@@ -325,12 +325,16 @@ def do_get_fitting_detail(fitting_id: str) -> dict:
     }
 
 
-def do_get_assemblable(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+def do_get_assemblable(fitting_id: str, cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                       target_sets: Optional[int] = None) -> dict:
     """How many complete fits of one fitting the Doctrine stockpile holds
-    right now and what stops one more (engine.fitting_assemblable)."""
+    right now, what stops one more and, with `target_sets`, what is missing
+    for that many fits (engine.fitting_assemblable)."""
+    if target_sets is not None and target_sets < 1:
+        raise ActionError("Target fits must be at least 1.")
     if storage.get_fitting(fitting_id) is None:
         raise ActionError(f"Fitting {fitting_id} not found.")
-    return engine.assemblable_for_fitting(fitting_id, cfg)
+    return engine.assemblable_for_fitting(fitting_id, cfg, target_sets=target_sets)
 
 
 def do_find_fittings(query: str) -> list[dict]:

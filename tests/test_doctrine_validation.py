@@ -368,6 +368,35 @@ def test_max_assemblable_min_over_items_and_short_for_next():
     assert details[1]["item_class"] == "exact"
 
 
+def test_short_for_sets_lists_what_is_missing_for_a_target():
+    per_set = v.build_stockpile_soll([FittingItem("f", 1, "low", 100, 2),
+                                      FittingItem("f", 2, "cargo", 200, 500)], hull_type_id=1, stockpile_target=1)
+    short = v.short_for_sets(per_set, {1: 5, 100: 7, 200: 1400}, 10)
+    assert short == {1: 5, 100: 13, 200: 3600}
+
+
+def test_short_for_sets_is_zero_below_what_the_stock_allows():
+    per_set = v.build_stockpile_soll([FittingItem("f", 1, "low", 100, 2)], hull_type_id=1, stockpile_target=1)
+    assert v.short_for_sets(per_set, {1: 5, 100: 10}, 5) == {1: 0, 100: 0}
+
+
+def test_short_for_sets_matches_short_for_next():
+    per_set = v.build_stockpile_soll([FittingItem("f", 1, "low", 100, 2)], hull_type_id=1, stockpile_target=1)
+    available = {1: 4, 100: 5}
+    max_sets, details = v.max_assemblable(per_set, available)
+    short = v.short_for_sets(per_set, available, max_sets + 1)
+    assert {t: d["short_for_next"] for t, d in details.items()} == short
+
+
+def test_short_for_sets_counts_equivalent_variants_once():
+    # 100 and 101 are twins; both are fitted. 6 units of 101 serve either line,
+    # so 3 sets need 12 and 5 of the pool (11 units) leave exactly 1 short.
+    per_set = {100: (2.0, "exact"), 101: (2.0, "exact")}
+    lookup = lambda t: (100, 101)  # noqa: E731
+    short = v.short_for_sets(per_set, {100: 5, 101: 6}, 3, lookup)
+    assert sum(short.values()) == 1
+
+
 def test_max_assemblable_consumables_need_full_quantity():
     per_set = v.build_stockpile_soll([FittingItem("f", 1, "cargo", 200, 100)], hull_type_id=1, stockpile_target=1)
     # 99 of 100 would pass the cargo tolerance on a contract; here it is not a fit.

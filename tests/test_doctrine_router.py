@@ -11,6 +11,7 @@ read/characters/settings), since business logic itself is already covered
 by doctrine/actions.py's own tests; this file only verifies the router's
 own wiring (path/body reach the right actions.do_* kwargs, results
 serialize, ActionError maps to 400)."""
+import pytest
 from fastapi.testclient import TestClient
 
 from eve_trader.actions import ActionError
@@ -341,20 +342,37 @@ def test_stockpile_and_contracts_pass_location_filter(monkeypatch):
 def test_fitting_assemblable_passes_fitting_id(monkeypatch):
     captured = {}
 
-    def _get(fitting_id):
-        captured["fitting_id"] = fitting_id
+    def _get(fitting_id, target_sets):
+        captured.update(fitting_id=fitting_id, target_sets=target_sets)
         return {"fitting_id": fitting_id, "max_sets": 3, "bottlenecks": [], "requirements": []}
     monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _get)
 
     resp = client.get("/api/doctrine/fittings/f1/assemblable")
 
     assert resp.status_code == 200
-    assert captured == {"fitting_id": "f1"}
+    assert captured == {"fitting_id": "f1", "target_sets": None}
     assert resp.json()["max_sets"] == 3
 
 
+def test_fitting_assemblable_passes_target_sets(monkeypatch):
+    captured = {}
+
+    def _get(fitting_id, target_sets):
+        captured.update(target_sets=target_sets)
+        return {"fitting_id": fitting_id, "target_sets": target_sets}
+    monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _get)
+
+    assert client.get("/api/doctrine/fittings/f1/assemblable?target_sets=25").status_code == 200
+    assert captured == {"target_sets": 25}
+
+
+@pytest.mark.parametrize("value", [0, -1, 100_001])
+def test_fitting_assemblable_rejects_a_target_out_of_range(value):
+    assert client.get(f"/api/doctrine/fittings/f1/assemblable?target_sets={value}").status_code == 422
+
+
 def test_fitting_assemblable_unknown_fitting_maps_to_400(monkeypatch):
-    def _raise(fitting_id):
+    def _raise(fitting_id, target_sets):
         raise ActionError(f"Fitting {fitting_id} not found.")
     monkeypatch.setattr(doctrine_actions, "do_get_assemblable", _raise)
 

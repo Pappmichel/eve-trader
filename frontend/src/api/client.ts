@@ -577,8 +577,9 @@ export const doctrineApi = {
     }),
   deleteFitting: (fittingId: string) => del(`/api/doctrine/fittings/${fittingId}`),
   fittingDetail: (fittingId: string) => get<T.FittingDetail>(`/api/doctrine/fittings/${fittingId}`),
-  assemblable: (fittingId: string) =>
-    get<T.AssemblableResult>(`/api/doctrine/fittings/${fittingId}/assemblable`),
+  assemblable: (fittingId: string, targetSets?: number) =>
+    get<T.AssemblableResult>(
+      `/api/doctrine/fittings/${fittingId}/assemblable${targetSets ? `?target_sets=${targetSets}` : ''}`),
 
   syncContracts: () => post<T.PipelineRunStatus>('/api/doctrine/sync'),
   syncContractsStatus: () => get<T.PipelineRunStatus>('/api/doctrine/sync/status'),

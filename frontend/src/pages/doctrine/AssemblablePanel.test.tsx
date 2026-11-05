@@ -57,6 +57,35 @@ describe('Doctrine AssemblablePanel', () => {
     expect(screen.queryByText('Check Production')).toBeNull()
   })
 
+  it('lists what is missing for an entered target', async () => {
+    const withTarget = {
+      ...RESULT, target_sets: 10,
+      requirements: [{ ...HULL, short_for_target: 7 }, { ...MODULE, short_for_target: 8 }],
+    }
+    vi.mocked(doctrineApi.assemblable).mockImplementation(
+      (async (_id: string, target?: number) => (target ? withTarget : RESULT)) as never)
+    vi.mocked(gateApi.status).mockResolvedValue({ tools: ['doctrine'] } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MantineProvider><AssemblablePanel fittingId="f1" /></MantineProvider></QueryClientProvider>)
+    fireEvent.change(await screen.findByLabelText('Target fits'), { target: { value: '10' } })
+    expect(await screen.findByText('Missing for 10 fits', {}, { timeout: 2000 })).toBeTruthy()
+    expect(doctrineApi.assemblable).toHaveBeenCalledWith('f1', 10)
+  })
+
+  it('says so when the stockpile covers the target', async () => {
+    const covered = {
+      ...RESULT, target_sets: 2,
+      requirements: [{ ...HULL, short_for_target: 0 }, { ...MODULE, short_for_target: 0 }],
+    }
+    vi.mocked(doctrineApi.assemblable).mockImplementation(
+      (async (_id: string, target?: number) => (target ? covered : RESULT)) as never)
+    vi.mocked(gateApi.status).mockResolvedValue({ tools: ['doctrine'] } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MantineProvider><AssemblablePanel fittingId="f1" /></MantineProvider></QueryClientProvider>)
+    fireEvent.change(await screen.findByLabelText('Target fits'), { target: { value: '2' } })
+    expect(await screen.findByText('The stockpile covers 2 fits.', {}, { timeout: 2000 })).toBeTruthy()
+  })
+
   it('shows a hint without shared assets', async () => {
     renderPanel(['doctrine'], { ...RESULT, assets_available: false, max_sets: null, bottlenecks: [], requirements: [] })
     expect(await screen.findByText(/No asset data yet/)).toBeTruthy()

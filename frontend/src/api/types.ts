@@ -1507,6 +1507,8 @@ export interface AssemblableRow {
   variant_on_hand?: number
   sets: number
   short_for_next: number
+  // Missing for AssemblableResult.target_sets fits; null without a target.
+  short_for_target?: number | null
   buildable: boolean
   also_needed_by: string[]
 }
@@ -1520,6 +1522,7 @@ export interface AssemblableResult {
   stockpile_locations: DoctrineLocationOption[]
   max_sets: number | null
   next_sets: number | null
+  target_sets?: number | null
   bottlenecks: AssemblableRow[]
   requirements: AssemblableRow[]
 }

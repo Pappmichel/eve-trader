@@ -1352,7 +1352,9 @@ bottleneck with a Production recipe the page asks Production's own
 `/api/production/max-buildable` on demand (button only with the
 `production` grant); there is no Doctrine-side cross-tool build path.
 The math is pure (`validation.max_assemblable`): per item
-`floor(on_hand / per_fit)`, the minimum is the answer.
+`floor(on_hand / per_fit)`, the minimum is the answer. An optional target
+(`?target_sets=N`, `--target N`, GitHub issue #416) adds `short_for_target`
+per row under the same rules (`validation.short_for_sets`).
 
 ## Mineral shopping lists respect market depth
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from .. import schemas
@@ -114,8 +114,8 @@ def get_fitting_detail(fitting_id: str):
 
 # ----------------------------------------------------------------------- sync
 @router.get("/fittings/{fitting_id}/assemblable")
-def get_fitting_assemblable(fitting_id: str):
-    return _wrap(actions.do_get_assemblable, fitting_id=fitting_id)
+def get_fitting_assemblable(fitting_id: str, target_sets: Optional[int] = Query(None, ge=1, le=100_000)):
+    return _wrap(actions.do_get_assemblable, fitting_id=fitting_id, target_sets=target_sets)
 
 
 @router.post("/sync")
