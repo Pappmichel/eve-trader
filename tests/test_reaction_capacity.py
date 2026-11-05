@@ -927,6 +927,7 @@ def test_build_window_counts_non_reaction_incoming_with_a_window_date(monkeypatc
     monkeypatch.setattr(engine.pricing, "buy_price", lambda *a, **k: 10.0)
     monkeypatch.setattr(storage, "manual_incoming_qty",
                         lambda t: 7.0 if t == reaction_product else 0.0)
+    monkeypatch.setattr(rc, "_type_names", lambda ids: {reaction_product: "Named Product"})
     cfg = ProductionConfig(reaction_window_next="2999-01-01T00:00:00+00:00")
     layer = ReactionLayer(recipes=[_recipe(
         "normal:1", reaction_product, inputs={fuel: 5.0}, outputs={reaction_product: 100.0})])
@@ -940,6 +941,7 @@ def test_build_window_counts_non_reaction_incoming_with_a_window_date(monkeypatc
     assert window.incoming1[reaction_product] == pytest.approx(7.0)
     assert window.on_hand[fuel] == pytest.approx(100.0)
     assert window.carry_need[fuel] == pytest.approx(25.0)
+    assert window.type_label(reaction_product) == "Named Product"
 
 
 def test_lp_rounding_replaces_a_poor_time_limited_incumbent(monkeypatch):
@@ -1013,3 +1015,233 @@ def test_layer_input_demand_counts_reaction_products_consumed_by_w1_runs():
         jobs_used=1, slots=10)
 
     assert layer_input_demand_from_plan(layer, plan) == {10: 100.0}   # moon material 9000 left out
+
+
+# --- W1 rounding: solver noise, dropped-run warnings, hard slot cap first
+def _raw_solve(runs1: dict, jobs1: dict, *, buy1: dict | None = None, success: bool = True):
+    from eve_trader.production.reaction_capacity import _RawSolve
+    return _RawSolve(
+        runs1=runs1, runs2={k: 0.0 for k in runs1},
+        jobs1=jobs1, jobs2={k: 0.0 for k in runs1},
+        new_formulas={k: 0 for k in runs1},
+        buy1=buy1 or {}, buy2={}, short1={}, short2={}, defer={},
+        slot_slack1=0.0, slot_slack2=0.0, objective=0.0,
+        success=success, message="",
+    )
+
+
+def test_round_w1_noise_above_fit_x_jobs_does_not_take_another_recipes_slot():
+    # Production case: 12.000000783 jobs at fit 222 gave 2664.00017 runs. Rounded
+    # up that was 2665 runs and a 13th job, which took the slot of the recipe
+    # the solver gave its own job.
+    from eve_trader.production.reaction_capacity import _round_w1
+
+    busy = _recipe("normal:1", 1, fit=222, formulas=20, outputs={1: 200.0})
+    starved = _recipe("normal:2", 2, fit=222, formulas=20, outputs={2: 200.0})
+    layer = ReactionLayer(recipes=[busy, starved])
+    window = _window({1: 1.0, 2: 1.0}, slots=13)
+    raw = _raw_solve(
+        {"normal:1": 2664.0001738, "normal:2": 222.0},
+        {"normal:1": 12, "normal:2": 1},
+    )
+
+    runs, jobs, buy, dropped = _round_w1(layer, window, raw)
+
+    assert runs == {"normal:1": 2664, "normal:2": 222}
+    assert jobs == {"normal:1": 12, "normal:2": 1}
+    assert dropped == []
+    assert buy == {}
+
+
+def test_round_w1_noise_without_a_job_is_not_a_run():
+    from eve_trader.production.reaction_capacity import _round_w1
+
+    recipe = _recipe("normal:1", 1, fit=222, formulas=20, outputs={1: 200.0})
+    layer = ReactionLayer(recipes=[recipe])
+    raw = _raw_solve({"normal:1": 0.0001643}, {"normal:1": 0})
+
+    runs, jobs, buy, dropped = _round_w1(layer, _window({1: 1.0}, slots=1), raw)
+
+    assert runs == {"normal:1": 0}
+    assert jobs == {"normal:1": 0}
+    assert (buy, dropped) == ({}, [])
+
+
+def test_round_w1_keeps_a_fractional_run_inside_the_job():
+    # 100.2 runs under a 222-run job is not noise: still ceiled to 101.
+    from eve_trader.production.reaction_capacity import _round_w1
+
+    recipe = _recipe("normal:1", 1, fit=222, formulas=20, outputs={1: 200.0})
+    layer = ReactionLayer(recipes=[recipe])
+    raw = _raw_solve({"normal:1": 100.2}, {"normal:1": 1})
+
+    runs, jobs, _buy, dropped = _round_w1(layer, _window({1: 1.0}, slots=1), raw)
+
+    assert runs == {"normal:1": 101}
+    assert jobs == {"normal:1": 1}
+    assert dropped == []
+
+
+def _dropped_warning(window, raw, recipe):
+    from eve_trader.production.reaction_capacity import _postprocess
+    layer = ReactionLayer(recipes=[recipe])
+    return _postprocess(layer, window, raw)[7]
+
+
+def test_dropped_runs_warning_names_the_item_and_w2_when_w1_does_not_need_it():
+    # No W1 demand: the dropped units go to the W2 purchases, not the Buy List.
+    from dataclasses import replace
+
+    recipe = _recipe("normal:33337", 33337, fit=222, formulas=20,
+                     outputs={33337: 200.0}, inputs={9000: 1.0})
+    window = replace(
+        _window({}, slots=0, on_hand={9000: 1e6}, prices={33337: 100.0}),
+        type_names={33337: "Promethium Mercurite"},
+    )
+    raw = _raw_solve({"normal:33337": 222.0}, {"normal:33337": 1})
+
+    warnings = _dropped_warning(window, raw, recipe)
+
+    assert warnings == [
+        "Promethium Mercurite: 222 run(s) dropped, not enough free W1 slots; "
+        "44,400 units moved to the W2 purchases"
+    ]
+
+
+def test_dropped_runs_warning_says_bought_when_w1_needs_the_units():
+    from dataclasses import replace
+
+    recipe = _recipe("alchemy:7", 7, fit=10, formulas=20, outputs={7: 100.0}, inputs={9000: 1.0})
+    window = replace(
+        _window({7: 1000.0}, slots=0, on_hand={9000: 1e6}, prices={7: 100.0}),
+        type_names={7: "Named Item"},
+    )
+    raw = _raw_solve({"alchemy:7": 10.0}, {"alchemy:7": 1})
+
+    warnings = _dropped_warning(window, raw, recipe)
+
+    assert warnings[0] == (
+        "Named Item (alchemy): 10 run(s) dropped, not enough free W1 slots; "
+        "1,000 units bought for W1"
+    )
+
+
+def test_dropped_runs_warning_names_the_formula_limit():
+    from dataclasses import replace
+
+    recipe = _recipe("normal:7", 7, fit=10, formulas=1, formula_price=None,
+                     outputs={7: 100.0}, inputs={9000: 1.0})
+    window = replace(
+        _window({}, slots=5, on_hand={9000: 1e6}, prices={7: 100.0}),
+        type_names={7: "Named Item"},
+    )
+    raw = _raw_solve({"normal:7": 20.0}, {"normal:7": 2})
+
+    warnings = _dropped_warning(window, raw, recipe)
+
+    assert "not enough owned formulas" in warnings[0]
+
+
+def test_warnings_fall_back_to_the_type_id_without_a_name():
+    recipe = _recipe("normal:7", 7, fit=10, outputs={7: 100.0})
+    window = _window({}, slots=0, on_hand={9000: 1e6}, prices={7: 100.0})
+    raw = _raw_solve({"normal:7": 10.0}, {"normal:7": 1})
+
+    assert _dropped_warning(window, raw, recipe)[0].startswith("type 7: 10 run(s) dropped")
+
+
+def test_unmet_demand_warning_uses_the_item_name():
+    from dataclasses import replace
+
+    # No buy price and no recipe capacity: the demand stays unmet.
+    recipe = _recipe("normal:1", 1, seconds=86400, formulas=1, formula_price=None,
+                     outputs={1: 100.0}, inputs={9000: 1.0})
+    window = replace(
+        _window({1: 50_000.0}, slots=1, on_hand={9000: 1e6}),
+        prices={9000: 1.0},
+        type_names={1: "Named Item"},
+    )
+
+    plan = solve(ReactionLayer(recipes=[recipe]), window)
+
+    assert any(w.startswith("Unmet W1 demand for Named Item:") for w in plan.warnings)
+
+
+def _spy_solve_mip(monkeypatch):
+    from eve_trader.production import reaction_capacity as rc
+
+    calls: list[dict] = []
+    real = rc._solve_mip
+
+    def spy(layer, window, **kwargs):
+        calls.append(kwargs)
+        return real(layer, window, **kwargs)
+
+    monkeypatch.setattr(rc, "_solve_mip", spy)
+    return calls, real
+
+
+def _buffer_window(**kwargs) -> ReactionWindow:
+    from dataclasses import replace
+    return replace(
+        _window({1: 500.0}, slots=2, on_hand={9000: 1e6}, **kwargs), buffer={1: 100.0})
+
+
+def test_buffer_solve_starts_with_the_hard_slot_cap(monkeypatch):
+    from eve_trader.production import reaction_capacity as rc
+
+    calls, _real = _spy_solve_mip(monkeypatch)
+    recipe = _recipe("normal:1", 1, fit=10, outputs={1: 100.0})
+
+    plan = rc._solve_core(ReactionLayer(recipes=[recipe]), _buffer_window())
+
+    assert calls[0].get("hard_w1_slots") is True
+    assert not any("slot slack" in w for w in plan.warnings)
+
+
+def test_solve_without_buffer_keeps_the_slack_model_first(monkeypatch):
+    from eve_trader.production import reaction_capacity as rc
+
+    calls, _real = _spy_solve_mip(monkeypatch)
+    recipe = _recipe("normal:1", 1, fit=10, outputs={1: 100.0})
+    window = _window({1: 500.0}, slots=2, on_hand={9000: 1e6})
+
+    rc._solve_core(ReactionLayer(recipes=[recipe]), window)
+
+    assert not calls[0].get("hard_w1_slots")
+
+
+def test_buffer_solve_keeps_slack_available_for_manual_build(monkeypatch):
+    from eve_trader.production import reaction_capacity as rc
+
+    calls, _real = _spy_solve_mip(monkeypatch)
+    recipe = _recipe("normal:1", 1, fit=10, outputs={1: 100.0})
+
+    rc._solve_core(
+        ReactionLayer(recipes=[recipe]), _buffer_window(manual_build=frozenset({1})))
+
+    assert not calls[0].get("hard_w1_slots")
+
+
+def test_buffer_solve_falls_back_to_slack_when_the_hard_cap_is_infeasible(monkeypatch):
+    from dataclasses import replace
+    from eve_trader.production import reaction_capacity as rc
+
+    real = rc._solve_mip
+    calls: list[dict] = []
+
+    def fake(layer, window, **kwargs):
+        calls.append(kwargs)
+        result = real(layer, window, **kwargs)
+        if len(calls) == 1:
+            return replace(result, success=False, mip_time_limit=False, message="infeasible")
+        return result
+
+    monkeypatch.setattr(rc, "_solve_mip", fake)
+    recipe = _recipe("normal:1", 1, fit=10, outputs={1: 100.0})
+
+    plan = rc._solve_core(ReactionLayer(recipes=[recipe]), _buffer_window())
+
+    assert calls[0].get("hard_w1_slots") is True
+    assert not calls[1].get("hard_w1_slots")
+    assert plan.jobs_used <= 2

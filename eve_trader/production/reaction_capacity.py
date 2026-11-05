@@ -43,6 +43,11 @@ _MIP_TIME_LIMIT_SECONDS = 10.0
 # slack is repeated with those fixed and priced at 0 (``solve``).
 _MIP_REL_GAP = 1e-4
 _MIP_ABS_GAP = 100_000.0
+# HiGHS accepts an integer job count up to 1e-6 off a whole number, so runs can
+# sit that share of a job above fit x jobs (seen on production: 12.000000783
+# jobs, 2664.00017 runs at fit 222). Excess up to this many jobs is solver
+# noise and must not round up into an extra run and job.
+_JOB_NOISE_TOL = 1e-5
 # Carry value per unit as a share of the buy price. Below 1 so buying a
 # unit only to hold it never ties with leaving it out of the plan.
 _CARRY_VALUE_SHARE = 0.99
@@ -120,6 +125,12 @@ class ReactionWindow:
     # internally). Raw inputs for buffer jobs may be bought.
     buffer: Mapping[int, float] = field(default_factory=dict)
     buffer_buy_cap: Optional[Mapping[int, float]] = None
+    # SDE names for warnings, filled by ``build_window``; the solver stays pure.
+    type_names: Mapping[int, str] = field(default_factory=dict)
+
+    def type_label(self, type_id: int) -> str:
+        """Item name for a warning; the id only when the name is unknown."""
+        return self.type_names.get(type_id) or f"type {type_id}"
 
     @property
     def slots_w2(self) -> int:
@@ -471,7 +482,19 @@ def _solve_core(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
     allow_defer = {
         p for p, choice in window.chain_choice.items() if choice == "wait"
     }
-    primary = _solve_mip(layer, window, allow_defer=allow_defer)
+    # A buffer solve fills every slot, so the slack model can run into the time
+    # limit with an over-capacity incumbent that is thrown away anyway, where
+    # the capped model solves in seconds. Without a buffer the slack model is
+    # fast and stays: within the MIP gap a capped solve can settle on another
+    # near-tied plan, e.g. buy for W1 although the product waits for W2.
+    hard_first = bool(window.buffer) and not any(
+        r.fit > 0 and r.product_type_id in window.manual_build for r in layer.recipes
+    )
+    primary = _solve_mip(layer, window, allow_defer=allow_defer, hard_w1_slots=hard_first)
+    if hard_first and not primary.success and not primary.mip_time_limit:
+        # Infeasible under the cap (the purchase caps can do that): solve with
+        # slack so the handling below can react to it.
+        primary = _solve_mip(layer, window, allow_defer=allow_defer)
     extra_warnings: list[str] = []
     if primary.mip_time_limit:
         extra_warnings.append(
@@ -481,8 +504,10 @@ def _solve_core(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
     elif primary.message and "Optimal" not in primary.message and primary.success:
         extra_warnings.append(f"Solver: {primary.message}")
 
-    # Hard W1 slots: slack without Manual Build is a solver failure — re-solve
-    # with slack1 fixed at 0 rather than accept an over-capacity plan.
+    # Hard W1 slots: slack without Manual Build (only reachable through the
+    # fallback above, or a Manual Build recipe that got no job) is a solver
+    # failure - re-solve with slack1 fixed at 0 rather than accept an
+    # over-capacity plan.
     if primary.slot_slack1 > _EPS and not _manual_build_uses_slots(layer, window, primary):
         extra_warnings.append(
             "W1 slot slack used without Manual Build; re-solving with hard slot cap"
@@ -611,6 +636,14 @@ def _manual_build_uses_slots(
         r.product_type_id in window.manual_build and raw.jobs1.get(r.key, 0) > 0
         for r in layer.recipes
     )
+
+
+@dataclass(frozen=True)
+class _DroppedRuns:
+    """W1 runs ``_round_w1`` could not give a job."""
+    recipe: ReactionRecipe
+    runs: int
+    limit: str                          # "slots" | "formulas"
 
 
 @dataclass
@@ -1073,14 +1106,21 @@ def _round_w1(
     layer: ReactionLayer,
     window: ReactionWindow,
     raw: _RawSolve,
-) -> tuple[dict[str, int], dict[str, int], dict[int, float], list[str]]:
-    """Ceil W1 runs; tighten jobs to ceil(runs/fit). Drop excess if no slot."""
-    warnings: list[str] = []
-    runs_i = {
-        k: int(math.ceil(v - _TOL)) if v > _EPS else 0 for k, v in raw.runs1.items()
-    }
-    buy = dict(raw.buy1)
+) -> tuple[dict[str, int], dict[str, int], dict[int, float], list[_DroppedRuns]]:
+    """Ceil W1 runs; tighten jobs to ceil(runs/fit). Drop excess if no slot.
+
+    Runs above fit x jobs by solver noise (``_JOB_NOISE_TOL``) are cut back
+    first: rounded up, they would take a slot for one extra run and starve a
+    recipe the solver gave a real job."""
     by_key = {r.key: r for r in layer.recipes}
+    runs_i: dict[str, int] = {}
+    for key, value in raw.runs1.items():
+        fit = by_key[key].fit
+        cap = max(fit, 0) * raw.jobs1.get(key, 0)
+        if fit > 0 and cap < value <= cap + _JOB_NOISE_TOL * fit:
+            value = float(cap)
+        runs_i[key] = int(math.ceil(value - _TOL)) if value > _EPS else 0
+    buy = dict(raw.buy1)
     jobs_i: dict[str, int] = {r.key: 0 for r in layer.recipes}
     ideal: dict[str, int] = {}
     for key, runs in runs_i.items():
@@ -1095,6 +1135,7 @@ def _round_w1(
         by_key.keys(),
         key=lambda k: (-raw.jobs1.get(k, 0), -ideal.get(k, 0), k),
     )
+    dropped_runs: list[_DroppedRuns] = []
     slots_left = int(window.slots)
     for key in order:
         recipe = by_key[key]
@@ -1104,7 +1145,6 @@ def _round_w1(
         formula_cap = int(recipe.owned_formulas) + int(raw.new_formulas.get(key, 0))
         take = min(need, slots_left, formula_cap)
         jobs_i[key] = take
-        slots_left -= take
         cap_runs = take * recipe.fit
         runs = runs_i.get(key, 0)
         if runs > cap_runs:
@@ -1113,19 +1153,56 @@ def _round_w1(
             out_qty = float(recipe.outputs.get(recipe.product_type_id, 0.0)) * dropped
             if out_qty > _EPS and recipe.product_type_id not in window.manual_build:
                 buy[recipe.product_type_id] = buy.get(recipe.product_type_id, 0.0) + out_qty
-            warnings.append(
-                f"Rounded W1 runs for {key} exceeded fit x jobs; "
-                f"dropped {dropped} run(s)"
-                + (
-                    f" and bought {out_qty:g} units"
-                    if recipe.product_type_id not in window.manual_build
-                    else " (manual Build: not bought)"
-                )
-            )
+            dropped_runs.append(_DroppedRuns(
+                recipe=recipe, runs=dropped,
+                limit="formulas" if formula_cap < slots_left else "slots",
+            ))
+        slots_left -= take
     # Manual Build: never buy that product, even if the MIP left a buy1.
     for m in window.manual_build:
         buy.pop(m, None)
-    return runs_i, jobs_i, buy, warnings
+    return runs_i, jobs_i, buy, dropped_runs
+
+
+def _units_text(qty: float) -> str:
+    return f"{qty:,.0f}" if qty >= 1 else f"{qty:.3g}"
+
+
+def _recipe_label(window: ReactionWindow, recipe: ReactionRecipe) -> str:
+    label = window.type_label(recipe.product_type_id)
+    return f"{label} (alchemy)" if _recipe_kind(recipe.key) == "alchemy" else label
+
+
+def _dropped_runs_warning(
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    hard_window: ReactionWindow,
+    raw: _RawSolve,
+    drop: _DroppedRuns,
+    runs1: Mapping[str, int],
+    recomputed: Mapping[int, float],
+    buy_later: Mapping[int, float],
+) -> str:
+    """Warning for one dropped recipe, stating where its units really went:
+    bought for W1, moved to the W2 purchases, or not bought at all."""
+    recipe = drop.recipe
+    product = recipe.product_type_id
+    limit = "free W1 slots" if drop.limit == "slots" else "owned formulas"
+    head = f"{_recipe_label(window, recipe)}: {drop.runs:,} run(s) dropped, not enough {limit}"
+    if product in window.manual_build:
+        return f"{head} (Manual Build: not bought)"
+    out_qty = float(recipe.outputs.get(product, 0.0)) * drop.runs
+    with_runs = dict(runs1)
+    with_runs[recipe.key] = with_runs.get(recipe.key, 0) + drop.runs
+    without_drop = _recompute_buy1(layer, hard_window, with_runs, raw.defer).get(product, 0.0)
+    now = min(out_qty, max(0.0, float(recomputed.get(product, 0.0)) - without_drop))
+    later = min(out_qty - now, float(buy_later.get(product, 0.0)))
+    parts = []
+    if now > _EPS:
+        parts.append(f"{_units_text(now)} units bought for W1")
+    if later > _EPS:
+        parts.append(f"{_units_text(later)} units moved to the W2 purchases")
+    return f"{head}; " + (" and ".join(parts) if parts else "no purchase needed")
 
 
 def _recompute_buy1(
@@ -1246,7 +1323,7 @@ def _postprocess(
            dict[int, float], float, float, list[str], dict[int, float]]:
     """Round W1, split buy1 into now / later, new_formulas, unmet; return
     pieces for cost."""
-    runs1, jobs1, buy_rounded, round_warnings = _round_w1(layer, window, raw)
+    runs1, jobs1, buy_rounded, dropped_runs = _round_w1(layer, window, raw)
     # Buy only what the demand without buffer needs: a buffer unit the
     # rounded runs do not make stays open, it is never bought.
     hard_window = (
@@ -1281,7 +1358,11 @@ def _postprocess(
             gap = float(dem) - covered
             if gap > _EPS:
                 unmet[p] = max(unmet.get(p, 0.0), gap)
-    warnings = list(round_warnings)
+    warnings = [
+        _dropped_runs_warning(
+            layer, window, hard_window, raw, drop, runs1, recomputed, buy_later)
+        for drop in dropped_runs
+    ]
     if not raw.success and raw.message and not raw.mip_time_limit:
         warnings.append(f"Solver: {raw.message}")
     if slot_slack1 > _EPS or raw.slot_slack1 > _EPS:
@@ -1294,7 +1375,8 @@ def _postprocess(
             # Should be rare after hard-slot re-solve; still surface it.
             warnings.append("Reaction jobs exceed W1 slot capacity")
     for p, qty in unmet.items():
-        warnings.append(f"Unmet W1 demand for type {p}: {qty:g} units")
+        warnings.append(
+            f"Unmet W1 demand for {window.type_label(p)}: {_units_text(qty)} units")
     return runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings, buy_later
 
 
@@ -1887,6 +1969,10 @@ def build_window(
         incoming2=incoming2,
         demand={int(k): float(v) for k, v in demand.items() if v > _EPS},
         prices=prices,
+        type_names=_type_names(sorted(
+            set(layer.product_ids) | {int(k) for k in demand}
+            | {int(k) for k in (cycle_demand or {})}
+        )),
         manual_buy=manual_buy,
         manual_build=manual_build,
         chain_choice=dict(chain_choice or {}),
