@@ -101,7 +101,8 @@ export default function MineralShoppingList() {
   ], [])
 
   const oreColumns = useMemo<ColumnDef<OrePurchase, any>[]>(() => [
-    { header: allHubs ? 'Buy' : `Buy in ${hub}`, accessorKey: 'item', size: 220 },
+    // The header names a hub, so DataTable's default for name columns misses it.
+    { header: allHubs ? 'Buy' : `Buy in ${hub}`, accessorKey: 'item', size: 220, meta: { copyable: true } },
     ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Family', accessorKey: 'family', size: 130 },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
