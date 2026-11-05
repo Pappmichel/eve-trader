@@ -306,7 +306,7 @@ def test_report_suggests_characters_that_own_assets_but_did_not_tick_the_capabil
 
 def test_planetary_goods_only_flags_locations_holding_nothing_else(tenant):
     from eve_trader import admin
-    PI_TYPE, SHIP_TYPE = 990901, 990902
+    PI_TYPE, SHIP_TYPE = 990931, 990932
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("INSERT INTO sde_categories VALUES (43, 'Planetary Commodities') ON CONFLICT DO NOTHING")
         conn.execute("INSERT INTO sde_categories VALUES (6, 'Ship') ON CONFLICT DO NOTHING")
