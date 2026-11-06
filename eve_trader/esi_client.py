@@ -94,6 +94,19 @@ class ESIHTTPError(ESIError):
         self.body = body
 
 
+MAX_RETRY_AFTER_WAIT_SECONDS = 30
+
+
+class ESIRateLimited(ESIError):
+    """A route group's bucket is empty and ESI asks for a wait too long to sit out."""
+
+    def __init__(self, retry_after: float, group: Optional[str]):
+        self.retry_after = retry_after
+        self.group = group
+        super().__init__(f"ESI rate limit{f' on {group}' if group else ''}: "
+                         f"try again in {int(retry_after)} s.")
+
+
 class ESIDeliveryUnknown(ESIError):
     """A non-idempotent write (sending a mail) whose outcome is unknown: the
     request may or may not have been processed (a timeout, a connection reset,
@@ -253,6 +266,7 @@ class ESIClient:
     # should watch X-Esi-Error-Limit-Remain and back off before it runs out,
     # since "once you reach the error limit, all your requests are
     # automatically discarded until the end of the time frame."
+    _rate_limit_remaining: dict[str, int] = {}  # route group -> tokens left at its last response
     _error_limit_lock = threading.Lock()
     _error_limit_remain: int = 100
     _error_limit_reset_at: float = 0.0  # unix timestamp the current window ends
@@ -443,6 +457,13 @@ class ESIClient:
 
     @classmethod
     def _record_error_budget(cls, resp: requests.Response) -> None:
+        group = resp.headers.get("X-Ratelimit-Group")
+        remaining = resp.headers.get("X-Ratelimit-Remaining")
+        if group and remaining is not None:
+            try:
+                cls._rate_limit_remaining[group] = int(remaining)
+            except ValueError:
+                pass
         remain = resp.headers.get("X-Esi-Error-Limit-Remain")
         reset = resp.headers.get("X-Esi-Error-Limit-Reset")
         if remain is None or reset is None:
@@ -514,13 +535,32 @@ class ESIClient:
                     _note_last_modified(resp)
                 return resp
             if resp.status_code in (420, 429):  # ESI error-limited (420) or plain HTTP rate-limited (429)
-                time.sleep(self._retry_after_seconds(resp, attempt))
+                self._wait_for_retry(resp, attempt)
                 continue
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
                 continue
             raise ESIError(f"HTTP {resp.status_code} for {url}: {resp.text[:300]}")
         raise ESIError(f"Exhausted retries for {url}")
+
+    @classmethod
+    def _wait_for_retry(cls, resp: requests.Response, attempt: int) -> None:
+        """Sleeps a short backoff, or raises ESIRateLimited for a long one.
+        ESI's route groups can ask for many minutes when a bucket is empty (seen
+        2026-11-06 on corp-contract, 600 per 15 min). Sleeping that out holds a
+        job slot and a thread, and the request's bearer token has expired by the
+        time it wakes, which then fails as a confusing 401."""
+        wait = cls._retry_after_seconds(resp, attempt)
+        if wait > MAX_RETRY_AFTER_WAIT_SECONDS:
+            raise ESIRateLimited(wait, resp.headers.get("X-Ratelimit-Group"))
+        time.sleep(wait)
+
+    @classmethod
+    def rate_limit_remaining(cls, group: str) -> Optional[int]:
+        """Tokens left in a route group at its last response, None if unseen.
+        ESI's buckets are per character; this holds the last one seen, which is
+        all a caller needs to stop early and leave room for scheduled syncs."""
+        return cls._rate_limit_remaining.get(group)
 
     @staticmethod
     def _retry_after_seconds(resp: requests.Response, attempt: int) -> float:
@@ -574,7 +614,7 @@ class ESIClient:
             if resp.status_code == 200:
                 return resp
             if resp.status_code in (420, 429):
-                time.sleep(self._retry_after_seconds(resp, attempt))
+                self._wait_for_retry(resp, attempt)
                 continue
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
@@ -1033,7 +1073,7 @@ class ESIClient:
             if resp.status_code in expect:
                 return resp
             if resp.status_code in (420, 429) and attempt < attempts:
-                time.sleep(self._retry_after_seconds(resp, attempt))
+                self._wait_for_retry(resp, attempt)
                 continue
             if resp.status_code in (500, 502, 503, 504):
                 if idempotent and attempt < attempts:
