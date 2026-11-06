@@ -204,7 +204,8 @@ def test_fitting_status_null_when_counts_unavailable(monkeypatch):
     assert status.ready_to_list is None
 
 
-def test_settings_expose_ready_to_list_fields():
+def test_settings_expose_ready_to_list_fields(monkeypatch):
+    monkeypatch.setattr(actions, "_location_options", lambda *a, **k: [])
     cfg = DoctrineConfig(**READY_CFG)
     out = actions.do_get_settings(cfg)
     assert out["ready_to_list_owner_type"] == "corporation"
