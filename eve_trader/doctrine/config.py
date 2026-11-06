@@ -96,9 +96,12 @@ class DoctrineConfig:
     # Whether a reserve fit needs its hull. A hull in the hangar stays hidden
     # from Production and Trading either way.
     strategic_reserve_include_hulls: bool = True
-    # Contract Market (GitHub issue #428): solar system to scan. Results live in
-    # doctrine_market_* tables, apart from doctrine_contracts (owner snapshot).
+    # Contract Market (GitHub issue #428): solar system to scan, plus which
+    # sources to include. Stored separately from doctrine_contracts (owner
+    # snapshot); results live in doctrine_market_* tables.
     contract_market_system_id: Optional[int] = None
+    contract_market_include_public: bool = True
+    contract_market_include_alliance: bool = True
 
     @property
     def effective_structure_ids(self) -> tuple[int, ...]:

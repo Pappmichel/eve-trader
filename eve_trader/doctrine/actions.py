@@ -387,7 +387,7 @@ def do_sync_status() -> dict:
 
 def do_scan_contract_market(system_id: Optional[int] = None, progress_callback=None,
                             cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
-    """Scan public contracts in one system (GitHub issue #428).
+    """Scan public + alliance contracts in one system (GitHub issue #428).
     Writes only doctrine_market_* tables."""
     if system_id is not None:
         contract_market._system_region(int(system_id))  # an unknown id is never saved
@@ -695,6 +695,8 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "strategic_reserve_container_id": cfg.strategic_reserve_container_id,
         "strategic_reserve_include_hulls": cfg.strategic_reserve_include_hulls,
         "contract_market_system_id": cfg.contract_market_system_id,
+        "contract_market_include_public": cfg.contract_market_include_public,
+        "contract_market_include_alliance": cfg.contract_market_include_alliance,
     }
 
 

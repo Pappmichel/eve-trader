@@ -1,5 +1,5 @@
-"""Contract Market (GitHub issue #428): public scan, system filter, match
-reuse, and never writing doctrine_contracts.
+"""Contract Market (GitHub issue #428): public + alliance scan, system
+filter, match reuse, and never writing doctrine_contracts.
 """
 from __future__ import annotations
 
@@ -26,13 +26,17 @@ REGION_ID = 10000002
 STRUCTURE_IN_SYSTEM = 60003760
 STRUCTURE_OTHER = 60000001
 CONTRACT_PUBLIC = 900001
-CONTRACT_OTHER = 900002
+CONTRACT_ALLIANCE = 900002
 FAKE_FITTING = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture
 def cfg():
-    return DoctrineConfig(contract_market_system_id=SYSTEM_ID)
+    return DoctrineConfig(
+        contract_market_system_id=SYSTEM_ID,
+        contract_market_include_public=True,
+        contract_market_include_alliance=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -88,8 +92,17 @@ def _raw(**overrides):
     return base
 
 
+def _alliance_raw(**overrides):
+    """A row of the character contract list, which does carry both fields."""
+    return _raw(status="outstanding", availability="alliance", **overrides)
+
+
 def _patch_client(monkeypatch, client):
     monkeypatch.setattr(contract_market, "ESIClient", lambda tokens=None: client)
+    monkeypatch.setattr(contract_market, "TokenManager", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(contract_market.location_resolver, "resolve_ids", lambda ids, force=False: {})
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
+    monkeypatch.setattr(contract_market, "list_shared_doctrine_characters", lambda tm=None: [])
 
 
 # ------------------------------------------------------------- pure filters
@@ -101,6 +114,12 @@ def test_public_filter_rejects_courier_and_expired():
     assert contract_market._is_open_public_item_exchange(_raw(type="courier")) is False
     assert contract_market._is_open_public_item_exchange(
         _raw(date_expired="2020-01-01T00:00:00Z")) is False
+
+
+def test_owner_list_filter_needs_outstanding():
+    assert contract_market._is_outstanding_item_exchange(_alliance_raw()) is True
+    assert contract_market._is_outstanding_item_exchange(
+        _raw(status="finished", availability="alliance")) is False
 
 
 def test_filter_by_system_keeps_only_target():
@@ -125,31 +144,60 @@ def test_scan_requires_system(cfg):
         contract_market.scan_contract_market(cfg)
 
 
-def test_scan_writes_market_not_doctrine(monkeypatch, cfg):
+def test_scan_requires_a_source(cfg):
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = False
+    with pytest.raises(ActionError, match="Public and/or Alliance"):
+        contract_market.scan_contract_market(cfg)
+
+
+def test_scan_public_and_alliance_match_writes_market_not_doctrine(monkeypatch, cfg):
     """Matched rows land in doctrine_market_* only; doctrine_contracts stays empty."""
     _seed_system_and_station()
+
+    public_raw = [_raw(contract_id=CONTRACT_PUBLIC, title="Public Fit", price=40e6)]
+    alliance_raw = [_alliance_raw(contract_id=CONTRACT_ALLIANCE, title="Alliance Fit", price=45e6)]
+    items = [{"record_id": 1, "type_id": 587, "quantity": 1,
+              "is_included": True, "is_singleton": True}]
+
     client = MagicMock()
-    client.public_contracts.return_value = [_raw(title="Public Fit", price=40e6)]
-    client.public_contract_items.return_value = [
-        {"record_id": 1, "type_id": 587, "quantity": 1, "is_included": True, "is_singleton": True}]
+    client.public_contracts.return_value = public_raw
+    client.public_contract_items.return_value = items
+    client.character_contracts.return_value = alliance_raw
+    client.character_contract_items.return_value = items
     client.resolve_names.return_value = {111: "Seller One"}
+    client.character_public_info.return_value = {"corporation_id": 98000001}
     _patch_client(monkeypatch, client)
+
+    monkeypatch.setattr(
+        contract_market, "list_shared_doctrine_characters",
+        lambda tm=None: [("doctrine:1", 42, "Scout")],
+    )
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
-    monkeypatch.setattr(contract_market.engine, "match_and_validate_contract",
-                        lambda *a, **k: (FAKE_FITTING, 1.0, [], "valid"))
+    monkeypatch.setattr(
+        contract_market.engine, "match_and_validate_contract",
+        lambda *a, **k: (FAKE_FITTING, 1.0, [], "valid"),
+    )
 
     result = contract_market.scan_contract_market(cfg)
 
-    assert result["matched"] == 1
+    assert result["matched"] == 2
     assert result["public_candidates"] == 1
+    assert result["alliance_candidates"] == 1
     assert result["system_id"] == SYSTEM_ID
-    rows = storage.list_doctrine_market_contracts()
-    assert len(rows) == 1
-    assert str(rows[0][10]) == FAKE_FITTING
+
+    market_rows = storage.list_doctrine_market_contracts()
+    assert len(market_rows) == 2
+    assert {r[1] for r in market_rows} == {"public", "alliance"}
+    assert all(str(r[11]) == FAKE_FITTING for r in market_rows)
+
     assert storage.list_doctrine_contracts() == []
+
     scan = storage.get_doctrine_market_scan()
+    assert scan is not None
     assert scan[1] == SYSTEM_ID
-    assert scan[3] == 1
+    assert scan[6] == 2
 
 
 def test_scan_skips_other_system_public_contracts(monkeypatch, cfg):
@@ -168,6 +216,7 @@ def test_scan_skips_other_system_public_contracts(monkeypatch, cfg):
     client.resolve_names.return_value = {111: "Seller"}
     _patch_client(monkeypatch, client)
 
+    cfg.contract_market_include_alliance = False
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
@@ -193,6 +242,7 @@ def test_unmatched_contracts_are_not_stored(monkeypatch, cfg):
     client.resolve_names.return_value = {}
     _patch_client(monkeypatch, client)
 
+    cfg.contract_market_include_alliance = False
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
@@ -214,12 +264,13 @@ def test_replace_snapshot_never_touches_doctrine_contracts():
     assert len(storage.list_doctrine_contracts()) == 1
 
     storage.replace_doctrine_market_snapshot(
-        [(CONTRACT_PUBLIC, 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
           "outstanding", "Market", 1.0, None, None,
           FAKE_FITTING, 1.0, "valid", "2026-01-02T00:00:00Z")],
         [(CONTRACT_PUBLIC, 1, 587, 1.0, True, True)],
         scanned_at="2026-01-02T00:00:00Z", system_id=SYSTEM_ID,
-        public_candidates=1, matched=1,
+        include_public=True, include_alliance=False,
+        public_candidates=1, alliance_candidates=0, matched=1,
     )
     assert len(storage.list_doctrine_contracts()) == 1
     assert storage.list_doctrine_contracts()[0][0] == 99
@@ -230,12 +281,13 @@ def test_items_carried_forward_skips_esi(monkeypatch, cfg):
     _seed_system_and_station()
 
     storage.replace_doctrine_market_snapshot(
-        [(CONTRACT_PUBLIC, 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
           "outstanding", "Market", 1.0, None, None,
           FAKE_FITTING, 1.0, "valid", "2026-01-01T00:00:00Z")],
         [(CONTRACT_PUBLIC, 1, 587, 1.0, True, True)],
         scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
-        public_candidates=1, matched=1,
+        include_public=True, include_alliance=False,
+        public_candidates=1, alliance_candidates=0, matched=1,
     )
 
     client = MagicMock()
@@ -244,6 +296,7 @@ def test_items_carried_forward_skips_esi(monkeypatch, cfg):
     client.public_contract_items.side_effect = AssertionError("items should be carried")
     _patch_client(monkeypatch, client)
 
+    cfg.contract_market_include_alliance = False
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
@@ -263,6 +316,7 @@ def _scan_setup(monkeypatch, cfg, client, *, status="valid", fitting=FAKE_FITTIN
     _seed_system_and_station()
     client.resolve_names.return_value = {111: "Seller"}
     _patch_client(monkeypatch, client)
+    cfg.contract_market_include_alliance = False
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
     monkeypatch.setattr(contract_market.engine, "match_and_validate_contract",
                         lambda *a, **k: (fitting, 1.0, [], status))
@@ -270,12 +324,13 @@ def _scan_setup(monkeypatch, cfg, client, *, status="valid", fitting=FAKE_FITTIN
 
 def _seed_previous_scan():
     storage.replace_doctrine_market_snapshot(
-        [(CONTRACT_PUBLIC, 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
           "outstanding", "Market", 1.0, None, FUTURE,
           FAKE_FITTING, 1.0, "valid", "2026-01-01T00:00:00Z")],
         [(CONTRACT_PUBLIC, 1, 587, 1.0, True, True)],
         scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
-        public_candidates=1, matched=1,
+        include_public=True, include_alliance=False,
+        public_candidates=1, alliance_candidates=0, matched=1,
     )
 
 
@@ -293,10 +348,14 @@ def test_unknown_structures_are_counted_not_looked_up(monkeypatch, cfg):
     client = MagicMock()
     client.public_contracts.return_value = [_raw(start_location_id=1_049_000_000_000)]
     _scan_setup(monkeypatch, cfg, client)
+    looked_up = []
+    monkeypatch.setattr(contract_market.location_resolver, "resolve_ids",
+                        lambda ids, force=False: looked_up.extend(ids) or {})
     result = contract_market.scan_contract_market(cfg)
     assert result["unknown_locations"] == 1
     assert result["public_candidates"] == 0
-    assert storage.get_doctrine_market_scan()[4] == 1
+    assert looked_up == []
+    assert storage.get_doctrine_market_scan()[7] == 1
 
 
 def test_items_of_unmatched_contracts_are_kept_for_the_next_scan(monkeypatch, cfg):
@@ -343,6 +402,22 @@ def test_failed_item_reads_keep_the_last_result(monkeypatch, cfg):
     assert len(storage.list_doctrine_market_contracts()) == 1
 
 
+def test_all_alliance_reads_failing_keeps_the_last_result(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIError
+    client = MagicMock()
+    client.public_contracts.return_value = []
+    client.character_contracts.side_effect = ESIError("503")
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "list_shared_doctrine_characters",
+                        lambda tm=None: [("doctrine:1", 42, "Scout")])
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="last result was kept"):
+        contract_market.scan_contract_market(cfg)
+    assert len(storage.list_doctrine_market_contracts()) == 1
+
+
 def test_contract_asking_for_items_is_not_listed(monkeypatch, cfg):
     client = MagicMock()
     client.public_contracts.return_value = [_raw(price=1.0)]
@@ -363,10 +438,32 @@ def test_invalid_fit_is_not_listed(monkeypatch, cfg):
     assert contract_market.scan_contract_market(cfg)["matched"] == 0
 
 
+def test_public_scan_runs_without_a_sharing_character(monkeypatch, cfg):
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw()]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = True
+    result = contract_market.scan_contract_market(cfg)
+    assert result["alliance_skipped"] is True
+    assert result["matched"] == 1
+
+
+def test_alliance_only_without_a_sharing_character_fails_before_esi(monkeypatch, cfg):
+    client = MagicMock()
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = True
+    with pytest.raises(ActionError, match="sharing Contracts"):
+        contract_market.scan_contract_market(cfg)
+    client.public_contracts.assert_not_called()
+
+
 def test_rescan_right_away_is_rejected():
     storage.replace_doctrine_market_snapshot(
         [], [], scanned_at=contract_market._now_iso(), system_id=SYSTEM_ID,
-        public_candidates=0, matched=0,
+        include_public=True, include_alliance=False,
+        public_candidates=0, alliance_candidates=0, matched=0,
     )
     with pytest.raises(ActionError, match="scanned"):
         contract_market.reject_scan_too_soon(SYSTEM_ID)
@@ -383,19 +480,21 @@ class _Cand:
         self.fitting = _Fit(fitting_id)
 
 
-def _results(monkeypatch, *, expired=False):
+def _results(monkeypatch, *, shared=True, expired=False):
     other = "22222222-2222-2222-2222-222222222222"
     _seed_system_and_station()
     storage.replace_doctrine_market_snapshot(
-        [(CONTRACT_PUBLIC, 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
           "outstanding", "Market", 10.0, None, "2020-01-01T00:00:00Z" if expired else FUTURE,
           FAKE_FITTING, 1.0, "valid", "2026-01-01T00:00:00Z"),
-         (CONTRACT_OTHER, 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+         (CONTRACT_ALLIANCE, "alliance", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
           "outstanding", "Own", 20.0, None, FUTURE,
           FAKE_FITTING, 1.0, "tolerable", "2026-01-01T00:00:00Z")],
         [], scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
-        public_candidates=2, matched=2, unknown_locations=3,
+        include_public=True, include_alliance=True,
+        public_candidates=1, alliance_candidates=1, matched=2, unknown_locations=3,
     )
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [1] if shared else [])
     monkeypatch.setattr(contract_market.engine, "load_match_candidates",
                         lambda: [_Cand(FAKE_FITTING), _Cand(other)])
     monkeypatch.setattr(contract_market.engine, "_fit_identity", lambda c: "same")
@@ -420,6 +519,12 @@ def test_results_list_identical_fits_under_every_doctrine(monkeypatch):
 def test_results_hide_expired_contracts(monkeypatch):
     out = _results(monkeypatch, expired=True)
     assert out["doctrines"][0]["fittings"][0]["count"] == 1
+
+
+def test_results_hide_alliance_rows_after_sharing_ends(monkeypatch):
+    out = _results(monkeypatch, shared=False)
+    sources = {c["source"] for f in out["doctrines"][0]["fittings"] for c in f["contracts"]}
+    assert sources == {"public"}
 
 
 def test_app_role_cannot_read_another_tenants_market_rows():

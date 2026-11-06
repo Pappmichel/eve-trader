@@ -300,6 +300,8 @@ class DoctrineSettings(BaseModel):
     strategic_reserve_container_id: Optional[int] = None
     strategic_reserve_include_hulls: bool = True
     contract_market_system_id: Optional[int] = None
+    contract_market_include_public: bool = True
+    contract_market_include_alliance: bool = True
 
 
 class LocationOption(BaseModel):
@@ -330,7 +332,8 @@ def update_settings(updates: DoctrineSettings):
                 "strategic_reserve_owner_type", "strategic_reserve_owner_id", "strategic_reserve_location_id",
                 "strategic_reserve_hangar_flag", "strategic_reserve_container_id",
                 "strategic_reserve_include_hulls",
-                "contract_market_system_id"):
+                "contract_market_system_id", "contract_market_include_public",
+                "contract_market_include_alliance"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)
