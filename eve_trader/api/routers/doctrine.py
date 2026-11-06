@@ -281,7 +281,6 @@ class DoctrineSettings(BaseModel):
     ready_to_list_owner_id: Optional[int] = None
     ready_to_list_location_id: Optional[int] = None
     ready_to_list_hangar_flag: Optional[str] = None
-    ready_to_list_container_id: Optional[int] = None
 
 
 class LocationOption(BaseModel):
@@ -313,7 +312,7 @@ def update_settings(updates: DoctrineSettings):
                 "strategic_reserve_hangar_flag", "strategic_reserve_container_id",
                 "strategic_reserve_include_hulls",
                 "ready_to_list_owner_type", "ready_to_list_owner_id", "ready_to_list_location_id",
-                "ready_to_list_hangar_flag", "ready_to_list_container_id"):
+                "ready_to_list_hangar_flag"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)

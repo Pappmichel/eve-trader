@@ -122,17 +122,7 @@ export default function DoctrineSettings() {
       ready_to_list_owner_id: ownerId ? Number(ownerId) : null,
       ready_to_list_location_id: locationId ? Number(locationId) : null,
       ready_to_list_hangar_flag: flag,
-      ready_to_list_container_id: null,
     } : f))
-  }
-  const selectedReadyHangar = (reserveHangars ?? []).find(
-    (o) => hangarKey(o.owner_type, o.owner_id, o.location_id, o.hangar_flag) === readyValue)
-  const readyContainerOptions = (selectedReadyHangar?.containers ?? []).map((c) => ({
-    value: String(c.item_id), label: containerLabel(c),
-  }))
-  const savedReadyContainer = form.ready_to_list_container_id
-  if (savedReadyContainer && !readyContainerOptions.some((o) => o.value === String(savedReadyContainer))) {
-    readyContainerOptions.unshift({ value: String(savedReadyContainer), label: `${savedReadyContainer} (not found)` })
   }
 
   return (
@@ -186,12 +176,6 @@ export default function DoctrineSettings() {
       <Select label="Ready-to-list hangar" searchable clearable placeholder="None" data={readyOptions}
         description="Assembled ships here count as ready to list when their fit is valid or tolerable (same rules as contracts)."
         value={readyValue} onChange={setReadyHangar} />
-      {readyValue && (
-        <Select label="Container in this hangar" searchable clearable placeholder="Whole hangar" data={readyContainerOptions}
-          description="Optional. Only assembled ships in this container (and nested under it) count."
-          value={savedReadyContainer ? String(savedReadyContainer) : null}
-          onChange={(v) => set('ready_to_list_container_id', v ? Number(v) : null)} />
-      )}
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
@@ -254,7 +238,6 @@ export default function DoctrineSettings() {
         ready_to_list_owner_id: form.ready_to_list_owner_id,
         ready_to_list_location_id: form.ready_to_list_location_id,
         ready_to_list_hangar_flag: form.ready_to_list_hangar_flag,
-        ready_to_list_container_id: form.ready_to_list_container_id,
       })}>
         Save Settings
       </Button>

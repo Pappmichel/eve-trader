@@ -15,7 +15,7 @@ from .. import storage
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
-from . import engine, equivalents, esi_sync, ready_to_list, reserve
+from . import engine, equivalents, esi_sync, reserve
 from .config import DOCTRINE_CONFIG, DoctrineConfig, validate_doctrine_overrides
 from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
@@ -658,7 +658,6 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "ready_to_list_owner_id": cfg.ready_to_list_owner_id,
         "ready_to_list_location_id": cfg.ready_to_list_location_id,
         "ready_to_list_hangar_flag": cfg.ready_to_list_hangar_flag,
-        "ready_to_list_container_id": cfg.ready_to_list_container_id,
     }
 
 
@@ -834,30 +833,24 @@ def _reject_intake_hangar(updates: dict) -> None:
             raise ActionError("This hangar is a Sorting intake source, so it cannot be the strategic reserve.")
 
 
-def _reject_foreign_container(updates: dict, cfg: DoctrineConfig, *,
-                               owner_type_key: str, owner_id_key: str, location_key: str,
-                               flag_key: str, container_key: str) -> None:
+def _reject_foreign_container(updates: dict, cfg: DoctrineConfig) -> None:
     """A newly chosen container must lie in the chosen hangar. An unchanged one
     is not rechecked: once it is gone, other settings must stay saveable."""
-    container = updates.get(container_key)
-    if container is None or container == getattr(cfg, container_key):
+    container = updates.get("strategic_reserve_container_id")
+    if container is None or container == cfg.strategic_reserve_container_id:
         return
     for option in reserve.hangar_options():
-        if (option["owner_type"] == updates.get(owner_type_key)
-                and option["owner_id"] == updates.get(owner_id_key)
-                and option["location_id"] == updates.get(location_key)
-                and option["hangar_flag"] == updates.get(flag_key)
+        if (option["owner_type"] == updates.get("strategic_reserve_owner_type")
+                and option["owner_id"] == updates.get("strategic_reserve_owner_id")
+                and option["location_id"] == updates.get("strategic_reserve_location_id")
+                and option["hangar_flag"] == updates.get("strategic_reserve_hangar_flag")
                 and any(c["item_id"] == container for c in option["containers"])):
             return
     raise ActionError("That container is not in the chosen hangar.")
 
 
-def _hangar_changed(updates: dict, cfg: DoctrineConfig, fields: tuple[str, ...]) -> bool:
-    return any(key in updates and updates[key] != getattr(cfg, key) for key in fields)
-
-
 def _reserve_changed(updates: dict, cfg: DoctrineConfig) -> bool:
-    return _hangar_changed(updates, cfg, reserve.HANGAR_FIELDS)
+    return any(key in updates and updates[key] != getattr(cfg, key) for key in reserve.HANGAR_FIELDS)
 
 
 def _invalidate_after_reserve_change() -> None:
@@ -889,17 +882,9 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
             raise ActionError(f"buyer_character_ids: {unknown} are not characters of this tenant.")
     switch_changed = ("accept_equivalent_variants" in updates
                       and bool(updates["accept_equivalent_variants"]) != cfg.accept_equivalent_variants)
-    reserve_changed = _hangar_changed(updates, cfg, reserve.HANGAR_FIELDS)
-    ready_changed = _hangar_changed(updates, cfg, ready_to_list.HANGAR_FIELDS)
+    reserve_changed = _reserve_changed(updates, cfg)
     _reject_intake_hangar(updates)
-    _reject_foreign_container(
-        updates, cfg, owner_type_key="strategic_reserve_owner_type",
-        owner_id_key="strategic_reserve_owner_id", location_key="strategic_reserve_location_id",
-        flag_key="strategic_reserve_hangar_flag", container_key="strategic_reserve_container_id")
-    _reject_foreign_container(
-        updates, cfg, owner_type_key="ready_to_list_owner_type",
-        owner_id_key="ready_to_list_owner_id", location_key="ready_to_list_location_id",
-        flag_key="ready_to_list_hangar_flag", container_key="ready_to_list_container_id")
+    _reject_foreign_container(updates, cfg)
     try:
         validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)
@@ -909,6 +894,4 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
         do_validate_contracts(cfg)  # stored contract statuses follow the switch at once
     if reserve_changed:
         _invalidate_after_reserve_change()
-    if ready_changed:
-        ready_to_list.invalidate_cache()
     return {"updated": list(updates.keys())}

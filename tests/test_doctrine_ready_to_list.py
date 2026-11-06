@@ -10,17 +10,10 @@ from eve_trader.doctrine.engine import _Candidate
 from eve_trader.doctrine.models import Fitting, FittingItem
 
 CORP, STRUCTURE = 98000001, 1049588174021
-HULL, MODULE, CONTAINER = 587, 2048, 3293
+HULL, MODULE = 587, 2048
 READY_CFG = dict(ready_to_list_owner_type="corporation", ready_to_list_owner_id=CORP,
                  ready_to_list_location_id=STRUCTURE, ready_to_list_hangar_flag="CorpSAG5")
 HANGAR = storage.ExcludedHangar("corporation", CORP, STRUCTURE, "CorpSAG5")
-
-
-@pytest.fixture(autouse=True)
-def _reset_cache():
-    ready_to_list.invalidate_cache()
-    yield
-    ready_to_list.invalidate_cache()
 
 
 def _candidate(fitting_id="f1", name="Fit", items=None, hull=HULL, doctrine_id="d1"):
@@ -60,13 +53,6 @@ def test_a_complete_hangar_or_none_at_all_is_accepted():
     validate_doctrine_overrides({key: None for key in READY_CFG})
 
 
-def test_a_container_without_its_hangar_is_rejected():
-    with pytest.raises(ConfigError):
-        validate_doctrine_overrides({"ready_to_list_owner_type": None, "ready_to_list_owner_id": None,
-                                     "ready_to_list_location_id": None, "ready_to_list_hangar_flag": None,
-                                     "ready_to_list_container_id": CONTAINER})
-    validate_doctrine_overrides({**READY_CFG, "ready_to_list_container_id": CONTAINER})
-
 
 def test_configured_hangar_all_or_none():
     assert ready_to_list.configured_hangar(DoctrineConfig()) is None
@@ -100,8 +86,38 @@ def test_no_asset_share_returns_none(monkeypatch):
 
 
 def test_empty_hangar_returns_zeros(monkeypatch):
-    counts, cands = _setup_counts(monkeypatch, [])
+    # The owner has assets, just no ship in this hangar.
+    counts, cands = _setup_counts(monkeypatch, [_asset(1, MODULE, flag="CorpSAG1")])
     assert counts == {cands[0].fitting.fitting_id: 0}
+
+
+def test_owner_without_any_asset_rows_is_unknown_not_zero(monkeypatch):
+    # Not synced yet, or cleared as stale: a red 0 would be a false statement.
+    counts, _ = _setup_counts(monkeypatch, [])
+    assert counts is None
+
+
+def test_ship_inside_another_ship_does_not_count(monkeypatch):
+    carrier, nested = 10, 20
+    assets = [
+        _asset(carrier, 23757, assembled=True),
+        _asset(nested, HULL, location=carrier, assembled=True, flag="CorpSAG5"),
+        _asset(21, MODULE, location=nested, fitted_flag="LoSlot0", assembled=True),
+    ]
+    assets[1]["location_flag"] = "ShipHangar"
+    counts, cands = _setup_counts(monkeypatch, assets)
+    assert counts == {cands[0].fitting.fitting_id: 0}
+
+
+def test_ship_in_a_corp_office_division_counts(monkeypatch):
+    office = 5
+    assets = [
+        _asset(office, storage.OFFICE_TYPE_ID, flag="OfficeFolder"),
+        _asset(10, HULL, location=office, assembled=True),
+        _asset(11, MODULE, location=10, fitted_flag="LoSlot0", assembled=True),
+    ]
+    counts, cands = _setup_counts(monkeypatch, assets)
+    assert counts == {cands[0].fitting.fitting_id: 1}
 
 
 def test_valid_and_tolerable_ships_count(monkeypatch):
@@ -161,52 +177,6 @@ def test_identical_fits_pool_the_same_ship(monkeypatch):
     assert counts == {"f1": 1, "f2": 1}
 
 
-def test_container_narrows_which_ships_count(monkeypatch):
-    from eve_trader.esi_data import access
-
-    cfg = DoctrineConfig(**READY_CFG, ready_to_list_container_id=CONTAINER)
-    cand = _candidate()
-    # Ship inside the container vs ship loose in the hangar.
-    assets = [
-        _asset(CONTAINER, 3293, flag="CorpSAG5"),
-        _asset(10, HULL, location=CONTAINER, assembled=True, flag="CorpSAG5"),
-        _asset(11, MODULE, location=10, fitted_flag="LoSlot0", assembled=True),
-        _asset(20, HULL, assembled=True, flag="CorpSAG5"),
-        _asset(21, MODULE, location=20, fitted_flag="LoSlot0", assembled=True),
-    ]
-    for a in assets:
-        a["resolved_location_id"] = STRUCTURE
-        a["resolved_hangar_flag"] = "CorpSAG5"
-        if a["item_id"] in (10, 20, CONTAINER):
-            a["location_flag"] = "CorpSAG5" if a["item_id"] != 10 else "Unlocked"
-            if a["item_id"] == 10:
-                a["location_flag"] = "Unlocked"
-            if a["item_id"] == 20:
-                a["location_flag"] = "CorpSAG5"
-
-    monkeypatch.setattr(storage, "get_current_tenant", lambda: "t1")
-    monkeypatch.setattr(storage, "asset_subtree_item_ids",
-                        lambda *a: frozenset({CONTAINER, 10, 11}))
-    monkeypatch.setattr(access, "is_shared", lambda *a, **k: True)
-    monkeypatch.setattr(access, "read_esi", lambda *a, **k: assets)
-    monkeypatch.setattr(engine, "equivalents_of", lambda _cfg=None: None)
-    monkeypatch.setattr(storage, "get_sde_type", lambda t: (t, 1, f"T{t}", 1.0, 1, 1, 0, None))
-    monkeypatch.setattr(storage, "get_type_slot", lambda t: "low")
-
-    counts = ready_to_list.counts(cfg, [cand])
-    assert counts == {"f1": 1}
-
-
-def test_missing_container_returns_zeros(monkeypatch):
-    from eve_trader.esi_data import access
-
-    cfg = DoctrineConfig(**READY_CFG, ready_to_list_container_id=999)
-    monkeypatch.setattr(storage, "get_current_tenant", lambda: "t1")
-    monkeypatch.setattr(storage, "asset_subtree_item_ids", lambda *a: frozenset())
-    monkeypatch.setattr(access, "is_shared", lambda *a, **k: True)
-    monkeypatch.setattr(access, "read_esi", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no read")))
-    assert ready_to_list.counts(cfg, [_candidate()]) == {"f1": 0}
-
 
 def test_fitting_status_carries_ready_to_list(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
@@ -235,28 +205,9 @@ def test_fitting_status_null_when_counts_unavailable(monkeypatch):
 
 
 def test_settings_expose_ready_to_list_fields():
-    cfg = DoctrineConfig(**READY_CFG, ready_to_list_container_id=CONTAINER)
+    cfg = DoctrineConfig(**READY_CFG)
     out = actions.do_get_settings(cfg)
     assert out["ready_to_list_owner_type"] == "corporation"
     assert out["ready_to_list_owner_id"] == CORP
     assert out["ready_to_list_location_id"] == STRUCTURE
     assert out["ready_to_list_hangar_flag"] == "CorpSAG5"
-    assert out["ready_to_list_container_id"] == CONTAINER
-
-
-def test_ready_hangar_change_invalidates_cache(monkeypatch):
-    called = []
-    monkeypatch.setattr(ready_to_list, "invalidate_cache", lambda: called.append(True))
-    monkeypatch.setattr(actions, "_reject_intake_hangar", lambda u: None)
-    monkeypatch.setattr(actions, "_reject_foreign_container", lambda *a, **k: None)
-    monkeypatch.setattr(actions, "save_tenant_config_overrides",
-                        lambda *a, **k: None)
-    # Patch the import site used inside do_update_settings
-    import eve_trader.config as config_mod
-    monkeypatch.setattr(config_mod, "save_tenant_config_overrides",
-                        lambda *a, **k: None)
-    monkeypatch.setattr("eve_trader.doctrine.actions.save_tenant_config_overrides",
-                        lambda *a, **k: None)
-
-    actions.do_update_settings(READY_CFG, DoctrineConfig())
-    assert called == [True]

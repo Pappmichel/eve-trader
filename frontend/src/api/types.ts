@@ -1596,7 +1596,6 @@ export interface DoctrineSettings {
   ready_to_list_owner_id: number | null
   ready_to_list_location_id: number | null
   ready_to_list_hangar_flag: string | null
-  ready_to_list_container_id: number | null
 }
 
 export interface ReserveContainerOption {

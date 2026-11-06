@@ -104,7 +104,6 @@ class DoctrineConfig:
     ready_to_list_owner_id: Optional[int] = None
     ready_to_list_location_id: Optional[int] = None
     ready_to_list_hangar_flag: Optional[str] = None
-    ready_to_list_container_id: Optional[int] = None
 
     @property
     def effective_structure_ids(self) -> tuple[int, ...]:
@@ -134,9 +133,10 @@ def fetcher_extra(cfg) -> Optional[dict]:
     return {"structure_ids": list(ids)} if ids else None
 
 
-def _validate_hangar_overrides(overrides: dict, keys: tuple[str, ...], container_key: str,
-                                label: str) -> None:
-    """All-or-none hangar (owner, location, flag) plus optional container.
+def _validate_hangar_overrides(overrides: dict, keys: tuple[str, ...],
+                                container_key: Optional[str], label: str) -> None:
+    """All-or-none hangar (owner, location, flag), plus an optional container
+    where the setting has one.
     Shared by the strategic reserve and ready-to-list settings."""
     if not any(key in overrides for key in keys):
         return
@@ -149,7 +149,7 @@ def _validate_hangar_overrides(overrides: dict, keys: tuple[str, ...], container
         if values[3] not in HANGAR_DIVISION_FLAGS:
             raise ConfigError(f"{keys[3]}: {values[3]!r} is not a known hangar division. "
                               f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
-    elif overrides.get(container_key) is not None:
+    elif container_key and overrides.get(container_key) is not None:
         raise ConfigError(f"{label}: a container needs its hangar.")
 
 
@@ -175,7 +175,7 @@ def validate_doctrine_overrides(overrides: dict) -> None:
         overrides,
         ("ready_to_list_owner_type", "ready_to_list_owner_id",
          "ready_to_list_location_id", "ready_to_list_hangar_flag"),
-        "ready_to_list_container_id", "Ready to list")
+        None, "Ready to list")
     if "stockpile_hangar_flags" in overrides:
         bad = [f for f in overrides["stockpile_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:
