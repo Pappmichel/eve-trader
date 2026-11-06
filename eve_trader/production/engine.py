@@ -2518,7 +2518,23 @@ def _reaction_cycle_demand(
 
 def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optional[float],
                     jita_market_stock: Optional[float], current_stock: float, cfg: ProductionConfig) -> float:
-    """Total shortfall to build/buy for a stock target: backup_stock (an
+    """Total shortfall to build/buy for a stock target - see `_stock_allocation`."""
+    return _stock_allocation(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)[0]
+
+
+def _stock_allocation(type_id: int, backup_stock: float, home_market_stock: Optional[float],
+                       jita_market_stock: Optional[float], current_stock: float, cfg: ProductionConfig
+                       ) -> tuple[float, float]:
+    """`(missing, reserved)` of one stock target: `missing` is `_total_missing`'s
+    value, `reserved` is the owned stock that same allocation commits to the
+    target - the backup reserve plus what is applied to the home and Jita
+    listing shortfalls - capped at `current_stock` by construction. The
+    planners hold `reserved` back from other jobs' material needs, so a unit
+    that `missing` already counts as covering a listing target is not also
+    consumed as a material (which would leave neither the listing nor the
+    job covered).
+
+    Total shortfall to build/buy for a stock target: backup_stock (an
     internal reserve, netted against owned current_stock - _current_stock)
     *plus* whatever's still short of the home/Jita market-*listing* targets,
     each netted against what's actually listed for sale there right now
@@ -2558,6 +2574,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
     buying either, since both compete on the same C-J sell price)."""
     missing = max(0.0, backup_stock - current_stock)
     surplus_stock = max(0.0, current_stock - backup_stock)  # owned units left over once the backup reserve is covered
+    reserved = max(0.0, min(current_stock, backup_stock))
     if home_market_stock:
         home_listed = (
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
@@ -2567,6 +2584,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         applied = min(surplus_stock, home_short)
         missing += home_short - applied
         surplus_stock -= applied
+        reserved += applied
     if jita_market_stock:
         jita_listed = (_sell_order_qty_in_region(type_id, _listing_region_id(cfg))
                        + storage.manual_listed_stock_qty(type_id, "jita"))
@@ -2574,7 +2592,8 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         applied = min(surplus_stock, jita_short)
         missing += jita_short - applied
         surplus_stock -= applied
-    return missing
+        reserved += applied
+    return missing, reserved
 
 
 def market_listing_shortfall_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, float]:
@@ -3118,8 +3137,11 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         current_stock = _current_stock(type_id, manual_stock, cfg, bp)
         reserved_here = reserved.get(type_id, 0.0)
         available = max(0.0, current_stock - reserved_here)
-        missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, available, cfg)
-        stock_used[type_id] = stock_used.get(type_id, 0.0) + min(available, backup_stock)
+        missing, target_reserve = _stock_allocation(
+            type_id, backup_stock, home_market_stock, jita_market_stock, available, cfg)
+        # Stock committed to this target (backup plus what covers its home/Jita
+        # listing shortfall) is not also handed to other jobs as a material.
+        stock_used[type_id] = stock_used.get(type_id, 0.0) + target_reserve
         inventory.append(InventoryRow(
             type_id=type_id, type_name=type_name, activity=activity,
             backup_stock=backup_stock, current_stock=available, total_missing=missing,
@@ -4055,8 +4077,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     Dual role: if the same type_id is *both* a directly-configured stock
     target *and* a shared material of another job, the stock filling its own
-    backup_stock is reserved in the sizing ledger up front (the same
-    min(current_stock, backup_stock) plan_production records), so another
+    backup_stock - plus the stock that covers its home/Jita listing targets
+    - is reserved in the sizing ledger up front (the same
+    `_stock_allocation` reserve plan_production records), so another
     job's claim only sees the rest - before 2026-10-11 the stock was netted
     in both roles and this list built fewer of the item than the regular
     Bauliste. Readiness is not reserved this way: the units physically exist
@@ -4248,8 +4271,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # this item's own backup_stock is not also handed to another job
         # that needs it as a material (sizing ledger only - readiness still
         # sees the physical units).
-        target_reserved[type_id] = target_reserved.get(type_id, 0.0) + min(current_stock, backup_stock)
-        missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
+        missing, target_reserve = _stock_allocation(
+            type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
+        target_reserved[type_id] = target_reserved.get(type_id, 0.0) + target_reserve
         if missing <= 0:
             continue
         _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
