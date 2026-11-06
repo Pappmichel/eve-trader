@@ -599,6 +599,113 @@ def test_two_corps_of_one_alliance_read_the_list_once(monkeypatch, cfg):
     assert client.corporation_contracts.call_count == 1
 
 
+def _readers_by_corp(mapping):
+    """corp_id -> (roles, alliance_id) for _corp_readers stubs."""
+    def _fn(corp_id, tm, client):
+        return mapping[int(corp_id)]
+    return _fn
+
+
+def test_alliance_prefers_the_corp_with_most_readers_either_order(monkeypatch, cfg):
+    corp_a, corp_b = CORP_ID, CORP_ID + 1
+    for order in ([corp_a, corp_b], [corp_b, corp_a]):
+        pg_helpers.wipe_tables(
+            "doctrine_market_contract_items", "doctrine_market_contracts",
+            "doctrine_market_scans",
+        )
+        client = MagicMock()
+        client.corporation_contracts.return_value = [_alliance_raw()]
+        client.corporation_contract_items.return_value = [ITEM]
+        _alliance_setup(monkeypatch, cfg, client)
+        monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: list(order))
+        monkeypatch.setattr(contract_market, "_corp_readers", _readers_by_corp({
+            corp_a: (["a1"], ALLIANCE_ID),
+            corp_b: (["b1", "b2", "b3"], ALLIANCE_ID),
+        }))
+        assert contract_market.scan_contract_market(cfg)["matched"] == 1
+        assert client.corporation_contracts.call_count == 1
+        assert client.corporation_contracts.call_args.args[0] == corp_b
+        assert client.corporation_contract_items.call_args.args[0] == corp_b
+
+
+def test_alliance_tie_breaks_to_lowest_corp_id(monkeypatch, cfg):
+    corp_a, corp_b = CORP_ID, CORP_ID + 1
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw()]
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [corp_b, corp_a])
+    monkeypatch.setattr(contract_market, "_corp_readers", _readers_by_corp({
+        corp_a: (["a1", "a2"], ALLIANCE_ID),
+        corp_b: (["b1", "b2"], ALLIANCE_ID),
+    }))
+    assert contract_market.scan_contract_market(cfg)["matched"] == 1
+    assert client.corporation_contracts.call_args.args[0] == corp_a
+
+
+def test_alliance_falls_back_when_largest_corp_list_fails(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIError
+    corp_a, corp_b = CORP_ID, CORP_ID + 1
+    client = MagicMock()
+
+    def _contracts(corp_id, auth_role=None):
+        if corp_id == corp_b:
+            raise ESIError("corp list failed")
+        return [_alliance_raw()]
+
+    client.corporation_contracts.side_effect = _contracts
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [corp_a, corp_b])
+    monkeypatch.setattr(contract_market, "_corp_readers", _readers_by_corp({
+        corp_a: (["a1"], ALLIANCE_ID),
+        corp_b: (["b1", "b2", "b3"], ALLIANCE_ID),
+    }))
+    assert contract_market.scan_contract_market(cfg)["matched"] == 1
+    assert client.corporation_contracts.call_count == 2
+    assert client.corporation_contract_items.call_args.args[0] == corp_a
+
+
+def test_alliance_both_corps_fail_keeps_previous(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIError
+    corp_a, corp_b = CORP_ID, CORP_ID + 1
+    client = MagicMock()
+    client.corporation_contracts.side_effect = ESIError("down")
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [corp_a, corp_b])
+    monkeypatch.setattr(contract_market, "_corp_readers", _readers_by_corp({
+        corp_a: (["a1"], ALLIANCE_ID),
+        corp_b: (["b1", "b2"], ALLIANCE_ID),
+    }))
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="last result was kept"):
+        contract_market.scan_contract_market(cfg)
+    assert len(storage.list_doctrine_market_contracts()) == 1
+
+
+def test_two_alliances_each_get_one_list_read(monkeypatch, cfg):
+    corp_a, corp_b = CORP_ID, CORP_ID + 1
+    alliance_b = ALLIANCE_ID + 1
+    client = MagicMock()
+
+    def _contracts(corp_id, auth_role=None):
+        aid = ALLIANCE_ID if corp_id == corp_a else alliance_b
+        return [_alliance_raw(contract_id=corp_id, assignee_id=aid)]
+
+    client.corporation_contracts.side_effect = _contracts
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [corp_a, corp_b])
+    monkeypatch.setattr(contract_market, "_corp_readers", _readers_by_corp({
+        corp_a: (["a1"], ALLIANCE_ID),
+        corp_b: (["b1"], alliance_b),
+    }))
+    result = contract_market.scan_contract_market(cfg)
+    assert result["matched"] == 2
+    assert client.corporation_contracts.call_count == 2
+    assert {c.args[0] for c in client.corporation_contracts.call_args_list} == {corp_a, corp_b}
+
+
 def test_public_scan_runs_without_a_sharing_character(monkeypatch, cfg):
     client = MagicMock()
     client.public_contracts.return_value = [_raw()]

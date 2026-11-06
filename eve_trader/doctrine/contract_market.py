@@ -257,49 +257,59 @@ def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int, min_v
                       progress_callback=None,
                       open_ids: Optional[set[int]] = None) -> tuple[list[dict], dict[int, tuple[int, _CorpReaders]]]:
     """Open contracts assigned to the alliance of a Doctrine-shared corporation.
-    One list read per alliance: every member corp gets the same list. Returns
-    (contracts, hints) where hints map contract_id -> (corp_id, its readers) for
-    the items fetch. Raises _NoAllianceSource when no shared corp can read
-    (before any ESI call). Raises ActionError when every read failed, so an
-    outage does not look like an empty alliance market. `open_ids` collects
-    every open contract, in any system, so known item lists survive a change
-    of system."""
+    One successful list read per alliance: every member corp gets the same
+    list, so only one corp reads it. Prefer the corp with the most member
+    tokens (then lowest corp id) so item reads spread over the largest
+    character budget; each character may only call its own corp's endpoint.
+    Returns (contracts, hints) where hints map contract_id -> (corp_id, its
+    readers) for the items fetch. Raises _NoAllianceSource when no shared
+    corp can read (before any ESI call). Raises ActionError when every read
+    failed, so an outage does not look like an empty alliance market.
+    `open_ids` collects every open contract, in any system, so known item
+    lists survive a change of system."""
     _emit_progress(progress_callback, {"phase": "alliance", "message": "Fetching alliance contracts"})
     # Discover readable sources first. Skipping every corp with reads==0 used
     # to look like a successful empty scan and wipe the last good snapshot.
-    sources: list[tuple[int, list[str], int]] = []
+    by_alliance: dict[int, list[tuple[int, list[str]]]] = {}
     for corp_id in shared_owner_ids("contracts", "doctrine", "corporation"):
         roles, alliance_id = _corp_readers(int(corp_id), tm, client)
         if roles and alliance_id:
-            sources.append((int(corp_id), roles, int(alliance_id)))
-    if not sources:
+            by_alliance.setdefault(int(alliance_id), []).append((int(corp_id), roles))
+    if not by_alliance:
         raise _NoAllianceSource()
 
     by_id: dict[int, dict] = {}
     hints: dict[int, tuple[int, _CorpReaders]] = {}
-    seen_alliances: set[int] = set()
     reads = 0
     failures = 0
 
-    for corp_id, roles, alliance_id in sources:
-        if alliance_id in seen_alliances:
-            continue
-        readers = _CorpReaders(roles)
+    for alliance_id in sorted(by_alliance):
+        # Most readers first (item budget), then lowest corp id for a stable pick.
+        corps = sorted(by_alliance[alliance_id], key=lambda t: (-len(t[1]), t[0]))
         raw = None
-        reads += 1
-        for role in roles:
-            try:
-                raw = client.corporation_contracts(corp_id, auth_role=role)
-                break
-            except ESIRateLimited:
-                continue  # each character has its own bucket
-            except ESIError as e:
-                log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
-                break
-        if raw is None:
-            failures += 1
+        winning_corp: Optional[int] = None
+        winning_readers: Optional[_CorpReaders] = None
+        for corp_id, roles in corps:
+            reads += 1
+            corp_raw = None
+            for role in roles:
+                try:
+                    corp_raw = client.corporation_contracts(corp_id, auth_role=role)
+                    break
+                except ESIRateLimited:
+                    continue  # each character has its own bucket
+                except ESIError as e:
+                    log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
+                    break
+            if corp_raw is None:
+                failures += 1
+                continue
+            raw = corp_raw
+            winning_corp = corp_id
+            winning_readers = _CorpReaders(roles)
+            break
+        if raw is None or winning_corp is None or winning_readers is None:
             continue
-        seen_alliances.add(alliance_id)
         for c in raw:
             if not _is_open_alliance_contract(c, alliance_id):
                 continue
@@ -308,7 +318,7 @@ def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int, min_v
             if _big_enough(c, min_volume):
                 cid = int(c["contract_id"])
                 by_id[cid] = c
-                hints.setdefault(cid, (corp_id, readers))
+                hints.setdefault(cid, (winning_corp, winning_readers))
 
     if reads and failures == reads:
         raise ActionError("Every alliance contract read failed. The last result was kept.")
