@@ -146,6 +146,28 @@ def _master_enabled() -> bool:
 
 _GLOBAL_JOB_STATUS = {"backup": _backup_status, "jita_price_cache": _jita_price_cache_status}
 
+# One in-flight worker per (tenant_id, job name). Released in the worker's
+# finally — not after join — so a timed-out thread keeps blocking a restart
+# until it actually finishes.
+_job_mu = threading.Lock()
+_running_jobs: dict[tuple, threading.Thread] = {}
+
+
+def _calendar_job_ready_after_failure(tenant_id: str, name: str) -> bool:
+    """Calendar-date jobs (portfolio_snapshot, asset_history) still use the
+    date rule for success, but after a failed attempt wait
+    FAILURE_BACKOFF_HOURS before retrying. A success leaves no backoff so a
+    run at 23:59 does not skip the next calendar day."""
+    from .esi_data.orchestrator import FAILURE_BACKOFF_HOURS
+
+    status = last_run_status.get(tenant_id, {}).get(name) or {}
+    if not status.get("error"):
+        return True
+    attempt = status.get("ran_at")
+    if attempt is None:
+        return True
+    return _hours_since(attempt) >= FAILURE_BACKOFF_HOURS
+
 
 def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
     """tenant_id=None records into the matching global status dict (looked
@@ -155,7 +177,20 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
     Runs `fn` on a short-lived daemon thread so a hang cannot stall later
     tenants on this tick (see JOB_TIMEOUT_SECONDS). contextvars.copy_context
     carries the submitting thread's tenant/config into the worker - raw
-    threading.Thread does not inherit contextvars (CLAUDE.md)."""
+    threading.Thread does not inherit contextvars (CLAUDE.md).
+
+    If a previous worker for the same (tenant, name) is still alive, skip
+    without overwriting its status."""
+    key = (tenant_id, name)
+    with _job_mu:
+        existing = _running_jobs.get(key)
+        if existing is not None and existing.is_alive():
+            log.warning(
+                "Scheduled job %r (tenant=%s) still running - not restarting",
+                name, tenant_id,
+            )
+            return
+
     outcome: dict = {"error": None}
 
     def _worker() -> None:
@@ -164,12 +199,25 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
         except Exception as e:  # noqa: BLE001 - a job's own failure must never kill the scheduler thread
             log.warning("Scheduled job %r (tenant=%s) failed: %s", name, tenant_id, e)
             outcome["error"] = str(e)
+        finally:
+            with _job_mu:
+                if _running_jobs.get(key) is thread:
+                    _running_jobs.pop(key, None)
 
     ctx = contextvars.copy_context()
     thread = threading.Thread(
         target=ctx.run, args=(_worker,),
         daemon=True, name=f"eve-trader-job-{name}",
     )
+    with _job_mu:
+        existing = _running_jobs.get(key)
+        if existing is not None and existing.is_alive():
+            log.warning(
+                "Scheduled job %r (tenant=%s) still running - not restarting",
+                name, tenant_id,
+            )
+            return
+        _running_jobs[key] = thread
     thread.start()
     thread.join(JOB_TIMEOUT_SECONDS)
     if thread.is_alive():
@@ -264,14 +312,20 @@ def _check_and_run_due_jobs_for_tenant(
             lambda: esi_orchestrator.do_sync_due(granted_tools=grants, extra=extra),
         )
 
-    if _portfolio_snapshot_due(cfg):
+    if (
+        _portfolio_snapshot_due(cfg)
+        and _calendar_job_ready_after_failure(tenant_id, "portfolio_snapshot")
+    ):
         _run_job(tenant_id, "portfolio_snapshot", lambda: portfolio.take_portfolio_snapshot(cfg))
 
     # Same calendar-date rule as portfolio_snapshot (one row set per day);
     # only for tenants that still hold the Asset Manager.
     if tenant_eligibility.may_use("asset_manager", grants):
         from .asset_manager import actions as asset_manager_actions
-        if asset_manager_actions.history_snapshot_due():
+        if (
+            asset_manager_actions.history_snapshot_due()
+            and _calendar_job_ready_after_failure(tenant_id, "asset_history")
+        ):
             _run_job(tenant_id, "asset_history", asset_manager_actions.take_history_snapshot)
 
 

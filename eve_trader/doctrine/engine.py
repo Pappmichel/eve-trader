@@ -153,6 +153,20 @@ def load_match_candidates() -> list[_Candidate]:
     return candidates
 
 
+def load_all_match_candidates() -> list[_Candidate]:
+    """Like load_match_candidates, but includes inactive fittings and
+    fittings on inactive doctrines. Active ones come first (see
+    storage.list_all_fittings) so they win the matching tiebreak. Used by
+    the Contract Market scan and display only."""
+    candidates = []
+    for row in storage.list_all_fittings():
+        fitting = fitting_from_row(row)
+        items = items_from_rows(fitting.fitting_id, storage.load_fitting_items(fitting.fitting_id))
+        exact_soll, consume_soll = validation.build_contract_soll(items)
+        candidates.append(_Candidate(fitting=fitting, exact_soll=exact_soll, consume_soll=consume_soll, items=items))
+    return candidates
+
+
 def _fit_identity(candidate: "_Candidate") -> tuple:
     """The fit a candidate represents, independent of which doctrine it sits
     in or how its EFT text was formatted: hull plus the total quantity per

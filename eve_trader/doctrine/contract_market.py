@@ -361,9 +361,9 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
         scan_alliance = False
         alliance_skipped = True
 
-    candidates = engine.load_match_candidates()
+    candidates = engine.load_all_match_candidates()
     if not candidates:
-        raise ActionError("No active Doctrine fittings to match against.")
+        raise ActionError("No Doctrine fittings to match against.")
 
     client = ESIClient(tokens=tm)
     min_volume = _min_contract_volume(candidates, client)
@@ -501,20 +501,75 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     }
 
 
+def _empty_market_fitting(row: tuple, hull_names: dict[int, Optional[str]]) -> dict:
+    hull_type_id = row[4]
+    hull_name = None
+    if hull_type_id is not None:
+        hull_name = hull_names.get(int(hull_type_id)) or str(hull_type_id)
+    return {
+        "fitting_id": str(row[0]),
+        "fitting_name": row[2],
+        "hull_type_id": hull_type_id,
+        "hull_name": hull_name,
+        "count": 0,
+        "min_price": None,
+        "avg_price": None,
+        "contracts": [],
+    }
+
+
+def _market_doctrine_skeleton() -> tuple[dict[str, dict], dict[str, dict]]:
+    """All configured doctrines and fittings (including inactive), each with
+    count 0. Returns (doctrine_groups, fittings_by_id)."""
+    all_fittings = storage.list_all_fittings()
+    hull_ids = [int(r[4]) for r in all_fittings if r[4] is not None]
+    hull_rows = storage.get_sde_types_bulk(hull_ids) if hull_ids else {}
+    hull_names = {
+        tid: (row[2] if row else None) for tid, row in hull_rows.items()
+    }
+    doctrine_groups: dict[str, dict] = {}
+    for drow in storage.list_doctrines():
+        doctrine_groups[str(drow[0])] = {
+            "doctrine_id": str(drow[0]),
+            "doctrine_name": drow[1],
+            "fittings": [],
+        }
+    fittings_by_id: dict[str, dict] = {}
+    for row in all_fittings:
+        entry = _empty_market_fitting(row, hull_names)
+        fittings_by_id[entry["fitting_id"]] = entry
+        doctrine_id = str(row[1])
+        if doctrine_id in doctrine_groups:
+            doctrine_groups[doctrine_id]["fittings"].append(entry)
+    return doctrine_groups, fittings_by_id
+
+
 def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
-    """Grouped-by-doctrine view of the last Contract Market scan."""
+    """Grouped-by-doctrine view of the last Contract Market scan.
+
+    Always lists every configured doctrine and fitting (including inactive
+    and those with no targets), with count 0 when there is no match. A
+    deleted fitting that still has stored hits appears under Other.
+    """
+    settings = {
+        "system_id": cfg.contract_market_system_id,
+        "include_public": cfg.contract_market_include_public,
+        "include_alliance": cfg.contract_market_include_alliance,
+    }
     scan = storage.get_doctrine_market_scan()
     contracts = storage.list_doctrine_market_contracts()
+    doctrine_groups, fittings_by_id = _market_doctrine_skeleton()
+
+    def _finalize(scan_view):
+        doctrines_out = sorted(
+            doctrine_groups.values(), key=lambda d: d["doctrine_name"].lower(),
+        )
+        for d in doctrines_out:
+            d["fittings"].sort(key=lambda f: f["fitting_name"].lower())
+        return {"scan": scan_view, "doctrines": doctrines_out, "settings": settings}
+
     if scan is None and not contracts:
-        return {
-            "scan": None,
-            "doctrines": [],
-            "settings": {
-                "system_id": cfg.contract_market_system_id,
-                "include_public": cfg.contract_market_include_public,
-                "include_alliance": cfg.contract_market_include_alliance,
-            },
-        }
+        return _finalize(None)
 
     system_id = scan[1] if scan else (contracts[0][5] if contracts else None)
     system_name = None
@@ -531,12 +586,10 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     loc_ids = [c[4] for c in contracts if c[4] is not None]
     loc_infos = location_reader.describe(loc_ids) if loc_ids else {}
 
-    fittings = {str(r[0]): r for r in storage.list_active_fittings()}
-    doctrines = {str(r[0]): r for r in storage.list_doctrines() if r[3]}  # active
     # A contract counts for every fitting with the same identity, so identical
     # fits in two doctrines both show it (engine.pooled_contract_counts' rule).
     identity_of = {str(c.fitting.fitting_id): engine._fit_identity(c)
-                   for c in engine.load_match_candidates()}
+                   for c in engine.load_all_match_candidates()}
     same_fit: dict[tuple, list[str]] = {}
     for fitting_key, identity in identity_of.items():
         same_fit.setdefault(identity, []).append(fitting_key)
@@ -568,46 +621,32 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         for target in same_fit.get(identity_of.get(fid), [fid]):
             by_fitting.setdefault(target, []).append(listing)
 
-    doctrine_groups: dict[str, dict] = {}
     for fid, clist in by_fitting.items():
-        fitting = fittings.get(fid)
-        if fitting is None:
-            # Inactive / deleted fitting: still show under a catch-all.
-            doctrine_id = "_other"
-            doctrine_name = "Other"
-            fitting_name = "Deleted fitting"
-            hull_type_id = None
-            hull_name = None
-        else:
-            doctrine_id = str(fitting[1])
-            drow = doctrines.get(doctrine_id)
-            doctrine_name = drow[1] if drow else doctrine_id
-            fitting_name = fitting[2]
-            hull_type_id = fitting[4]
-            hull_name = None
-            if hull_type_id is not None:
-                sde = storage.get_sde_type(int(hull_type_id))
-                hull_name = sde[2] if sde else str(hull_type_id)
+        entry = fittings_by_id.get(fid)
+        if entry is None:
+            # Truly deleted fitting: only show under Other when it has hits.
+            prices = [c["price"] for c in clist if c["price"] is not None]
+            group = doctrine_groups.setdefault("_other", {
+                "doctrine_id": None,
+                "doctrine_name": "Other",
+                "fittings": [],
+            })
+            group["fittings"].append({
+                "fitting_id": fid,
+                "fitting_name": "Deleted fitting",
+                "hull_type_id": None,
+                "hull_name": None,
+                "count": len(clist),
+                "min_price": min(prices) if prices else None,
+                "avg_price": (sum(prices) / len(prices)) if prices else None,
+                "contracts": sorted(clist, key=lambda c: (c["price"] is None, c["price"] or 0)),
+            })
+            continue
         prices = [c["price"] for c in clist if c["price"] is not None]
-        group = doctrine_groups.setdefault(doctrine_id, {
-            "doctrine_id": doctrine_id if doctrine_id != "_other" else None,
-            "doctrine_name": doctrine_name,
-            "fittings": [],
-        })
-        group["fittings"].append({
-            "fitting_id": fid,
-            "fitting_name": fitting_name,
-            "hull_type_id": hull_type_id,
-            "hull_name": hull_name,
-            "count": len(clist),
-            "min_price": min(prices) if prices else None,
-            "avg_price": (sum(prices) / len(prices)) if prices else None,
-            "contracts": sorted(clist, key=lambda c: (c["price"] is None, c["price"] or 0)),
-        })
-
-    doctrines_out = sorted(doctrine_groups.values(), key=lambda d: d["doctrine_name"].lower())
-    for d in doctrines_out:
-        d["fittings"].sort(key=lambda f: f["fitting_name"].lower())
+        entry["count"] = len(clist)
+        entry["min_price"] = min(prices) if prices else None
+        entry["avg_price"] = (sum(prices) / len(prices)) if prices else None
+        entry["contracts"] = sorted(clist, key=lambda c: (c["price"] is None, c["price"] or 0))
 
     scan_view = None
     if scan is not None:
@@ -627,13 +666,4 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             "items_failed": items_failed,
             "asks_for_items": asks_for_items,
         }
-
-    return {
-        "scan": scan_view,
-        "doctrines": doctrines_out,
-        "settings": {
-            "system_id": cfg.contract_market_system_id,
-            "include_public": cfg.contract_market_include_public,
-            "include_alliance": cfg.contract_market_include_alliance,
-        },
-    }
+    return _finalize(scan_view)

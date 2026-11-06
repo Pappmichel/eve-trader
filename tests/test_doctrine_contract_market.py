@@ -177,7 +177,7 @@ def test_scan_public_and_alliance_match_writes_market_not_doctrine(monkeypatch, 
 
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
     monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["doctrine:1"], ALLIANCE_ID))
-    monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
         lambda *a, **k: (FAKE_FITTING, 1.0, [], "valid"),
@@ -220,7 +220,7 @@ def test_scan_skips_other_system_public_contracts(monkeypatch, cfg):
     _patch_client(monkeypatch, client)
 
     cfg.contract_market_include_alliance = False
-    monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
         lambda *a, **k: (FAKE_FITTING, 1.0, [], "valid"),
@@ -246,7 +246,7 @@ def test_unmatched_contracts_are_not_stored(monkeypatch, cfg):
     _patch_client(monkeypatch, client)
 
     cfg.contract_market_include_alliance = False
-    monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
         lambda *a, **k: (None, 0.0, [], "no_relevant_hull"),
@@ -300,7 +300,7 @@ def test_items_carried_forward_skips_esi(monkeypatch, cfg):
     _patch_client(monkeypatch, client)
 
     cfg.contract_market_include_alliance = False
-    monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
         lambda *a, **k: (FAKE_FITTING, 1.0, [], "valid"),
@@ -320,7 +320,7 @@ def _scan_setup(monkeypatch, cfg, client, *, status="valid", fitting=FAKE_FITTIN
     client.resolve_names.return_value = {111: "Seller"}
     _patch_client(monkeypatch, client)
     cfg.contract_market_include_alliance = False
-    monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [object()])
     monkeypatch.setattr(contract_market.engine, "match_and_validate_contract",
                         lambda *a, **k: (fitting, 1.0, [], status))
 
@@ -656,13 +656,13 @@ def _results(monkeypatch, *, shared=True, expired=False):
         public_candidates=1, alliance_candidates=1, matched=2, unknown_locations=3,
     )
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [1] if shared else [])
-    monkeypatch.setattr(contract_market.engine, "load_match_candidates",
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates",
                         lambda: [_Cand(FAKE_FITTING), _Cand(other)])
     monkeypatch.setattr(contract_market.engine, "_fit_identity", lambda c: "same")
-    monkeypatch.setattr(storage, "list_active_fittings", lambda: [
+    monkeypatch.setattr(storage, "list_all_fittings", lambda: [
         (FAKE_FITTING, "d1", "Fit A", None, 587), (other, "d2", "Fit B", None, 587)])
     monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Alpha", None, True), ("d2", "Beta", None, True)])
-    monkeypatch.setattr(storage, "get_sde_type", lambda t: (t, 1, "Rifter"))
+    monkeypatch.setattr(storage, "get_sde_types_bulk", lambda ids: {t: (t, 1, "Rifter") for t in ids})
     return contract_market.market_results(DoctrineConfig())
 
 
@@ -694,3 +694,213 @@ def test_app_role_cannot_read_another_tenants_market_rows():
     with storage.tenant_context(other):
         assert storage.list_doctrine_market_contracts() == []
         assert storage.get_doctrine_market_scan() is None
+
+
+# ------------------------------------------------------------- all fittings (display + scan)
+
+
+INACTIVE_FIT = "33333333-3333-3333-3333-333333333333"
+ZERO_TARGET_FIT = "44444444-4444-4444-4444-444444444444"
+EMPTY_DOC = "55555555-5555-5555-5555-555555555555"
+INACTIVE_DOC_FIT = "66666666-6666-6666-6666-666666666666"
+DELETED_FIT = "77777777-7777-7777-7777-777777777777"
+
+
+def _fit_row(fitting_id, doctrine_id, name, hull=587):
+    return (fitting_id, doctrine_id, name, None, hull)
+
+
+def test_results_include_zero_count_and_empty_doctrine(monkeypatch):
+    """Every configured fitting appears (count 0 when unmatched); a doctrine
+    with no fittings appears with fittings: []."""
+    _seed_system_and_station()
+    storage.replace_doctrine_market_snapshot(
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+          "outstanding", "Market", 10.0, None, FUTURE,
+          FAKE_FITTING, 1.0, "valid", "2026-01-01T00:00:00Z")],
+        [], scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
+        include_public=True, include_alliance=False,
+        public_candidates=1, alliance_candidates=0, matched=1,
+    )
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates",
+                        lambda: [_Cand(FAKE_FITTING), _Cand(ZERO_TARGET_FIT)])
+    monkeypatch.setattr(contract_market.engine, "_fit_identity",
+                        lambda c: c.fitting.fitting_id)
+    monkeypatch.setattr(storage, "list_all_fittings", lambda: [
+        _fit_row(FAKE_FITTING, "d1", "Hit"),
+        _fit_row(ZERO_TARGET_FIT, "d1", "Zero targets"),
+    ])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [
+        ("d1", "Alpha", None, True),
+        (EMPTY_DOC, "Empty", None, True),
+    ])
+    monkeypatch.setattr(storage, "get_sde_types_bulk",
+                        lambda ids: {t: (t, 1, "Rifter") for t in ids})
+
+    out = contract_market.market_results(DoctrineConfig())
+    by_name = {d["doctrine_name"]: d for d in out["doctrines"]}
+    assert set(by_name) == {"Alpha", "Empty"}
+    assert by_name["Empty"]["fittings"] == []
+    fits = {f["fitting_name"]: f for f in by_name["Alpha"]["fittings"]}
+    assert fits["Hit"]["count"] == 1
+    assert fits["Zero targets"]["count"] == 0
+    assert fits["Zero targets"]["min_price"] is None
+    assert fits["Zero targets"]["contracts"] == []
+
+
+def test_results_show_inactive_fitting_and_inactive_doctrine(monkeypatch):
+    _seed_system_and_station()
+    storage.replace_doctrine_market_snapshot(
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+          "outstanding", "Market", 12.0, None, FUTURE,
+          INACTIVE_FIT, 1.0, "valid", "2026-01-01T00:00:00Z"),
+         (CONTRACT_ALLIANCE, "alliance", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+          "outstanding", "Own", 22.0, None, FUTURE,
+          INACTIVE_DOC_FIT, 1.0, "valid", "2026-01-01T00:00:00Z")],
+        [], scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
+        include_public=True, include_alliance=True,
+        public_candidates=1, alliance_candidates=1, matched=2,
+    )
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [1])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates",
+                        lambda: [_Cand(INACTIVE_FIT), _Cand(INACTIVE_DOC_FIT)])
+    monkeypatch.setattr(contract_market.engine, "_fit_identity",
+                        lambda c: c.fitting.fitting_id)
+    monkeypatch.setattr(storage, "list_all_fittings", lambda: [
+        _fit_row(INACTIVE_FIT, "d_active", "Inactive Fit"),
+        _fit_row(INACTIVE_DOC_FIT, "d_inactive", "Fit On Inactive Doc"),
+    ])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [
+        ("d_active", "Still Active", None, True),
+        ("d_inactive", "Retired Doctrine", None, False),
+    ])
+    monkeypatch.setattr(storage, "get_sde_types_bulk",
+                        lambda ids: {t: (t, 1, "Rifter") for t in ids})
+
+    out = contract_market.market_results(DoctrineConfig())
+    by_name = {d["doctrine_name"]: d for d in out["doctrines"]}
+    assert by_name["Still Active"]["fittings"][0]["fitting_name"] == "Inactive Fit"
+    assert by_name["Still Active"]["fittings"][0]["count"] == 1
+    assert by_name["Retired Doctrine"]["fittings"][0]["fitting_name"] == "Fit On Inactive Doc"
+    assert by_name["Retired Doctrine"]["fittings"][0]["count"] == 1
+
+
+def test_results_without_scan_still_list_doctrines(monkeypatch):
+    monkeypatch.setattr(storage, "get_doctrine_market_scan", lambda: None)
+    monkeypatch.setattr(storage, "list_doctrine_market_contracts", lambda: [])
+    monkeypatch.setattr(storage, "list_all_fittings", lambda: [
+        _fit_row(FAKE_FITTING, "d1", "Fit A"),
+    ])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [
+        ("d1", "Alpha", None, True),
+    ])
+    monkeypatch.setattr(storage, "get_sde_types_bulk",
+                        lambda ids: {t: (t, 1, "Rifter") for t in ids})
+
+    out = contract_market.market_results(DoctrineConfig())
+    assert out["scan"] is None
+    assert len(out["doctrines"]) == 1
+    assert out["doctrines"][0]["fittings"][0]["count"] == 0
+    assert out["doctrines"][0]["fittings"][0]["fitting_name"] == "Fit A"
+
+
+def test_results_other_only_when_deleted_fitting_has_hits(monkeypatch):
+    _seed_system_and_station()
+    storage.replace_doctrine_market_snapshot(
+        [(CONTRACT_PUBLIC, "public", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+          "outstanding", "Market", 10.0, None, FUTURE,
+          DELETED_FIT, 1.0, "valid", "2026-01-01T00:00:00Z")],
+        [], scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
+        include_public=True, include_alliance=False,
+        public_candidates=1, alliance_candidates=0, matched=1,
+    )
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [])
+    monkeypatch.setattr(contract_market.engine, "_fit_identity",
+                        lambda c: c.fitting.fitting_id)
+    monkeypatch.setattr(storage, "list_all_fittings", lambda: [])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [
+        ("d1", "Alpha", None, True),
+    ])
+    monkeypatch.setattr(storage, "get_sde_types_bulk", lambda ids: {})
+
+    out = contract_market.market_results(DoctrineConfig())
+    other = next(d for d in out["doctrines"] if d["doctrine_name"] == "Other")
+    assert other["fittings"][0]["fitting_name"] == "Deleted fitting"
+    assert other["fittings"][0]["count"] == 1
+
+
+def test_results_zero_when_all_hits_expired_or_alliance_hidden(monkeypatch):
+    out = _results(monkeypatch, shared=False, expired=True)
+    # public expired + alliance hidden => both fittings count 0, still listed
+    for doctrine in out["doctrines"]:
+        assert doctrine["fittings"][0]["count"] == 0
+
+
+def test_list_all_fittings_puts_active_before_inactive(tenant, _apply_doctrine_schema):
+    active_doc = storage.create_doctrine("Active Doc", None)
+    inactive_doc = storage.create_doctrine("Inactive Doc", None)
+    storage.update_doctrine(inactive_doc, {"active": False})
+    inactive_first = storage.create_fitting(
+        inactive_doc, "Inactive First", 587, "[Rifter, Inactive First]\n", None, 0, 0, None)
+    active_fit = storage.create_fitting(
+        active_doc, "Active Fit", 587, "[Rifter, Active Fit]\n", None, 0, 0, None)
+    inactive_fit = storage.create_fitting(
+        active_doc, "Inactive Fit", 587, "[Rifter, Inactive Fit]\n", None, 0, 0, None)
+    storage.update_fitting(inactive_fit, {"active": False})
+
+    all_ids = [str(r[0]) for r in storage.list_all_fittings()]
+    assert all_ids.index(str(active_fit)) < all_ids.index(str(inactive_fit))
+    assert all_ids.index(str(active_fit)) < all_ids.index(str(inactive_first))
+    active_only = [str(r[0]) for r in storage.list_active_fittings()]
+    assert active_only == [str(active_fit)]
+
+
+def test_load_match_candidates_stays_active_only(monkeypatch, tenant, _apply_doctrine_schema):
+    from eve_trader.doctrine import engine
+
+    active_doc = storage.create_doctrine("Active Doc", None)
+    active_fit = storage.create_fitting(
+        active_doc, "Active Fit", 587, "[Rifter, Active Fit]\n", None, 0, 0, None)
+    inactive_fit = storage.create_fitting(
+        active_doc, "Inactive Fit", 587, "[Rifter, Inactive Fit]\n", None, 0, 0, None)
+    storage.update_fitting(inactive_fit, {"active": False})
+    storage.replace_fitting_items(active_fit, [(1, "low", 2048, 1, False)])
+    storage.replace_fitting_items(inactive_fit, [(1, "low", 2048, 1, False)])
+
+    active_ids = {c.fitting.fitting_id for c in engine.load_match_candidates()}
+    all_ids = {c.fitting.fitting_id for c in engine.load_all_match_candidates()}
+    assert active_ids == {str(active_fit)}
+    assert all_ids == {str(active_fit), str(inactive_fit)}
+    # Active comes first so a tied match prefers it.
+    assert engine.load_all_match_candidates()[0].fitting.fitting_id == str(active_fit)
+
+
+def test_tied_match_prefers_active_candidate_order(monkeypatch):
+    """Matching tiebreak is candidate order; active fittings must lead the list."""
+    from eve_trader.doctrine.engine import _Candidate, match_and_validate_contract
+    from eve_trader.doctrine.models import ContractItemRow, Fitting
+
+    monkeypatch.setattr(contract_market.engine, "equivalents_of", lambda cfg=None: {})
+    monkeypatch.setattr(contract_market.engine, "effective_cargo_tolerance", lambda *a, **k: 1.0)
+
+    active = Fitting(
+        fitting_id=FAKE_FITTING, doctrine_id="d1", name="Active",
+        hull_type_id=587, raw_eft="",
+    )
+    inactive = Fitting(
+        fitting_id=INACTIVE_FIT, doctrine_id="d1", name="Inactive",
+        hull_type_id=587, raw_eft="", active=False,
+    )
+    # Identical empty Soll => identical match score; winner is first in list.
+    c_active = _Candidate(fitting=active, exact_soll={}, consume_soll={}, items=[])
+    c_inactive = _Candidate(fitting=inactive, exact_soll={}, consume_soll={}, items=[])
+    items = [ContractItemRow(1, 1, 587, 1.0, True, True)]
+    fid, _score, _devs, status = match_and_validate_contract(
+        1, None, items, [c_active, c_inactive], DoctrineConfig())
+    assert fid == FAKE_FITTING
+    assert status in ("valid", "tolerable")
+    fid2, _, _, _ = match_and_validate_contract(
+        1, None, items, [c_inactive, c_active], DoctrineConfig())
+    assert fid2 == INACTIVE_FIT  # documents that order is the tiebreak

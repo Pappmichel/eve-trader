@@ -1,4 +1,6 @@
-from eve_trader.esi_client import ESIClient
+import pytest
+
+from eve_trader.esi_client import ESIClient, ESIError
 
 
 class _FakeResp:
@@ -79,3 +81,39 @@ def test_get_all_pages_forwards_params_and_auth_role_to_every_page(monkeypatch):
     assert all(a == "producer:1" for _, _, a in seen)
     assert all(prm["datasource"] == "tranquility" for _, prm, _ in seen)
     assert sorted(prm["page"] for _, prm, _ in seen) == [1, 2]
+
+
+def test_get_all_pages_retries_empty_follow_up_page_once(monkeypatch):
+    """An empty page 2 is retried once; a second good response is kept."""
+    attempts = {1: 0, 2: 0}
+
+    def _fake_get_response(self, path, params=None, auth_role=None, retries=3):
+        page = params["page"]
+        attempts[page] = attempts.get(page, 0) + 1
+        if page == 1:
+            return _FakeResp([{"item_id": 1}], total_pages=2)
+        if attempts[page] == 1:
+            return _FakeResp([], total_pages=2)
+        return _FakeResp([{"item_id": 2}], total_pages=2)
+
+    monkeypatch.setattr(ESIClient, "_get_response", _fake_get_response)
+    result = ESIClient()._get_all_pages("/some/path/")
+    assert attempts[2] == 2
+    assert result == [{"item_id": 1}, {"item_id": 2}]
+
+
+def test_get_all_pages_empty_follow_up_page_after_retry_raises(monkeypatch):
+    """Page 2 stays empty after one retry → fail closed with ESIError."""
+    attempts = {1: 0, 2: 0}
+
+    def _fake_get_response(self, path, params=None, auth_role=None, retries=3):
+        page = params["page"]
+        attempts[page] = attempts.get(page, 0) + 1
+        if page == 1:
+            return _FakeResp([{"item_id": 1}], total_pages=2)
+        return _FakeResp([], total_pages=2)
+
+    monkeypatch.setattr(ESIClient, "_get_response", _fake_get_response)
+    with pytest.raises(ESIError, match="Empty ESI page 2/2"):
+        ESIClient()._get_all_pages("/some/path/")
+    assert attempts[2] == 2
