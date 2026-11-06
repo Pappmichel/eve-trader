@@ -742,6 +742,51 @@ def test_quotes_available_false_on_empty_or_error(monkeypatch):
     assert portfolio._quotes_available() is True
 
 
+def test_quotes_available_home_market_http_4xx_does_not_block(monkeypatch, caplog):
+    """A wrong home-market slug (HTTP 4xx) must not refuse the snapshot."""
+    import logging
+    import requests
+    from eve_trader.goonmetrics_client import CurrentPrice
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production.pricing import JITA_MARKET
+
+    class Client:
+        def current_prices(self, market):
+            if market == JITA_MARKET:
+                return [CurrentPrice(type_id=34, updated="", buy=1.0, sell=2.0)]
+            resp = requests.Response()
+            resp.status_code = 404
+            raise requests.HTTPError("404", response=resp)
+
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "not-a-real-slug")
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", Client)
+    portfolio.clear_quotes_unavailable_cache()
+    with caplog.at_level(logging.WARNING):
+        assert portfolio._quotes_available() is True
+    assert any("home market" in r.message and "404" in r.message for r in caplog.records)
+
+
+def test_quotes_available_home_market_5xx_blocks(monkeypatch):
+    import requests
+    from eve_trader.goonmetrics_client import CurrentPrice
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production.pricing import JITA_MARKET
+
+    class Client:
+        def current_prices(self, market):
+            if market == JITA_MARKET:
+                return [CurrentPrice(type_id=34, updated="", buy=1.0, sell=2.0)]
+            resp = requests.Response()
+            resp.status_code = 503
+            raise requests.HTTPError("503", response=resp)
+
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "insmother")
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", Client)
+    portfolio.clear_quotes_unavailable_cache()
+    assert portfolio._quotes_available() is False
+    portfolio.clear_quotes_unavailable_cache()
+
+
 def test_take_portfolio_snapshot_refuses_when_quotes_unavailable(monkeypatch):
     upserted = []
     monkeypatch.setattr(portfolio, "_quotes_available", lambda: False)

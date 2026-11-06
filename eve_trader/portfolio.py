@@ -8,6 +8,7 @@ either (confirmed with the user).
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -17,6 +18,8 @@ from . import storage
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 from .portfolio_wealth import assemble
+
+log = logging.getLogger(__name__)
 
 # Same window vocabulary as the tool pages (production/realized/period.ts).
 # "since_t0" leaves `start` unset so each tool's summary applies the ledger T0.
@@ -53,10 +56,13 @@ def clear_quotes_unavailable_cache() -> None:
 
 
 def _quotes_available() -> bool:
-    """True when Jita (and home, when set) current-price lists can be fetched.
+    """True when Jita current-price quotes can be fetched.
 
-    A successful probe costs nothing afterward: current_prices caches the
-    payload. RequestException, ValueError, or an empty list means unavailable.
+    Home market is probed when set, but an HTTP 4xx there means a wrong slug
+    (not an outage): log a warning and continue — valuation already falls
+    back to Jita. Jita itself treats every failure (4xx/5xx/timeout/empty)
+    as unavailable. A successful probe costs nothing afterward: current_prices
+    caches the payload.
     """
     import requests
 
@@ -66,18 +72,32 @@ def _quotes_available() -> bool:
 
     markets = [JITA_MARKET]
     home = getattr(PRODUCTION_CONFIG, "home_market", None)
-    if home:
+    if home and home != JITA_MARKET:
         markets.append(home)
 
     now = time.time()
     with _quotes_unavailable_lock:
-        if any(_quotes_unavailable_until.get(m, 0.0) > now for m in markets):
+        # Only a remembered Jita miss blocks the snapshot. A home-market miss
+        # is never cached as blocking (4xx is a slug problem; 5xx is checked live).
+        if _quotes_unavailable_until.get(JITA_MARKET, 0.0) > now:
             return False
 
     client = GoonmetricsClient()
     for market in markets:
         try:
             prices = client.current_prices(market)
+        except requests.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if market != JITA_MARKET and status is not None and 400 <= status < 500:
+                log.warning(
+                    "home market %r quotes returned HTTP %s (likely a bad slug); "
+                    "continuing with Jita fallback",
+                    market, status,
+                )
+                continue
+            with _quotes_unavailable_lock:
+                _quotes_unavailable_until[market] = time.time() + _QUOTES_UNAVAILABLE_TTL
+            return False
         except (requests.RequestException, ValueError):
             with _quotes_unavailable_lock:
                 _quotes_unavailable_until[market] = time.time() + _QUOTES_UNAVAILABLE_TTL
