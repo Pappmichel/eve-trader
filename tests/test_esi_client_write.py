@@ -156,10 +156,11 @@ def test_recipient_and_search_helpers(monkeypatch):
     out = esi.resolve_recipient_names(["Alice", "Alice", "Corp", ""])
     assert out == {"character": [{"id": 1, "name": "Alice"}], "corporation": [{"id": 2, "name": "Corp"}], "alliance": []}
 
-    monkeypatch.setattr(esi, "_get", lambda path, params=None, **kw: {"character": [10, 11, 12], "alliance": [30]})
-    monkeypatch.setattr(esi, "resolve_names_cached", lambda ids: {i: f"N{i}" for i in ids if i != 11})
-    hits = esi.search_entities("ali", limit=2)
-    assert hits == [
-        {"type": "character", "id": 10, "name": "N10"},       # 11 has no resolvable name -> dropped
-        {"type": "alliance", "id": 30, "name": "N30"},        # limit=2 cut character 12
+    monkeypatch.setattr(esi, "_post_universe_ids", lambda names: {
+        "characters": [{"id": 10, "name": "ali"}, {"id": 11, "name": "ali"}],
+        "alliances": [{"id": 30, "name": "ali"}],
+    })
+    assert esi.search_entities("ali", limit=1) == [
+        {"type": "character", "id": 10, "name": "ali"},   # limit=1 cut character 11
+        {"type": "alliance", "id": 30, "name": "ali"},
     ]

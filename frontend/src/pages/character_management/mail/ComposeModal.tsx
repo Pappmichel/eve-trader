@@ -142,7 +142,7 @@ export function ComposeModal({ opened, onClose, draft, senders }: {
           </Group>
           <TextInput
             aria-label="Add recipient"
-            placeholder="Type a name, pick a suggestion or press Enter"
+            placeholder="Type a full name, pick a suggestion or press Enter"
             value={typed}
             onChange={(e) => setTyped(e.currentTarget.value)}
             onKeyDown={(e) => {

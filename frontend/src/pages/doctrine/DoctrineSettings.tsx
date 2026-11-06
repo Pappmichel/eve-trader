@@ -69,11 +69,13 @@ export default function DoctrineSettings() {
   const set = <K extends keyof DoctrineSettingsT>(key: K, value: DoctrineSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
 
-  const reserveValue = hangarKey(form.strategic_reserve_owner_type, form.strategic_reserve_owner_id,
-    form.strategic_reserve_location_id, form.strategic_reserve_hangar_flag)
-  const reserveOptions = (reserveHangars ?? []).map((o) => ({
+  const hangarSelectOptions = (reserveHangars ?? []).map((o) => ({
     value: hangarKey(o.owner_type, o.owner_id, o.location_id, o.hangar_flag) as string, label: hangarLabel(o),
   }))
+
+  const reserveValue = hangarKey(form.strategic_reserve_owner_type, form.strategic_reserve_owner_id,
+    form.strategic_reserve_location_id, form.strategic_reserve_hangar_flag)
+  const reserveOptions = [...hangarSelectOptions]
   // A saved hangar that holds nothing right now stays selectable.
   if (reserveValue && !reserveOptions.some((o) => o.value === reserveValue)) {
     reserveOptions.unshift({
@@ -101,6 +103,26 @@ export default function DoctrineSettings() {
   const savedContainer = form.strategic_reserve_container_id
   if (savedContainer && !containerOptions.some((o) => o.value === String(savedContainer))) {
     containerOptions.unshift({ value: String(savedContainer), label: `${savedContainer} (not found)` })
+  }
+
+  const readyValue = hangarKey(form.ready_to_list_owner_type, form.ready_to_list_owner_id,
+    form.ready_to_list_location_id, form.ready_to_list_hangar_flag)
+  const readyOptions = [...hangarSelectOptions]
+  if (readyValue && !readyOptions.some((o) => o.value === readyValue)) {
+    readyOptions.unshift({
+      value: readyValue,
+      label: `${form.ready_to_list_hangar_flag} at ${form.ready_to_list_location_id} (empty or not shared)`,
+    })
+  }
+  const setReadyHangar = (value: string | null) => {
+    const [ownerType, ownerId, locationId, flag] = value ? value.split('|') : [null, null, null, null]
+    setForm((f) => (f ? {
+      ...f,
+      ready_to_list_owner_type: ownerType as DoctrineSettingsT['ready_to_list_owner_type'],
+      ready_to_list_owner_id: ownerId ? Number(ownerId) : null,
+      ready_to_list_location_id: locationId ? Number(locationId) : null,
+      ready_to_list_hangar_flag: flag,
+    } : f))
   }
 
   return (
@@ -149,6 +171,11 @@ export default function DoctrineSettings() {
       )}
       <Switch label="Reserve fits include the hull" checked={form.strategic_reserve_include_hulls}
         onChange={(e) => set('strategic_reserve_include_hulls', e.currentTarget.checked)} />
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Ready to list</Title>
+      <Select label="Ready-to-list hangar" searchable clearable placeholder="None" data={readyOptions}
+        description="Assembled ships here count as ready to list when their fit is valid or tolerable (same rules as contracts)."
+        value={readyValue} onChange={setReadyHangar} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Contract Market</Title>
       <Text size="xs" c="dimmed">
@@ -219,6 +246,10 @@ export default function DoctrineSettings() {
         strategic_reserve_hangar_flag: form.strategic_reserve_hangar_flag,
         strategic_reserve_container_id: form.strategic_reserve_container_id,
         strategic_reserve_include_hulls: form.strategic_reserve_include_hulls,
+        ready_to_list_owner_type: form.ready_to_list_owner_type,
+        ready_to_list_owner_id: form.ready_to_list_owner_id,
+        ready_to_list_location_id: form.ready_to_list_location_id,
+        ready_to_list_hangar_flag: form.ready_to_list_hangar_flag,
         contract_market_system_id: form.contract_market_system_id,
         contract_market_include_public: form.contract_market_include_public,
         contract_market_include_alliance: form.contract_market_include_alliance,

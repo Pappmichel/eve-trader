@@ -298,3 +298,61 @@ def test_parse_bay_items_ignores_offline_and_comma_charge_pairing():
     items, issues = parse_bay_items("Damage Control II /offline", _resolve_name, "fuelbay")
     assert items == []
     assert issues[0].issue_kind == "unresolved_name"
+
+
+# ------------------------------------------------------------------ size limits
+def _timed_parse(text):
+    import time
+    started = time.perf_counter()
+    try:
+        parse_fitting(text, _resolve_name, _resolve_slot)
+    except FittingParseError:
+        pass
+    return time.perf_counter() - started
+
+
+def test_long_nbsp_run_is_not_quadratic():
+    line = "Damage Control II" + "\u00a0" * 19_000
+    assert _timed_parse(f"[Rifter, Fit]\n{line}") < 1.0
+
+
+def test_long_vertical_tab_run_is_not_quadratic():
+    line = "Damage Control II" + "\x0b" * 19_000
+    assert _timed_parse(f"[Rifter, Fit]\n{line}") < 1.0
+
+
+def test_comma_heavy_line_makes_only_one_lookup():
+    calls = []
+
+    def counting(name):
+        calls.append(name)
+        return _resolve_name(name)
+
+    parse_fitting("[Rifter, Fit]\n" + "a," * 200, counting, _resolve_slot)
+    assert len(calls) <= 2  # hull name, then the whole line
+
+
+def test_a_module_with_a_charge_still_splits():
+    parsed = parse_fitting("[Rifter, Fit]\n200mm AutoCannon II, Antimatter Charge S",
+                           _resolve_name, _resolve_slot)
+    assert {i.type_id for i in parsed.items} == {3, 4}
+
+
+def test_text_over_the_limit_is_rejected():
+    with pytest.raises(FittingParseError, match="too long"):
+        parse_fitting("[Rifter, Fit]\n" + "x" * 20_001, _resolve_name, _resolve_slot)
+
+
+def test_too_many_lines_are_rejected():
+    with pytest.raises(FittingParseError, match="Too many lines"):
+        parse_fitting("[Rifter, Fit]\n" + "Damage Control II\n" * 600, _resolve_name, _resolve_slot)
+
+
+def test_overlong_line_is_reported_not_fatal():
+    parsed = parse_fitting("[Rifter, Fit]\n" + "y" * 5_000, _resolve_name, _resolve_slot)
+    assert parsed.issues
+
+
+def test_bay_text_over_the_limit_is_rejected():
+    with pytest.raises(FittingParseError, match="too long"):
+        parse_bay_items("x" * 20_001, _resolve_name, "fuelbay")

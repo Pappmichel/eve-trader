@@ -35,7 +35,7 @@ def test_ci_installs_from_the_lockfile_not_open_ranges():
     assert "pip install -r requirements.lock" in text
     assert "pip install -e . --no-deps" in text
     assert "pip install -e .[test]" not in text
-    assert "pip_audit -r requirements.lock" in text
+    assert "pip_audit -r requirements.txt" in text
 
 
 def test_start_bat_uses_the_lockfile_and_no_deps():
@@ -98,7 +98,8 @@ def test_lockfile_websockets_supports_python_3_10():
 
 def test_ci_python_is_inside_the_declared_matrix():
     text = (_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "python-version: ['3.10', '3.11']" in text
+    # Production's platform has to be in the matrix: Python 3.12 on aarch64.
+    assert "{ os: ubuntu-24.04-arm, python-version: '3.12' }" in text
     assert "python-version: ${{ matrix.python-version }}" in text
 
 

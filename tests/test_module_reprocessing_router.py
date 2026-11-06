@@ -104,6 +104,7 @@ def test_update_settings_calls_action(monkeypatch):
         "min_profit_threshold": 0.0, "min_margin_threshold": 0.05, "ignore_thresholds": False,
         "purchase_region_id": 10000002, "input_hub_region_id": 10000002,
         "purchase_structure_id": None, "enforce_shortlist_cap": False, "max_active_shortlist_items": 300,
+        "shopping_price_tolerance": 0.08,
     }
     resp = client.post("/api/module-reprocessing/settings", json=payload)
 
