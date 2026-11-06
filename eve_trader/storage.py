@@ -359,7 +359,7 @@ def with_batch_session():
 
 
 @contextmanager
-def connect_unscoped():
+def connect_unscoped(timeout: Optional[float] = None):
     """A `connect()` sibling for the handful of genuinely tenant-independent
     tables (`tenants`, `tenant_registry_entries`,
     `character_session_revocations`, `access_allowlist`, `access_requests`
@@ -371,13 +371,17 @@ def connect_unscoped():
     identity-login branch) necessarily happens before any tenant_id exists
     for that request - the normal connect() would fail-closed right there.
 
+    ``timeout`` (seconds) is forwarded to ``pool.connection(timeout=...)``
+    so a hot path like session authorization can fail fast instead of
+    waiting for the pool's default. Other callers leave it unset.
+
     Deliberately narrow: using this against a real per-tenant RLS-enabled
     table doesn't silently bypass RLS - Postgres itself raises
     `unrecognized configuration parameter "app.tenant_id"` immediately,
     since nothing here ever calls `set_config`, same fail-loud spirit as
     connect()'s own check, just enforced by Postgres instead of Python."""
     pool = _get_pool()
-    with pool.connection() as conn:
+    with pool.connection(timeout=timeout) as conn:
         try:
             yield _TranslatingConnection(conn)
             conn.commit()
@@ -657,8 +661,11 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[Session
     registry column and character_session_revocations (P5-03) — Postgres
     GREATEST is NULL-hostile, so the CASE is required. The allowlist EXISTS
     is in the same statement so the middleware does not take a second round
-    trip to learn whether the re-check is active."""
-    with connect_unscoped() as conn:
+    trip to learn whether the re-check is active.
+
+    Uses a 5 s pool checkout so a drained pool fails the gate quickly
+    instead of blocking the event loop for the pool's full wait."""
+    with connect_unscoped(timeout=5.0) as conn:
         rows = conn.execute(
             "SELECT g.tool_key, "
             "CASE "

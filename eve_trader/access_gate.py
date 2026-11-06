@@ -40,6 +40,12 @@ log = logging.getLogger(__name__)
 SESSION_COOKIE_NAME = "eve_trader_session"
 SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 
+
+class AuthorizationUnavailable(Exception):
+    """The session could not be checked because the database (or pool) is
+    unavailable. Callers must answer 503, not 401: the cookie itself may
+    still be valid and the frontend must not bounce the user to SSO."""
+
 # Every tool this app has. "admin" is a normal tool grant, issued by the
 # Admin UI or `eve-trader admin bootstrap` — not implied by DEFAULT_TENANT_ID.
 # "characters" is the ninth grant (docs/ESI_ACCESS_PLAN.md decision 11):
@@ -156,9 +162,14 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
     the cookie's tenant, the signature/expiry check passes, and the
     itsdangerous issue timestamp is not before sessions_valid_after.
 
-    Returns None (unauthenticated) on any failure, including a DB error —
+    Returns None (unauthenticated) when the cookie is missing, unsigned,
+    expired, revoked, or the character is not registered for that tenant —
     fail closed. An empty tool_keys list is a successful auth with no
     grants (callers 403 on the required tool), distinct from None.
+
+    Raises AuthorizationUnavailable when the registry lookup itself fails
+    (DB down, pool timeout): the request must stay fail-closed as 503, not
+    401, so a transient outage is not mistaken for a logged-out session.
     """
     if not token:
         return None
@@ -173,9 +184,9 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
         return None
     try:
         authz = storage.session_authorization(int(character_id), str(tenant_id))
-    except Exception:
+    except Exception as e:
         log.exception("session authorization lookup failed; refusing the request")
-        return None
+        raise AuthorizationUnavailable("session authorization lookup failed") from e
     if authz is None:
         return None
     tool_keys = authz.tool_keys
