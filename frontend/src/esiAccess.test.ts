@@ -180,6 +180,27 @@ describe('tool view / extra kinds', () => {
     expect(corporationIdsFrom(sharing, [])).toEqual([99])
   })
 
+  it('offers a character corporation even when nothing is shared yet', () => {
+    expect(corporationIdsFrom([], [], [{ corporation_id: 98_000_000 }])).toEqual([98_000_000])
+  })
+
+  it('does not duplicate a corporation that is already shared', () => {
+    expect(corporationIdsFrom(
+      sharing,
+      [],
+      [{ corporation_id: 99 }],
+    )).toEqual([99])
+  })
+
+  it('skips NPC corporations and characters without a corporation_id', () => {
+    expect(corporationIdsFrom([], [], [
+      { corporation_id: 1_000_004 },
+      { corporation_id: null },
+      { corporation_id: undefined },
+      { corporation_id: 98_000_001 },
+    ])).toEqual([98_000_001])
+  })
+
     it('summarizes the tools and access capabilities a character currently holds', () => {
     expect(characterRemovalImpact(1, sharing, capabilities)).toEqual({
       tools: ['production', 'doctrine'],
