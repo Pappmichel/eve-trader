@@ -174,8 +174,9 @@ def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int) -> bo
     them here does not add either tool to the costing union.
     """
     try:
-        from .access import is_shared
-        return any(is_shared(data_kind, tool, owner_type, int(owner_id)) for tool in _LEDGER_ONLY_READERS)
+        with storage.savepoint():
+            from .access import is_shared
+            return any(is_shared(data_kind, tool, owner_type, int(owner_id)) for tool in _LEDGER_ONLY_READERS)
     except Exception:  # noqa: BLE001 - never fail the snapshot sync
         log.exception("ledger reader share check failed for %s %s %s", data_kind, owner_type, owner_id)
         return False
@@ -188,8 +189,9 @@ def _archive_for_production(data_kind: str, owner_type: str, owner_id: int) -> b
     at read time. The check is the one lazy import of the shared package's
     access helper; the write imports stay in the archive functions."""
     try:
-        from ..realized.access import owner_in_scope
-        return owner_in_scope(data_kind, owner_type, int(owner_id))
+        with storage.savepoint():
+            from ..realized.access import owner_in_scope
+            return owner_in_scope(data_kind, owner_type, int(owner_id))
     except Exception:  # noqa: BLE001 - never fail the snapshot sync
         log.exception("ledger share check failed for %s %s %s", data_kind, owner_type, owner_id)
         return False
@@ -204,16 +206,17 @@ def _archive_wallet(owner_type: str, owner_id: int, txn_rows: list[tuple],
         return
     from ..realized import ingest as ledger_ingest
     try:
-        if owner_type == "corporation" and journal_by_division is not None:
-            ledger_ingest.archive_corp_wallet(
-                owner_id=owner_id, txn_rows=txn_rows,
-                journal_entries_by_division=journal_by_division,
-            )
-        else:
-            ledger_ingest.archive_wallet(
-                owner_type=owner_type, owner_id=owner_id, txn_rows=txn_rows,
-                journal_raw=journal, journal_division=journal_division,
-            )
+        with storage.savepoint():
+            if owner_type == "corporation" and journal_by_division is not None:
+                ledger_ingest.archive_corp_wallet(
+                    owner_id=owner_id, txn_rows=txn_rows,
+                    journal_entries_by_division=journal_by_division,
+                )
+            else:
+                ledger_ingest.archive_wallet(
+                    owner_type=owner_type, owner_id=owner_id, txn_rows=txn_rows,
+                    journal_raw=journal, journal_division=journal_division,
+                )
     except Exception:  # noqa: BLE001 - archive must not fail the snapshot sync
         log.exception("ledger wallet archive failed for %s %s", owner_type, owner_id)
 
@@ -225,19 +228,20 @@ def _archive_industry_jobs(client: ESIClient, owner_type: str, owner_id: int,
         return
     from ..realized import ingest as ledger_ingest
     try:
-        # A ledger-only read: its cache window is not the snapshot's age.
-        with ignore_last_modified():
-            if owner_type == "character":
-                jobs = client.character_industry_jobs(
-                    owner_id, auth_role=auth_role, include_completed=True,
-                )
-            else:
-                jobs = client.corporation_industry_jobs(
-                    owner_id, auth_role=auth_role, include_completed=True,
-                )
-        ledger_ingest.archive_industry_jobs(
-            owner_type=owner_type, owner_id=owner_id, jobs=jobs,
-        )
+        with storage.savepoint():
+            # A ledger-only read: its cache window is not the snapshot's age.
+            with ignore_last_modified():
+                if owner_type == "character":
+                    jobs = client.character_industry_jobs(
+                        owner_id, auth_role=auth_role, include_completed=True,
+                    )
+                else:
+                    jobs = client.corporation_industry_jobs(
+                        owner_id, auth_role=auth_role, include_completed=True,
+                    )
+            ledger_ingest.archive_industry_jobs(
+                owner_type=owner_type, owner_id=owner_id, jobs=jobs,
+            )
     except Exception:  # noqa: BLE001
         log.exception("ledger industry_jobs archive failed for %s %s", owner_type, owner_id)
 
@@ -247,9 +251,10 @@ def _archive_blueprints(owner_type: str, owner_id: int, bps: list[dict]) -> None
         return
     from ..realized import ingest as ledger_ingest
     try:
-        ledger_ingest.archive_blueprints(
-            owner_type=owner_type, owner_id=owner_id, blueprints=bps,
-        )
+        with storage.savepoint():
+            ledger_ingest.archive_blueprints(
+                owner_type=owner_type, owner_id=owner_id, blueprints=bps,
+            )
     except Exception:  # noqa: BLE001
         log.exception("ledger blueprints archive failed for %s %s", owner_type, owner_id)
 
@@ -261,19 +266,20 @@ def _archive_market_orders(client: ESIClient, owner_type: str, owner_id: int,
         return
     from ..realized import ingest as ledger_ingest
     try:
-        # Order history is cached 60 min and only feeds the ledger; the
-        # open orders above are what the snapshot holds.
-        with ignore_last_modified():
-            if owner_type == "character":
-                history = client.character_orders_history(owner_id, auth_role=auth_role)
-            else:
-                history = client.corporation_orders_history(owner_id, auth_role=auth_role)
-        # History rows carry state; open orders often do not - tag them open.
-        tagged_open = [{**o, "state": o.get("state") or "open"} for o in open_orders]
-        ledger_ingest.archive_market_orders(
-            owner_type=owner_type, owner_id=owner_id,
-            orders=tagged_open + list(history or []),
-        )
+        with storage.savepoint():
+            # Order history is cached 60 min and only feeds the ledger; the
+            # open orders above are what the snapshot holds.
+            with ignore_last_modified():
+                if owner_type == "character":
+                    history = client.character_orders_history(owner_id, auth_role=auth_role)
+                else:
+                    history = client.corporation_orders_history(owner_id, auth_role=auth_role)
+            # History rows carry state; open orders often do not - tag them open.
+            tagged_open = [{**o, "state": o.get("state") or "open"} for o in open_orders]
+            ledger_ingest.archive_market_orders(
+                owner_type=owner_type, owner_id=owner_id,
+                orders=tagged_open + list(history or []),
+            )
     except Exception:  # noqa: BLE001
         log.exception("ledger market_orders archive failed for %s %s", owner_type, owner_id)
 
@@ -298,54 +304,55 @@ def _archive_contracts_pass(
     from ..realized import db as ledger_db
     from ..realized import ingest as ledger_ingest
     try:
-        candidates = [
-            c for c in raw_list
-            if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
-            and ledger_ingest.contract_party_matches(
-                c, owner_type=owner_type, owner_id=owner_id,
-                corporation_id=corporation_id,
-            )
-        ]
-        # Finished and failed couriers this owner issued are archived so
-        # costing can price freight (F5). They have no items and never
-        # enter costing as buys or sales. Expired and deleted are skipped.
-        couriers = [
-            c for c in raw_list
-            if c.get("type") == "courier"
-            and (c.get("status") or "") in ("finished", "failed")
-            and ledger_ingest.contract_issuer_matches(
-                c, owner_type=owner_type, owner_id=owner_id,
-            )
-        ]
-        have_items = ledger_db.contract_ids_with_items(
-            owner_type, owner_id, [c["contract_id"] for c in candidates],
-        )
-        entries = [
-            (c, owner_type == "corporation", owner_id if owner_type == "corporation" else None)
-            for c in candidates
-            if int(c["contract_id"]) not in have_items
-        ]
-        items_info = _fetch_contract_items_for(
-            client, entries,
-            character_id=owner_id if owner_type == "character" else None,
-            auth_role=auth_role,
-        )
-        items_by_contract: dict[int, list[dict]] = {}
-        for cid, items in items_info.get("fetched", {}).items():
-            items_by_contract[int(cid)] = items
-        # Doctrine-carried rows are (record_id, type_id, qty, is_incl, is_single).
-        for cid, carried in items_info.get("carried", {}).items():
-            items_by_contract[int(cid)] = [
-                {
-                    "record_id": t[0], "type_id": t[1], "quantity": t[2],
-                    "is_included": t[3], "is_singleton": t[4],
-                }
-                for t in carried
+        with storage.savepoint():
+            candidates = [
+                c for c in raw_list
+                if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
+                and ledger_ingest.contract_party_matches(
+                    c, owner_type=owner_type, owner_id=owner_id,
+                    corporation_id=corporation_id,
+                )
             ]
-        ledger_ingest.archive_contracts(
-            owner_type=owner_type, owner_id=owner_id,
-            contracts=candidates + couriers, items_by_contract=items_by_contract,
-        )
+            # Finished and failed couriers this owner issued are archived so
+            # costing can price freight (F5). They have no items and never
+            # enter costing as buys or sales. Expired and deleted are skipped.
+            couriers = [
+                c for c in raw_list
+                if c.get("type") == "courier"
+                and (c.get("status") or "") in ("finished", "failed")
+                and ledger_ingest.contract_issuer_matches(
+                    c, owner_type=owner_type, owner_id=owner_id,
+                )
+            ]
+            have_items = ledger_db.contract_ids_with_items(
+                owner_type, owner_id, [c["contract_id"] for c in candidates],
+            )
+            entries = [
+                (c, owner_type == "corporation", owner_id if owner_type == "corporation" else None)
+                for c in candidates
+                if int(c["contract_id"]) not in have_items
+            ]
+            items_info = _fetch_contract_items_for(
+                client, entries,
+                character_id=owner_id if owner_type == "character" else None,
+                auth_role=auth_role,
+            )
+            items_by_contract: dict[int, list[dict]] = {}
+            for cid, items in items_info.get("fetched", {}).items():
+                items_by_contract[int(cid)] = items
+            # Doctrine-carried rows are (record_id, type_id, qty, is_incl, is_single).
+            for cid, carried in items_info.get("carried", {}).items():
+                items_by_contract[int(cid)] = [
+                    {
+                        "record_id": t[0], "type_id": t[1], "quantity": t[2],
+                        "is_included": t[3], "is_singleton": t[4],
+                    }
+                    for t in carried
+                ]
+            ledger_ingest.archive_contracts(
+                owner_type=owner_type, owner_id=owner_id,
+                contracts=candidates + couriers, items_by_contract=items_by_contract,
+            )
     except Exception:  # noqa: BLE001
         log.exception("ledger contracts archive failed for %s %s", owner_type, owner_id)
 
@@ -358,8 +365,9 @@ def _archive_stock_observation(owner_type: str, owner_id: int) -> None:
     if not _archive_for_production("assets", owner_type, owner_id):
         return
     try:
-        from ..realized import ingest as ledger_ingest
-        ledger_ingest.archive_stock_observation()
+        with storage.savepoint():
+            from ..realized import ingest as ledger_ingest
+            ledger_ingest.archive_stock_observation()
     except Exception:  # noqa: BLE001
         log.exception("stock observation failed for %s %s", owner_type, owner_id)
 
@@ -393,13 +401,14 @@ def _asset_item_names(
     answered: Optional[set[int]] = None
     names: dict[int, str] = {}
     try:
-        returned = fetch_names(ids)
-        answered = {int(n["item_id"]) for n in returned}
-        names = {
-            int(n["item_id"]): n["name"].strip()
-            for n in returned
-            if isinstance(n.get("name"), str) and n["name"].strip() not in ("", "None")
-        }
+        with storage.savepoint():
+            returned = fetch_names(ids)
+            answered = {int(n["item_id"]) for n in returned}
+            names = {
+                int(n["item_id"]): n["name"].strip()
+                for n in returned
+                if isinstance(n.get("name"), str) and n["name"].strip() not in ("", "None")
+            }
     except Exception:  # noqa: BLE001
         log.exception("asset names fetch failed for %s %s", table, owner_id)
     # An id ESI did not answer for (a failed call, or a chunk it answered 404)
@@ -407,7 +416,8 @@ def _asset_item_names(
     unanswered = [i for i in ids if answered is None or i not in answered]
     if unanswered:
         try:
-            previous = storage.load_asset_item_names(table, owner_id)
+            with storage.savepoint():
+                previous = storage.load_asset_item_names(table, owner_id)
         except Exception:  # noqa: BLE001
             log.exception("asset names carry-over failed for %s %s", table, owner_id)
             previous = {}
