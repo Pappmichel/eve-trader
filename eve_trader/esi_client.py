@@ -1308,65 +1308,26 @@ class ESIClient:
         return self._get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
-    # Class-level public-contract caches (GitHub issue #428). Same per-key
-    # lock shape as region_orders_raw: public data, safe across tenants, TTL
-    # matches the order-book cache (a region's public list moves faster than
-    # character_public_info).
-    _PUBLIC_CONTRACTS_CACHE_TTL = 30  # seconds
-    _public_contracts_cache: dict[int, list[dict]] = {}
-    _public_contracts_cache_at: dict[int, float] = {}
-    _public_contracts_locks: dict[int, threading.Lock] = {}
-    _public_contract_items_cache: dict[int, list[dict]] = {}
-    _public_contract_items_cache_at: dict[int, float] = {}
-    _public_contract_items_locks: dict[int, threading.Lock] = {}
-
     def public_contracts(self, region_id: int) -> list[dict]:
         """Unauthenticated GET /contracts/public/{region_id}/ - every public
-        contract currently listed in that region (paginated). Doctrine's
-        Contract Market (GitHub issue #428) filters further to outstanding
-        item_exchange in one solar system. Cached class-wide for
-        _PUBLIC_CONTRACTS_CACHE_TTL seconds per region_id."""
-        key = int(region_id)
-        with self._lock_for_key(self._public_contracts_locks, key):
-            cached_at = self._public_contracts_cache_at.get(key, 0.0)
-            if key in self._public_contracts_cache and (time.time() - cached_at) < self._PUBLIC_CONTRACTS_CACHE_TTL:
-                return self._public_contracts_cache[key]
-            contracts = self._get_all_pages(
-                f"/contracts/public/{key}/",
-                params={"datasource": "tranquility"},
-            )
-            self._public_contracts_cache[key] = contracts
-            self._public_contracts_cache_at[key] = time.time()
-            return contracts
+        contract currently open in that region (paginated). Doctrine's Contract
+        Market (GitHub issue #428) filters further to item_exchange in one
+        solar system. Not cached: one tenant-level job reads it, and a region
+        list held in memory would stay until the process restarts."""
+        return self._get_all_pages(
+            f"/contracts/public/{int(region_id)}/",
+            params={"datasource": "tranquility"},
+        )
 
     def public_contract_items(self, contract_id: int) -> list[dict]:
         """Unauthenticated GET /contracts/public/items/{contract_id}/. A
-        contract's item list never changes after creation (ESI guarantee) -
-        Contract Market reuses stored items for known contract_ids and only
-        calls this for new ones. Cached class-wide; a 404 means the contract
-        is gone (caller handles)."""
-        key = int(contract_id)
-        with self._lock_for_key(self._public_contract_items_locks, key):
-            cached_at = self._public_contract_items_cache_at.get(key, 0.0)
-            if key in self._public_contract_items_cache and (time.time() - cached_at) < self._PUBLIC_CONTRACTS_CACHE_TTL:
-                return self._public_contract_items_cache[key]
-            items = self._get(
-                f"/contracts/public/items/{key}/",
-                params={"datasource": "tranquility"},
-            )
-            self._public_contract_items_cache[key] = items
-            self._public_contract_items_cache_at[key] = time.time()
-            return items
-
-    @classmethod
-    def clear_public_contract_caches(cls) -> None:
-        """Forces the next public_contracts/public_contract_items call to
-        re-fetch - exists for tests, same reason clear_order_book_caches does."""
-        with cls._order_book_locks_guard:
-            cls._public_contracts_cache.clear()
-            cls._public_contracts_cache_at.clear()
-            cls._public_contract_items_cache.clear()
-            cls._public_contract_items_cache_at.clear()
+        contract's item list never changes, so Contract Market stores it per
+        contract and only calls this for new ones. Raises ESIError when the
+        contract is gone."""
+        return self._get(
+            f"/contracts/public/items/{int(contract_id)}/",
+            params={"datasource": "tranquility"},
+        )
 
     def character_wallet_transactions(self, character_id: int, auth_role: str,
                                        from_id: Optional[int] = None) -> list[dict]:

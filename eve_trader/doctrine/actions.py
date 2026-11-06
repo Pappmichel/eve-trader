@@ -389,6 +389,8 @@ def do_scan_contract_market(system_id: Optional[int] = None, progress_callback=N
                             cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     """Scan public + alliance contracts in one system (GitHub issue #428).
     Writes only doctrine_market_* tables."""
+    if system_id is not None:
+        contract_market._system_region(int(system_id))  # an unknown id is never saved
     if system_id is not None and system_id != cfg.contract_market_system_id:
         # Persist the system the user just picked so the next open remembers it.
         do_update_settings({"contract_market_system_id": int(system_id)}, cfg)
@@ -398,8 +400,13 @@ def do_scan_contract_market(system_id: Optional[int] = None, progress_callback=N
     )
 
 
-def do_start_scan_contract_market(system_id: Optional[int] = None) -> dict:
+def do_start_scan_contract_market(system_id: Optional[int] = None,
+                                  cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     from .. import pipeline_runner
+    target = system_id if system_id is not None else cfg.contract_market_system_id
+    if target:
+        contract_market._system_region(int(target))
+        contract_market.reject_scan_too_soon(int(target))
     return pipeline_runner.start_contract_market_scan(system_id=system_id)
 
 

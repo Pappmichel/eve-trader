@@ -1637,6 +1637,10 @@ export interface ContractMarketScanInfo {
   public_candidates: number
   alliance_candidates: number
   matched: number
+  unknown_locations: number
+  items_pending: number
+  items_failed: number
+  asks_for_items: number
 }
 
 export interface ContractMarketResponse {

@@ -312,8 +312,9 @@ CREATE POLICY tenant_isolation ON doctrine_equivalent_disabled_groups
 -- system, matched against Doctrine fittings. Deliberately NOT
 -- doctrine_contracts: that table is the owner-issued snapshot (ampel,
 -- alerts, stockpile counts). A market scan must not collide with it.
--- Wholesale-replaced per scan (one current result per tenant); items are
--- carried forward for unchanged contract_ids so ESI is not re-hit.
+-- Wholesale-replaced per scan (one current result per tenant). Items of every
+-- candidate in the system, matched or not, are carried forward so ESI is not
+-- re-hit for a list that never changes.
 CREATE TABLE IF NOT EXISTS doctrine_market_scans (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -323,8 +324,16 @@ CREATE TABLE IF NOT EXISTS doctrine_market_scans (
     public_candidates INTEGER NOT NULL DEFAULT 0,
     alliance_candidates INTEGER NOT NULL DEFAULT 0,
     matched INTEGER NOT NULL DEFAULT 0,
+    unknown_locations INTEGER NOT NULL DEFAULT 0,
+    items_pending INTEGER NOT NULL DEFAULT 0,
+    items_failed INTEGER NOT NULL DEFAULT 0,
+    asks_for_items INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tenant_id)
 );
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS unknown_locations INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS items_pending INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS items_failed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS asks_for_items INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE doctrine_market_scans ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_market_scans;
 CREATE POLICY tenant_isolation ON doctrine_market_scans
@@ -363,7 +372,7 @@ CREATE TABLE IF NOT EXISTS doctrine_market_contract_items (
     contract_id BIGINT NOT NULL,
     record_id BIGINT NOT NULL,
     type_id INTEGER NOT NULL,
-    quantity REAL NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
     is_included BOOLEAN NOT NULL DEFAULT true,
     is_singleton BOOLEAN NOT NULL DEFAULT false,
     PRIMARY KEY (tenant_id, contract_id, record_id)

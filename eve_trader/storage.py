@@ -8180,12 +8180,31 @@ def load_doctrine_market_contract_items(contract_id: int) -> list[tuple]:
 
 def get_doctrine_market_scan() -> Optional[tuple]:
     """(scanned_at, system_id, include_public, include_alliance,
-    public_candidates, alliance_candidates, matched) or None."""
+    public_candidates, alliance_candidates, matched, unknown_locations,
+    items_pending, items_failed, asks_for_items) or None."""
     with connect() as conn:
         return conn.execute(
             "SELECT scanned_at, system_id, include_public, include_alliance, "
-            "public_candidates, alliance_candidates, matched FROM doctrine_market_scans"
+            "public_candidates, alliance_candidates, matched, unknown_locations, "
+            "items_pending, items_failed, asks_for_items FROM doctrine_market_scans"
         ).fetchone()
+
+
+def load_all_doctrine_market_items() -> dict[int, list]:
+    """contract_id -> its stored item rows, for every contract of the last scan.
+    The list of a contract never changes, so a scan reuses these instead of
+    asking ESI again."""
+    from .doctrine.models import ContractItemRow
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, record_id, type_id, quantity, is_included, is_singleton "
+            "FROM doctrine_market_contract_items ORDER BY contract_id, record_id"
+        ).fetchall()
+    out: dict[int, list] = {}
+    for contract_id, record_id, type_id, quantity, is_included, is_singleton in rows:
+        out.setdefault(int(contract_id), []).append(ContractItemRow(
+            int(contract_id), record_id, type_id, quantity, is_included, is_singleton))
+    return out
 
 
 def list_doctrine_market_contracts() -> list[tuple]:
@@ -8208,6 +8227,10 @@ def replace_doctrine_market_snapshot(
     public_candidates: int,
     alliance_candidates: int,
     matched: int,
+    unknown_locations: int = 0,
+    items_pending: int = 0,
+    items_failed: int = 0,
+    asks_for_items: int = 0,
 ) -> None:
     """Wholesale-replace the Contract Market snapshot for this tenant.
 
@@ -8222,10 +8245,12 @@ def replace_doctrine_market_snapshot(
         conn.execute(
             "INSERT INTO doctrine_market_scans "
             "(scanned_at, system_id, include_public, include_alliance, "
-            "public_candidates, alliance_candidates, matched) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "public_candidates, alliance_candidates, matched, "
+            "unknown_locations, items_pending, items_failed, asks_for_items) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (scanned_at, system_id, include_public, include_alliance,
-             public_candidates, alliance_candidates, matched),
+             public_candidates, alliance_candidates, matched,
+             unknown_locations, items_pending, items_failed, asks_for_items),
         )
         if contracts:
             cols = ", ".join(_MARKET_CONTRACT_COLUMNS)

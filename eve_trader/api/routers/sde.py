@@ -16,3 +16,8 @@ router = APIRouter()
 @router.get("/regions")
 def list_regions() -> list[dict]:
     return [{"region_id": rid, "region_name": name} for rid, name in storage.list_all_regions()]
+
+
+@router.get("/solar-systems")
+def list_solar_systems() -> list[dict]:
+    return [{"solar_system_id": s, "solar_system_name": n} for s, n in storage.list_all_solar_systems()]

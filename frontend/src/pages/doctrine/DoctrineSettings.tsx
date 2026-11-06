@@ -157,7 +157,9 @@ export default function DoctrineSettings() {
       </Text>
       <Switch label="Include public contracts" checked={form.contract_market_include_public ?? true}
         onChange={(e) => set('contract_market_include_public', e.currentTarget.checked)} />
-      <Switch label="Include alliance contracts" checked={form.contract_market_include_alliance ?? true}
+      <Switch label="Include alliance contracts"
+        description="Only contracts a sharing character or corporation issued, accepted or is assignee of: ESI has no alliance-wide list."
+        checked={form.contract_market_include_alliance ?? true}
         onChange={(e) => set('contract_market_include_alliance', e.currentTarget.checked)} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>

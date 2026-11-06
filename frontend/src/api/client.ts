@@ -1000,6 +1000,7 @@ export const hubsApi = {
 
 export const sdeApi = {
   regions: () => get<T.RegionOption[]>('/api/sde/regions'),
+  solarSystems: () => get<{ solar_system_id: number; solar_system_name: string }[]>('/api/sde/solar-systems'),
 }
 
 export const errorsApi = {
