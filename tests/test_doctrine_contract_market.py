@@ -109,6 +109,28 @@ def _patch_client(monkeypatch, client):
 
 
 # ------------------------------------------------------------- pure filters
+def test_seller_id_uses_corporation_when_for_corporation():
+    assert contract_market._seller_id(_raw(
+        for_corporation=True, issuer_corporation_id=98_000_001, issuer_id=111,
+    )) == 98_000_001
+
+
+def test_seller_id_personal_when_for_corporation_false():
+    assert contract_market._seller_id(_raw(for_corporation=False)) == 111
+
+
+def test_seller_id_personal_when_for_corporation_missing():
+    raw = _raw()
+    assert "for_corporation" not in raw
+    assert contract_market._seller_id(raw) == 111
+
+
+def test_seller_id_personal_when_corp_flag_without_corp_id():
+    assert contract_market._seller_id(_raw(
+        for_corporation=True, issuer_corporation_id=None, issuer_id=111,
+    )) == 111
+
+
 def test_public_row_without_status_is_open():
     assert contract_market._is_open_public_item_exchange(_raw()) is True
 
@@ -856,6 +878,57 @@ def test_alliance_skipped_keeps_existing_item_store(monkeypatch, cfg):
     result = contract_market.scan_contract_market(cfg)
     assert result["alliance_skipped"] is True
     assert storage.load_doctrine_market_contract_items(CONTRACT_ALLIANCE)
+
+
+def test_corp_contract_stores_corporation_as_seller(monkeypatch, cfg):
+    corp_id, char_id = 98_000_042, 111
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw(
+        for_corporation=True, issuer_corporation_id=corp_id, issuer_id=char_id,
+    )]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    client.resolve_names.return_value = {corp_id: "Seller Corp"}
+    result = contract_market.scan_contract_market(cfg)
+    assert result["matched"] == 1
+    row = storage.list_doctrine_market_contracts()[0]
+    assert row[2] == corp_id
+    assert row[3] == "Seller Corp"
+    resolved = client.resolve_names.call_args[0][0]
+    assert corp_id in resolved
+    assert char_id not in resolved
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates",
+                        lambda: [_Cand(FAKE_FITTING)])
+    monkeypatch.setattr(contract_market.engine, "_fit_identity", lambda c: "same")
+    page = contract_market.market_results()
+    listings = [c for d in page["doctrines"] for f in d["fittings"] for c in f["contracts"]]
+    assert listings and listings[0]["issuer_id"] == corp_id
+    assert listings[0]["issuer_name"] == "Seller Corp"
+    assert char_id not in {c["issuer_id"] for c in listings}
+
+
+def test_personal_and_missing_flag_keep_character_seller(monkeypatch, cfg):
+    client = MagicMock()
+    client.public_contracts.return_value = [
+        _raw(contract_id=1, for_corporation=False, issuer_id=201),
+        _raw(contract_id=2, issuer_id=202),  # public list often omits for_corporation
+        _raw(contract_id=3, for_corporation=True, issuer_corporation_id=None, issuer_id=203),
+        _raw(contract_id=4, for_corporation=True, issuer_corporation_id=98_000_099, issuer_id=204),
+    ]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    client.resolve_names.return_value = {
+        201: "Char A", 202: "Char B", 203: "Char C", 98_000_099: "Corp D",
+    }
+    assert contract_market.scan_contract_market(cfg)["matched"] == 4
+    by_cid = {r[0]: (r[2], r[3]) for r in storage.list_doctrine_market_contracts()}
+    assert by_cid[1] == (201, "Char A")
+    assert by_cid[2] == (202, "Char B")
+    assert by_cid[3] == (203, "Char C")
+    assert by_cid[4] == (98_000_099, "Corp D")
+    resolved = set(client.resolve_names.call_args[0][0])
+    assert 204 not in resolved
+    assert 98_000_099 in resolved
 
 
 def test_rescan_right_away_is_rejected():

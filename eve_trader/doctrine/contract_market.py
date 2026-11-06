@@ -74,6 +74,19 @@ def _expired(contract_date) -> bool:
     return when < datetime.now(timezone.utc)
 
 
+def _seller_id(raw: dict) -> Optional[int]:
+    """Who the Contract Market page shows as Seller.
+
+    A contract issued for a corporation uses issuer_corporation_id; the
+    character who clicked Create stays out of resolve_names and storage.
+    Missing for_corporation (common on the public list) means personal.
+    """
+    if raw.get("for_corporation") and raw.get("issuer_corporation_id") is not None:
+        return int(raw["issuer_corporation_id"])
+    issuer = raw.get("issuer_id")
+    return int(issuer) if issuer is not None else None
+
+
 def _is_open_public_item_exchange(contract: dict) -> bool:
     """The public list has no status: everything on it is open until it expires."""
     return (contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
@@ -496,20 +509,20 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
                               it.is_included, it.is_singleton) for it in items)
             already.add(cid)
 
-    issuer_ids = sorted({int(h[2]["issuer_id"]) for h in hits if h[2].get("issuer_id")})
+    seller_ids = sorted({sid for sid in (_seller_id(h[2]) for h in hits) if sid is not None})
     try:
-        names = client.resolve_names(issuer_ids) if issuer_ids else {}
+        names = client.resolve_names(seller_ids) if seller_ids else {}
     except ESIError:
         names = {}
 
     scanned_at = _now_iso()
     contract_rows: list[tuple] = []
     for cid, source, raw, fitting_id, score, status in hits:
-        issuer_id = raw.get("issuer_id")
+        seller_id = _seller_id(raw)
         contract_rows.append((
             cid, source,
-            int(issuer_id) if issuer_id is not None else None,
-            names.get(int(issuer_id)) if issuer_id is not None else None,
+            seller_id,
+            names.get(seller_id) if seller_id is not None else None,
             raw.get("start_location_id"), _system_id,
             raw.get("status") or "outstanding",
             raw.get("title"), raw.get("price"),
