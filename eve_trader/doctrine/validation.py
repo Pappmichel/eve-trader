@@ -82,7 +82,13 @@ def build_stockpile_soll(items: list[FittingItem], hull_type_id: int,
     for type_id, qty in exact.items():
         result[type_id] = (qty * total_sets, "exact")
     for type_id, qty in consume.items():
-        result[type_id] = (qty * total_sets, "consume")
+        # Fitted + cargo of the same type used to overwrite; add both and
+        # keep class exact so cargo tolerance cannot soft-pass a fitted short.
+        if type_id in result:
+            prev_qty, _cls = result[type_id]
+            result[type_id] = (prev_qty + qty * total_sets, "exact")
+        else:
+            result[type_id] = (qty * total_sets, "consume")
     return result
 
 
@@ -196,21 +202,27 @@ def compute_deviations(contract_id: int, exact_soll: dict[int, float], consume_s
         e_exact = exact_soll.get(type_id, 0.0)
         e_consume = consume_soll.get(type_id, 0.0)
         a = ist.get(type_id, 0.0)
+        # Serve exact demand first when the same type is also cargo; only the
+        # remainder is judged against the consume tolerance rule.
+        a_remaining = a
 
         if e_exact > 0:
-            if a <= 0:
+            a_exact = min(a_remaining, e_exact)
+            a_remaining -= a_exact
+            if a_exact <= 0:
                 _add(type_id, DEVIATION_KIND_MISSING, SEVERITY_CRITICAL, e_exact, 0.0)
-            elif a < e_exact:
-                _add(type_id, DEVIATION_KIND_SHORT, SEVERITY_CRITICAL, e_exact, a)
+            elif a_exact < e_exact:
+                _add(type_id, DEVIATION_KIND_SHORT, SEVERITY_CRITICAL, e_exact, a_exact)
 
         if e_consume > 0:
+            a_consume = a_remaining
             threshold = math.ceil(cargo_tolerance_pct * e_consume)
-            if a <= 0:
+            if a_consume <= 0:
                 _add(type_id, DEVIATION_KIND_MISSING, SEVERITY_CRITICAL, e_consume, 0.0)
-            elif a < threshold:
-                _add(type_id, DEVIATION_KIND_SHORT, SEVERITY_CRITICAL, e_consume, a)
-            elif a < e_consume:
-                _add(type_id, DEVIATION_KIND_SHORT, SEVERITY_TOLERABLE, e_consume, a)
+            elif a_consume < threshold:
+                _add(type_id, DEVIATION_KIND_SHORT, SEVERITY_CRITICAL, e_consume, a_consume)
+            elif a_consume < e_consume:
+                _add(type_id, DEVIATION_KIND_SHORT, SEVERITY_TOLERABLE, e_consume, a_consume)
 
         if e_exact <= 0 and e_consume <= 0 and a > 0:
             severity = SEVERITY_TOLERABLE if strict_extras else SEVERITY_INFO
