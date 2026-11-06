@@ -2691,12 +2691,17 @@ class _PlanContext:
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
             self.adjusted_prices_available = False
-        ages = [
-            s for s in (
-                getattr(ESIClient, "adjusted_prices_stale_seconds", lambda: None)(),
-                getattr(ESIClient, "cost_indices_stale_seconds", lambda: None)(),
-            ) if s is not None
-        ]
+        # Cost-index age only matters when a system is configured; otherwise
+        # the plan never reads the class-wide catalog and a leftover stale
+        # cache must not show "ESI is not reachable".
+        ages = []
+        adj_age = getattr(ESIClient, "adjusted_prices_stale_seconds", lambda: None)()
+        if adj_age is not None:
+            ages.append(adj_age)
+        if configured_systems:
+            ci_age = getattr(ESIClient, "cost_indices_stale_seconds", lambda: None)()
+            if ci_age is not None:
+                ages.append(ci_age)
         self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
         # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
         self._reaction_solve_cache = None

@@ -178,9 +178,13 @@ export function buildToolView(
   })
 }
 
+/** NPC corporations sit below this id; player corps never do. */
+const NPC_CORPORATION_ID_CEILING = 2_000_000
+
 export function corporationIdsFrom(
   sharing: EsiSharingRow[],
   freshness: EsiFreshnessRow[],
+  owners: Array<{ corporation_id?: number | null }> = [],
 ): number[] {
   const ids = new Set<number>()
   for (const row of sharing) {
@@ -188,6 +192,12 @@ export function corporationIdsFrom(
   }
   for (const row of freshness) {
     if (row.owner_type === 'corporation') ids.add(row.owner_id)
+  }
+  // Every corp a page owner belongs to, so a new tenant can tick sharing
+  // without an existing corp row. NPC corps are never offered.
+  for (const owner of owners) {
+    const cid = owner.corporation_id
+    if (cid != null && cid >= NPC_CORPORATION_ID_CEILING) ids.add(cid)
   }
   return [...ids].sort((a, b) => a - b)
 }

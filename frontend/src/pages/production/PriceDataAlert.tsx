@@ -3,6 +3,7 @@ import { Alert, Stack } from '@mantine/core'
 export type PriceDataFlags = {
   adjusted_prices_available?: boolean
   cost_indices_available?: boolean
+  prices_available?: boolean
   price_data_stale_hours?: number | null
 }
 
@@ -12,12 +13,20 @@ export function PriceDataAlert({ flags }: { flags?: PriceDataFlags | null }) {
   if (!flags) return null
   const adjustedMissing = flags.adjusted_prices_available === false
   const indicesMissing = flags.cost_indices_available === false
+  const pricesMissing = flags.prices_available === false
   const staleHours = flags.price_data_stale_hours
   const stale = staleHours != null && staleHours > 0
-  if (!adjustedMissing && !indicesMissing && !stale) return null
+  if (!adjustedMissing && !indicesMissing && !pricesMissing && !stale) return null
 
   return (
     <Stack gap="xs">
+      {pricesMissing && (
+        <Alert color="danger" variant="light" title="Market quotes are unavailable">
+          Home and hub market quotes could not be fetched for this computation - the ISK totals
+          below do not add up. Recompute once market data is reachable again before trusting
+          these numbers.
+        </Alert>
+      )}
       {adjustedMissing && (
         <Alert color="danger" variant="light" title="Job Cost figures are currently unavailable">
           ESI&apos;s adjusted-price data could not be fetched for this computation - every Job Cost/Unit

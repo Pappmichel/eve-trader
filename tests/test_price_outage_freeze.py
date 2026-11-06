@@ -140,3 +140,29 @@ def test_bpc_run_values_skip_cache_when_fee_rates_missing(monkeypatch):
 
     assert portfolio._bpc_run_values({1}) == {1: 42.0}
     assert portfolio._bpc_cache == {}  # must not have been written
+
+
+def test_bpc_run_values_keep_cached_on_partial_outage(monkeypatch):
+    from eve_trader import portfolio
+
+    monkeypatch.setattr(portfolio, "_bpc_cache", {("t", 1): 10.0, ("t", 2): 20.0})
+    monkeypatch.setattr(portfolio, "_bpc_cache_at", {"t": __import__("time").time()})
+    monkeypatch.setattr(portfolio.storage, "get_current_tenant", lambda: "t")
+
+    def _compute(type_ids):
+        return {3: 30.0}, False
+
+    monkeypatch.setattr(portfolio, "_compute_bpc_run_values", _compute)
+    assert portfolio._bpc_run_values({1, 2, 3}) == {1: 10.0, 2: 20.0, 3: 30.0}
+    assert ("t", 3) not in portfolio._bpc_cache
+
+
+def test_bpc_run_values_outage_without_new_value_keeps_cache(monkeypatch):
+    from eve_trader import portfolio
+
+    monkeypatch.setattr(portfolio, "_bpc_cache", {("t", 1): 10.0, ("t", 2): 20.0})
+    monkeypatch.setattr(portfolio, "_bpc_cache_at", {"t": __import__("time").time()})
+    monkeypatch.setattr(portfolio.storage, "get_current_tenant", lambda: "t")
+    monkeypatch.setattr(portfolio, "_compute_bpc_run_values", lambda type_ids: ({3: None}, False))
+    assert portfolio._bpc_run_values({1, 2, 3}) == {1: 10.0, 2: 20.0}
+    assert ("t", 3) not in portfolio._bpc_cache

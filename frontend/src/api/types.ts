@@ -1664,6 +1664,7 @@ export interface ContractMarketScanInfo {
   items_pending: number
   items_failed: number
   asks_for_items: number
+  alliance_skipped: boolean
 }
 
 export interface ContractMarketResponse {

@@ -188,3 +188,17 @@ def test_cost_indices_loaded_and_stale_helpers(monkeypatch):
     assert ESIClient.cost_indices_loaded() is False
     assert ESIClient._adjusted_prices_fail_at == 0.0
     assert ESIClient._cost_indices_fail_at == 0.0
+
+
+def test_cost_indices_loaded_false_when_past_hard_stale_ceiling(monkeypatch):
+    _fake_get(monkeypatch, {
+        "/industry/systems/": [
+            {"solar_system_id": 1, "cost_indices": [{"activity": "manufacturing", "cost_index": 0.1}]},
+        ],
+    })
+    ESIClient().get_system_cost_indices(1)
+    assert ESIClient.cost_indices_loaded() is True
+    ESIClient._cost_indices_cache_at = __import__("time").time() - (
+        ESIClient.PRICE_DATA_MAX_STALE_SECONDS + 8 * 3600
+    )
+    assert ESIClient.cost_indices_loaded() is False
