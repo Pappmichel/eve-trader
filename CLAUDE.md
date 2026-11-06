@@ -931,8 +931,11 @@ other global/unscoped job.
 decides which (owner, kind) pairs are due given `esi_freshness.last_success_at`
 and the three freshness-tier intervals (`esi_frequent_interval_hours` /
 `esi_normal_interval_hours` / `esi_rare_interval_hours`). A failed fetch
-passes `TradingConfig.esi_stale_clear_multiples` into the existing
-`clear_stale_owner_kind` (do not re-derive that clear). Manual tool syncs
+records `last_error` always; it calls the existing
+`clear_stale_owner_kind` (with `TradingConfig.esi_stale_clear_multiples` —
+do not re-derive that clear) only for a dead owner (HTTP 401/403 or a
+rejected SSO refresh), never for a global ESI outage, rate limit, network
+error, or non-ESI failure. Manual tool syncs
 (`do_sync_for_tool`) stamp freshness and push those pairs past the next
 scheduled fetch. `last_run_status` stays job-named (`esi_data_sync`);
 per-kind state lives on `esi_freshness`. `get_status()` reports

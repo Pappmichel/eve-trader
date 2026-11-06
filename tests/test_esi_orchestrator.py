@@ -16,7 +16,7 @@ import requests
 from eve_trader import storage
 from eve_trader.auth import TokenManager, TokenRecord
 from eve_trader.config import TRADING_CONFIG, TradingConfig
-from eve_trader.esi_client import ESIClient, ESIError
+from eve_trader.esi_client import ESIClient, ESIError, ESIRateLimited, ESIStatusError
 from eve_trader.esi_data import orchestrator
 from eve_trader.esi_data.orchestrator import (
     _run_corporation_kinds_for_members, do_sync_due, do_sync_for_tool,
@@ -618,7 +618,8 @@ def test_character_worker_thread_sees_tenant_trading_overrides(tenant, monkeypat
     client = FakeClient(assets={ALICE: [_asset(1, ALICE)]})
 
     def boom(*_args, **_kwargs):
-        raise ESIError("assets 500")
+        # Stale clear runs only for a dead-owner error (401/403).
+        raise ESIStatusError(401, "assets 401")
 
     client.character_assets = boom
     result = do_sync_for_tool("production", client=client)
@@ -817,13 +818,120 @@ def test_failed_on_demand_sync_never_runs_the_stale_clear(tenant, monkeypatch):
     _tokens((ALICE, "Alice"), scopes=SKILLQUEUE_SCOPE)
     assert do_sync_for_tool("char_skills", client=QueueClient(fail=True))["ok"] is False
     assert calls == []  # on_demand: exempt
-    # while a scheduled kind still gets its stale clear on failure
+    # A scheduled kind still clears only on a dead-owner error (401/403).
     _tokens((ALICE, "Alice"), scopes=PRODUCER_SCOPES)
-    failing = FakeClient(job_error_for={ALICE})
+    failing = FakeClient(jobs={ALICE: [_job(11, ALICE)]})
+
+    def boom(*_a, **_k):
+        raise ESIStatusError(403, "jobs 403")
+
+    failing.character_industry_jobs = boom
     _share("character", ALICE, "industry_jobs", "production")
     do_sync_for_tool("production", client=failing)
     assert len(calls) == 1
 
+
+
+def _seed_stale_assets(*, hours_ago: float = 100.0) -> None:
+    """Past the assets clear window (normal tier 6h × multiples 3 = 18h)."""
+    from datetime import datetime, timedelta, timezone
+    storage.replace_assets(
+        "character_assets",
+        [(1, TYPE_ID, LOCATION_ID, "Hangar", 5, 0, "Alice")],
+        owner_character_id=ALICE, owner_name="Alice",
+    )
+    stale_at = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    storage.upsert_esi_freshness(
+        "character", ALICE, "assets", success=True,
+        now=stale_at.isoformat(),
+    )
+
+
+def test_outage_errors_do_not_clear_stale_snapshots(tenant, monkeypatch):
+    """503 / 429 / network / SQL past the age limit must keep the rows."""
+    calls = []
+    monkeypatch.setattr(
+        orchestrator, "clear_stale_owner_kind",
+        lambda *a, **k: calls.append((a, k)) or True,
+    )
+    _share("character", ALICE, "assets", "production")
+    _tokens((ALICE, "Alice"), scopes=ASSETS_SCOPE)
+    _seed_stale_assets()
+
+    cases = [
+        ESIStatusError(503, "HTTP 503 for https://esi/x: unavailable"),
+        ESIStatusError(429, "HTTP 429 for https://esi/x: slow down"),
+        ESIRateLimited(60.0, "character"),
+        ESIError("Request failed for https://esi/x: ConnectionError"),
+        RuntimeError("duplicate key value violates unique constraint"),
+    ]
+    for err in cases:
+        calls.clear()
+        client = FakeClient(assets={ALICE: [_asset(1, ALICE)]})
+        client.character_assets = lambda *_a, **_k: (_ for _ in ()).throw(err)
+        assert do_sync_for_tool("production", client=client)["ok"] is False
+        assert calls == [], f"unexpected clear for {type(err).__name__}: {err}"
+    assert _count("character_assets", owner_character_id=ALICE) == 1
+
+
+def test_dead_owner_401_and_403_clear_stale_snapshots(tenant, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        orchestrator, "clear_stale_owner_kind",
+        lambda *a, **k: calls.append((a, k)) or True,
+    )
+    _share("character", ALICE, "assets", "production")
+    _tokens((ALICE, "Alice"), scopes=ASSETS_SCOPE)
+    for status in (401, 403):
+        calls.clear()
+        client = FakeClient(assets={ALICE: [_asset(1, ALICE)]})
+        client.character_assets = lambda *_a, s=status, **_k: (
+            _ for _ in ()
+        ).throw(ESIStatusError(s, f"HTTP {s} for https://esi/x: denied"))
+        assert do_sync_for_tool("production", client=client)["ok"] is False
+        assert len(calls) == 1
+
+
+def test_corp_path_preserves_dead_owner_error_for_stale_clear(tenant, monkeypatch):
+    """Corporation failures used to wrap the ESI error as RuntimeError(str),
+    so a 401 never cleared and a 503 always looked the same."""
+    calls = []
+    monkeypatch.setattr(
+        orchestrator, "clear_stale_owner_kind",
+        lambda *a, **k: calls.append(k) or True,
+    )
+    storage.save_tenant_token("producer:1001", asdict(TokenRecord(
+        role="producer:1001", character_id=ALICE, character_name="Alice",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes=CORP_ASSETS_SCOPE,
+    )))
+    tm = TokenManager()
+    alice = tm.get_record("producer:1001")
+    assert alice is not None
+
+    class CorpClient(FakeClient):
+        def corporation_assets(self, corporation_id, auth_role):
+            raise ESIStatusError(401, "HTTP 401 for https://esi/corp/assets: denied")
+
+    result = _run_corporation_kinds_for_members(
+        client=CorpClient(), corp_id=CORP_ID, kinds=["assets"],
+        members=[alice], corp_name="Test Corp", extra={}, tokens=tm,
+    )
+    assert result["ok"] is False
+    assert len(calls) == 1
+
+    calls.clear()
+
+    class CorpOutage(FakeClient):
+        def corporation_assets(self, corporation_id, auth_role):
+            raise ESIStatusError(503, "HTTP 503 for https://esi/corp/assets: unavailable")
+
+    result = _run_corporation_kinds_for_members(
+        client=CorpOutage(), corp_id=CORP_ID, kinds=["assets"],
+        members=[alice], corp_name="Test Corp", extra={}, tokens=tm,
+    )
+    assert result["ok"] is False
+    assert calls == []
 
 
 def test_non_esi_failure_is_recorded_against_its_kind(tenant, monkeypatch):

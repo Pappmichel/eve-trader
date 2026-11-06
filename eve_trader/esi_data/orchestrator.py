@@ -16,7 +16,7 @@ from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
-from ..esi_client import ESIClient, ESIError, collect_last_modified
+from ..esi_client import ESIClient, ESIError, ESIRateLimited, ESIStatusError, collect_last_modified
 from .fetchers import fetcher_for
 from .registry import OWNED_DATA_KINDS, ON_DEMAND, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
 from .selector import REAUTH_NEEDED, select_auth_role
@@ -223,6 +223,23 @@ def _record_reauth_attempts(owner_type: str, owner_id: int, kinds: list[str]) ->
             )
 
 
+def _is_dead_owner_error(error: BaseException) -> bool:
+    """True only when this owner looks permanently unauthorized.
+
+    A global ESI outage (5xx), rate limit, network failure, or a non-ESI
+    error (e.g. SQL) must not clear snapshots. HTTP 401/403 and a rejected
+    SSO refresh (400/401, raised as ESIStatusError) do.
+    """
+    if isinstance(error, ESIRateLimited):
+        return False
+    if isinstance(error, ESIStatusError):
+        return error.status in (401, 403) or (
+            # Rejected refresh uses 400/401 with the token-refresh message.
+            error.status == 400 and "Token refresh failed" in str(error)
+        )
+    return False
+
+
 def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseException) -> None:
     if data_kind not in _KIND_TIER:
         log.warning(
@@ -237,13 +254,21 @@ def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseE
         # Display-only snapshots are expected to age between page visits; one
         # failed page-open sync must not wipe them (SCHEDULER_REWORK_PLAN.md).
         return
+    if not _is_dead_owner_error(error):
+        return
     try:
-        clear_stale_owner_kind(
+        cleared = clear_stale_owner_kind(
             owner_type, owner_id, data_kind,
             tier_interval_hours=_tier_hours(data_kind),
             stale_clear_multiples=_stale_clear_multiples(),
             owner_name=None,
         )
+        if cleared:
+            # delete_owner_snapshot_rows returns None — log without a row count.
+            log.warning(
+                "cleared stale %s snapshot for %s %s after dead-owner error",
+                data_kind, owner_type, owner_id,
+            )
     except Exception:  # noqa: BLE001 - stale clear must not hide the fetch error
         log.warning(
             "stale clear failed for %s %s %s", owner_type, owner_id, data_kind,
@@ -374,7 +399,7 @@ def _run_corporation_kinds_for_members(
         }
     owner_name = f"{corp_name} (corp)"
     kind_report: dict = {}
-    failed_kinds: dict[str, str] = {}
+    failed_kinds: dict[str, BaseException] = {}
     reauth_kinds: list[str] = []
     current_kind: Optional[str] = None  # see _run_character_owner
     try:
@@ -435,17 +460,20 @@ def _run_corporation_kinds_for_members(
                     reauth_kinds.append(data_kind)
                     continue
                 if last_error is not None or wrote is None:
-                    failed_kinds[data_kind] = str(last_error or "no member could fetch")
-                    kind_report[data_kind] = f"skipped ({failed_kinds[data_kind]})"
+                    err = last_error or RuntimeError("no member could fetch")
+                    failed_kinds[data_kind] = err
+                    kind_report[data_kind] = f"skipped ({err})"
                     # Abort the batch so a later kind cannot commit a
                     # half-written earlier kind from this same owner-run.
-                    raise RuntimeError(failed_kinds[data_kind])
+                    # Re-raise the original exception so _record_failure still
+                    # sees ESIStatusError (dead owner) vs a plain outage.
+                    raise err
                 _record_success(owner_type, corp_id, data_kind, data_ages)
                 kind_report[data_kind] = wrote
             current_kind = None
     except Exception as e:  # noqa: BLE001
         if not failed_kinds:
-            failed_kinds[current_kind or "?"] = str(e)
+            failed_kinds[current_kind or "?"] = e
     finally:
         _end_owner(owner_type, corp_id)
 
@@ -454,13 +482,10 @@ def _run_corporation_kinds_for_members(
     if failed_kinds:
         # Record failure for the first unclaimed kind (the one that aborted).
         first_kind = next(iter(failed_kinds))
-        _record_failure(
-            owner_type, corp_id, first_kind,
-            RuntimeError(failed_kinds[first_kind]),
-        )
+        _record_failure(owner_type, corp_id, first_kind, failed_kinds[first_kind])
         return {
             "owner_type": owner_type, "owner_id": corp_id, "name": owner_name,
-            "kinds": kind_report, "ok": False, "error": failed_kinds[first_kind],
+            "kinds": kind_report, "ok": False, "error": str(failed_kinds[first_kind]),
         }
     return {
         "owner_type": owner_type, "owner_id": corp_id, "name": owner_name,

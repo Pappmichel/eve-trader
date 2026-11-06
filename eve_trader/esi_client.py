@@ -94,6 +94,16 @@ class ESIHTTPError(ESIError):
         self.body = body
 
 
+class ESIStatusError(ESIError):
+    """An HTTP status failure from a read/sync path. Carries `status` only —
+    no response body attribute (unlike ESIHTTPError, which write callers
+    catch and must not receive a body-bearing type from reads)."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
 MAX_RETRY_AFTER_WAIT_SECONDS = 30
 
 
@@ -502,10 +512,18 @@ class ESIClient:
                 # fast here rather than retrying; a transient refresh
                 # outage resolves on the next scheduled sync, and the
                 # freshness row now records why this one did not run.
-                raise ESIError(
+                #
+                # SSO 400/401 (revoked refresh) is a dead owner; SSO 5xx /
+                # timeout is not — ESIStatusError carries the status so the
+                # orchestrator's stale clear can tell them apart.
+                message = (
                     f"Token refresh failed for role '{auth_role}': {e}. "
                     f"Re-authorize this character."
-                ) from e
+                )
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if isinstance(e, requests.HTTPError) and status in (400, 401):
+                    raise ESIStatusError(int(status), message) from e
+                raise ESIError(message) from e
         for attempt in range(1, retries + 1):
             self._await_error_budget()
             try:
@@ -532,7 +550,10 @@ class ESIClient:
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
                 continue
-            raise ESIError(f"HTTP {resp.status_code} for {url}: {resp.text[:300]}")
+            raise ESIStatusError(
+                resp.status_code,
+                f"HTTP {resp.status_code} for {url}: {resp.text[:300]}",
+            )
         raise ESIError(f"Exhausted retries for {url}")
 
     @classmethod
