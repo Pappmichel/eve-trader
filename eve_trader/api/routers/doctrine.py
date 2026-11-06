@@ -7,10 +7,10 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import schemas
-from ...doctrine import actions
+from ...doctrine import actions, parser
 from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
 from ...actions import ConflictError
@@ -60,8 +60,12 @@ def delete_doctrine(doctrine_id: str):
 
 
 # -------------------------------------------------------------------- fittings
+_FITTING_TEXT = Field(max_length=parser.MAX_FITTING_CHARS)
+_OPTIONAL_FITTING_TEXT = Field(default=None, max_length=parser.MAX_FITTING_CHARS)
+
+
 class ParseFittingRequest(BaseModel):
-    raw_eft: str
+    raw_eft: str = _FITTING_TEXT
 
 
 @router.post("/fittings/parse")
@@ -70,14 +74,14 @@ def parse_fitting(req: ParseFittingRequest):
 
 
 class AddFittingRequest(BaseModel):
-    raw_eft: str
+    raw_eft: str = _FITTING_TEXT
     name: Optional[str] = None
     variant_label: Optional[str] = None
     contract_target: int = 0
     stockpile_target: int = 0
     cargo_tolerance_pct: Optional[float] = None
-    fuel_bay_text: Optional[str] = None
-    ship_maintenance_bay_text: Optional[str] = None
+    fuel_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
+    ship_maintenance_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
 
 
 @router.post("/doctrines/{doctrine_id}/fittings")
@@ -86,15 +90,15 @@ def add_fitting(doctrine_id: str, req: AddFittingRequest):
 
 
 class UpdateFittingRequest(BaseModel):
-    raw_eft: Optional[str] = None
+    raw_eft: Optional[str] = _OPTIONAL_FITTING_TEXT
     name: Optional[str] = None
     variant_label: Optional[str] = None
     contract_target: Optional[int] = None
     stockpile_target: Optional[int] = None
     cargo_tolerance_pct: Optional[float] = None
     active: Optional[bool] = None
-    fuel_bay_text: Optional[str] = None
-    ship_maintenance_bay_text: Optional[str] = None
+    fuel_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
+    ship_maintenance_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
     reserve_target: Optional[int] = None
 
 

@@ -32,6 +32,16 @@ from .constants import (
 )
 from .models import ParsedFitting, ParsedIssue, ParsedItem
 
+# Size limits. Without them one request could block the whole service: the
+# suffix regexes are quadratic on long whitespace runs and hold the GIL, each
+# comma of a line costs name lookups, and suggestions are pure-Python
+# Levenshtein. A real fit is far below all of these; no item name has commas.
+MAX_FITTING_CHARS = 20_000
+MAX_FITTING_LINES = 500
+_MAX_LINE_CHARS = 512
+_MAX_COMMAS_IN_LINE = 4
+_MAX_SUGGEST_NAME_CHARS = 120
+
 # Positional block order (Phase 3 A.2/A.4) - only used for the marker-export
 # position-vs-SDE gegenprobe (A.4's last rule), never to *decide* a section.
 _EFT_SECTION_ORDER = ("low", "med", "high", "rig", "subsystem", "service", "drone", "cargo")
@@ -92,6 +102,8 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 def _suggest(name: str, candidates: Iterable[str]) -> Optional[str]:
+    if len(name) > _MAX_SUGGEST_NAME_CHARS:
+        return None
     best: Optional[str] = None
     best_dist = None
     for candidate in candidates:
@@ -105,6 +117,13 @@ def _suggest(name: str, candidates: Iterable[str]) -> Optional[str]:
     return best
 
 
+def _check_size(raw_text: str) -> None:
+    if len(raw_text) > MAX_FITTING_CHARS:
+        raise FittingParseError(f"Text is too long: the limit is {MAX_FITTING_CHARS:,} characters.")
+    if raw_text.count("\n") + raw_text.count("\r") >= MAX_FITTING_LINES * 2:
+        raise FittingParseError(f"Too many lines: the limit is {MAX_FITTING_LINES}.")
+
+
 def _normalize(raw_text: str) -> list[str]:
     """Phase 3 A.3: CRLF/CR -> LF defines line_no's numbering (done first,
     nothing before this point may change line counts); per-line whitespace
@@ -113,10 +132,14 @@ def _normalize(raw_text: str) -> list[str]:
     text = raw_text.lstrip("﻿")  # strip BOM if present
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
+    if len(lines) > MAX_FITTING_LINES:
+        raise FittingParseError(f"Too many lines: the limit is {MAX_FITTING_LINES}.")
     normalized = []
     for line in lines:
-        line = line.replace("\t", " ")
-        line = re.sub(r" {2,}", " ", line)
+        # Every whitespace kind, not only spaces and tabs: \s in the suffix
+        # regexes also matches NBSP and the like. An overlong line stays cut
+        # off and is reported as an unknown name.
+        line = re.sub(r"\s+", " ", line[:_MAX_LINE_CHARS])
         normalized.append(line.strip())
     return normalized
 
@@ -127,6 +150,8 @@ def _comma_split_candidates(text: str) -> list[tuple[str, str]]:
     conservative one, since module names are more likely to themselves
     contain comma-adjacent-looking text than charge names."""
     positions = [i for i, ch in enumerate(text) if ch == ","]
+    if len(positions) > _MAX_COMMAS_IN_LINE:
+        return []
     return [(text[:i].strip(), text[i + 1:].strip()) for i in reversed(positions)]
 
 
@@ -177,6 +202,7 @@ def parse_fitting(raw_text: str, resolve_name: NameResolver, resolve_slot: SlotR
     two hard-fail cases (A.7); everything else becomes a ParsedItem or a
     ParsedIssue, never an exception, so a fitting with warnings is still
     fully parseable and (by the caller's choice) storable."""
+    _check_size(raw_text)
     lines = _normalize(raw_text)
 
     header_idx = None
@@ -366,11 +392,13 @@ def parse_bay_items(text: str, resolve_name: NameResolver, slot_section: str,
     these continuing on from wherever parse_fitting's own item line numbers
     left off, so a bay-content issue's line_no never collides with a main
     EFT body issue's."""
+    _check_size(text)
     items: list[ParsedItem] = []
     issues: list[ParsedIssue] = []
     line_no = line_no_start
     # Same line split as _normalize, with the tabs still in place.
-    tabbed = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    tabbed = [line[:_MAX_LINE_CHARS] for line in
+              text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     for raw_line, tab_line in zip(_normalize(text), tabbed):
         if not raw_line:
             continue
