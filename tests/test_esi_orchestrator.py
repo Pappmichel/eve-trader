@@ -934,6 +934,57 @@ def test_corp_path_preserves_dead_owner_error_for_stale_clear(tenant, monkeypatc
     assert calls == []
 
 
+def test_corp_stale_clear_requires_every_attempted_member_dead(tenant, monkeypatch):
+    """A mixed [503, 403] or [403, 503] must not clear; only [401, 403] does."""
+    calls = []
+    monkeypatch.setattr(
+        orchestrator, "clear_stale_owner_kind",
+        lambda *a, **k: calls.append(k) or True,
+    )
+    storage.save_tenant_token("producer:1001", asdict(TokenRecord(
+        role="producer:1001", character_id=ALICE, character_name="Alice",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes=CORP_ASSETS_SCOPE,
+    )))
+    storage.save_tenant_token("producer:1002", asdict(TokenRecord(
+        role="producer:1002", character_id=BOB, character_name="Bob",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes=CORP_ASSETS_SCOPE,
+    )))
+    tm = TokenManager()
+    alice = tm.get_record("producer:1001")
+    bob = tm.get_record("producer:1002")
+    assert alice is not None and bob is not None
+    members = [alice, bob]
+    role_of = {"producer:1001": 0, "producer:1002": 1}
+
+    def _client(statuses):
+        class CorpClient(FakeClient):
+            def corporation_assets(self, corporation_id, auth_role):
+                status = statuses[role_of[auth_role]]
+                raise ESIStatusError(
+                    status, f"HTTP {status} for https://esi/corp/assets: err",
+                )
+        return CorpClient()
+
+    for statuses in ([503, 403], [403, 503]):
+        calls.clear()
+        result = _run_corporation_kinds_for_members(
+            client=_client(statuses), corp_id=CORP_ID, kinds=["assets"],
+            members=members, corp_name="Test Corp", extra={}, tokens=tm,
+        )
+        assert result["ok"] is False
+        assert calls == [], f"unexpected clear for {statuses}"
+
+    calls.clear()
+    result = _run_corporation_kinds_for_members(
+        client=_client([401, 403]), corp_id=CORP_ID, kinds=["assets"],
+        members=members, corp_name="Test Corp", extra={}, tokens=tm,
+    )
+    assert result["ok"] is False
+    assert len(calls) == 1
+
+
 def test_non_esi_failure_is_recorded_against_its_kind(tenant, monkeypatch):
     """A storage error inside a fetch (seen on production 2026-10-02: a
     doctrine_contract_items primary-key conflict) used to be recorded as the

@@ -240,7 +240,10 @@ def _is_dead_owner_error(error: BaseException) -> bool:
     return False
 
 
-def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseException) -> None:
+def _record_failure(
+    owner_type: str, owner_id: int, data_kind: str, error: BaseException,
+    *, member_errors: Optional[list[BaseException]] = None,
+) -> None:
     if data_kind not in _KIND_TIER:
         log.warning(
             "not recording freshness for unknown kind %r (%s %s): %s",
@@ -254,7 +257,11 @@ def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseE
         # Display-only snapshots are expected to age between page visits; one
         # failed page-open sync must not wipe them (SCHEDULER_REWORK_PLAN.md).
         return
-    if not _is_dead_owner_error(error):
+    # Corporation path: clear only when every attempted member looks dead.
+    # A single 5xx / network / rate-limit failure among them must not clear,
+    # regardless of which member was tried last.
+    dead_check = member_errors if member_errors is not None else [error]
+    if not dead_check or not all(_is_dead_owner_error(e) for e in dead_check):
         return
     try:
         cleared = clear_stale_owner_kind(
@@ -400,6 +407,9 @@ def _run_corporation_kinds_for_members(
     owner_name = f"{corp_name} (corp)"
     kind_report: dict = {}
     failed_kinds: dict[str, BaseException] = {}
+    # Per kind: every ESIError from a member that was actually tried. Clear
+    # only when this list is non-empty and every entry is a dead-owner error.
+    failed_kind_member_errors: dict[str, list[BaseException]] = {}
     reauth_kinds: list[str] = []
     current_kind: Optional[str] = None  # see _run_character_owner
     try:
@@ -408,6 +418,7 @@ def _run_corporation_kinds_for_members(
                 current_kind = data_kind
                 scope = _required_scope(data_kind, owner_type)
                 last_error: Optional[BaseException] = None
+                member_errors: list[BaseException] = []
                 wrote = None
                 any_candidate = False
                 data_ages: list[datetime] = []
@@ -438,6 +449,7 @@ def _run_corporation_kinds_for_members(
                         last_error = None
                     except ESIError as e:
                         last_error = e
+                        member_errors.append(e)
                 else:
                     for rec in members:
                         role = select_auth_role(rec.character_id, scope, tokens=tokens) if scope else None
@@ -451,9 +463,11 @@ def _run_corporation_kinds_for_members(
                                 extra=extra, data_ages=data_ages,
                             )
                             last_error = None
+                            member_errors = []
                             break
                         except ESIError as e:
                             last_error = e
+                            member_errors.append(e)
                             continue
                 if not any_candidate:
                     kind_report[data_kind] = REAUTH_NEEDED
@@ -462,6 +476,7 @@ def _run_corporation_kinds_for_members(
                 if last_error is not None or wrote is None:
                     err = last_error or RuntimeError("no member could fetch")
                     failed_kinds[data_kind] = err
+                    failed_kind_member_errors[data_kind] = list(member_errors) or [err]
                     kind_report[data_kind] = f"skipped ({err})"
                     # Abort the batch so a later kind cannot commit a
                     # half-written earlier kind from this same owner-run.
@@ -474,6 +489,7 @@ def _run_corporation_kinds_for_members(
     except Exception as e:  # noqa: BLE001
         if not failed_kinds:
             failed_kinds[current_kind or "?"] = e
+            failed_kind_member_errors.setdefault(current_kind or "?", [e])
     finally:
         _end_owner(owner_type, corp_id)
 
@@ -482,7 +498,10 @@ def _run_corporation_kinds_for_members(
     if failed_kinds:
         # Record failure for the first unclaimed kind (the one that aborted).
         first_kind = next(iter(failed_kinds))
-        _record_failure(owner_type, corp_id, first_kind, failed_kinds[first_kind])
+        _record_failure(
+            owner_type, corp_id, first_kind, failed_kinds[first_kind],
+            member_errors=failed_kind_member_errors.get(first_kind),
+        )
         return {
             "owner_type": owner_type, "owner_id": corp_id, "name": owner_name,
             "kinds": kind_report, "ok": False, "error": str(failed_kinds[first_kind]),
