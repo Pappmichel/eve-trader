@@ -77,9 +77,9 @@ def _quotes_available() -> bool:
 
     now = time.time()
     with _quotes_unavailable_lock:
-        # Only a remembered Jita miss blocks the snapshot. A home-market miss
-        # is never cached as blocking (4xx is a slug problem; 5xx is checked live).
-        if _quotes_unavailable_until.get(JITA_MARKET, 0.0) > now:
+        # A remembered outage of any market blocks without another slow probe.
+        # A home-market 4xx is a slug problem and is never remembered.
+        if any(_quotes_unavailable_until.get(m, 0.0) > now for m in markets):
             return False
 
     client = GoonmetricsClient()
@@ -1043,9 +1043,10 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     wealth_contract_value and wealth_escrow are. Escrow stays NULL until
     a sync stores it. Only the declared snapshot columns are persisted.
 
-    Raises MarketQuotesUnavailable before any computation when Jita (and
-    home, when set) current prices cannot be fetched — a downed quote
-    feed would otherwise write a near-empty wealth row that the calendar
+    Raises MarketQuotesUnavailable before any computation when Jita or the
+    home market is down (a home-market HTTP 4xx does not count: that is a
+    wrong slug, see _quotes_available) — a downed quote feed would otherwise
+    write a near-empty wealth row that the calendar
     date check then keeps all day.
     """
     if not _quotes_available():

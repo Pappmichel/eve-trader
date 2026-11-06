@@ -787,6 +787,53 @@ def test_quotes_available_home_market_5xx_blocks(monkeypatch):
     portfolio.clear_quotes_unavailable_cache()
 
 
+def _home_market_client(status: int, seen: list):
+    import requests
+    from eve_trader.goonmetrics_client import CurrentPrice
+    from eve_trader.production.pricing import JITA_MARKET
+
+    class Client:
+        def current_prices(self, market):
+            if market == JITA_MARKET:
+                return [CurrentPrice(type_id=34, updated="", buy=1.0, sell=2.0)]
+            seen.append(market)
+            resp = requests.Response()
+            resp.status_code = status
+            raise requests.HTTPError(str(status), response=resp)
+
+    return Client
+
+
+def test_quotes_available_remembers_a_home_market_outage(monkeypatch):
+    """A failed probe can take minutes, so an outage is probed once per TTL."""
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    seen: list = []
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "insmother")
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", _home_market_client(503, seen))
+    portfolio.clear_quotes_unavailable_cache()
+    try:
+        assert [portfolio._quotes_available() for _ in range(5)] == [False] * 5
+        assert seen == ["insmother"]
+    finally:
+        portfolio.clear_quotes_unavailable_cache()
+
+
+def test_quotes_available_never_remembers_a_wrong_home_market_slug(monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    seen: list = []
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "not-a-real-slug")
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", _home_market_client(404, seen))
+    portfolio.clear_quotes_unavailable_cache()
+    try:
+        assert [portfolio._quotes_available() for _ in range(5)] == [True] * 5
+        assert len(seen) == 5
+        assert portfolio._quotes_unavailable_until == {}
+    finally:
+        portfolio.clear_quotes_unavailable_cache()
+
+
 def test_take_portfolio_snapshot_refuses_when_quotes_unavailable(monkeypatch):
     upserted = []
     monkeypatch.setattr(portfolio, "_quotes_available", lambda: False)
