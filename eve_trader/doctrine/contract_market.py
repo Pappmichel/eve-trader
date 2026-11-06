@@ -16,6 +16,7 @@ documentation does not promise this, so it may change.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -46,12 +47,11 @@ _KEEP_STATUSES = frozenset({VALIDATION_VALID, VALIDATION_TOLERABLE})
 MAX_NEW_ITEM_FETCHES = 1000
 MIN_SECONDS_BETWEEN_SCANS = 120
 # Above this share of failed item reads the last good result is kept.
-# The corporation route group allows 600 tokens per 15 min at 2 per read, shared
-# with the scheduled contract sync of the same character. Alliance item reads stay
-# well inside that and the rest continue on the next scan.
-MAX_NEW_ALLIANCE_ITEM_FETCHES = 100
-_CORP_CONTRACT_GROUP = "corp-contract"
-_MIN_CORP_TOKENS_LEFT = 150
+# The corp-contract route group allows 600 tokens per 15 min at 2 per read, per
+# character, and any member of the corporation can read its list. Reads spread
+# over every member's token, up to this many each, which leaves room for the
+# scheduled contract sync of the same character.
+MAX_READS_PER_CHARACTER = 200
 _MAX_FAILED_ITEM_SHARE = 0.2
 _VOLUME_MARGIN = 0.9
 _MIN_FAILED_ITEMS_TO_ABORT = 5
@@ -172,7 +172,7 @@ def _filter_by_system(contracts: list[dict], system_id: int,
 
 
 def _collect_public(client: ESIClient, region_id: int, system_id: int, min_volume: float = 0.0,
-                    progress_callback=None) -> tuple[list[dict], int]:
+                    progress_callback=None, open_ids: Optional[set[int]] = None) -> tuple[list[dict], int]:
     """(contracts in the system, contracts at places this tenant cannot place)."""
     _emit_progress(progress_callback, {"phase": "public", "message": "Fetching public contracts"})
     try:
@@ -184,16 +184,41 @@ def _collect_public(client: ESIClient, region_id: int, system_id: int, min_volum
         if previous is not None and int(previous[1]) == system_id and previous[4]:
             raise ActionError("ESI returned an empty public contract list for a region that "
                               "had contracts. The last result was kept.")
-    candidates = [c for c in raw if _is_open_public_item_exchange(c) and _big_enough(c, min_volume)]
+    open_public = [c for c in raw if _is_open_public_item_exchange(c)]
+    if open_ids is not None:
+        open_ids.update(int(c["contract_id"]) for c in open_public)
+    candidates = [c for c in open_public if _big_enough(c, min_volume)]
     system_of = _known_location_systems(
         [c.get("start_location_id") for c in candidates if c.get("start_location_id")])
     unknown = sum(1 for c in candidates if int(c.get("start_location_id") or 0) not in system_of)
     return _filter_by_system(candidates, system_id, system_of), unknown
 
 
-def _corp_reader(corp_id: int, tm: TokenManager, client: ESIClient) -> Optional[tuple[str, Optional[int]]]:
-    """(auth role, alliance id) of the first token that can read this corp's contracts."""
+class _CorpReaders:
+    """The tokens of one corporation's members, used in turn for item reads."""
+
+    def __init__(self, roles: list[str]):
+        self.roles = roles
+        self.reads: dict[str, int] = {}
+        self.exhausted: set[str] = set()
+
+    def next_role(self) -> Optional[str]:
+        usable = [r for r in self.roles if r not in self.exhausted
+                  and self.reads.get(r, 0) < MAX_READS_PER_CHARACTER]
+        if not usable:
+            return None
+        return min(usable, key=lambda r: self.reads.get(r, 0))
+
+
+def _corp_readers(corp_id: int, tm: TokenManager, client: ESIClient) -> tuple[list[str], Optional[int]]:
+    """(auth roles of every member with the corp contract scope, alliance id)."""
+    roles: list[str] = []
+    alliance_id = None
+    seen: set[int] = set()
     for rec in tm.list_records():
+        if rec.character_id in seen:
+            continue
+        seen.add(rec.character_id)
         role = select_auth_role(rec.character_id, _CORP_CONTRACTS_SCOPE, tokens=tm)
         if role is None:
             continue
@@ -202,8 +227,9 @@ def _corp_reader(corp_id: int, tm: TokenManager, client: ESIClient) -> Optional[
         except ESIError:
             continue
         if info.get("corporation_id") == corp_id:
-            return role, info.get("alliance_id")
-    return None
+            roles.append(role)
+            alliance_id = info.get("alliance_id")
+    return roles, alliance_id
 
 
 def _is_open_alliance_contract(contract: dict, alliance_id: int) -> bool:
@@ -215,41 +241,50 @@ def _is_open_alliance_contract(contract: dict, alliance_id: int) -> bool:
 
 
 def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int, min_volume: float = 0.0,
-                      progress_callback=None) -> tuple[list[dict], dict[int, tuple[str, str, int]]]:
+                      progress_callback=None,
+                      open_ids: Optional[set[int]] = None) -> tuple[list[dict], dict[int, tuple[int, _CorpReaders]]]:
     """Open contracts assigned to the alliance of a Doctrine-shared corporation.
-    One read per alliance: every member corp gets the same list. Returns
-    (contracts, item_auth_hints) where hints map contract_id -> (owner_type,
-    auth_role, owner_id) for the items fetch. Raises ActionError when every read
-    failed, so an outage does not look like an empty alliance market."""
+    One list read per alliance: every member corp gets the same list. Returns
+    (contracts, hints) where hints map contract_id -> (corp_id, its readers) for
+    the items fetch. Raises ActionError when every read failed, so an outage does
+    not look like an empty alliance market. `open_ids` collects every open
+    contract, in any system, so known item lists survive a change of system."""
     _emit_progress(progress_callback, {"phase": "alliance", "message": "Fetching alliance contracts"})
     by_id: dict[int, dict] = {}
-    hints: dict[int, tuple[str, str, int]] = {}
+    hints: dict[int, tuple[int, _CorpReaders]] = {}
     seen_alliances: set[int] = set()
     reads = 0
     failures = 0
 
     for corp_id in shared_owner_ids("contracts", "doctrine", "corporation"):
-        reader = _corp_reader(int(corp_id), tm, client)
-        if reader is None:
+        roles, alliance_id = _corp_readers(int(corp_id), tm, client)
+        if not roles or not alliance_id or alliance_id in seen_alliances:
             continue
-        role, alliance_id = reader
-        if not alliance_id or alliance_id in seen_alliances:
-            continue
+        readers = _CorpReaders(roles)
+        raw = None
         reads += 1
-        try:
-            raw = client.corporation_contracts(int(corp_id), auth_role=role)
-        except ESIRateLimited as e:
-            raise ActionError(f"{e} The last result was kept.") from e
-        except ESIError as e:
+        for role in roles:
+            try:
+                raw = client.corporation_contracts(int(corp_id), auth_role=role)
+                break
+            except ESIRateLimited:
+                continue  # each character has its own bucket
+            except ESIError as e:
+                log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
+                break
+        if raw is None:
             failures += 1
-            log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
             continue
         seen_alliances.add(alliance_id)
         for c in raw:
-            if _is_open_alliance_contract(c, alliance_id) and _big_enough(c, min_volume):
+            if not _is_open_alliance_contract(c, alliance_id):
+                continue
+            if open_ids is not None:
+                open_ids.add(int(c["contract_id"]))
+            if _big_enough(c, min_volume):
                 cid = int(c["contract_id"])
                 by_id[cid] = c
-                hints.setdefault(cid, ("corporation", role, int(corp_id)))
+                hints.setdefault(cid, (int(corp_id), readers))
 
     if reads and failures == reads:
         raise ActionError("Every alliance contract read failed. The last result was kept.")
@@ -262,36 +297,38 @@ def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int, min_v
     return kept, {cid: h for cid, h in hints.items() if cid in kept_ids}
 
 
+class _NoReaderLeft(Exception):
+    """Every character's budget for this scan is used up."""
+
+
+def _read_alliance_items(client: ESIClient, cid: int, corp_id: int, readers: _CorpReaders) -> list[dict]:
+    while True:
+        role = readers.next_role()
+        if role is None:
+            raise _NoReaderLeft
+        readers.reads[role] = readers.reads.get(role, 0) + 1
+        try:
+            return client.corporation_contract_items(corp_id, cid, auth_role=role)
+        except ESIRateLimited:
+            readers.exhausted.add(role)
+
+
 def _fetch_items(client: ESIClient, contract: dict, source: str,
-                 auth_hint: Optional[tuple[str, str, int]] = None) -> Optional[list[ContractItemRow]]:
-    """auth_hint: (owner_type, auth_role, owner_id) for alliance items. None
-    when the read failed or no token can read it."""
+                 hint: Optional[tuple[int, _CorpReaders]] = None) -> list[ContractItemRow]:
+    """hint: (corp_id, readers) for alliance items. Raises ESIError when the read
+    failed, ESIRateLimited or _NoReaderLeft when there is no budget for it."""
     cid = int(contract["contract_id"])
-    try:
-        if source == SOURCE_PUBLIC:
-            raw_items = client.public_contract_items(cid)
-        elif auth_hint is not None:
-            _owner_type, role, owner_id = auth_hint
-            raw_items = client.corporation_contract_items(owner_id, cid, auth_role=role)
-        else:
-            return None
-    except ESIRateLimited:
-        raise
-    except ESIError as e:
-        log.info("contract market items for %s failed: %s", cid, e)
-        return None
+    if source == SOURCE_PUBLIC:
+        raw_items = client.public_contract_items(cid)
+    else:
+        if hint is None:
+            raise ESIError("no token can read this contract")
+        raw_items = _read_alliance_items(client, cid, hint[0], hint[1])
     return [
         ContractItemRow(cid, it["record_id"], it["type_id"], it["quantity"],
                         it.get("is_included", True), it.get("is_singleton", False))
         for it in (raw_items or [])
     ]
-
-
-def _corp_budget_left(client: ESIClient, reads_so_far: int) -> bool:
-    if reads_so_far >= MAX_NEW_ALLIANCE_ITEM_FETCHES:
-        return False
-    remaining = client.rate_limit_remaining(_CORP_CONTRACT_GROUP)
-    return remaining is None or remaining >= _MIN_CORP_TOKENS_LEFT
 
 
 def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
@@ -332,14 +369,15 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     min_volume = _min_contract_volume(candidates, client)
     public_list: list[dict] = []
     alliance_list: list[dict] = []
-    alliance_hints: dict[int, tuple[str, str, int]] = {}
+    alliance_hints: dict[int, tuple[int, _CorpReaders]] = {}
+    open_ids: set[int] = set()
     unknown_locations = 0
     if cfg.contract_market_include_public:
         public_list, unknown_locations = _collect_public(
-            client, region_id, _system_id, min_volume, progress_callback)
+            client, region_id, _system_id, min_volume, progress_callback, open_ids)
     if scan_alliance:
         alliance_list, alliance_hints = _collect_alliance(
-            client, tm, _system_id, min_volume, progress_callback)
+            client, tm, _system_id, min_volume, progress_callback, open_ids)
 
     # Alliance wins on id collision (more specific view than public).
     combined: dict[int, tuple[str, dict]] = {}
@@ -356,8 +394,9 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     known_items = storage.load_all_doctrine_market_items()
     item_rows: list[tuple] = []
     hits: list[tuple] = []
-    new_fetches = alliance_fetches = failed_items = items_pending = asks_for_items = 0
+    new_fetches = failed_items = items_pending = asks_for_items = 0
     rate_limited: set[str] = set()
+    failure_reasons: Counter[str] = Counter()
     for i, (cid, (source, raw)) in enumerate(sorted(combined.items())):
         if i % 10 == 0:
             _emit_progress(progress_callback, {
@@ -366,21 +405,22 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
             })
         items = known_items.get(cid)
         if items is None:
-            if (new_fetches >= MAX_NEW_ITEM_FETCHES or source in rate_limited
-                    or (source == SOURCE_ALLIANCE and not _corp_budget_left(client, alliance_fetches))):
+            if new_fetches >= MAX_NEW_ITEM_FETCHES or source in rate_limited:
                 items_pending += 1
                 continue
             hint = alliance_hints.get(cid) if source == SOURCE_ALLIANCE else None
             try:
-                items = _fetch_items(client, raw, source, auth_hint=hint)
-            except ESIRateLimited:
+                items = _fetch_items(client, raw, source, hint=hint)
+                new_fetches += 1
+            except (ESIRateLimited, _NoReaderLeft):
                 rate_limited.add(source)
                 items_pending += 1
                 continue
-            new_fetches += 1
-            alliance_fetches += source == SOURCE_ALLIANCE
-            if items is None:
+            except ESIError as e:
+                new_fetches += 1
                 failed_items += 1
+                failure_reasons[str(e).split(" for ")[0][:60]] += 1
+                log.info("contract market items for %s failed: %s", cid, e)
                 continue
         for it in items:
             item_rows.append((cid, it.record_id, it.type_id, it.quantity,
@@ -399,8 +439,16 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     if failed_items and (failed_items == new_fetches or (
             failed_items >= _MIN_FAILED_ITEMS_TO_ABORT
             and failed_items / new_fetches > _MAX_FAILED_ITEM_SHARE)):
-        raise ActionError(f"{failed_items} of {new_fetches} contract item reads failed. "
-                          "The last result was kept.")
+        reason = failure_reasons.most_common(1)[0][0]
+        raise ActionError(f"{failed_items} of {new_fetches} contract item reads failed, "
+                          f"mostly {reason}. The last result was kept.")
+
+    # Lists never change, so ones from another system of this tenant stay for as
+    # long as the contract is open.
+    for cid, items in known_items.items():
+        if cid in open_ids and cid not in combined:
+            item_rows.extend((cid, it.record_id, it.type_id, it.quantity,
+                              it.is_included, it.is_singleton) for it in items)
 
     issuer_ids = sorted({int(h[2]["issuer_id"]) for h in hits if h[2].get("issuer_id")})
     try:

@@ -1431,13 +1431,15 @@ Rules:
   and is never read: 413 of 34,459 in The Forge pass. If a hull's volume is
   unknown, the filter is off.
 - The corporation contract routes are group `corp-contract`: 600 tokens per 15 min,
-  2 per read, shared with the scheduled contract sync. A 16-page list costs 32; an
-  item list costs 2. So alliance item reads stop at `MAX_NEW_ALLIANCE_ITEM_FETCHES`
-  or below `_MIN_CORP_TOKENS_LEFT`, and the next scan continues.
+  2 per read, **per character** (checked live with 18 members), and any member can
+  read the corp list without a corp role. A 16-page list costs 32. So item reads
+  spread over every member's token, at most `MAX_READS_PER_CHARACTER` each, moving on
+  when a bucket is empty; the next scan continues what is left.
 - `ESIClient` never sleeps out a `Retry-After` over `MAX_RETRY_AFTER_WAIT_SECONDS`;
   it raises `ESIRateLimited`. Waiting holds the job slot, and the bearer token in
   the prepared request expires meanwhile, which then fails as a 401.
-- Items of every candidate are stored, because a contract's list never changes.
+- Items of every open contract read so far are stored, in any system, because a
+  contract's list never changes.
   Cap per scan `MAX_NEW_ITEM_FETCHES`, minimum interval `MIN_SECONDS_BETWEEN_SCANS`.
 - A contract asking the buyer for items is not listed: its price says nothing
   about the fit. Invalid fits are not listed either.
