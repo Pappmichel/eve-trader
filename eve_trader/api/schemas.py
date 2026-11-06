@@ -1063,6 +1063,16 @@ class ProductionPlan(BaseModel):
     # above silently reads 0 rather than its real value - see
     # production/engine.py's _PlanContext for the root cause.
     adjusted_prices_available: bool = True
+    # False when a configured solar system has no loaded ESI cost-index
+    # catalog (job cost then uses the flat ACTIVITY_MODS rate). Defaults
+    # True so an older cached plan without the field shows no warning.
+    cost_indices_available: bool = True
+    # False when home and hub quotes were both empty despite having types
+    # to price. Defaults True for the same older-cache reason.
+    prices_available: bool = True
+    # Hours since the oldest ESI adjusted-price / cost-index refresh that
+    # was still served after a failed refresh; None when fresh.
+    price_data_stale_hours: Optional[float] = None
     # Per integrated special-order line item: units claimed from stock and
     # what is left to plan (SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D16).
     order_progress: list[OrderProgressRow] = []
@@ -1086,6 +1096,11 @@ class AssetPlan(BaseModel):
     # Whether readiness counted only stock at each category's build location
     # (ProductionConfig.asset_plan_ready_at_build_location) when computed.
     ready_at_build_location: bool = False
+    # See ProductionPlan for the four reliability fields.
+    adjusted_prices_available: bool = True
+    cost_indices_available: bool = True
+    prices_available: bool = True
+    price_data_stale_hours: Optional[float] = None
     # True once integrated special-order demand changed after this plan was
     # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
     # recompute hint.
@@ -1124,6 +1139,9 @@ class SpecialOrderComputeResult(BaseModel):
     # T2-02 (business-logic audit, 2026-09-25/26): see ProductionPlan's own
     # comment on the same field.
     adjusted_prices_available: bool = True
+    cost_indices_available: bool = True
+    prices_available: bool = True
+    price_data_stale_hours: Optional[float] = None
 
 
 # ---------------------------------------------------------------- sorting

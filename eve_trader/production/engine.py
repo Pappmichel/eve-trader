@@ -2612,8 +2612,16 @@ class _PlanContext:
         # `hub_region_id` lets a caller with its own hub setting (Doctrine) price
         # its quotes against that hub instead of Production's (#222).
         self.jita = pricing.jita_prices(priced_type_ids, hub_region_id if hub_region_id is not None else cfg.hub_region_id)
+        # False only when we asked for quotes and both markets came back empty
+        # - a legitimate empty universe (priced_type_ids empty) stays True.
+        self.prices_available = bool(self.home or self.jita) or not priced_type_ids
 
         esi_client = ESIClient()
+        configured_systems = [
+            sid for sid in (cfg.component_system_id, cfg.manufacturing_system_id) if sid is not None
+        ]
+        category_systems = storage.load_category_system_ids()
+        configured_systems.extend(category_systems.values())
         self.cost_indices: CostIndices = {
             "component": pricing.system_cost_indices_for(esi_client, cfg.component_system_id),
             "manufacturing": pricing.system_cost_indices_for(esi_client, cfg.manufacturing_system_id),
@@ -2626,10 +2634,16 @@ class _PlanContext:
         # One ESI call per *distinct* system (categories sharing a system
         # share the fetch, via system_indices_by_id's cache-by-system-id).
         system_indices_by_id: dict[int, dict[str, float]] = {}
-        for category, system_id in storage.load_category_system_ids().items():
+        for category, system_id in category_systems.items():
             if system_id not in system_indices_by_id:
                 system_indices_by_id[system_id] = pricing.system_cost_indices_for(esi_client, system_id)
             self.cost_indices[f"category:{category}"] = system_indices_by_id[system_id]
+        # False only when at least one system is configured and the ESI
+        # catalog never loaded. An empty {} for an unconfigured or unknown
+        # system is legitimate and must not warn (falls back to flat rate).
+        self.cost_indices_available = (
+            not configured_systems or ESIClient.cost_indices_loaded()
+        )
         # Per-category cost-index overrides (confirmed with the user
         # 2026-09-16) - a pure DB read, no ESI call, so this is cheap
         # regardless of how many categories have one set. _job_cost_rate
@@ -2678,8 +2692,34 @@ class _PlanContext:
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
             self.adjusted_prices_available = False
+        ages = [
+            s for s in (
+                ESIClient.adjusted_prices_stale_seconds(),
+                ESIClient.cost_indices_stale_seconds(),
+            ) if s is not None
+        ]
+        self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
         # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
         self._reaction_solve_cache = None
+
+    @property
+    def job_costs_reliable(self) -> bool:
+        """True when both adjusted prices and cost indices are usable for
+        freezing planned costs / dynamic targets. Stale-but-served values
+        from ESIClient still count as available."""
+        return self.adjusted_prices_available and self.cost_indices_available
+
+
+def _reliability_fields(ctx) -> dict:
+    """Shared keys every plan_* return dict exposes for the UI warnings.
+    getattr defaults keep test doubles that only set adjusted_prices_available
+    working (older shape = everything fine)."""
+    return {
+        "adjusted_prices_available": getattr(ctx, "adjusted_prices_available", True),
+        "cost_indices_available": getattr(ctx, "cost_indices_available", True),
+        "prices_available": getattr(ctx, "prices_available", True),
+        "price_data_stale_hours": getattr(ctx, "price_data_stale_hours", None),
+    }
 
 
 def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float],
@@ -3267,7 +3307,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
 
     result = {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
-              "adjusted_prices_available": ctx.adjusted_prices_available,
+              **_reliability_fields(ctx),
               "order_progress": order_progress}
     if reaction_block is not None:
         result["reaction_capacity"] = reaction_block
@@ -3435,7 +3475,7 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
         # adjusted-price fetch failed this run, so every build_list row's
         # job_cost - and this page's own "Total Job Cost"/"Gesamt" sum -
         # silently reads 0 rather than its real value. See _PlanContext.
-        "adjusted_prices_available": ctx.adjusted_prices_available,
+        **_reliability_fields(ctx),
     }
 
 
@@ -4745,7 +4785,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     result = {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True),
               "order_progress": _asset_plan_order_progress(order_claims, order_top_level),
-              "ready_at_build_location": ready_at_location}
+              "ready_at_build_location": ready_at_location,
+              **_reliability_fields(ctx)}
     if reaction_block is not None:
         result["reaction_capacity"] = reaction_block
     return result

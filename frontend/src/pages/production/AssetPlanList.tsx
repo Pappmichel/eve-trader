@@ -8,6 +8,7 @@ import type { AssetPlanJob } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StalePlanAlert } from './StalePlanAlert'
+import { PriceDataAlert } from './PriceDataAlert'
 import ReactionCapacityPanel from './ReactionCapacityPanel'
 import { useAction } from '../../hooks/useAction'
 import { duration, isk, pct, qty } from '../../format'
@@ -248,6 +249,7 @@ export default function AssetPlanList() {
     return (
       <Stack>
         <StalePlanAlert stale={plan.stale} />
+        <PriceDataAlert flags={plan} />
         <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
       </Stack>
     )
@@ -256,6 +258,7 @@ export default function AssetPlanList() {
   return (
     <Stack>
       <StalePlanAlert stale={plan.stale} />
+      <PriceDataAlert flags={plan} />
       <ReactionCapacityPanel block={plan.reaction_capacity} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
