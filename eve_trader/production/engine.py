@@ -205,6 +205,17 @@ def _material_qty(base_qty: float, material_mult: float, runs: float) -> float:
     return max(runs, math.ceil(round(base_qty * material_mult * runs, 2)))
 
 
+def _unit_material_qty(base_qty: float, material_mult: float) -> float:
+    """Per-run material quantity for the *cost estimate* (buy-vs-build unit
+    cost): the ME-reduced quantity floored at 1 unit, without the per-run
+    ceil `_material_qty` applies. A real job rounds up once for the whole
+    batch of runs, so a one-run ceil here overstates the per-unit cost of
+    every batch larger than one run (a 0.9 -> 1 unit rounding is up to ~10 %
+    per run). Job planning and demand expansion keep using `_material_qty`
+    with the real run count."""
+    return max(1.0, base_qty * material_mult)
+
+
 def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float]]]:
     """Returns (activity_label, blueprint_info). blueprint_info is
     (blueprint_type_id, activity_id, product_qty_per_run), or None if `type_id`
@@ -375,7 +386,7 @@ def _reaction_run_cost_and_time(recipe: tuple[int, int, float], product_type_id:
     material_cost = 0.0
     eiv = 0.0
     for material_id, base_qty in materials:
-        qty = _material_qty(base_qty, material_mult, 1)
+        qty = _unit_material_qty(base_qty, material_mult)
         volume = _haul_volume(material_id, cfg)
         unit = pricing.buy_price(material_id, home, jita, volume, cfg)
         if unit is None:
@@ -1374,7 +1385,7 @@ def _alchemy_unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: di
                              cost_indices, adjusted_prices, depth + 1, alchemy_memo)
         if m_cost is None:
             return None
-        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        material_cost += _unit_material_qty(base_qty, material_mult) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
     run_cost = material_cost + eiv * job_cost_rate
 
@@ -1449,7 +1460,7 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
         if m_cost is None:
             memo[type_id] = buy
             return buy
-        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        material_cost += _unit_material_qty(base_qty, material_mult) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
 
     job_cost = eiv * job_cost_rate
@@ -1514,7 +1525,7 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
                              cost_indices, adjusted_prices, depth=1, alchemy_memo=alchemy_memo)
         if m_cost is None:
             return buy, None, buy
-        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        material_cost += _unit_material_qty(base_qty, material_mult) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
     job_cost = eiv * job_cost_rate
     # GitHub issue #40 - see _unit_cost's own comment on this same line.
