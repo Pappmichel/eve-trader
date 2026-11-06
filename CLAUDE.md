@@ -1425,7 +1425,12 @@ say otherwise:
   say `availability: personal` (esi/esi-issues#1447), so only `assignee_id`
   identifies them. The character list does not have them.
 - A corp list therefore holds about 15,000 rows of mostly other people's contracts.
-  Anything reading it must filter by issuer, as `esi_data/fetchers.py` does.
+  Anything treating a row as the corporation's own must check `for_corporation` as
+  well as `issuer_corporation_id` (`esi_data/fetchers.py`, `realized.ingest.
+  contract_issuer_matches`): the latter names the corp on every member's personal
+  contract too. Checked live: 1 of 1,734 such rows in a 12,000-member corp is a real
+  corp contract. A member's personal contracts come through their character share.
+  Corp archive rows stored before this rule stay in `ledger_contracts`.
 
 Rules:
 - Public locations are read, not looked up: resolving every structure of a region

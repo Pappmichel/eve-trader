@@ -531,11 +531,13 @@ def contract_issuer_matches(
     contract: dict, *, owner_type: str, owner_id: int,
 ) -> bool:
     """True when this owner issued the contract. A character matches
-    issuer_id; a corporation matches issuer_corporation_id."""
+    issuer_id. A corporation needs for_corporation as well: issuer_corporation_id
+    is the issuer's corporation on every contract, also on a member's personal
+    one, so alone it would book all members' contracts as the corporation's."""
     oid = int(owner_id)
     if owner_type == "character":
         return contract.get("issuer_id") == oid
-    return contract.get("issuer_corporation_id") == oid
+    return contract.get("issuer_corporation_id") == oid and bool(contract.get("for_corporation"))
 
 
 def contract_party_matches(
@@ -546,7 +548,7 @@ def contract_party_matches(
     if owner_type == "character":
         return contract.get("issuer_id") == oid or contract.get("acceptor_id") == oid
     return (
-        contract.get("issuer_corporation_id") == oid
+        contract_issuer_matches(contract, owner_type=owner_type, owner_id=oid)
         or contract.get("acceptor_id") == oid
     )
 
