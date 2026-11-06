@@ -52,15 +52,16 @@ function formatErrorDetail(detail: unknown, fallback: string): string {
 
 // A 401 only ever means "no valid access-gate session" (see
 // api/app.py's AccessGateMiddleware - a no-op, so never actually returned,
-// unless AccessConfig.access_gate_enabled is true) - every other failure
-// mode in this app is a 400 (ActionError, via routers' _wrap) or a 422
-// (Pydantic validation), never a bare 401, so repurposing this one status
-// code for "go log in" doesn't collide with anything else. Skipped if the
-// URL already carries a terminal ?gate= result - that means we *just* came
-// back from the gate login, and every query on that page (e.g. App.tsx's
-// SdeFreshnessChecker, which runs on every route including Landing) would
-// otherwise immediately 401 and bounce straight back into another login
-// attempt before the user ever sees the message.
+// unless AccessConfig.access_gate_enabled is true). A 503 with
+// detail "service_unavailable" means the gate could not check the session
+// (DB/pool outage) - the cookie itself may still be fine, so we must NOT
+// redirect to EVE SSO. Every other failure mode in this app is a 400
+// (ActionError, via routers' _wrap) or a 422 (Pydantic validation). Skipped
+// if the URL already carries a terminal ?gate= result - that means we
+// *just* came back from the gate login, and every query on that page
+// (e.g. App.tsx's SdeFreshnessChecker, which runs on every route including
+// Landing) would otherwise immediately 401 and bounce straight back into
+// another login attempt before the user ever sees the message.
 async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> {
   const resp = await fetch(path, {
     headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
@@ -81,6 +82,9 @@ async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> 
       detail = formatErrorDetail(body.detail, detail)
     } catch {
       /* not JSON */
+    }
+    if (resp.status === 503 && detail === 'service_unavailable') {
+      detail = 'The server is temporarily unavailable. Your session is fine, try again shortly.'
     }
     throw new ApiError(resp.status, detail)
   }

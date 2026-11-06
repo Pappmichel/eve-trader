@@ -24,7 +24,8 @@ from starlette.types import Scope
 from .. import access_policy, scheduler, storage, tenant_scope
 from ..asset_manager import actions as asset_manager_actions
 from ..access_gate import (
-    ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie, note_tenant_activity,
+    ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizationUnavailable, AuthorizedSession,
+    authorize_session_cookie, note_tenant_activity,
 )
 
 log = logging.getLogger(__name__)
@@ -314,7 +315,12 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
         if _is_docs_path(path):
-            session = authorize_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
+            try:
+                session = await run_in_threadpool(
+                    authorize_session_cookie, request.cookies.get(SESSION_COOKIE_NAME),
+                )
+            except AuthorizationUnavailable:
+                return JSONResponse({"detail": "service_unavailable"}, status_code=503)
             if session is None:
                 return JSONResponse({"detail": "Not authenticated"}, status_code=401)
             blocked = await _affiliation_block(session)
@@ -328,7 +334,14 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
             # storage.connect_unscoped() internally, doesn't need one set here.
             return await call_next(request)
 
-        session = authorize_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
+        try:
+            session = await run_in_threadpool(
+                authorize_session_cookie, request.cookies.get(SESSION_COOKIE_NAME),
+            )
+        except AuthorizationUnavailable:
+            # Exceptions from dispatch bypass FastAPI exception handlers —
+            # catch here so a DB outage is 503, not an unhandled 500/401.
+            return JSONResponse({"detail": "service_unavailable"}, status_code=503)
         if session is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
@@ -338,8 +351,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
         # Scheduler inactivity signal (throttled to one UPDATE/hour/tenant,
         # never raises) - after the suspension check so a suspended tenant
-        # does not count as active.
-        note_tenant_activity(session.tenant_id)
+        # does not count as active. Off the event loop like authorization.
+        try:
+            await run_in_threadpool(note_tenant_activity, session.tenant_id)
+        except AuthorizationUnavailable:
+            return JSONResponse({"detail": "service_unavailable"}, status_code=503)
 
         required_tool = _required_tool_for_path(path, request.method)
         if required_tool is not None and required_tool not in session.tool_keys:
@@ -435,6 +451,13 @@ def _load_default_tenant_config() -> None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="EVE Trader API", lifespan=_lifespan)
+
+    @app.exception_handler(AuthorizationUnavailable)
+    async def _authorization_unavailable_handler(request: Request, exc: AuthorizationUnavailable):
+        # Covers /api/gate/status and /api/admin callers that call
+        # authorize_session_cookie in a route (middleware catches its own).
+        # Must not return logged_in: false — that would look like a logout.
+        return JSONResponse({"detail": "service_unavailable"}, status_code=503)
 
     app.add_middleware(
         CORSMiddleware,
