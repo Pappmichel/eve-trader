@@ -38,6 +38,8 @@ must be bought for every attempt (relic_cost, reported by a user
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass, replace
 from typing import Optional
 
@@ -50,6 +52,52 @@ from .constants import (
 from .models import InventionResult
 
 logger = logging.getLogger(__name__)
+
+# fee_rates is called once per public estimate; resolve invention_location_id
+# to a solar system at most once per tenant+location per minute (same shape
+# as engine._facility_cache). None results are cached too so a missing
+# location does not re-hit locations.reader on every item.
+_INVENTION_SYSTEM_CACHE_TTL_SECONDS = 60.0
+_invention_system_cache: dict[tuple[Optional[str], Optional[int]], tuple[float, Optional[int]]] = {}
+_invention_system_cache_lock = threading.Lock()
+
+
+def _invention_system_id(cfg: ProductionConfig) -> Optional[int]:
+    """Solar system for invention/copy cost indices: invention_location_id
+    via locations.reader (Offices and containers resolve to their structure),
+    else manufacturing_system_id. Returns None without a tenant or on error."""
+    location_id = cfg.invention_location_id
+    tenant_id = storage.get_current_tenant()
+    key = (tenant_id, location_id)
+    now = time.time()
+    with _invention_system_cache_lock:
+        cached = _invention_system_cache.get(key)
+        if cached is not None and now - cached[0] < _INVENTION_SYSTEM_CACHE_TTL_SECONDS:
+            return cached[1]
+    system_id: Optional[int] = None
+    if location_id is not None and tenant_id is not None:
+        try:
+            from ..locations import reader as locations_reader
+            described = locations_reader.describe([location_id]).get(location_id)
+            if described is not None:
+                system_id = described.solar_system_id
+        except Exception:  # noqa: BLE001 - fall through to manufacturing system
+            logger.warning(
+                "Could not resolve invention_location_id %s to a system; "
+                "falling back to manufacturing_system_id",
+                location_id, exc_info=True,
+            )
+    if system_id is None:
+        system_id = cfg.manufacturing_system_id
+    with _invention_system_cache_lock:
+        _invention_system_cache[key] = (now, system_id)
+    return system_id
+
+
+def clear_invention_system_cache() -> None:
+    """Test helper: drop the invention-system resolution cache."""
+    with _invention_system_cache_lock:
+        _invention_system_cache.clear()
 
 # EVE bases copying and invention fees on 2% of the manufacturing EIV (ME0
 # materials x ESI adjusted price) of the blueprint's product. For invention
@@ -71,12 +119,16 @@ class FeeRates:
 
 
 def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
-    """Invention and copy jobs are priced in the manufacturing system and
-    structure (cfg.manufacturing_system_id / manufacturing_structure_type).
-    A missing system or index falls back to the flat Tech II rate, like
-    engine._job_cost_rate. None if ESI's adjusted prices can't be read - the
-    fees are then left out (0) rather than guessed. Both ESI reads are
-    cached class-wide by ESIClient."""
+    """Invention and copy job fees use the cost index of the invention
+    location's solar system (cfg.invention_location_id, resolved through
+    locations.reader so Offices and containers map to their structure),
+    falling back to cfg.manufacturing_system_id, then the flat Tech II rate
+    like engine._job_cost_rate. The structure cost bonus still comes from
+    the manufacturing profile (there is no separate invention structure
+    profile). None if ESI's adjusted prices can't be read - the fees are
+    then left out (0) rather than guessed. Both ESI reads are cached
+    class-wide by ESIClient; system resolution is cached per tenant+location.
+    """
     from ..esi_client import ESIClient
 
     client = ESIClient()
@@ -86,10 +138,12 @@ def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
         logger.warning("Invention job fees left out: ESI adjusted prices unavailable (%s)", e)
         return None
     indices: dict[str, float] = {}
-    if cfg.manufacturing_system_id is not None:
+    system_id = _invention_system_id(cfg)
+    if system_id is not None:
         try:
-            indices = client.get_system_cost_indices(cfg.manufacturing_system_id,
-                                                     activities=("invention", "copying"))
+            indices = client.get_system_cost_indices(
+                system_id, activities=("invention", "copying"),
+            )
         except Exception:  # noqa: BLE001 - falls back to the flat rate below
             indices = {}
     cost_mult, _, _ = structure_rig_multiplier(cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier)
