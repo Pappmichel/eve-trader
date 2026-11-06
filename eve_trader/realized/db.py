@@ -1119,6 +1119,13 @@ def replace_derived_costing(
         for row in results
     ]
     with storage.connect() as conn:
+        # Serialize overlapping rebuilds (HTTP job, scheduler, CLI) for this
+        # tenant. Transaction-scoped: released on commit/rollback, same conn
+        # as every DELETE+INSERT below (including under batch_session).
+        conn.execute(
+            "SELECT pg_advisory_xact_lock("
+            "hashtext('replace_derived_costing:' || current_setting('app.tenant_id')))"
+        )
         for table in (
             "prod_cost_layers", "prod_realized_results", "prod_cost_draws",
             "prod_job_records", "prod_fee_lines", "prod_job_losses",
