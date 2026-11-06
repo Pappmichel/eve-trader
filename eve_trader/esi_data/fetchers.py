@@ -1102,8 +1102,12 @@ def fetch_corporation_contracts(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **kwargs,
 ) -> dict:
     raw_list = client.corporation_contracts(owner_id, auth_role=auth_role)
-    # Contracts this corp issued, not merely assigned to it.
-    own = [c for c in raw_list if c.get("issuer_corporation_id") == owner_id]
+    # Contracts issued on this corp's behalf. issuer_corporation_id alone is not
+    # enough: it also names the corp on every member's personal contract, and on
+    # a large corp nearly all rows are those. A member's own contracts come in
+    # through that character's share.
+    own = [c for c in raw_list
+           if c.get("issuer_corporation_id") == owner_id and c.get("for_corporation")]
     structure_ids = _structure_filter(kwargs)
     syncable = _at_structure(
         [

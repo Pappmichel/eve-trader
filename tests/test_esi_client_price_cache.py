@@ -16,12 +16,16 @@ def _reset_price_caches():
 
 
 def _fake_get(monkeypatch, responses):
-    """responses: {path: return_value} - counts calls per path."""
+    """responses: {path: return_value} - counts calls per path.
+    A value that is an Exception instance is raised instead of returned."""
     calls: dict[str, int] = {}
 
     def _get(self, path_or_url, params=None, auth_role=None, retries=3):
         calls[path_or_url] = calls.get(path_or_url, 0) + 1
-        return responses[path_or_url]
+        value = responses[path_or_url]
+        if isinstance(value, Exception):
+            raise value
+        return value
     monkeypatch.setattr(ESIClient, "_get", _get)
     return calls
 
@@ -103,3 +107,98 @@ def test_get_system_cost_indices_refetches_after_clear_price_caches(monkeypatch)
     ESIClient().get_system_cost_indices(30000142)
 
     assert calls["/industry/systems/"] == 2
+
+
+def test_get_adjusted_prices_serves_stale_on_error(monkeypatch):
+    _fake_get(monkeypatch, {"/markets/prices/": [{"type_id": 34, "adjusted_price": 5.5}]})
+    assert ESIClient().get_adjusted_prices() == {34: 5.5}
+    ESIClient._adjusted_prices_cache_at = (
+        __import__("time").time() - 3601
+    )
+    calls = _fake_get(monkeypatch, {"/markets/prices/": ESIError("down")})
+
+    assert ESIClient().get_adjusted_prices() == {34: 5.5}
+    assert calls["/markets/prices/"] == 1
+    assert ESIClient.adjusted_prices_stale_seconds() is not None
+
+
+def test_get_adjusted_prices_raises_when_stale_too_old(monkeypatch):
+    _fake_get(monkeypatch, {"/markets/prices/": [{"type_id": 34, "adjusted_price": 5.5}]})
+    ESIClient().get_adjusted_prices()
+    ESIClient._adjusted_prices_cache_at = (
+        __import__("time").time() - ESIClient.PRICE_DATA_MAX_STALE_SECONDS - 1
+    )
+    _fake_get(monkeypatch, {"/markets/prices/": ESIError("down")})
+
+    with pytest.raises(ESIError):
+        ESIClient().get_adjusted_prices()
+
+
+def test_get_adjusted_prices_raises_with_no_cache(monkeypatch):
+    _fake_get(monkeypatch, {"/markets/prices/": ESIError("down")})
+    with pytest.raises(ESIError):
+        ESIClient().get_adjusted_prices()
+
+
+def test_get_adjusted_prices_fail_backoff_skips_second_http(monkeypatch):
+    _fake_get(monkeypatch, {"/markets/prices/": [{"type_id": 34, "adjusted_price": 5.5}]})
+    ESIClient().get_adjusted_prices()
+    ESIClient._adjusted_prices_cache_at = __import__("time").time() - 3601
+    calls = _fake_get(monkeypatch, {"/markets/prices/": ESIError("down")})
+
+    assert ESIClient().get_adjusted_prices() == {34: 5.5}
+    assert ESIClient().get_adjusted_prices() == {34: 5.5}
+    assert calls["/markets/prices/"] == 1  # second call stayed in backoff
+
+
+def test_get_system_cost_indices_empty_response_keeps_old_cache(monkeypatch):
+    _fake_get(monkeypatch, {
+        "/industry/systems/": [
+            {"solar_system_id": 30000142, "cost_indices": [
+                {"activity": "manufacturing", "cost_index": 0.02},
+            ]},
+        ],
+    })
+    assert ESIClient().get_system_cost_indices(30000142) == {"manufacturing": 0.02}
+    ESIClient._cost_indices_cache_at = __import__("time").time() - 21601
+    _fake_get(monkeypatch, {"/industry/systems/": []})
+
+    assert ESIClient().get_system_cost_indices(30000142) == {"manufacturing": 0.02}
+    assert ESIClient.cost_indices_loaded() is True
+
+
+def test_cost_indices_loaded_and_stale_helpers(monkeypatch):
+    assert ESIClient.cost_indices_loaded() is False
+    assert ESIClient.adjusted_prices_stale_seconds() is None
+    assert ESIClient.cost_indices_stale_seconds() is None
+
+    _fake_get(monkeypatch, {
+        "/markets/prices/": [{"type_id": 34, "adjusted_price": 1.0}],
+        "/industry/systems/": [
+            {"solar_system_id": 1, "cost_indices": [{"activity": "manufacturing", "cost_index": 0.1}]},
+        ],
+    })
+    ESIClient().get_adjusted_prices()
+    ESIClient().get_system_cost_indices(1)
+    assert ESIClient.cost_indices_loaded() is True
+    assert ESIClient.adjusted_prices_stale_seconds() is None
+    assert ESIClient.cost_indices_stale_seconds() is None
+
+    ESIClient.clear_price_caches()
+    assert ESIClient.cost_indices_loaded() is False
+    assert ESIClient._adjusted_prices_fail_at == 0.0
+    assert ESIClient._cost_indices_fail_at == 0.0
+
+
+def test_cost_indices_loaded_false_when_past_hard_stale_ceiling(monkeypatch):
+    _fake_get(monkeypatch, {
+        "/industry/systems/": [
+            {"solar_system_id": 1, "cost_indices": [{"activity": "manufacturing", "cost_index": 0.1}]},
+        ],
+    })
+    ESIClient().get_system_cost_indices(1)
+    assert ESIClient.cost_indices_loaded() is True
+    ESIClient._cost_indices_cache_at = __import__("time").time() - (
+        ESIClient.PRICE_DATA_MAX_STALE_SECONDS + 8 * 3600
+    )
+    assert ESIClient.cost_indices_loaded() is False

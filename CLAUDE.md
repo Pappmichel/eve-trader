@@ -1425,7 +1425,12 @@ say otherwise:
   say `availability: personal` (esi/esi-issues#1447), so only `assignee_id`
   identifies them. The character list does not have them.
 - A corp list therefore holds about 15,000 rows of mostly other people's contracts.
-  Anything reading it must filter by issuer, as `esi_data/fetchers.py` does.
+  Anything treating a row as the corporation's own must check `for_corporation` as
+  well as `issuer_corporation_id` (`esi_data/fetchers.py`, `realized.ingest.
+  contract_issuer_matches`): the latter names the corp on every member's personal
+  contract too. Checked live: 1 of 1,734 such rows in a 12,000-member corp is a real
+  corp contract. A member's personal contracts come through their character share.
+  Corp archive rows stored before this rule stay in `ledger_contracts`.
 
 Rules:
 - Public locations are read, not looked up: resolving every structure of a region
@@ -1449,6 +1454,24 @@ Rules:
 - A contract asking the buyer for items is not listed: its price says nothing
   about the fit. Invalid fits are not listed either.
 - A contract shows under every fitting with the same identity.
+- When `for_corporation` is true and `issuer_corporation_id` is set, the Seller
+  is that corporation; the character who created the contract is never resolved
+  or stored on `doctrine_market_contracts`. Missing `for_corporation` (common on
+  the public list) stays personal. Own Contracts (`doctrine_contracts`) are
+  unchanged.
+- Without a readable alliance source the last result is never replaced: an
+  alliance-only scan raises, and with Public on the public half continues with
+  `alliance_skipped` (shown on the page). Previously stored item lists stay
+  when an enabled source was not actually read.
+- If several corporations of the same alliance are shared, the one with the most
+  capable readers runs the list and item reads (lowest corp id on a tie). Their
+  readers are not pooled: a character may only call its own corporation endpoint.
+- Character contract-item calls are paced in `ESIClient` at 15 per 10 s per
+  character (below ESI's ConStopSpamming wall of 20 / 10 s). A 520 body with
+  `ConStopSpamming` waits `remainingTime / 1e7` seconds (100-ns ticks) or raises
+  `ESIRateLimited` when the wait is too long; other 520s stay ordinary errors.
+- Items already fetched survive a scan abort (`upsert_doctrine_market_contract_items`
+  before the `ActionError`); the next scan skips those contract ids.
 
 ## Sorting paste
 

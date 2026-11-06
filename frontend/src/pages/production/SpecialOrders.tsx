@@ -20,6 +20,7 @@ import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { dateTime, isk, pct, qty } from '../../format'
 import { MaxBuildablePanel, type MaxBuildablePrefill } from './MaxBuildablePanel'
+import { PriceDataAlert } from './PriceDataAlert'
 
 // The cached plans are included so their `stale` flag (set by the backend when
 // an integrated order changes) shows up right away.
@@ -114,13 +115,7 @@ function ComputeResultView({ result, integrated = false }: { result: SpecialOrde
 
   return (
     <Stack gap="md">
-      {!result.adjusted_prices_available && (
-        <Alert color="danger" variant="light" title="Job Cost figures are currently unavailable">
-          ESI's adjusted-price data could not be fetched for this computation - every Job Cost/Unit below (and
-          the Total Job Cost/Gesamt totals) reads 0 rather than its real value. Recompute once ESI is reachable
-          again before trusting these numbers.
-        </Alert>
-      )}
+      <PriceDataAlert flags={result} />
       {!integrated && result.stock_overlap_warning.length > 0 && (
         <Alert color="warn" variant="light" title="Possible stock overlap with your Stock Targets">
           These items are on hand right now and also reachable from your configured Stock Targets - the same

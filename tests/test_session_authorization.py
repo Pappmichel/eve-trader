@@ -179,6 +179,7 @@ def test_logout_revokes_server_side(monkeypatch, _apply_admin_schema):
 
 
 def test_db_error_fail_closed(monkeypatch, _apply_admin_schema):
+    # Was 401 (looked like logout); now 503 so the session is not discarded.
     _enable_gate(monkeypatch)
     tenant_id = storage.create_tenant("A")
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
@@ -189,7 +190,68 @@ def test_db_error_fail_closed(monkeypatch, _apply_admin_schema):
     monkeypatch.setattr(storage, "session_authorization", boom)
 
     resp = client.get("/api/trading/settings", cookies=_cookie(11, tenant_id))
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "service_unavailable"}
+
+
+def test_missing_cookie_stays_401(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    resp = client.get("/api/trading/settings")
     assert resp.status_code == 401
+
+
+def test_invalid_cookie_stays_401(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    resp = client.get(
+        "/api/trading/settings",
+        cookies={access_gate.SESSION_COOKIE_NAME: "not-a-real-cookie"},
+    )
+    assert resp.status_code == 401
+
+
+def test_db_error_on_gate_status_is_503_not_logged_out(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("postgres down")
+    monkeypatch.setattr(storage, "session_authorization", boom)
+
+    resp = client.get("/api/gate/status", cookies=_cookie(11, tenant_id))
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body == {"detail": "service_unavailable"}
+    assert "logged_in" not in body
+
+
+def test_db_error_503_does_not_invoke_protected_handler(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+
+    called = []
+
+    def boom(*_a, **_k):
+        raise RuntimeError("postgres down")
+
+    monkeypatch.setattr(storage, "session_authorization", boom)
+    # Settings handler would put trading config in the body if reached.
+    from eve_trader.api.routers import trading as trading_router
+    original = trading_router.get_settings
+
+    def spy():
+        called.append(1)
+        return original()
+
+    monkeypatch.setattr(trading_router, "get_settings", spy)
+
+    resp = client.get("/api/trading/settings", cookies=_cookie(11, tenant_id))
+    assert resp.status_code == 503
+    assert called == []
+    assert "jita_region_id" not in resp.text
 
 
 def test_admin_grant_still_reaches_admin_api(monkeypatch, _apply_admin_schema):

@@ -359,7 +359,7 @@ def with_batch_session():
 
 
 @contextmanager
-def connect_unscoped():
+def connect_unscoped(timeout: Optional[float] = None):
     """A `connect()` sibling for the handful of genuinely tenant-independent
     tables (`tenants`, `tenant_registry_entries`,
     `character_session_revocations`, `access_allowlist`, `access_requests`
@@ -371,13 +371,17 @@ def connect_unscoped():
     identity-login branch) necessarily happens before any tenant_id exists
     for that request - the normal connect() would fail-closed right there.
 
+    ``timeout`` (seconds) is forwarded to ``pool.connection(timeout=...)``
+    so a hot path like session authorization can fail fast instead of
+    waiting for the pool's default. Other callers leave it unset.
+
     Deliberately narrow: using this against a real per-tenant RLS-enabled
     table doesn't silently bypass RLS - Postgres itself raises
     `unrecognized configuration parameter "app.tenant_id"` immediately,
     since nothing here ever calls `set_config`, same fail-loud spirit as
     connect()'s own check, just enforced by Postgres instead of Python."""
     pool = _get_pool()
-    with pool.connection() as conn:
+    with pool.connection(timeout=timeout) as conn:
         try:
             yield _TranslatingConnection(conn)
             conn.commit()
@@ -657,8 +661,11 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[Session
     registry column and character_session_revocations (P5-03) — Postgres
     GREATEST is NULL-hostile, so the CASE is required. The allowlist EXISTS
     is in the same statement so the middleware does not take a second round
-    trip to learn whether the re-check is active."""
-    with connect_unscoped() as conn:
+    trip to learn whether the re-check is active.
+
+    Uses a 5 s pool checkout so a drained pool fails the gate quickly
+    instead of blocking the event loop for the pool's full wait."""
+    with connect_unscoped(timeout=5.0) as conn:
         rows = conn.execute(
             "SELECT g.tool_key, "
             "CASE "
@@ -1542,6 +1549,7 @@ def replace_sde_data(
     get_type_materials.cache_clear()
     get_invention_recipe.cache_clear()
     get_blueprint_skills.cache_clear()
+    unrefined_type_ids.cache_clear()
     # The PI tool's StaticData and design caches (docs/PI_TECHNICAL_DESIGN.md
     # P-11). Imported lazily: pi.static imports storage.
     from .pi import static as pi_static
@@ -7224,6 +7232,26 @@ def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     return rows
 
 
+@lru_cache(maxsize=None)
+def unrefined_type_ids() -> dict[str, int]:
+    """Published SDE types whose name starts with "Unrefined ", keyed by
+    lowercased stripped name. One query for the whole set - Production's
+    alchemy path looks up "Unrefined <product>" for every reaction product
+    and must not run a per-product ILIKE scan. ORDER BY type_id DESC so a
+    later overwrite keeps the lower id on a name clash (same rule as
+    resolve_type_names_exact). Cleared with the other SDE caches on apply."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, type_name FROM sde_types "
+            "WHERE published = 1 AND type_name ILIKE 'Unrefined %' "
+            "ORDER BY type_id DESC",
+        ).fetchall()
+    out: dict[str, int] = {}
+    for type_id, type_name in rows:
+        out[type_name.strip().lower()] = type_id
+    return out
+
+
 def list_all_sde_types() -> list[tuple[int, str]]:
     """Every published SDE type (type_id, type_name), name-ordered - the
     full candidate list for the item-name autocomplete (static-list-loaded-
@@ -8215,12 +8243,14 @@ def load_doctrine_market_contract_items(contract_id: int) -> list[tuple]:
 def get_doctrine_market_scan() -> Optional[tuple]:
     """(scanned_at, system_id, include_public, include_alliance,
     public_candidates, alliance_candidates, matched, unknown_locations,
-    items_pending, items_failed, asks_for_items) or None."""
+    items_pending, items_failed, asks_for_items, alliance_skipped) or None.
+    New columns stay at the end so callers that unpack by index keep working."""
     with connect() as conn:
         return conn.execute(
             "SELECT scanned_at, system_id, include_public, include_alliance, "
             "public_candidates, alliance_candidates, matched, unknown_locations, "
-            "items_pending, items_failed, asks_for_items FROM doctrine_market_scans"
+            "items_pending, items_failed, asks_for_items, alliance_skipped "
+            "FROM doctrine_market_scans"
         ).fetchone()
 
 
@@ -8250,6 +8280,31 @@ def list_doctrine_market_contracts() -> list[tuple]:
         ).fetchall()
 
 
+def upsert_doctrine_market_contract_items(items: list[tuple]) -> None:
+    """Insert or replace item rows without touching contracts or the scan
+    row. A contract's item list never changes, so a scan that aborts after
+    some successful fetches can still keep those lists for the next run.
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    No FK to doctrine_market_contracts - unmatched candidates are stored too."""
+    if not items:
+        return
+    by_contract: dict[int, list[tuple]] = {}
+    for row in items:
+        by_contract.setdefault(int(row[0]), []).append(row)
+    with connect() as conn:
+        for cid, rows in by_contract.items():
+            conn.execute(
+                "DELETE FROM doctrine_market_contract_items WHERE contract_id = ?",
+                (cid,),
+            )
+            conn.executemany(
+                "INSERT INTO doctrine_market_contract_items "
+                "(contract_id, record_id, type_id, quantity, is_included, is_singleton) "
+                "VALUES (?,?,?,?,?,?)",
+                rows,
+            )
+
+
 def replace_doctrine_market_snapshot(
     contracts: list[tuple],
     items: list[tuple],
@@ -8265,6 +8320,7 @@ def replace_doctrine_market_snapshot(
     items_pending: int = 0,
     items_failed: int = 0,
     asks_for_items: int = 0,
+    alliance_skipped: bool = False,
 ) -> None:
     """Wholesale-replace the Contract Market snapshot for this tenant.
 
@@ -8280,11 +8336,13 @@ def replace_doctrine_market_snapshot(
             "INSERT INTO doctrine_market_scans "
             "(scanned_at, system_id, include_public, include_alliance, "
             "public_candidates, alliance_candidates, matched, "
-            "unknown_locations, items_pending, items_failed, asks_for_items) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "unknown_locations, items_pending, items_failed, asks_for_items, "
+            "alliance_skipped) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (scanned_at, system_id, include_public, include_alliance,
              public_candidates, alliance_candidates, matched,
-             unknown_locations, items_pending, items_failed, asks_for_items),
+             unknown_locations, items_pending, items_failed, asks_for_items,
+             alliance_skipped),
         )
         if contracts:
             cols = ", ".join(_MARKET_CONTRACT_COLUMNS)

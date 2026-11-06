@@ -692,7 +692,7 @@ export default function CharactersPage() {
     CHARACTERS_KEYS,
   )
 
-  const corpIds = corporationIdsFrom(sharing, freshness)
+  const corpIds = corporationIdsFrom(sharing, freshness, owners)
 
   const toggleSharing = (ownerType: string, ownerId: number, dataKind: string, toolKey: string, enabled: boolean) => {
     setPendingToggle(`${ownerType}:${ownerId}:${dataKind}:${toolKey}`)

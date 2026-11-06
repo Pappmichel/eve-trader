@@ -615,15 +615,29 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
             _bpc_cache_at[tenant] = now
         missing = [tid for tid in type_ids if (tenant, tid) not in _bpc_cache]
         if missing:
-            for tid, value in _compute_bpc_run_values(missing).items():
-                _bpc_cache[(tenant, tid)] = value
+            computed, cacheable = _compute_bpc_run_values(missing)
+            if cacheable:
+                for tid, value in computed.items():
+                    _bpc_cache[(tenant, tid)] = value
+            # Always return cached values plus this call's computed ones.
+            # Only the write above depends on cacheable - otherwise a partial
+            # outage would drop already-known BPC values from Total Wealth.
+            out = {
+                tid: _bpc_cache[(tenant, tid)]
+                for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
+            }
+            if not cacheable:
+                for tid, value in computed.items():
+                    if value is not None and tid in type_ids:
+                        out[tid] = value
+            return out
         return {
             tid: _bpc_cache[(tenant, tid)]
             for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
         }
 
 
-def _compute_bpc_run_values(type_ids: list[int]) -> dict[int, Optional[float]]:
+def _compute_bpc_run_values(type_ids: list[int]) -> tuple[dict[int, Optional[float]], bool]:
     from .production import invention
     from .production.config import PRODUCTION_CONFIG
     from .production.pricing import JITA_MARKET, _goonmetrics_prices
@@ -634,7 +648,7 @@ def _compute_bpc_run_values(type_ids: list[int]) -> dict[int, Optional[float]]:
         if storage.find_invention_recipe_candidates_by_product_type_id(tid)
     ]
     if not inventable:
-        return out
+        return out, True
     inputs: set[int] = set()
     for tid in inventable:
         for candidate in storage.find_invention_recipe_candidates_by_product_type_id(tid):
@@ -648,11 +662,12 @@ def _compute_bpc_run_values(type_ids: list[int]) -> dict[int, Optional[float]]:
     home = _goonmetrics_prices(cfg.home_market, ids) if cfg.home_market else {}
     jita = _goonmetrics_prices(JITA_MARKET, ids)
     rates = invention.fee_rates(cfg)
+    cacheable = rates is not None and bool(home or jita)
     for tid in inventable:
         best = invention.best_recipe_and_decryptor(tid, home, jita, cfg, 0.0, rates=rates)
         if best is not None and best.expected_cost_per_run is not None:
             out[tid] = float(best.expected_cost_per_run)
-    return out
+    return out, cacheable
 
 
 def _blueprint_effective_quantity(quantity: int) -> int:

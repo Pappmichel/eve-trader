@@ -334,6 +334,7 @@ ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS unknown_locations INT
 ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS items_pending INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS items_failed INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS asks_for_items INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS alliance_skipped BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE doctrine_market_scans ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_market_scans;
 CREATE POLICY tenant_isolation ON doctrine_market_scans

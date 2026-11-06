@@ -222,6 +222,12 @@ export default function ContractMarket() {
           {data.scan.asks_for_items} contracts ask the buyer for items and are not listed.
         </Text>
       )}
+      {data?.scan && data.scan.alliance_skipped && (
+        <Text size="sm" c="dimmed">
+          Alliance contracts were not read: no sharing corporation has an alliance and a member
+          token with the corporation contracts scope. Fittings below only reflect public contracts.
+        </Text>
+      )}
 
       {isLoading && <Text size="sm" c="dimmed">Loading…</Text>}
       {isError && <Text size="sm" c="danger">Could not load the last scan.</Text>}

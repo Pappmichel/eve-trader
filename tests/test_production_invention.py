@@ -214,3 +214,175 @@ def test_rank_without_a_material_cost_is_plain_cheapest_first():
 
     assert invention.rank([parity, accelerant], None)[0].decryptor == "Accelerant"
     assert invention.rank([parity, accelerant], 0.0)[0].decryptor == "Accelerant"
+
+
+# --- fee_rates: invention system vs manufacturing fallback -------------------
+# Opt out of conftest's fee_rates stub via @pytest.mark.live_fee_rates.
+
+
+@pytest.fixture(autouse=True)
+def _clear_invention_system_cache():
+    invention.clear_invention_system_cache()
+    yield
+    invention.clear_invention_system_cache()
+
+
+def _fee_client(monkeypatch, *, adjusted=None, indices_by_system=None):
+    """Stub ESIClient so fee_rates never hits the network. indices_by_system
+    maps solar_system_id -> activity-index dict."""
+    from eve_trader import esi_client as esi_client_module
+
+    adjusted = adjusted if adjusted is not None else {1: 1.0}
+    indices_by_system = indices_by_system or {}
+    seen_systems: list[int] = []
+
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices",
+                        lambda self: adjusted)
+
+    def fake_indices(self, system_id, activities=()):
+        seen_systems.append(system_id)
+        return dict(indices_by_system.get(system_id, {}))
+
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_system_cost_indices", fake_indices)
+    return seen_systems
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_uses_invention_location_system(monkeypatch):
+    from eve_trader.locations.reader import LocationInfo
+    from eve_trader.production.config import ProductionConfig
+    from eve_trader.production.constants import ACTIVITY_MODS, SCC_SURCHARGE_RATE
+
+    invention_sys, mfg_sys = 30_000_142, 30_000_144
+    location_id = 102_000_000_001
+    describe_calls: list[list[int]] = []
+
+    def fake_describe(ids):
+        describe_calls.append(list(ids))
+        return {location_id: LocationInfo(location_id=location_id, solar_system_id=invention_sys)}
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+    monkeypatch.setattr("eve_trader.locations.reader.describe", fake_describe)
+    seen = _fee_client(monkeypatch, indices_by_system={
+        invention_sys: {"invention": 0.5, "copying": 0.25},
+        mfg_sys: {"invention": 0.1, "copying": 0.05},
+    })
+    cfg = ProductionConfig(
+        invention_location_id=location_id,
+        manufacturing_system_id=mfg_sys,
+        facility_tax_rate=0.0,
+    )
+    rates = invention.fee_rates(cfg)
+    assert rates is not None
+    assert seen == [invention_sys]
+    assert rates.invention_rate == pytest.approx(0.5 + SCC_SURCHARGE_RATE)
+    assert rates.copying_rate == pytest.approx(0.25 + SCC_SURCHARGE_RATE)
+    assert ACTIVITY_MODS["Tech II"].job_cost_rate != 0.5  # not the flat fallback
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_falls_back_to_manufacturing_system_when_location_unset(monkeypatch):
+    from eve_trader.production.config import ProductionConfig
+    from eve_trader.production.constants import SCC_SURCHARGE_RATE
+
+    mfg_sys = 30_000_144
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+
+    def boom(_ids):
+        raise AssertionError("describe must not run without invention_location_id")
+
+    monkeypatch.setattr("eve_trader.locations.reader.describe", boom)
+    seen = _fee_client(monkeypatch, indices_by_system={
+        mfg_sys: {"invention": 0.2, "copying": 0.1},
+    })
+    cfg = ProductionConfig(invention_location_id=None, manufacturing_system_id=mfg_sys,
+                           facility_tax_rate=0.0)
+    rates = invention.fee_rates(cfg)
+    assert rates is not None
+    assert seen == [mfg_sys]
+    assert rates.invention_rate == pytest.approx(0.2 + SCC_SURCHARGE_RATE)
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_falls_back_when_location_unknown(monkeypatch):
+    from eve_trader.production.config import ProductionConfig
+    from eve_trader.production.constants import SCC_SURCHARGE_RATE
+
+    mfg_sys = 30_000_144
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+    monkeypatch.setattr("eve_trader.locations.reader.describe", lambda ids: {})
+    seen = _fee_client(monkeypatch, indices_by_system={
+        mfg_sys: {"invention": 0.3, "copying": 0.15},
+    })
+    cfg = ProductionConfig(invention_location_id=999, manufacturing_system_id=mfg_sys,
+                           facility_tax_rate=0.0)
+    rates = invention.fee_rates(cfg)
+    assert rates is not None
+    assert seen == [mfg_sys]
+    assert rates.invention_rate == pytest.approx(0.3 + SCC_SURCHARGE_RATE)
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_uses_flat_tech_ii_rate_when_no_index(monkeypatch):
+    from eve_trader.production.config import ProductionConfig
+    from eve_trader.production.constants import ACTIVITY_MODS, SCC_SURCHARGE_RATE
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+    monkeypatch.setattr("eve_trader.locations.reader.describe", lambda ids: {})
+    _fee_client(monkeypatch, indices_by_system={})  # system known, empty indices
+    cfg = ProductionConfig(invention_location_id=None, manufacturing_system_id=30_000_144,
+                           facility_tax_rate=0.0)
+    rates = invention.fee_rates(cfg)
+    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
+    assert rates is not None
+    assert rates.invention_rate == pytest.approx(flat + SCC_SURCHARGE_RATE)
+    assert rates.copying_rate == pytest.approx(flat + SCC_SURCHARGE_RATE)
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_caches_location_describe(monkeypatch):
+    from eve_trader.locations.reader import LocationInfo
+    from eve_trader.production.config import ProductionConfig
+
+    location_id = 102_000_000_001
+    invention_sys = 30_000_142
+    describe_calls: list[int] = []
+
+    def fake_describe(ids):
+        describe_calls.append(1)
+        return {location_id: LocationInfo(location_id=location_id, solar_system_id=invention_sys)}
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+    monkeypatch.setattr("eve_trader.locations.reader.describe", fake_describe)
+    _fee_client(monkeypatch, indices_by_system={
+        invention_sys: {"invention": 0.4, "copying": 0.2},
+    })
+    cfg = ProductionConfig(invention_location_id=location_id, manufacturing_system_id=1,
+                           facility_tax_rate=0.0)
+    assert invention.fee_rates(cfg) is not None
+    assert invention.fee_rates(cfg) is not None
+    assert len(describe_calls) == 1
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_falls_back_without_tenant(monkeypatch):
+    from eve_trader.production.config import ProductionConfig
+    from eve_trader.production.constants import SCC_SURCHARGE_RATE
+
+    mfg_sys = 30_000_144
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: None)
+
+    def boom(_ids):
+        raise AssertionError("describe requires a tenant; must not be called")
+
+    monkeypatch.setattr("eve_trader.locations.reader.describe", boom)
+    seen = _fee_client(monkeypatch, indices_by_system={
+        mfg_sys: {"invention": 0.2, "copying": 0.1},
+    })
+    cfg = ProductionConfig(invention_location_id=102_000_000_001,
+                           manufacturing_system_id=mfg_sys, facility_tax_rate=0.0)
+    rates = invention.fee_rates(cfg)
+    assert rates is not None
+    assert seen == [mfg_sys]
+    assert rates.invention_rate == pytest.approx(0.2 + SCC_SURCHARGE_RATE)

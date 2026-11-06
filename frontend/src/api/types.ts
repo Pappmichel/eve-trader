@@ -615,6 +615,12 @@ export interface AssetPlan {
   reaction_capacity?: ReactionCapacityBlock
   // Readiness counted only stock at each category's build location.
   ready_at_build_location?: boolean
+  // Compare with === false so an older cached plan without the field
+  // shows no warning.
+  adjusted_prices_available?: boolean
+  cost_indices_available?: boolean
+  prices_available?: boolean
+  price_data_stale_hours?: number | null
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -660,6 +666,11 @@ export interface SpecialOrderComputeResult {
   // job_cost - and this page's own Total Job Cost/Gesamt sum - silently
   // reads 0 rather than its real value.
   adjusted_prices_available: boolean
+  // Compare with === false so an older cached plan without the field
+  // shows no warning.
+  cost_indices_available?: boolean
+  prices_available?: boolean
+  price_data_stale_hours?: number | null
 }
 
 export interface SpecialOrderDetail {
@@ -1013,6 +1024,11 @@ export interface ProductionPlan {
   // adjusted-price fetch failed this run, so every BuildJobEntry.job_cost
   // above silently reads 0 rather than its real value.
   adjusted_prices_available: boolean
+  // Compare with === false so an older cached plan without the field
+  // shows no warning.
+  cost_indices_available?: boolean
+  prices_available?: boolean
+  price_data_stale_hours?: number | null
   order_progress?: OrderProgressRow[]
   // See AssetPlan.stale.
   stale?: boolean
@@ -1648,6 +1664,7 @@ export interface ContractMarketScanInfo {
   items_pending: number
   items_failed: number
   asks_for_items: number
+  alliance_skipped: boolean
 }
 
 export interface ContractMarketResponse {

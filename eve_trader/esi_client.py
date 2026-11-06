@@ -6,7 +6,10 @@ indices - the ESI surface both the Trading and Production tools need.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +25,8 @@ import requests
 from . import storage
 from .auth import TokenManager
 from .config import TRADING_CONFIG, TradingConfig
+
+log = logging.getLogger(__name__)
 
 _contact = os.getenv("EVE_CONTACT_EMAIL", "").strip()
 USER_AGENT = (
@@ -299,6 +304,29 @@ class ESIClient:
     _adjusted_prices_cache_at: float = 0.0
     _cost_indices_cache: Optional[dict[int, dict[str, float]]] = None
     _cost_indices_cache_at: float = 0.0
+    # After a failed refresh that still returned a usable stale value, skip
+    # another network attempt for this long so planners do not queue behind
+    # _prices_indices_lock while ESI is down. Only applies when a stale
+    # value can be served; with no cache the call still tries as before.
+    _PRICE_FETCH_FAIL_BACKOFF_SECONDS = 300.0
+    # Absolute ceiling for serving a stale adjusted-prices / cost-indices
+    # cache after a failed refresh. These change slowly; a value older than
+    # this is not trusted and the call raises like a cold miss.
+    PRICE_DATA_MAX_STALE_SECONDS = 72 * 3600
+    _adjusted_prices_fail_at: float = 0.0
+    _cost_indices_fail_at: float = 0.0
+
+    # Contract-items soft limit (below ESI's 20 / 10 s ConStopSpamming wall).
+    # Class-wide and keyed by character id so every caller (Contract Market,
+    # doctrine sync, fetchers, alerts) and every role prefix of the same
+    # character share one budget. Slot reservation is under the lock; sleep
+    # is outside so one character never blocks another.
+    _CONTRACT_ITEMS_WINDOW_SECONDS = 10.0
+    _CONTRACT_ITEMS_MAX_PER_WINDOW = 15
+    _contract_items_lock = threading.Lock()
+    _contract_items_times: dict[int, list[float]] = {}
+    # Tests replace this to advance without real waits.
+    _monotonic = staticmethod(time.monotonic)
 
     # Class-level, short-TTL caches for region_order_stats/structure_orders_raw
     # (GitHub issue #103) - same real order-book data for anyone querying the
@@ -401,6 +429,46 @@ class ESIClient:
             cls._adjusted_prices_cache_at = 0.0
             cls._cost_indices_cache = None
             cls._cost_indices_cache_at = 0.0
+            cls._adjusted_prices_fail_at = 0.0
+            cls._cost_indices_fail_at = 0.0
+
+    @classmethod
+    def adjusted_prices_stale_seconds(cls) -> Optional[float]:
+        """Seconds since the adjusted-prices cache was last refreshed, or
+        None when the cache is empty or still within its normal TTL window
+        (planners treat None as 'fresh enough to not warn')."""
+        with cls._prices_indices_lock:
+            if cls._adjusted_prices_cache is None:
+                return None
+            age = time.time() - cls._adjusted_prices_cache_at
+            if age <= 3600:
+                return None
+            return age
+
+    @classmethod
+    def cost_indices_stale_seconds(cls) -> Optional[float]:
+        """Seconds since the cost-indices cache was last refreshed, or None
+        when the cache is empty or still within its normal TTL window."""
+        with cls._prices_indices_lock:
+            if cls._cost_indices_cache is None:
+                return None
+            age = time.time() - cls._cost_indices_cache_at
+            if age <= 21600:
+                return None
+            return age
+
+    @classmethod
+    def cost_indices_loaded(cls) -> bool:
+        """True when a non-empty cost-indices catalog is in memory and not
+        older than PRICE_DATA_MAX_STALE_SECONDS. False means no usable
+        catalog (never fetched, empty, or past the hard stale ceiling), so
+        a {} from system_cost_indices_for is an outage, not a missing
+        system."""
+        with cls._prices_indices_lock:
+            if not cls._cost_indices_cache:
+                return False
+            age = time.time() - cls._cost_indices_cache_at
+            return age <= cls.PRICE_DATA_MAX_STALE_SECONDS
 
     @classmethod
     def clear_order_book_caches(cls) -> None:
@@ -547,6 +615,20 @@ class ESIClient:
             if resp.status_code in (420, 429):  # ESI error-limited (420) or plain HTTP rate-limited (429)
                 self._wait_for_retry(resp, attempt)
                 continue
+            if resp.status_code == 520 and "ConStopSpamming" in (resp.text or ""):
+                wait = self._con_stop_spamming_wait(resp)
+                if wait is None:
+                    raise ESIStatusError(
+                        resp.status_code,
+                        f"HTTP {resp.status_code} for {url}: {resp.text[:300]}",
+                    )
+                # Small buffer past remainingTime; still sit it out only when
+                # short enough not to hold a job slot / expire the bearer.
+                wait = wait + 0.25
+                if wait <= MAX_RETRY_AFTER_WAIT_SECONDS and attempt < retries:
+                    time.sleep(wait)
+                    continue
+                raise ESIRateLimited(wait, "contract-items")
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
                 continue
@@ -555,6 +637,64 @@ class ESIClient:
                 f"HTTP {resp.status_code} for {url}: {resp.text[:300]}",
             )
         raise ESIError(f"Exhausted retries for {url}")
+
+    @staticmethod
+    def _con_stop_spamming_wait(resp: requests.Response) -> Optional[float]:
+        """remainingTime from a 520 ConStopSpamming body, in seconds.
+        CCP counts in 100-ns ticks (1e7 per second). Unreadable -> None.
+        Live body shape: {"error":"ConStopSpamming, details: {\"remainingTime\": N}"}."""
+        text = resp.text or ""
+        try:
+            body = resp.json()
+        except (ValueError, TypeError):
+            body = {}
+        err = str((body or {}).get("error") or text)
+        if "ConStopSpamming" not in err and "ConStopSpamming" not in text:
+            return None
+        m = re.search(r'remainingTime["\\\s:]+(\d+)', err) or re.search(
+            r'remainingTime["\\\s:]+(\d+)', text)
+        if m:
+            return max(int(m.group(1)) / 1e7, 0.0)
+        if "details:" in err:
+            try:
+                nested = json.loads(err.split("details:", 1)[-1].strip())
+                return max(int(nested["remainingTime"]) / 1e7, 0.0)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+        return None
+
+    @classmethod
+    def clear_contract_items_limiter(cls) -> None:
+        """Drop the per-character contract-items pace tracker (tests)."""
+        with cls._contract_items_lock:
+            cls._contract_items_times.clear()
+
+    @classmethod
+    def _character_id_from_role(cls, auth_role: Optional[str]) -> Optional[int]:
+        if not auth_role or ":" not in auth_role:
+            return None
+        try:
+            return int(auth_role.rsplit(":", 1)[-1])
+        except ValueError:
+            return None
+
+    @classmethod
+    def _await_contract_items_slot(cls, character_id: int) -> None:
+        """At most _CONTRACT_ITEMS_MAX_PER_WINDOW calls per character per
+        _CONTRACT_ITEMS_WINDOW_SECONDS. Reserves under the lock, sleeps outside."""
+        while True:
+            with cls._contract_items_lock:
+                now = cls._monotonic()
+                window = cls._CONTRACT_ITEMS_WINDOW_SECONDS
+                times = [t for t in cls._contract_items_times.get(character_id, [])
+                         if now - t < window]
+                if len(times) < cls._CONTRACT_ITEMS_MAX_PER_WINDOW:
+                    times.append(now)
+                    cls._contract_items_times[character_id] = times
+                    return
+                wait = window - (now - times[0])
+            if wait > 0:
+                time.sleep(wait)
 
     @classmethod
     def _wait_for_retry(cls, resp: requests.Response, attempt: int) -> None:
@@ -972,29 +1112,65 @@ class ESIClient:
         adjusted price in one call - so fetch the full list (cached
         class-wide for `cache_seconds`, see _adjusted_prices_cache's own
         comment) and filter locally.
+
+        On fetch failure, a cache younger than PRICE_DATA_MAX_STALE_SECONDS
+        is returned with a warning (better than zeros). A subsequent failure
+        within _PRICE_FETCH_FAIL_BACKOFF_SECONDS reuses that value without
+        another HTTP attempt, so planners do not queue behind the lock.
         """
         with ESIClient._prices_indices_lock:
             now = time.time()
-            if (ESIClient._adjusted_prices_cache is None
-                    or (now - ESIClient._adjusted_prices_cache_at) > cache_seconds):
-                rows = self._get("/markets/prices/", params={"datasource": "tranquility"})
-                # Confirmed real (2026-09-16): a genuine response always
-                # covers thousands of published types - a 200 response that
-                # happens to carry zero rows is an ESI-side anomaly, not a
-                # documented/expected shape. Treat it the same as a real
-                # fetch failure (raise, don't cache) rather than caching a
-                # known-bad empty result for the full cache_seconds window -
-                # that used to silently zero every BuildJobEntry.job_cost
-                # for up to an hour with no error anywhere (production/
-                # engine.py's _PlanContext already logs+falls back on this
-                # exception, see its own comment).
-                if not rows:
-                    raise ESIError("ESI /markets/prices/ returned zero rows - treating as a failed fetch.")
-                ESIClient._adjusted_prices_cache = {
-                    row["type_id"]: row["adjusted_price"] for row in rows if "adjusted_price" in row
-                }
-                ESIClient._adjusted_prices_cache_at = now
             cache = ESIClient._adjusted_prices_cache
+            age = (now - ESIClient._adjusted_prices_cache_at) if cache is not None else None
+            needs_fetch = cache is None or (age is not None and age > cache_seconds)
+            if needs_fetch:
+                in_fail_backoff = (
+                    cache is not None
+                    and ESIClient._adjusted_prices_fail_at > 0
+                    and (now - ESIClient._adjusted_prices_fail_at)
+                    < ESIClient._PRICE_FETCH_FAIL_BACKOFF_SECONDS
+                    and age is not None
+                    and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS
+                )
+                if in_fail_backoff:
+                    pass  # keep cache; skip HTTP for the backoff window
+                else:
+                    try:
+                        rows = self._get("/markets/prices/", params={"datasource": "tranquility"})
+                        # Confirmed real (2026-09-16): a genuine response always
+                        # covers thousands of published types - a 200 response that
+                        # happens to carry zero rows is an ESI-side anomaly, not a
+                        # documented/expected shape. Treat it the same as a real
+                        # fetch failure (raise, don't cache) rather than caching a
+                        # known-bad empty result for the full cache_seconds window -
+                        # that used to silently zero every BuildJobEntry.job_cost
+                        # for up to an hour with no error anywhere (production/
+                        # engine.py's _PlanContext already logs+falls back on this
+                        # exception, see its own comment).
+                        if not rows:
+                            raise ESIError(
+                                "ESI /markets/prices/ returned zero rows - treating as a failed fetch."
+                            )
+                        ESIClient._adjusted_prices_cache = {
+                            row["type_id"]: row["adjusted_price"]
+                            for row in rows if "adjusted_price" in row
+                        }
+                        ESIClient._adjusted_prices_cache_at = now
+                        ESIClient._adjusted_prices_fail_at = 0.0
+                        cache = ESIClient._adjusted_prices_cache
+                    except Exception as e:
+                        if (cache is not None
+                                and age is not None
+                                and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS):
+                            ESIClient._adjusted_prices_fail_at = now
+                            log.warning(
+                                "ESI get_adjusted_prices failed (%s); serving cache %.0fs old",
+                                e, age,
+                            )
+                        else:
+                            raise
+            if cache is None:
+                raise ESIError("ESI adjusted prices unavailable.")
         if type_ids is None:
             return dict(cache)
         return {t: cache.get(t, 0) for t in type_ids}
@@ -1006,19 +1182,58 @@ class ESIClient:
         once (cached class-wide for `cache_seconds`, see
         _adjusted_prices_cache's own comment), then look up `system_id` and
         filter to `activities`. Missing activities are omitted.
+
+        On fetch failure, a cache younger than PRICE_DATA_MAX_STALE_SECONDS
+        is returned with a warning. An empty 200 is treated as failure so it
+        cannot overwrite a good cache. Fail-backoff matches get_adjusted_prices.
         """
         with ESIClient._prices_indices_lock:
             now = time.time()
-            if ESIClient._cost_indices_cache is None or (now - ESIClient._cost_indices_cache_at) > cache_seconds:
-                rows = self._get("/industry/systems/", params={"datasource": "tranquility"})
-                ESIClient._cost_indices_cache = {
-                    row["solar_system_id"]: {
-                        idx["activity"]: idx["cost_index"] for idx in row.get("cost_indices", [])
-                    }
-                    for row in rows
-                }
-                ESIClient._cost_indices_cache_at = now
-            system_indices = ESIClient._cost_indices_cache.get(system_id)
+            cache = ESIClient._cost_indices_cache
+            age = (now - ESIClient._cost_indices_cache_at) if cache is not None else None
+            needs_fetch = cache is None or (age is not None and age > cache_seconds)
+            if needs_fetch:
+                in_fail_backoff = (
+                    cache is not None
+                    and ESIClient._cost_indices_fail_at > 0
+                    and (now - ESIClient._cost_indices_fail_at)
+                    < ESIClient._PRICE_FETCH_FAIL_BACKOFF_SECONDS
+                    and age is not None
+                    and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS
+                )
+                if in_fail_backoff:
+                    pass
+                else:
+                    try:
+                        rows = self._get("/industry/systems/", params={"datasource": "tranquility"})
+                        if not rows:
+                            raise ESIError(
+                                "ESI /industry/systems/ returned zero rows - treating as a failed fetch."
+                            )
+                        ESIClient._cost_indices_cache = {
+                            row["solar_system_id"]: {
+                                idx["activity"]: idx["cost_index"]
+                                for idx in row.get("cost_indices", [])
+                            }
+                            for row in rows
+                        }
+                        ESIClient._cost_indices_cache_at = now
+                        ESIClient._cost_indices_fail_at = 0.0
+                        cache = ESIClient._cost_indices_cache
+                    except Exception as e:
+                        if (cache is not None
+                                and age is not None
+                                and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS):
+                            ESIClient._cost_indices_fail_at = now
+                            log.warning(
+                                "ESI get_system_cost_indices failed (%s); serving cache %.0fs old",
+                                e, age,
+                            )
+                        else:
+                            raise
+            if cache is None:
+                raise ESIError("ESI cost indices unavailable.")
+            system_indices = cache.get(system_id)
         if system_indices is None:
             raise ESIError(f"No cost indices found for solar system {system_id}.")
         return {a: system_indices[a] for a in activities if a in system_indices}
@@ -1358,12 +1573,18 @@ class ESIClient:
         character_contracts, not a separate one). A contract's item list
         never changes after creation (ESI guarantee) - doctrine/esi_sync.py
         relies on this to only re-fetch items for contracts it hasn't
-        already stored."""
+        already stored. Paced per character against ESI's ConStopSpamming
+        wall (see _await_contract_items_slot)."""
+        self._await_contract_items_slot(int(character_id))
         return self._get(f"/characters/{character_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
     def corporation_contract_items(self, corporation_id: int, contract_id: int, auth_role: str) -> list[dict]:
-        """Requires esi-contracts.read_corporation_contracts.v1."""
+        """Requires esi-contracts.read_corporation_contracts.v1. Paced per
+        character (from auth_role) against ESI's ConStopSpamming wall."""
+        character_id = self._character_id_from_role(auth_role)
+        if character_id is not None:
+            self._await_contract_items_slot(character_id)
         return self._get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
