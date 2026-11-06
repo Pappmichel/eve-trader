@@ -5485,14 +5485,12 @@ def _install_caesarium_alchemy_sde(monkeypatch):
             return 6 * 3600
         return None
 
-    def fake_search(query, limit=5):
-        if "Unrefined Caesarium Cadmide" in query:
-            return [(_UNREFINED, "Unrefined Caesarium Cadmide")]
-        return []
+    def fake_unrefined():
+        return {"unrefined caesarium cadmide": _UNREFINED}
 
     monkeypatch.setattr(storage, "get_blueprint_for_product", fake_bp)
     monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
-    monkeypatch.setattr(storage, "search_sde_types", fake_search)
+    monkeypatch.setattr(storage, "unrefined_type_ids", fake_unrefined)
     monkeypatch.setattr(storage, "get_blueprint_materials", fake_materials)
     monkeypatch.setattr(storage, "get_blueprint_time", fake_time)
     monkeypatch.setattr(storage, "get_type_materials",
@@ -5506,7 +5504,7 @@ def test_compare_alchemy_disabled_does_not_touch_storage_or_refining(monkeypatch
         raise AssertionError("disabled alchemy path must not touch storage/refining")
 
     monkeypatch.setattr(storage, "get_blueprint_for_product", boom)
-    monkeypatch.setattr(storage, "search_sde_types", boom)
+    monkeypatch.setattr(storage, "unrefined_type_ids", boom)
     monkeypatch.setattr(storage, "get_sde_type", boom)
     monkeypatch.setattr(storage, "get_type_materials", boom)
     monkeypatch.setattr(engine, "find_alchemy_alternative", boom)
@@ -5525,7 +5523,7 @@ def test_find_alchemy_alternative_returns_none_without_unrefined_counterpart(mon
     monkeypatch.setattr(storage, "get_blueprint_for_product",
                          lambda type_id: (_NORMAL_BP, 11, 200.0) if type_id == _CAESARIUM else None)
     monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
-    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=5: [])
+    monkeypatch.setattr(storage, "unrefined_type_ids", lambda: {})
     assert find_alchemy_alternative(_CAESARIUM) is None
 
 
@@ -5533,8 +5531,8 @@ def test_find_alchemy_alternative_returns_none_when_unrefined_has_no_recipe(monk
     monkeypatch.setattr(storage, "get_blueprint_for_product",
                          lambda type_id: (_NORMAL_BP, 11, 200.0) if type_id == _CAESARIUM else None)
     monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
-    monkeypatch.setattr(storage, "search_sde_types",
-                         lambda query, limit=5: [(_UNREFINED, "Unrefined Caesarium Cadmide")])
+    monkeypatch.setattr(storage, "unrefined_type_ids",
+                         lambda: {"unrefined caesarium cadmide": _UNREFINED})
     assert find_alchemy_alternative(_CAESARIUM) is None
 
 
@@ -5558,7 +5556,7 @@ def test_compare_alchemy_returns_none_when_no_unrefined_pair(monkeypatch):
     monkeypatch.setattr(storage, "get_blueprint_for_product",
                          lambda type_id: (_NORMAL_BP, 11, 200.0) if type_id == _CAESARIUM else None)
     monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
-    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=5: [])
+    monkeypatch.setattr(storage, "unrefined_type_ids", lambda: {})
     cfg = ProductionConfig(alchemy_reactions_enabled=True)
     assert compare_alchemy_profitability(_CAESARIUM, cfg) is None
 

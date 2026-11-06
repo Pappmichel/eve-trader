@@ -302,7 +302,7 @@ def find_alchemy_alternative(product_type_id: int) -> Optional[tuple[tuple[int, 
     target's.
 
     Detection is name-based ("Unrefined " + the real target's SDE type
-    name, exact match via storage.search_sde_types) - this matches every
+    name, exact match via storage.unrefined_type_ids) - this matches every
     currently known alchemy pair (Caesarium Cadmide, Dysporite, Vanadium
     Hafnite, Neo Mercurite, Crystallite Alloy, Ferrofluid) with no
     heuristics or hardcoded item lists. Returns None (not an error) for
@@ -318,11 +318,7 @@ def find_alchemy_alternative(product_type_id: int) -> Optional[tuple[tuple[int, 
     if not product_name or product_name == str(product_type_id):
         return None
     unrefined_name = f"Unrefined {product_name}"
-    unrefined_type_id = None
-    for type_id, type_name in storage.search_sde_types(unrefined_name, limit=5):
-        if type_name.strip().lower() == unrefined_name.strip().lower():
-            unrefined_type_id = type_id
-            break
+    unrefined_type_id = storage.unrefined_type_ids().get(unrefined_name.strip().lower())
     if unrefined_type_id is None:
         return None
     alchemy_recipe = storage.get_blueprint_for_product(unrefined_type_id)

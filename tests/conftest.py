@@ -92,10 +92,14 @@ def _reset_goonmetrics_region_coverage():
 
 
 @pytest.fixture(autouse=True)
-def _no_live_invention_fee_rates(monkeypatch):
+def _no_live_invention_fee_rates(request, monkeypatch):
     """invention.estimate reads live ESI adjusted prices and cost indices for
     its job fees unless a caller passes `rates`. Tests never reach ESI:
-    fees are left out unless a test passes its own FeeRates."""
+    fees are left out unless a test passes its own FeeRates. Opt out with
+    `@pytest.mark.live_fee_rates` when the test is specifically covering
+    fee_rates itself (with ESIClient mocked)."""
+    if request.node.get_closest_marker("live_fee_rates"):
+        return
     from eve_trader.production import invention
     monkeypatch.setattr(invention, "fee_rates", lambda cfg=None: None)
 
