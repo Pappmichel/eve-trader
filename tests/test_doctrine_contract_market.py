@@ -796,6 +796,68 @@ def test_scan_tuple_without_skip_defaults_alliance_skipped_false():
     assert storage.get_doctrine_market_scan()[11] is False
 
 
+def test_rate_limited_item_reads_count_as_pending_not_abort(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIRateLimited
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw(contract_id=i) for i in range(1, 4)]
+    client.corporation_contract_items.side_effect = ESIRateLimited(5, "contract-items")
+    _alliance_setup(monkeypatch, cfg, client)
+    result = contract_market.scan_contract_market(cfg)
+    assert result["items_pending"] == 3
+    assert result["items_failed"] == 0
+    assert result["matched"] == 0
+
+
+def test_item_abort_keeps_successful_fetches_for_next_scan(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIError
+    client = MagicMock()
+    client.corporation_contracts.return_value = [
+        _alliance_raw(contract_id=i) for i in range(1, 8)
+    ]
+    # First succeeds, then enough failures to abort.
+    client.corporation_contract_items.side_effect = (
+        [[ITEM]] + [ESIError("boom")] * 10
+    )
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "_MIN_FAILED_ITEMS_TO_ABORT", 1)
+    monkeypatch.setattr(contract_market, "_MAX_FAILED_ITEM_SHARE", 0.1)
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="last result was kept"):
+        contract_market.scan_contract_market(cfg)
+    # Previous contracts row stays; successful item list for cid=1 was upserted.
+    assert len(storage.list_doctrine_market_contracts()) == 1
+    assert storage.load_doctrine_market_contract_items(1)
+    # Next scan must not re-fetch contract 1.
+    client2 = MagicMock()
+    client2.corporation_contracts.return_value = [_alliance_raw(contract_id=1)]
+    client2.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client2)
+    assert contract_market.scan_contract_market(cfg)["matched"] == 1
+    client2.corporation_contract_items.assert_not_called()
+
+
+def test_alliance_skipped_keeps_existing_item_store(monkeypatch, cfg):
+    storage.replace_doctrine_market_snapshot(
+        [(CONTRACT_ALLIANCE, "alliance", 111, "Seller", STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+          "outstanding", "Own", 1.0, None, FUTURE,
+          FAKE_FITTING, 1.0, "valid", "2026-01-01T00:00:00Z")],
+        [(CONTRACT_ALLIANCE, 1, 587, 1.0, True, True)],
+        scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
+        include_public=False, include_alliance=True,
+        public_candidates=0, alliance_candidates=1, matched=1,
+    )
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw()]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: ([], None))
+    result = contract_market.scan_contract_market(cfg)
+    assert result["alliance_skipped"] is True
+    assert storage.load_doctrine_market_contract_items(CONTRACT_ALLIANCE)
+
+
 def test_rescan_right_away_is_rejected():
     storage.replace_doctrine_market_snapshot(
         [], [], scanned_at=contract_market._now_iso(), system_id=SYSTEM_ID,

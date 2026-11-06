@@ -6,8 +6,10 @@ indices - the ESI surface both the Trading and Production tools need.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -314,6 +316,18 @@ class ESIClient:
     _adjusted_prices_fail_at: float = 0.0
     _cost_indices_fail_at: float = 0.0
 
+    # Contract-items soft limit (below ESI's 20 / 10 s ConStopSpamming wall).
+    # Class-wide and keyed by character id so every caller (Contract Market,
+    # doctrine sync, fetchers, alerts) and every role prefix of the same
+    # character share one budget. Slot reservation is under the lock; sleep
+    # is outside so one character never blocks another.
+    _CONTRACT_ITEMS_WINDOW_SECONDS = 10.0
+    _CONTRACT_ITEMS_MAX_PER_WINDOW = 15
+    _contract_items_lock = threading.Lock()
+    _contract_items_times: dict[int, list[float]] = {}
+    # Tests replace this to advance without real waits.
+    _monotonic = staticmethod(time.monotonic)
+
     # Class-level, short-TTL caches for region_order_stats/structure_orders_raw
     # (GitHub issue #103) - same real order-book data for anyone querying the
     # same region_id/structure_id, so two near-simultaneous refreshes (two
@@ -597,6 +611,20 @@ class ESIClient:
             if resp.status_code in (420, 429):  # ESI error-limited (420) or plain HTTP rate-limited (429)
                 self._wait_for_retry(resp, attempt)
                 continue
+            if resp.status_code == 520 and "ConStopSpamming" in (resp.text or ""):
+                wait = self._con_stop_spamming_wait(resp)
+                if wait is None:
+                    raise ESIStatusError(
+                        resp.status_code,
+                        f"HTTP {resp.status_code} for {url}: {resp.text[:300]}",
+                    )
+                # Small buffer past remainingTime; still sit it out only when
+                # short enough not to hold a job slot / expire the bearer.
+                wait = wait + 0.25
+                if wait <= MAX_RETRY_AFTER_WAIT_SECONDS and attempt < retries:
+                    time.sleep(wait)
+                    continue
+                raise ESIRateLimited(wait, "contract-items")
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
                 continue
@@ -605,6 +633,64 @@ class ESIClient:
                 f"HTTP {resp.status_code} for {url}: {resp.text[:300]}",
             )
         raise ESIError(f"Exhausted retries for {url}")
+
+    @staticmethod
+    def _con_stop_spamming_wait(resp: requests.Response) -> Optional[float]:
+        """remainingTime from a 520 ConStopSpamming body, in seconds.
+        CCP counts in 100-ns ticks (1e7 per second). Unreadable -> None.
+        Live body shape: {"error":"ConStopSpamming, details: {\"remainingTime\": N}"}."""
+        text = resp.text or ""
+        try:
+            body = resp.json()
+        except (ValueError, TypeError):
+            body = {}
+        err = str((body or {}).get("error") or text)
+        if "ConStopSpamming" not in err and "ConStopSpamming" not in text:
+            return None
+        m = re.search(r'remainingTime["\\\s:]+(\d+)', err) or re.search(
+            r'remainingTime["\\\s:]+(\d+)', text)
+        if m:
+            return max(int(m.group(1)) / 1e7, 0.0)
+        if "details:" in err:
+            try:
+                nested = json.loads(err.split("details:", 1)[-1].strip())
+                return max(int(nested["remainingTime"]) / 1e7, 0.0)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+        return None
+
+    @classmethod
+    def clear_contract_items_limiter(cls) -> None:
+        """Drop the per-character contract-items pace tracker (tests)."""
+        with cls._contract_items_lock:
+            cls._contract_items_times.clear()
+
+    @classmethod
+    def _character_id_from_role(cls, auth_role: Optional[str]) -> Optional[int]:
+        if not auth_role or ":" not in auth_role:
+            return None
+        try:
+            return int(auth_role.rsplit(":", 1)[-1])
+        except ValueError:
+            return None
+
+    @classmethod
+    def _await_contract_items_slot(cls, character_id: int) -> None:
+        """At most _CONTRACT_ITEMS_MAX_PER_WINDOW calls per character per
+        _CONTRACT_ITEMS_WINDOW_SECONDS. Reserves under the lock, sleeps outside."""
+        while True:
+            with cls._contract_items_lock:
+                now = cls._monotonic()
+                window = cls._CONTRACT_ITEMS_WINDOW_SECONDS
+                times = [t for t in cls._contract_items_times.get(character_id, [])
+                         if now - t < window]
+                if len(times) < cls._CONTRACT_ITEMS_MAX_PER_WINDOW:
+                    times.append(now)
+                    cls._contract_items_times[character_id] = times
+                    return
+                wait = window - (now - times[0])
+            if wait > 0:
+                time.sleep(wait)
 
     @classmethod
     def _wait_for_retry(cls, resp: requests.Response, attempt: int) -> None:
@@ -1483,12 +1569,18 @@ class ESIClient:
         character_contracts, not a separate one). A contract's item list
         never changes after creation (ESI guarantee) - doctrine/esi_sync.py
         relies on this to only re-fetch items for contracts it hasn't
-        already stored."""
+        already stored. Paced per character against ESI's ConStopSpamming
+        wall (see _await_contract_items_slot)."""
+        self._await_contract_items_slot(int(character_id))
         return self._get(f"/characters/{character_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
     def corporation_contract_items(self, corporation_id: int, contract_id: int, auth_role: str) -> list[dict]:
-        """Requires esi-contracts.read_corporation_contracts.v1."""
+        """Requires esi-contracts.read_corporation_contracts.v1. Paced per
+        character (from auth_role) against ESI's ConStopSpamming wall."""
+        character_id = self._character_id_from_role(auth_role)
+        if character_id is not None:
+            self._await_contract_items_slot(character_id)
         return self._get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 

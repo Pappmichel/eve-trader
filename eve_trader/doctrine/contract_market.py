@@ -474,16 +474,27 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     if failed_items and (failed_items == new_fetches or (
             failed_items >= _MIN_FAILED_ITEMS_TO_ABORT
             and failed_items / new_fetches > _MAX_FAILED_ITEM_SHARE)):
+        # Keep successful fetches: the next scan must not re-read them, and
+        # the contracts / scan row stay as they were (replace never runs).
+        if item_rows:
+            storage.upsert_doctrine_market_contract_items(item_rows)
         reason = failure_reasons.most_common(1)[0][0]
         raise ActionError(f"{failed_items} of {new_fetches} contract item reads failed, "
                           f"mostly {reason}. The last result was kept.")
 
-    # Lists never change, so ones from another system of this tenant stay for as
-    # long as the contract is open.
+    # Lists never change. Carry open contracts from another system, and keep
+    # every previously stored list when an enabled source was not actually
+    # read this run (alliance_skipped) - otherwise replace would wipe
+    # alliance items that open_ids never saw.
+    sources_fully_read = not (bool(cfg.contract_market_include_alliance) and alliance_skipped)
+    already = {int(r[0]) for r in item_rows}
     for cid, items in known_items.items():
-        if cid in open_ids and cid not in combined:
+        if cid in already:
+            continue
+        if (cid in open_ids and cid not in combined) or not sources_fully_read:
             item_rows.extend((cid, it.record_id, it.type_id, it.quantity,
                               it.is_included, it.is_singleton) for it in items)
+            already.add(cid)
 
     issuer_ids = sorted({int(h[2]["issuer_id"]) for h in hits if h[2].get("issuer_id")})
     try:
