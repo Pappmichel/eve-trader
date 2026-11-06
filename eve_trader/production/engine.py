@@ -2612,8 +2612,16 @@ class _PlanContext:
         # `hub_region_id` lets a caller with its own hub setting (Doctrine) price
         # its quotes against that hub instead of Production's (#222).
         self.jita = pricing.jita_prices(priced_type_ids, hub_region_id if hub_region_id is not None else cfg.hub_region_id)
+        # False only when we asked for quotes and both markets came back empty
+        # - a legitimate empty universe (priced_type_ids empty) stays True.
+        self.prices_available = bool(self.home or self.jita) or not priced_type_ids
 
         esi_client = ESIClient()
+        configured_systems = [
+            sid for sid in (cfg.component_system_id, cfg.manufacturing_system_id) if sid is not None
+        ]
+        category_systems = storage.load_category_system_ids()
+        configured_systems.extend(category_systems.values())
         self.cost_indices: CostIndices = {
             "component": pricing.system_cost_indices_for(esi_client, cfg.component_system_id),
             "manufacturing": pricing.system_cost_indices_for(esi_client, cfg.manufacturing_system_id),
@@ -2626,10 +2634,19 @@ class _PlanContext:
         # One ESI call per *distinct* system (categories sharing a system
         # share the fetch, via system_indices_by_id's cache-by-system-id).
         system_indices_by_id: dict[int, dict[str, float]] = {}
-        for category, system_id in storage.load_category_system_ids().items():
+        for category, system_id in category_systems.items():
             if system_id not in system_indices_by_id:
                 system_indices_by_id[system_id] = pricing.system_cost_indices_for(esi_client, system_id)
             self.cost_indices[f"category:{category}"] = system_indices_by_id[system_id]
+        # False only when at least one system is configured and the ESI
+        # catalog never loaded. An empty {} for an unconfigured or unknown
+        # system is legitimate and must not warn (falls back to flat rate).
+        # getattr: test doubles that replace ESIClient may omit the new
+        # classmethods; missing means "catalog loaded" (everything fine).
+        self.cost_indices_available = (
+            not configured_systems
+            or getattr(ESIClient, "cost_indices_loaded", lambda: True)()
+        )
         # Per-category cost-index overrides (confirmed with the user
         # 2026-09-16) - a pure DB read, no ESI call, so this is cheap
         # regardless of how many categories have one set. _job_cost_rate
@@ -2678,8 +2695,34 @@ class _PlanContext:
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
             self.adjusted_prices_available = False
+        ages = [
+            s for s in (
+                getattr(ESIClient, "adjusted_prices_stale_seconds", lambda: None)(),
+                getattr(ESIClient, "cost_indices_stale_seconds", lambda: None)(),
+            ) if s is not None
+        ]
+        self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
         # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
         self._reaction_solve_cache = None
+
+    @property
+    def job_costs_reliable(self) -> bool:
+        """True when both adjusted prices and cost indices are usable for
+        freezing planned costs / dynamic targets. Stale-but-served values
+        from ESIClient still count as available."""
+        return self.adjusted_prices_available and self.cost_indices_available
+
+
+def _reliability_fields(ctx) -> dict:
+    """Shared keys every plan_* return dict exposes for the UI warnings.
+    getattr defaults keep test doubles that only set adjusted_prices_available
+    working (older shape = everything fine)."""
+    return {
+        "adjusted_prices_available": getattr(ctx, "adjusted_prices_available", True),
+        "cost_indices_available": getattr(ctx, "cost_indices_available", True),
+        "prices_available": getattr(ctx, "prices_available", True),
+        "price_data_stale_hours": getattr(ctx, "price_data_stale_hours", None),
+    }
 
 
 def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float],
@@ -3264,10 +3307,19 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # that read path). Only this function, not plan_asset_optimized / 
     # plan_special_order: those are a different shape, and "the buy list" the
     # Sorting tool means is specifically plan_production / do_refresh_production.
-    storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
+    # Skip the write when quotes or job-cost inputs are missing so a price
+    # outage cannot replace a good pot with zero-ISK finished goods.
+    if getattr(ctx, "prices_available", True) and getattr(ctx, "job_costs_reliable", True):
+        storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
+    else:
+        log.warning(
+            "Skipping save_latest_buy_list (prices_available=%s, job_costs_reliable=%s)",
+            getattr(ctx, "prices_available", True),
+            getattr(ctx, "job_costs_reliable", True),
+        )
 
     result = {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
-              "adjusted_prices_available": ctx.adjusted_prices_available,
+              **_reliability_fields(ctx),
               "order_progress": order_progress}
     if reaction_block is not None:
         result["reaction_capacity"] = reaction_block
@@ -3435,7 +3487,7 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
         # adjusted-price fetch failed this run, so every build_list row's
         # job_cost - and this page's own "Total Job Cost"/"Gesamt" sum -
         # silently reads 0 rather than its real value. See _PlanContext.
-        "adjusted_prices_available": ctx.adjusted_prices_available,
+        **_reliability_fields(ctx),
     }
 
 
@@ -4745,7 +4797,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     result = {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True),
               "order_progress": _asset_plan_order_progress(order_claims, order_top_level),
-              "ready_at_build_location": ready_at_location}
+              "ready_at_build_location": ready_at_location,
+              **_reliability_fields(ctx)}
     if reaction_block is not None:
         result["reaction_capacity"] = reaction_block
     return result
@@ -5037,8 +5090,10 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
         if tenant_id is not None and tenant_id in _discover_cache \
                 and (time.time() - cached_at) < _DISCOVER_CACHE_TTL:
             return _discover_cache[tenant_id][:top_n]
-        results = _scan_build_candidates(cfg, client, progress_callback)
-        if tenant_id is not None:
+        results, cacheable = _scan_build_candidates(cfg, client, progress_callback)
+        # Still return the scan when job costs / quotes are unreliable, but
+        # do not freeze it into the TTL cache (would outlast the outage).
+        if tenant_id is not None and cacheable:
             _discover_cache[tenant_id] = results
             _discover_cache_at[tenant_id] = time.time()
         return results[:top_n]
@@ -5046,7 +5101,8 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
 
 @storage.with_batch_session()
 def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsClient"],
-                            progress_callback: Optional[Callable[[dict], None]] = None) -> list[dict]:
+                            progress_callback: Optional[Callable[[dict], None]] = None,
+                            ) -> tuple[list[dict], bool]:
     """The actual (slow - walks every SDE item) scan behind
     discover_build_candidates - split out so the public function can hold
     _discover_cache_lock across the whole scan without an awkwardly deep
@@ -5054,6 +5110,10 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
     connection (storage.batch_session) for the same reason plan_production/
     plan_asset_optimized are - this walks up to ~19,400 SDE items, each
     triggering several storage calls.
+
+    Returns ``(results, cacheable)``. ``cacheable`` is False when the plan
+    context's job costs or market quotes are unreliable, so the caller can
+    still return the rows without writing the process-wide TTL cache.
 
     classify_activity is run for every scanned item in a first pass, *before*
     `_PlanContext` is built, so every real candidate (anything with a
@@ -5155,7 +5215,11 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
         _attach_alchemy_comparisons(results, cfg, ctx)
     if progress_callback is not None:
         _emit_progress(progress_callback, {"batch": total_batches, "total_batches": total_batches})
-    return results
+    cacheable = (
+        getattr(ctx, "job_costs_reliable", True)
+        and getattr(ctx, "prices_available", True)
+    )
+    return results, cacheable
 
 
 def _attach_alchemy_comparisons(results: list[dict], cfg: ProductionConfig, ctx: "_PlanContext") -> None:
@@ -5267,8 +5331,8 @@ def discover_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG,
         if tenant_id is not None and tenant_id in _ship_margin_cache \
                 and (time.time() - cached_at) < _SHIP_MARGIN_CACHE_TTL:
             return _ship_margin_cache[tenant_id]
-        results = _scan_ship_margins(cfg)
-        if tenant_id is not None:
+        results, cacheable = _scan_ship_margins(cfg)
+        if tenant_id is not None and cacheable:
             _ship_margin_cache[tenant_id] = results
             _ship_margin_cache_at[tenant_id] = time.time()
         return results
@@ -5292,7 +5356,7 @@ def _descendant_market_group_ids(root_id: int) -> set[int]:
 
 
 @storage.with_batch_session()
-def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
+def _scan_ship_margins(cfg: ProductionConfig) -> tuple[list[dict], bool]:
     """The actual scan behind discover_ship_margins - split out for the same
     reason _scan_build_candidates is (holds the cache lock across the whole
     scan, not just the read/write). Ships are a much smaller SDE slice than
@@ -5309,7 +5373,9 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
     Margin page's single-item search (see item_margin_detail's docstring).
     Cheap to widen this way: ships are already a small, bounded SDE slice
     (see this function's own docstring above), unlike
-    _scan_build_candidates' full ~19,400-item universe."""
+    _scan_build_candidates' full ~19,400-item universe.
+
+    Returns ``(results, cacheable)`` - see `_scan_build_candidates`."""
     excluded_market_groups = _descendant_market_group_ids(SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID)
     ships = []  # (type_id, type_name, meta_level, activity)
     for type_id, type_name, _volume, market_group_id, meta_level, category_id in storage.load_sde_types_with_market_group():
@@ -5343,7 +5409,11 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
         })
 
     results.sort(key=lambda r: r.get("margin_home") or 0.0, reverse=True)
-    return results
+    cacheable = (
+        getattr(ctx, "job_costs_reliable", True)
+        and getattr(ctx, "prices_available", True)
+    )
+    return results, cacheable
 
 
 def _item_margin_detail_with_context(
@@ -6162,6 +6232,12 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
     return rows
 
 
+class PlannerValuationError(RuntimeError):
+    """Raised by planner_unit_values when job-cost inputs are unreliable so
+    the realized-profit loader skips freezing build valuations for this run
+    (falls back to The Forge average; next rebuild retries)."""
+
+
 @storage.with_batch_session()
 def planner_unit_values(type_ids: Iterable[int],
                         cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, tuple[float, str]]:
@@ -6171,11 +6247,27 @@ def planner_unit_values(type_ids: Iterable[int],
     as _unit_cost decides it. {type_id: (value, source)} with source
     "buy_home", "buy_hub" or "build"; types the planner cannot price are
     left out. Production realized profit values stock without a purchase
-    with this (plan D5/D8)."""
+    with this (plan D5/D8).
+
+    Raises PlannerValuationError when adjusted prices or cost indices are
+    unavailable (including after Fix 1's stale window expires), so a rebuild
+    during an outage does not freeze understated build costs."""
     ids = sorted({int(t) for t in type_ids})
     if not ids:
         return {}
     ctx = _PlanContext(cfg, extra_type_ids=ids)
+    # getattr: unit tests stub _PlanContext with a SimpleNamespace that may
+    # omit the new reliability fields (treat missing as reliable).
+    if not getattr(ctx, "job_costs_reliable", True):
+        log.warning(
+            "planner_unit_values: job costs unreliable "
+            "(adjusted_prices_available=%s, cost_indices_available=%s); refusing to value",
+            getattr(ctx, "adjusted_prices_available", True),
+            getattr(ctx, "cost_indices_available", True),
+        )
+        raise PlannerValuationError(
+            "Job cost inputs unavailable; refusing planner valuations for this run"
+        )
     memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
     out: dict[int, tuple[float, str]] = {}

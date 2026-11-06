@@ -513,8 +513,20 @@ def ensure_dynamic_targets_frozen(cfg: ProductionConfig, ctx, cost_memo: dict, t
     """Section 7: computes and writes today's frozen value for every dynamic
     row that has none yet (or all of them with `force`). Returns the number of
     rows written. The planners call this before sizing anything; with the
-    switch off, or no dynamic row, it does nothing at all (E-19)."""
+    switch off, or no dynamic row, it does nothing at all (E-19).
+
+    Skips the write when job costs or market quotes are unreliable so an
+    outage cannot freeze understated margins; effective_stock_targets then
+    keeps using the last good frozen values."""
     if not getattr(cfg, 'dynamic_targets_enabled', False):
+        return 0
+    if not getattr(ctx, "job_costs_reliable", True) or not getattr(ctx, "prices_available", True):
+        log.warning(
+            "ensure_dynamic_targets_frozen: skipping freeze "
+            "(job_costs_reliable=%s, prices_available=%s)",
+            getattr(ctx, "job_costs_reliable", True),
+            getattr(ctx, "prices_available", True),
+        )
         return 0
     modes = modes if modes is not None else storage.load_stock_target_modes()
     specs = dynamic_specs(ctx.stock_targets, modes)
@@ -704,15 +716,23 @@ def _summary(rows: list[dict], signals: Optional[Signals]) -> dict:
 
 def recalculate_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG, *, ctx=None, client=None) -> dict:
     """The "Recalculate" button: drops today's rows and runs the same freeze a
-    plan run would. Raises ValueError when there is no home location (E-18) so
-    the action can turn it into an ActionError."""
+    plan run would. Raises ValueError when there is no home location (E-18) or
+    when job costs / market quotes are unreliable, so the action can turn it
+    into an ActionError - and today's rows are only cleared after that check."""
     if cfg.home_location_id is None:
         raise ValueError("No home location configured (Settings -> Market & Location).")
     rows = storage.load_stock_targets()
     modes = storage.load_stock_target_modes()
     if not dynamic_specs(rows, modes):
         return {"written": 0}
-    invalidate_today()
+    # Build context before invalidate_today: an outage must not wipe today's
+    # frozen values and then refuse to rewrite them.
     ctx = ctx if ctx is not None else _make_context(cfg)
+    if not getattr(ctx, "job_costs_reliable", True) or not getattr(ctx, "prices_available", True):
+        raise ValueError(
+            "Market quotes or job-cost data are unavailable right now; "
+            "keeping today's dynamic targets unchanged. Try again once ESI is reachable."
+        )
+    invalidate_today()
     written = ensure_dynamic_targets_frozen(cfg, ctx, {}, {}, {}, modes=modes, force=True, client=client)
     return {"written": written}
