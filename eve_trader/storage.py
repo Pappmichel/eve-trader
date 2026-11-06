@@ -8243,12 +8243,14 @@ def load_doctrine_market_contract_items(contract_id: int) -> list[tuple]:
 def get_doctrine_market_scan() -> Optional[tuple]:
     """(scanned_at, system_id, include_public, include_alliance,
     public_candidates, alliance_candidates, matched, unknown_locations,
-    items_pending, items_failed, asks_for_items) or None."""
+    items_pending, items_failed, asks_for_items, alliance_skipped) or None.
+    New columns stay at the end so callers that unpack by index keep working."""
     with connect() as conn:
         return conn.execute(
             "SELECT scanned_at, system_id, include_public, include_alliance, "
             "public_candidates, alliance_candidates, matched, unknown_locations, "
-            "items_pending, items_failed, asks_for_items FROM doctrine_market_scans"
+            "items_pending, items_failed, asks_for_items, alliance_skipped "
+            "FROM doctrine_market_scans"
         ).fetchone()
 
 
@@ -8293,6 +8295,7 @@ def replace_doctrine_market_snapshot(
     items_pending: int = 0,
     items_failed: int = 0,
     asks_for_items: int = 0,
+    alliance_skipped: bool = False,
 ) -> None:
     """Wholesale-replace the Contract Market snapshot for this tenant.
 
@@ -8308,11 +8311,13 @@ def replace_doctrine_market_snapshot(
             "INSERT INTO doctrine_market_scans "
             "(scanned_at, system_id, include_public, include_alliance, "
             "public_candidates, alliance_candidates, matched, "
-            "unknown_locations, items_pending, items_failed, asks_for_items) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "unknown_locations, items_pending, items_failed, asks_for_items, "
+            "alliance_skipped) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (scanned_at, system_id, include_public, include_alliance,
              public_candidates, alliance_candidates, matched,
-             unknown_locations, items_pending, items_failed, asks_for_items),
+             unknown_locations, items_pending, items_failed, asks_for_items,
+             alliance_skipped),
         )
         if contracts:
             cols = ", ".join(_MARKET_CONTRACT_COLUMNS)

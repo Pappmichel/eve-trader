@@ -75,7 +75,7 @@ describe('Doctrine ContractMarket badges', () => {
         scanned_at: '2026-01-01T00:00:00Z', system_id: 30000142, system_name: 'Jita',
         include_public: true, include_alliance: true, public_candidates: 0,
         alliance_candidates: 0, matched: 0, unknown_locations: 0, items_pending: 0,
-        items_failed: 0, asks_for_items: 0,
+        items_failed: 0, asks_for_items: 0, alliance_skipped: false,
       },
       settings: SETTINGS,
       doctrines: [{ doctrine_id: 'd1', doctrine_name: 'Frigates', fittings: [FITTING] }],
@@ -88,13 +88,41 @@ describe('Doctrine ContractMarket badges', () => {
     expect(await screen.findByText('No contracts for this fitting in the last scan.')).toBeTruthy()
   })
 
+  it('shows the alliance-skipped hint only when the flag is set', async () => {
+    const hint = /Alliance contracts were not read/
+    renderPage({
+      scan: {
+        scanned_at: '2026-01-01T00:00:00Z', system_id: 30000142, system_name: 'Jita',
+        include_public: true, include_alliance: true, public_candidates: 1,
+        alliance_candidates: 0, matched: 0, unknown_locations: 0, items_pending: 0,
+        items_failed: 0, asks_for_items: 0, alliance_skipped: false,
+      },
+      settings: SETTINGS,
+      doctrines: [{ doctrine_id: 'd1', doctrine_name: 'Frigates', fittings: [FITTING] }],
+    })
+    expect(await screen.findByText('0 contracts')).toBeTruthy()
+    expect(screen.queryByText(hint)).toBeNull()
+
+    renderPage({
+      scan: {
+        scanned_at: '2026-01-01T00:00:00Z', system_id: 30000142, system_name: 'Jita',
+        include_public: true, include_alliance: true, public_candidates: 1,
+        alliance_candidates: 0, matched: 0, unknown_locations: 0, items_pending: 0,
+        items_failed: 0, asks_for_items: 0, alliance_skipped: true,
+      },
+      settings: SETTINGS,
+      doctrines: [{ doctrine_id: 'd1', doctrine_name: 'Frigates', fittings: [FITTING] }],
+    })
+    expect(await screen.findByText(hint)).toBeTruthy()
+  })
+
   it('lists a hit count when contracts matched', async () => {
     renderPage({
       scan: {
         scanned_at: '2026-01-01T00:00:00Z', system_id: 30000142, system_name: 'Jita',
         include_public: true, include_alliance: true, public_candidates: 1,
         alliance_candidates: 0, matched: 1, unknown_locations: 0, items_pending: 0,
-        items_failed: 0, asks_for_items: 0,
+        items_failed: 0, asks_for_items: 0, alliance_skipped: false,
       },
       settings: SETTINGS,
       doctrines: [{

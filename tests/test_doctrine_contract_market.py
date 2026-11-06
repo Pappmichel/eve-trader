@@ -608,6 +608,9 @@ def test_public_scan_runs_without_a_sharing_character(monkeypatch, cfg):
     result = contract_market.scan_contract_market(cfg)
     assert result["alliance_skipped"] is True
     assert result["matched"] == 1
+    assert storage.get_doctrine_market_scan()[11] is True
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [])
+    assert contract_market.market_results(cfg)["scan"]["alliance_skipped"] is True
 
 
 def test_alliance_only_without_a_sharing_character_fails_before_esi(monkeypatch, cfg):
@@ -615,9 +618,75 @@ def test_alliance_only_without_a_sharing_character_fails_before_esi(monkeypatch,
     _scan_setup(monkeypatch, cfg, client)
     cfg.contract_market_include_public = False
     cfg.contract_market_include_alliance = True
-    with pytest.raises(ActionError, match="sharing Contracts"):
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="corporation contracts scope"):
         contract_market.scan_contract_market(cfg)
     client.public_contracts.assert_not_called()
+    client.corporation_contracts.assert_not_called()
+    assert len(storage.list_doctrine_market_contracts()) == 1
+
+
+def test_alliance_only_sharing_corp_without_readers_keeps_previous(monkeypatch, cfg):
+    client = MagicMock()
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: ([], None))
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="corporation contracts scope"):
+        contract_market.scan_contract_market(cfg)
+    client.corporation_contracts.assert_not_called()
+    assert len(storage.list_doctrine_market_contracts()) == 1
+
+
+def test_alliance_only_corp_without_alliance_keeps_previous(monkeypatch, cfg):
+    client = MagicMock()
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["doctrine:1"], None))
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="corporation contracts scope"):
+        contract_market.scan_contract_market(cfg)
+    assert len(storage.list_doctrine_market_contracts()) == 1
+
+
+def test_public_with_unreadable_corp_sets_alliance_skipped(monkeypatch, cfg):
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw()]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: ([], None))
+    result = contract_market.scan_contract_market(cfg)
+    assert result["matched"] == 1
+    assert result["alliance_skipped"] is True
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates", lambda: [])
+    assert contract_market.market_results(cfg)["scan"]["alliance_skipped"] is True
+    client.corporation_contracts.assert_not_called()
+
+
+def test_readable_corp_scan_does_not_skip_alliance(monkeypatch, cfg):
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw()]
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    result = contract_market.scan_contract_market(cfg)
+    assert result["alliance_skipped"] is False
+    assert result["matched"] == 1
+    assert storage.get_doctrine_market_scan()[11] is False
+
+
+def test_scan_tuple_without_skip_defaults_alliance_skipped_false():
+    storage.replace_doctrine_market_snapshot(
+        [], [], scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
+        include_public=True, include_alliance=False,
+        public_candidates=0, alliance_candidates=0, matched=0,
+    )
+    assert storage.get_doctrine_market_scan()[11] is False
 
 
 def test_rescan_right_away_is_rejected():
