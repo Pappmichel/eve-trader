@@ -36,6 +36,16 @@ describe('StructureIdField', () => {
     expect(screen.getByText("Don't see it? Enter ID manually")).toBeTruthy()
   })
 
+  it('shows a saved structure that has no name instead of an empty field', () => {
+    renderField(999, { '1020000000001': 'C-J' })
+    expect((screen.getByRole('combobox') as HTMLInputElement).value).toBe('999 (not resolved)')
+  })
+
+  it('shows the name of a known structure', () => {
+    renderField(1020000000001, { '1020000000001': 'C-J' })
+    expect((screen.getByRole('combobox') as HTMLInputElement).value).toBe('C-J (1020000000001)')
+  })
+
   it('shows "No known structures" when the known list is empty', async () => {
     renderField(null, {})
     await userEvent.click(screen.getByRole('combobox'))

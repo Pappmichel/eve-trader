@@ -18,6 +18,12 @@ export function StructureIdField({ label, value, onChange, structureNames }: Pro
   const knownOptions = Object.entries(structureNames ?? {})
     .filter((entry): entry is [string, string] => !!entry[1])
     .map(([id, name]) => ({ value: id, label: `${name} (${id})` }))
+  // A saved structure no character can name stays visible, so the field never
+  // reads as unset while a value is stored.
+  const valueString = value != null ? String(value) : null
+  const options = valueString && !knownOptions.some((o) => o.value === valueString)
+    ? [{ value: valueString, label: `${valueString} (not resolved)` }, ...knownOptions]
+    : knownOptions
   const [manualMode, setManualMode] = useState(false)
 
   return (
@@ -27,10 +33,11 @@ export function StructureIdField({ label, value, onChange, structureNames }: Pro
       ) : (
         <Select
           label={label}
-          data={knownOptions}
-          value={value != null ? String(value) : null}
+          data={options}
+          value={valueString}
           onChange={(v) => onChange(v ? Number(v) : null)}
           searchable
+          limit={50}
           nothingFoundMessage={knownOptions.length === 0 ? 'No known structures' : 'No match'}
         />
       )}
