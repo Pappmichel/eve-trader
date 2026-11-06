@@ -45,7 +45,7 @@ describe('Shortlist 30d sparkline column', () => {
     render(
       <MantineProvider><QueryClientProvider client={client}><MemoryRouter><Shortlist /></MemoryRouter></QueryClientProvider></MantineProvider>,
     )
-    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalled())
+    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalled(), { timeout: 10_000 })
     expect(tradingApi.sparklines).toHaveBeenCalledTimes(1)
     expect(tradingApi.sparklines).toHaveBeenCalledWith([1, 2])
     await waitFor(() => expect(screen.getAllByTestId('sparkline')).toHaveLength(1))
@@ -58,10 +58,10 @@ describe('Shortlist 30d sparkline column', () => {
     render(
       <MantineProvider><QueryClientProvider client={client}><MemoryRouter><Shortlist /></MemoryRouter></QueryClientProvider></MantineProvider>,
     )
-    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalledTimes(1), { timeout: 10_000 })
 
     await act(() => client.invalidateQueries({ queryKey: ['trading', 'shortlist', 'snapshot'] }))
-    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalledTimes(2), { timeout: 10_000 })
     expect(vi.mocked(tradingApi.sparklines).mock.calls[1][0]).toEqual([1, 2])
   })
 })

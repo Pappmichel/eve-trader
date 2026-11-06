@@ -601,6 +601,11 @@ export const doctrineApi = {
     return get<T.DoctrineContractRow[]>(`/api/doctrine/contracts${qs ? `?${qs}` : ''}`)
   },
   contractHistory: () => get<T.ContractHistoryRow[]>('/api/doctrine/contracts/history'),
+  contractMarket: () => get<T.ContractMarketResponse>('/api/doctrine/contract-market'),
+  scanContractMarket: (systemId?: number | null) =>
+    post<T.PipelineRunStatus>('/api/doctrine/contract-market/scan',
+      { system_id: systemId ?? null }),
+  scanContractMarketStatus: () => get<T.PipelineRunStatus>('/api/doctrine/contract-market/scan/status'),
   stockpile: (doctrineId?: string, locationId?: number) => {
     const params = new URLSearchParams()
     if (doctrineId) params.set('doctrine_id', doctrineId)
@@ -995,6 +1000,7 @@ export const hubsApi = {
 
 export const sdeApi = {
   regions: () => get<T.RegionOption[]>('/api/sde/regions'),
+  solarSystems: () => get<{ solar_system_id: number; solar_system_name: string }[]>('/api/sde/solar-systems'),
 }
 
 export const errorsApi = {

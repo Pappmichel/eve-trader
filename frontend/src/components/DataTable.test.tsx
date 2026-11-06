@@ -91,7 +91,7 @@ describe('DataTable', () => {
     const OriginalBlob = globalThis.Blob
     let csv: string | undefined
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    globalThis.Blob = vi.fn((parts: any[], options: any) => {
+    globalThis.Blob = vi.fn(function (parts: any[], options: any) {
       csv = parts.join('')
       return new OriginalBlob(parts, options)
     }) as unknown as typeof Blob

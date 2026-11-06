@@ -1500,6 +1500,8 @@ export interface FittingStatus {
   // Complete fits the stockpile holds right now (null without shared assets)
   assemblable_now?: number | null
   assemblable_bottleneck?: string | null
+  // Assembled ships in the ready-to-list hangar (valid or tolerable fit)
+  ready_to_list?: number | null
 }
 
 export interface AssemblableRow {
@@ -1589,6 +1591,73 @@ export interface DoctrineSettings {
   // Optional: only this container in the hangar is the reserve.
   strategic_reserve_container_id: number | null
   strategic_reserve_include_hulls: boolean
+  // Ready-to-list hangar (assembled ships ready to contract). All four or none.
+  ready_to_list_owner_type: 'character' | 'corporation' | null
+  ready_to_list_owner_id: number | null
+  ready_to_list_location_id: number | null
+  ready_to_list_hangar_flag: string | null
+  // Contract Market (GitHub issue #428)
+  contract_market_system_id: number | null
+  contract_market_include_public: boolean
+  contract_market_include_alliance: boolean
+}
+
+export interface ContractMarketListing {
+  contract_id: number
+  source: 'public' | 'alliance'
+  issuer_id: number | null
+  issuer_name: string | null
+  start_location_id: number | null
+  location_name: string | null
+  status: string
+  title: string | null
+  price: number | null
+  date_issued: string | null
+  date_expired: string | null
+  match_score: number | null
+  validation_status: string
+}
+
+export interface ContractMarketFitting {
+  fitting_id: string
+  fitting_name: string
+  hull_type_id: number | null
+  hull_name: string | null
+  count: number
+  min_price: number | null
+  avg_price: number | null
+  contracts: ContractMarketListing[]
+}
+
+export interface ContractMarketDoctrine {
+  doctrine_id: string | null
+  doctrine_name: string
+  fittings: ContractMarketFitting[]
+}
+
+export interface ContractMarketScanInfo {
+  scanned_at: string
+  system_id: number
+  system_name: string | null
+  include_public: boolean
+  include_alliance: boolean
+  public_candidates: number
+  alliance_candidates: number
+  matched: number
+  unknown_locations: number
+  items_pending: number
+  items_failed: number
+  asks_for_items: number
+}
+
+export interface ContractMarketResponse {
+  scan: ContractMarketScanInfo | null
+  doctrines: ContractMarketDoctrine[]
+  settings: {
+    system_id: number | null
+    include_public: boolean
+    include_alliance: boolean
+  }
 }
 
 export interface ReserveContainerOption {

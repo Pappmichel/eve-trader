@@ -307,9 +307,88 @@ CREATE POLICY tenant_isolation ON doctrine_equivalent_disabled_groups
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- ================================================== per-tenant: contract market
+-- GitHub issue #428 - public + alliance contracts scanned for one solar
+-- system, matched against Doctrine fittings. Deliberately NOT
+-- doctrine_contracts: that table is the owner-issued snapshot (ampel,
+-- alerts, stockpile counts). A market scan must not collide with it.
+-- Wholesale-replaced per scan (one current result per tenant). Items of every
+-- candidate in the system, matched or not, are carried forward so ESI is not
+-- re-hit for a list that never changes.
+CREATE TABLE IF NOT EXISTS doctrine_market_scans (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    system_id INTEGER NOT NULL,
+    include_public BOOLEAN NOT NULL DEFAULT true,
+    include_alliance BOOLEAN NOT NULL DEFAULT true,
+    public_candidates INTEGER NOT NULL DEFAULT 0,
+    alliance_candidates INTEGER NOT NULL DEFAULT 0,
+    matched INTEGER NOT NULL DEFAULT 0,
+    unknown_locations INTEGER NOT NULL DEFAULT 0,
+    items_pending INTEGER NOT NULL DEFAULT 0,
+    items_failed INTEGER NOT NULL DEFAULT 0,
+    asks_for_items INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id)
+);
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS unknown_locations INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS items_pending INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS items_failed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ADD COLUMN IF NOT EXISTS asks_for_items INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doctrine_market_scans ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_market_scans;
+CREATE POLICY tenant_isolation ON doctrine_market_scans
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+CREATE TABLE IF NOT EXISTS doctrine_market_contracts (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    contract_id BIGINT NOT NULL,
+    source TEXT NOT NULL,                 -- 'public' | 'alliance'
+    issuer_id BIGINT,
+    issuer_name TEXT,
+    start_location_id BIGINT,
+    system_id INTEGER,
+    status TEXT NOT NULL,
+    title TEXT,
+    price DOUBLE PRECISION,
+    date_issued TIMESTAMPTZ,
+    date_expired TIMESTAMPTZ,
+    matched_fitting_id UUID,
+    match_score REAL,
+    validation_status TEXT NOT NULL,
+    scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, contract_id)
+);
+CREATE INDEX IF NOT EXISTS idx_doctrine_market_contracts_fitting
+    ON doctrine_market_contracts (tenant_id, matched_fitting_id);
+ALTER TABLE doctrine_market_contracts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_market_contracts;
+CREATE POLICY tenant_isolation ON doctrine_market_contracts
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+CREATE TABLE IF NOT EXISTS doctrine_market_contract_items (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    contract_id BIGINT NOT NULL,
+    record_id BIGINT NOT NULL,
+    type_id INTEGER NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    is_included BOOLEAN NOT NULL DEFAULT true,
+    is_singleton BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (tenant_id, contract_id, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_doctrine_market_items_contract
+    ON doctrine_market_contract_items (tenant_id, contract_id);
+ALTER TABLE doctrine_market_contract_items ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_market_contract_items;
+CREATE POLICY tenant_isolation ON doctrine_market_contract_items
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     sde_type_slots, sde_type_equivalents, doctrine_equivalent_overrides,
     doctrine_equivalent_disabled_groups, doctrines, doctrine_fittings, doctrine_fitting_items,
     doctrine_fitting_parse_issues, doctrine_contracts, doctrine_contract_items,
-    doctrine_contract_deviations, doctrine_contract_history
+    doctrine_contract_deviations, doctrine_contract_history,
+    doctrine_market_scans, doctrine_market_contracts, doctrine_market_contract_items
     TO eve_trader_app;

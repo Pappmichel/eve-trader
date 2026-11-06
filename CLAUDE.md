@@ -177,7 +177,7 @@ tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 4). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 5). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
 
@@ -1394,6 +1394,48 @@ can reach the setting of. Asset rows with a NULL flag stay counted until the nex
 sync: `_exclude_hangar_clause` needs its `COALESCE`, a plain `NOT (a AND b)`
 would drop them.
 
+## Ready to list (Doctrine, GitHub issue #429)
+
+`doctrine/ready_to_list.py`: one hangar of assembled ships, per owner, structure
+and division (`DoctrineConfig.ready_to_list_*`). The Doctrine Detail column counts
+ships whose fit validates as valid or tolerable, pooled by fit identity. The hull
+must be the ship itself, and a ship inside another ship's bay does not count. No
+container option: assembled ships cannot sit in a container. An owner with no asset
+rows at all is unknown (`None`), not 0. Not an exclude hangar: assembled ships are
+never stock.
+
+## Contract Market (Doctrine, GitHub issue #428)
+
+`doctrine/contract_market.py`, tab `/doctrine/contract-market`, tables
+`doctrine_market_*` (never `doctrine_contracts`). Scans one solar system as a
+`pipeline_runner` job, on demand only.
+
+ESI facts, checked live 2026-11-06. Do not re-derive these from the docs, which
+say otherwise:
+- `GET /contracts/public/{region}/` has no `status` or `availability`. Everything
+  on it is open until `date_expired`.
+- There is no alliance endpoint (esi/esi-issues#1218). `GET /corporations/{id}/
+  contracts/` also returns contracts assigned to the corporation's alliance, from
+  any member corp, with readable items; member corps get the same list. Those rows
+  say `availability: personal` (esi/esi-issues#1447), so only `assignee_id`
+  identifies them. The character list does not have them.
+- A corp list therefore holds about 15,000 rows of mostly other people's contracts.
+  Anything reading it must filter by issuer, as `esi_data/fetchers.py` does.
+
+Rules:
+- Public locations are read, not looked up: resolving every structure of a region
+  fills `location_registry` with strangers' structures and burns the ESI error
+  budget. What cannot be placed is counted and shown.
+- A failed list read or too many failed item reads keep the last result.
+- A contract smaller than the smallest doctrine hull (packaged) cannot hold a fit
+  and is never read: 413 of 34,459 in The Forge pass. If a hull's volume is
+  unknown, the filter is off.
+- Items of every candidate are stored, because a contract's list never changes.
+  Cap per scan `MAX_NEW_ITEM_FETCHES`, minimum interval `MIN_SECONDS_BETWEEN_SCANS`.
+- A contract asking the buyer for items is not listed: its price says nothing
+  about the fit. Invalid fits are not listed either.
+- A contract shows under every fitting with the same identity.
+
 ## Sorting paste
 
 `sorting.actions.do_sorting_paste` (`POST /api/sorting/sorting-paste`, tab
@@ -1545,9 +1587,9 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
 ## Environment specifics
 
 - **Git repository, GitHub remote.** `git init` + first commit + a GitHub
-  remote (`origin`, https://github.com/Pappmichel/eve-trader, currently
-  private) were set up 2026-08-16 as part of preparing the project for
-  publication - this repo is no longer "no VCS safety net." Workflow: commit
+  remote (`origin`, https://github.com/Pappmichel/eve-trader, **public**) were
+  set up 2026-08-16 as part of preparing the project for publication, so never
+  commit server addresses, player data or open security findings. Workflow: commit
   locally after completed work without asking (cheap, reversible, purely
   local); never `git push` without the user explicitly asking for it in that
   turn, since that's what actually publishes to the shared remote.

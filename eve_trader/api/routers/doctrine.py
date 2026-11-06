@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from .. import schemas
-from ...doctrine import actions
+from ...doctrine import actions, parser
 from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
 from ...actions import ConflictError
@@ -60,8 +60,12 @@ def delete_doctrine(doctrine_id: str):
 
 
 # -------------------------------------------------------------------- fittings
+_FITTING_TEXT = Field(max_length=parser.MAX_FITTING_CHARS)
+_OPTIONAL_FITTING_TEXT = Field(default=None, max_length=parser.MAX_FITTING_CHARS)
+
+
 class ParseFittingRequest(BaseModel):
-    raw_eft: str
+    raw_eft: str = _FITTING_TEXT
 
 
 @router.post("/fittings/parse")
@@ -70,14 +74,14 @@ def parse_fitting(req: ParseFittingRequest):
 
 
 class AddFittingRequest(BaseModel):
-    raw_eft: str
+    raw_eft: str = _FITTING_TEXT
     name: Optional[str] = None
     variant_label: Optional[str] = None
     contract_target: int = 0
     stockpile_target: int = 0
     cargo_tolerance_pct: Optional[float] = None
-    fuel_bay_text: Optional[str] = None
-    ship_maintenance_bay_text: Optional[str] = None
+    fuel_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
+    ship_maintenance_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
 
 
 @router.post("/doctrines/{doctrine_id}/fittings")
@@ -86,15 +90,15 @@ def add_fitting(doctrine_id: str, req: AddFittingRequest):
 
 
 class UpdateFittingRequest(BaseModel):
-    raw_eft: Optional[str] = None
+    raw_eft: Optional[str] = _OPTIONAL_FITTING_TEXT
     name: Optional[str] = None
     variant_label: Optional[str] = None
     contract_target: Optional[int] = None
     stockpile_target: Optional[int] = None
     cargo_tolerance_pct: Optional[float] = None
     active: Optional[bool] = None
-    fuel_bay_text: Optional[str] = None
-    ship_maintenance_bay_text: Optional[str] = None
+    fuel_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
+    ship_maintenance_bay_text: Optional[str] = _OPTIONAL_FITTING_TEXT
     reserve_target: Optional[int] = None
 
 
@@ -170,6 +174,28 @@ def list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = Non
 @router.get("/contracts/history", response_model=list[schemas.ContractHistoryRow])
 def get_contract_history():
     return _wrap(actions.do_contract_history)["rows"]
+
+
+# ------------------------------------------------------------- contract market (#428)
+class ContractMarketScanRequest(BaseModel):
+    system_id: Optional[int] = None
+
+
+@router.get("/contract-market")
+def get_contract_market():
+    return _wrap(actions.do_get_contract_market)
+
+
+@router.post("/contract-market/scan")
+def scan_contract_market(req: ContractMarketScanRequest = Body(default_factory=ContractMarketScanRequest)):
+    """Starts the Contract Market scan as a background job. Poll
+    GET .../contract-market/scan/status; results via GET .../contract-market."""
+    return _wrap(actions.do_start_scan_contract_market, system_id=req.system_id)
+
+
+@router.get("/contract-market/scan/status")
+def contract_market_scan_status():
+    return _wrap(actions.do_contract_market_scan_status)
 
 
 @router.get("/stockpile")
@@ -277,6 +303,13 @@ class DoctrineSettings(BaseModel):
     strategic_reserve_hangar_flag: Optional[str] = None
     strategic_reserve_container_id: Optional[int] = None
     strategic_reserve_include_hulls: bool = True
+    ready_to_list_owner_type: Optional[str] = None
+    ready_to_list_owner_id: Optional[int] = None
+    ready_to_list_location_id: Optional[int] = None
+    ready_to_list_hangar_flag: Optional[str] = None
+    contract_market_system_id: Optional[int] = None
+    contract_market_include_public: bool = True
+    contract_market_include_alliance: bool = True
 
 
 class LocationOption(BaseModel):
@@ -306,7 +339,11 @@ def update_settings(updates: DoctrineSettings):
     for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants",
                 "strategic_reserve_owner_type", "strategic_reserve_owner_id", "strategic_reserve_location_id",
                 "strategic_reserve_hangar_flag", "strategic_reserve_container_id",
-                "strategic_reserve_include_hulls"):
+                "strategic_reserve_include_hulls",
+                "ready_to_list_owner_type", "ready_to_list_owner_id", "ready_to_list_location_id",
+                "ready_to_list_hangar_flag",
+                "contract_market_system_id", "contract_market_include_public",
+                "contract_market_include_alliance"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)

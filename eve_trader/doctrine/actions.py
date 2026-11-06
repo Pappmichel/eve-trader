@@ -15,7 +15,7 @@ from .. import storage
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
-from . import engine, equivalents, esi_sync, reserve
+from . import contract_market, engine, equivalents, esi_sync, reserve
 from .config import DOCTRINE_CONFIG, DoctrineConfig, validate_doctrine_overrides
 from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
@@ -378,7 +378,47 @@ def do_start_sync_contracts() -> dict:
 
 def do_sync_status() -> dict:
     from .. import pipeline_runner
-    return pipeline_runner.job_status(pipeline_runner.TOOL_DOCTRINE)
+    # Narrowed to sync_contracts once Contract Market shares TOOL_DOCTRINE
+    # (pipeline_runner.job_status docstring / phase 8).
+    return pipeline_runner.job_status(
+        pipeline_runner.TOOL_DOCTRINE, pipeline_runner.JOB_SYNC_CONTRACTS,
+    )
+
+
+def do_scan_contract_market(system_id: Optional[int] = None, progress_callback=None,
+                            cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """Scan public + alliance contracts in one system (GitHub issue #428).
+    Writes only doctrine_market_* tables."""
+    if system_id is not None:
+        contract_market._system_region(int(system_id))  # an unknown id is never saved
+    if system_id is not None and system_id != cfg.contract_market_system_id:
+        # Persist the system the user just picked so the next open remembers it.
+        do_update_settings({"contract_market_system_id": int(system_id)}, cfg)
+        cfg = DOCTRINE_CONFIG  # proxy re-reads after save
+    return contract_market.scan_contract_market(
+        cfg, system_id=system_id, progress_callback=progress_callback,
+    )
+
+
+def do_start_scan_contract_market(system_id: Optional[int] = None,
+                                  cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    from .. import pipeline_runner
+    target = system_id if system_id is not None else cfg.contract_market_system_id
+    if target:
+        contract_market._system_region(int(target))
+        contract_market.reject_scan_too_soon(int(target))
+    return pipeline_runner.start_contract_market_scan(system_id=system_id)
+
+
+def do_contract_market_scan_status() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.job_status(
+        pipeline_runner.TOOL_DOCTRINE, pipeline_runner.JOB_CONTRACT_MARKET_SCAN,
+    )
+
+
+def do_get_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    return contract_market.market_results(cfg)
 
 
 def _contract_ids_affected_by_fitting(fitting_id: str, rematch_unmatched: bool,
@@ -654,6 +694,13 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "strategic_reserve_hangar_flag": cfg.strategic_reserve_hangar_flag,
         "strategic_reserve_container_id": cfg.strategic_reserve_container_id,
         "strategic_reserve_include_hulls": cfg.strategic_reserve_include_hulls,
+        "ready_to_list_owner_type": cfg.ready_to_list_owner_type,
+        "ready_to_list_owner_id": cfg.ready_to_list_owner_id,
+        "ready_to_list_location_id": cfg.ready_to_list_location_id,
+        "ready_to_list_hangar_flag": cfg.ready_to_list_hangar_flag,
+        "contract_market_system_id": cfg.contract_market_system_id,
+        "contract_market_include_public": cfg.contract_market_include_public,
+        "contract_market_include_alliance": cfg.contract_market_include_alliance,
     }
 
 

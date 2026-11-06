@@ -1,7 +1,5 @@
 import { useState } from 'react'
-import { NumberInput, Stack, UnstyledButton } from '@mantine/core'
-
-import { SearchableSelect } from './SearchableSelect'
+import { NumberInput, Select, Stack, UnstyledButton } from '@mantine/core'
 
 interface Props {
   label: string
@@ -10,33 +8,41 @@ interface Props {
   structureNames: Record<string, string | null> | undefined
 }
 
-// Every structure-ID field needs a hard fallback to raw numeric entry - a
-// structure not yet in the tenant's resolved-names cache (brand new, or no
-// producer character has ESI access to it yet) is a guaranteed, routine
-// case, not an edge case, so the picker must never be the only way in.
-// Defaults to manual mode whenever the current value isn't a known/named
-// entry in the cache (including while the cache is still loading).
+// Picker-first structure-ID field (same shape as LocationPicker): known
+// named structures from the tenant's resolved-names cache are the default
+// entry, with a hard fallback to raw numeric ID entry. A structure not yet
+// in the cache (brand new, or no character has ESI access to it yet) is a
+// guaranteed, routine case, not an edge case, so the picker must never be
+// the only way in.
 export function StructureIdField({ label, value, onChange, structureNames }: Props) {
   const knownOptions = Object.entries(structureNames ?? {})
     .filter((entry): entry is [string, string] => !!entry[1])
     .map(([id, name]) => ({ value: id, label: `${name} (${id})` }))
-  const currentIsKnown = value != null && !!structureNames?.[String(value)]
-  const [manualMode, setManualMode] = useState(!currentIsKnown)
+  // A saved structure no character can name stays visible, so the field never
+  // reads as unset while a value is stored.
+  const valueString = value != null ? String(value) : null
+  const options = valueString && !knownOptions.some((o) => o.value === valueString)
+    ? [{ value: valueString, label: `${valueString} (not resolved)` }, ...knownOptions]
+    : knownOptions
+  const [manualMode, setManualMode] = useState(false)
 
   return (
     <Stack gap={2}>
       {manualMode ? (
         <NumberInput label={label} value={value ?? ''} min={1} onChange={(v) => onChange(v ? Number(v) : null)} />
       ) : (
-        <SearchableSelect
+        <Select
           label={label}
-          data={knownOptions}
-          value={value != null ? String(value) : null}
+          data={options}
+          value={valueString}
           onChange={(v) => onChange(v ? Number(v) : null)}
+          searchable
+          limit={50}
+          nothingFoundMessage={knownOptions.length === 0 ? 'No known structures' : 'No match'}
         />
       )}
       <UnstyledButton onClick={() => setManualMode((m) => !m)} c="accent" fz="xs" td="underline">
-        {manualMode ? 'Pick from known structures instead' : "Don't see it? Enter ID manually"}
+        {manualMode ? 'Search instead' : "Don't see it? Enter ID manually"}
       </UnstyledButton>
     </Stack>
   )

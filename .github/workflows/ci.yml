@@ -5,13 +5,22 @@ on:
     branches: [main, dev]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Production runs Python 3.12 on aarch64, and native solver hangs have
+      # shown up there but not on x86 (CLAUDE.md, HiGHS section). 3.11 stays
+      # for local development.
       matrix:
-        python-version: ['3.10', '3.11']
+        include:
+          - { os: ubuntu-latest, python-version: '3.11' }
+          - { os: ubuntu-latest, python-version: '3.12' }
+          - { os: ubuntu-24.04-arm, python-version: '3.12' }
     # Matches tests/pg_helpers.py's OWNER_DSN default exactly (postgres/
     # devpassword@localhost:5432). The tests never use the eve_trader
     # database itself: they create eve_trader_test (one per xdist worker,
@@ -48,7 +57,9 @@ jobs:
       - run: python -m pip install -r requirements.lock
       - run: python -m pip install -e . --no-deps
       - run: python -m pip install pip-audit
-      - run: python -m pip_audit -r requirements.lock
+      # requirements.txt, not the lock file: the lock file is only a -r include,
+      # which pip-audit would otherwise check as zero packages.
+      - run: python -m pip_audit -r requirements.txt
       - run: python -m pytest -n auto
 
   frontend:
@@ -60,7 +71,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '20'
+          node-version: '22'  # production's version; 20 is end-of-life
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
@@ -72,6 +83,9 @@ jobs:
       # reaches a real user, so it doesn't need to fail this build the same
       # way a vulnerable shipped dependency would.
       - run: npm audit --omit dev
+      # Dev tooling runs on developer machines and in deploy's build step, so a
+      # finding there is reported too, without blocking on critical-only noise.
+      - run: npm audit --audit-level=critical
       - run: npm run build
       - run: npm run lint
       - run: npm test

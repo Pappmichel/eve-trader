@@ -341,6 +341,14 @@ def test_recipient_search_combines_own_lists_and_public_search(tenant, fake):
         mail_write.do_search_recipients(ALICE, "ab")
 
 
+def test_recipient_search_keeps_list_matches_when_the_lookup_fails(tenant, fake, monkeypatch):
+    _setup()
+    monkeypatch.setattr(mail_write, "_own_lists", lambda *a: {77: "abc list"})
+    monkeypatch.setattr(fake, "search_entities", lambda q, limit=8: (_ for _ in ()).throw(ESIError("503")))
+    out = mail_write.do_search_recipients(ALICE, "abc")
+    assert out["results"] == [{"type": "mailing_list", "id": 77, "name": "abc list"}]
+
+
 def test_recipient_search_failure_is_redacted(tenant, fake, monkeypatch):
     _setup()
     monkeypatch.setattr(fake, "search_entities", lambda q, limit=8: (_ for _ in ()).throw(ESIError("HTTP 500 for u: secret")))

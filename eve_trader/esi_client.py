@@ -1308,6 +1308,27 @@ class ESIClient:
         return self._get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def public_contracts(self, region_id: int) -> list[dict]:
+        """Unauthenticated GET /contracts/public/{region_id}/ - every public
+        contract currently open in that region (paginated). Doctrine's Contract
+        Market (GitHub issue #428) filters further to item_exchange in one
+        solar system. Not cached: one tenant-level job reads it, and a region
+        list held in memory would stay until the process restarts."""
+        return self._get_all_pages(
+            f"/contracts/public/{int(region_id)}/",
+            params={"datasource": "tranquility"},
+        )
+
+    def public_contract_items(self, contract_id: int) -> list[dict]:
+        """Unauthenticated GET /contracts/public/items/{contract_id}/. A
+        contract's item list never changes, so Contract Market stores it per
+        contract and only calls this for new ones. Raises ESIError when the
+        contract is gone."""
+        return self._get(
+            f"/contracts/public/items/{int(contract_id)}/",
+            params={"datasource": "tranquility"},
+        )
+
     def character_wallet_transactions(self, character_id: int, auth_role: str,
                                        from_id: Optional[int] = None) -> list[dict]:
         """This character's wallet transaction history.
@@ -1693,18 +1714,16 @@ class ESIClient:
         }
 
     def search_entities(self, query: str, limit: int = 8) -> list[dict]:
-        """Public GET /search/ (no auth) over characters, corporations and
-        alliances, for the compose recipient autocomplete. Returns at most
-        `limit` per category as [{"type", "id", "name"}]."""
-        found = self._get(
-            "/search/", params={"categories": "character,corporation,alliance", "search": query,
-                                "strict": "false", "datasource": "tranquility"},
-        )
-        picked: list[tuple[str, int]] = []
-        for kind in ("character", "corporation", "alliance"):
-            picked.extend((kind, int(i)) for i in (found.get(kind) or [])[:limit])
-        names = self.resolve_names_cached([i for _k, i in picked])
-        return [{"type": k, "id": i, "name": names[i]} for k, i in picked if i in names]
+        """Characters, corporations and alliances named exactly `query`, for the
+        compose recipient autocomplete, as [{"type", "id", "name"}]. Exact only:
+        CCP removed the public GET /search/ route, and the search that remains
+        needs a login with a scope this app does not request."""
+        found = self.resolve_recipient_names([query])
+        return [
+            {"type": kind, "id": int(hit["id"]), "name": hit["name"]}
+            for kind in ("character", "corporation", "alliance")
+            for hit in (found.get(kind) or [])[:limit]
+        ]
 
     def resolve_names_cached(self, ids: list[int]) -> dict[int, str]:
         """resolve_names with a shared 1 h in-memory cache (public data).
