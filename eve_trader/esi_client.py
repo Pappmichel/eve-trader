@@ -1308,6 +1308,27 @@ class ESIClient:
         return self._get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def public_contracts(self, region_id: int) -> list[dict]:
+        """Unauthenticated GET /contracts/public/{region_id}/ - every public
+        contract currently open in that region (paginated). Doctrine's Contract
+        Market (GitHub issue #428) filters further to item_exchange in one
+        solar system. Not cached: one tenant-level job reads it, and a region
+        list held in memory would stay until the process restarts."""
+        return self._get_all_pages(
+            f"/contracts/public/{int(region_id)}/",
+            params={"datasource": "tranquility"},
+        )
+
+    def public_contract_items(self, contract_id: int) -> list[dict]:
+        """Unauthenticated GET /contracts/public/items/{contract_id}/. A
+        contract's item list never changes, so Contract Market stores it per
+        contract and only calls this for new ones. Raises ESIError when the
+        contract is gone."""
+        return self._get(
+            f"/contracts/public/items/{int(contract_id)}/",
+            params={"datasource": "tranquility"},
+        )
+
     def character_wallet_transactions(self, character_id: int, auth_role: str,
                                        from_id: Optional[int] = None) -> list[dict]:
         """This character's wallet transaction history.

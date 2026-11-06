@@ -55,6 +55,7 @@ JOB_REFRESH_AND_PRUNE = "refresh_and_prune"
 JOB_REFRESH_SHORTLIST = "refresh_shortlist"
 JOB_PIPELINE = "pipeline"
 JOB_SYNC_CONTRACTS = "sync_contracts"
+JOB_CONTRACT_MARKET_SCAN = "contract_market_scan"  # GitHub issue #428
 JOB_SDE_PREVIEW = "sde_preview"
 JOB_DISCOVER_BUILD_CANDIDATES = "discover_build_candidates"
 JOB_REBUILD_REALIZED = "rebuild_realized"
@@ -65,6 +66,7 @@ _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_TRADING, JOB_REFRESH_SHORTLIST): "Refresh Shortlist",
     (TOOL_TRADING, JOB_PIPELINE): "Run Complete Pipeline",
     (TOOL_DOCTRINE, JOB_SYNC_CONTRACTS): "Sync Contracts",
+    (TOOL_DOCTRINE, JOB_CONTRACT_MARKET_SCAN): "Contract Market Scan",
     (TOOL_ADMIN, JOB_SDE_PREVIEW): "Preview SDE",
     (TOOL_ADMIN, JOB_STRUCTURE_RESOLVE): "Resolve Structure Names",
     (TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES): "Discover Build Candidates",
@@ -190,6 +192,17 @@ def start_doctrine_sync() -> dict:
         TOOL_DOCTRINE, JOB_SYNC_CONTRACTS,
         _JOB_LABELS[(TOOL_DOCTRINE, JOB_SYNC_CONTRACTS)],
         lambda cb: doctrine_actions.do_sync_contracts(progress_callback=cb),
+    )
+
+
+def start_contract_market_scan(system_id: int | None = None) -> dict:
+    """Background Contract Market scan (GitHub issue #428)."""
+    from .doctrine import actions as doctrine_actions
+    return start_job(
+        TOOL_DOCTRINE, JOB_CONTRACT_MARKET_SCAN,
+        _JOB_LABELS[(TOOL_DOCTRINE, JOB_CONTRACT_MARKET_SCAN)],
+        lambda cb: doctrine_actions.do_scan_contract_market(
+            system_id=system_id, progress_callback=cb),
     )
 
 

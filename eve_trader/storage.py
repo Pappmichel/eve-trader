@@ -8159,6 +8159,115 @@ def doctrine_contract_history_ids(contract_ids: list[int]) -> set[int]:
     return {r[0] for r in rows}
 
 
+# ------------------------------------------------------------- Contract Market (GitHub #428)
+_MARKET_CONTRACT_COLUMNS = (
+    "contract_id", "source", "issuer_id", "issuer_name", "start_location_id", "system_id",
+    "status", "title", "price", "date_issued", "date_expired", "matched_fitting_id",
+    "match_score", "validation_status", "scanned_at",
+)
+
+
+def load_doctrine_market_contract_items(contract_id: int) -> list[tuple]:
+    """(record_id, type_id, quantity, is_included, is_singleton) for one
+    market contract - reused across scans so ESI items are not re-fetched."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT record_id, type_id, quantity, is_included, is_singleton "
+            "FROM doctrine_market_contract_items WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchall()
+
+
+def get_doctrine_market_scan() -> Optional[tuple]:
+    """(scanned_at, system_id, include_public, include_alliance,
+    public_candidates, alliance_candidates, matched, unknown_locations,
+    items_pending, items_failed, asks_for_items) or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT scanned_at, system_id, include_public, include_alliance, "
+            "public_candidates, alliance_candidates, matched, unknown_locations, "
+            "items_pending, items_failed, asks_for_items FROM doctrine_market_scans"
+        ).fetchone()
+
+
+def load_all_doctrine_market_items() -> dict[int, list]:
+    """contract_id -> its stored item rows, for every contract of the last scan.
+    The list of a contract never changes, so a scan reuses these instead of
+    asking ESI again."""
+    from .doctrine.models import ContractItemRow
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, record_id, type_id, quantity, is_included, is_singleton "
+            "FROM doctrine_market_contract_items ORDER BY contract_id, record_id"
+        ).fetchall()
+    out: dict[int, list] = {}
+    for contract_id, record_id, type_id, quantity, is_included, is_singleton in rows:
+        out.setdefault(int(contract_id), []).append(ContractItemRow(
+            int(contract_id), record_id, type_id, quantity, is_included, is_singleton))
+    return out
+
+
+def list_doctrine_market_contracts() -> list[tuple]:
+    """Current Contract Market snapshot rows matching _MARKET_CONTRACT_COLUMNS."""
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_MARKET_CONTRACT_COLUMNS)} FROM doctrine_market_contracts "
+            "ORDER BY matched_fitting_id, price NULLS LAST"
+        ).fetchall()
+
+
+def replace_doctrine_market_snapshot(
+    contracts: list[tuple],
+    items: list[tuple],
+    *,
+    scanned_at: str,
+    system_id: int,
+    include_public: bool,
+    include_alliance: bool,
+    public_candidates: int,
+    alliance_candidates: int,
+    matched: int,
+    unknown_locations: int = 0,
+    items_pending: int = 0,
+    items_failed: int = 0,
+    asks_for_items: int = 0,
+) -> None:
+    """Wholesale-replace the Contract Market snapshot for this tenant.
+
+    contracts: rows matching _MARKET_CONTRACT_COLUMNS.
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    Never touches doctrine_contracts.
+    """
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrine_market_contract_items")
+        conn.execute("DELETE FROM doctrine_market_contracts")
+        conn.execute("DELETE FROM doctrine_market_scans")
+        conn.execute(
+            "INSERT INTO doctrine_market_scans "
+            "(scanned_at, system_id, include_public, include_alliance, "
+            "public_candidates, alliance_candidates, matched, "
+            "unknown_locations, items_pending, items_failed, asks_for_items) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (scanned_at, system_id, include_public, include_alliance,
+             public_candidates, alliance_candidates, matched,
+             unknown_locations, items_pending, items_failed, asks_for_items),
+        )
+        if contracts:
+            cols = ", ".join(_MARKET_CONTRACT_COLUMNS)
+            placeholders = ", ".join("?" for _ in _MARKET_CONTRACT_COLUMNS)
+            conn.executemany(
+                f"INSERT INTO doctrine_market_contracts ({cols}) VALUES ({placeholders})",
+                contracts,
+            )
+        if items:
+            conn.executemany(
+                "INSERT INTO doctrine_market_contract_items "
+                "(contract_id, record_id, type_id, quantity, is_included, is_singleton) "
+                "VALUES (?,?,?,?,?,?)",
+                items,
+            )
+
+
 def load_doctrine_contract_history() -> list[tuple]:
     """Most-recently-completed first; a history row with no date_completed
     at all (shouldn't normally happen - ESI sets it the moment a contract

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .. import schemas
@@ -176,6 +176,28 @@ def get_contract_history():
     return _wrap(actions.do_contract_history)["rows"]
 
 
+# ------------------------------------------------------------- contract market (#428)
+class ContractMarketScanRequest(BaseModel):
+    system_id: Optional[int] = None
+
+
+@router.get("/contract-market")
+def get_contract_market():
+    return _wrap(actions.do_get_contract_market)
+
+
+@router.post("/contract-market/scan")
+def scan_contract_market(req: ContractMarketScanRequest = Body(default_factory=ContractMarketScanRequest)):
+    """Starts the Contract Market scan as a background job. Poll
+    GET .../contract-market/scan/status; results via GET .../contract-market."""
+    return _wrap(actions.do_start_scan_contract_market, system_id=req.system_id)
+
+
+@router.get("/contract-market/scan/status")
+def contract_market_scan_status():
+    return _wrap(actions.do_contract_market_scan_status)
+
+
 @router.get("/stockpile")
 def get_stockpile(doctrine_id: Optional[str] = None, location_id: Optional[int] = None):
     return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id, location_id=location_id)
@@ -285,6 +307,9 @@ class DoctrineSettings(BaseModel):
     ready_to_list_owner_id: Optional[int] = None
     ready_to_list_location_id: Optional[int] = None
     ready_to_list_hangar_flag: Optional[str] = None
+    contract_market_system_id: Optional[int] = None
+    contract_market_include_public: bool = True
+    contract_market_include_alliance: bool = True
 
 
 class LocationOption(BaseModel):
@@ -316,7 +341,9 @@ def update_settings(updates: DoctrineSettings):
                 "strategic_reserve_hangar_flag", "strategic_reserve_container_id",
                 "strategic_reserve_include_hulls",
                 "ready_to_list_owner_type", "ready_to_list_owner_id", "ready_to_list_location_id",
-                "ready_to_list_hangar_flag"):
+                "ready_to_list_hangar_flag",
+                "contract_market_system_id", "contract_market_include_public",
+                "contract_market_include_alliance"):
         if key not in updates.model_fields_set:
             body.pop(key)
     return _wrap(actions.do_update_settings, updates=body)
