@@ -150,6 +150,16 @@ export default function DoctrineSettings() {
       <Switch label="Reserve fits include the hull" checked={form.strategic_reserve_include_hulls}
         onChange={(e) => set('strategic_reserve_include_hulls', e.currentTarget.checked)} />
 
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Contract Market</Title>
+      <Text size="xs" c="dimmed">
+        The Contract Market tab scans public and/or alliance item-exchange contracts in a solar system
+        and matches them against your fittings. Results are stored separately from your own Contracts tab.
+      </Text>
+      <Switch label="Include public contracts" checked={form.contract_market_include_public ?? true}
+        onChange={(e) => set('contract_market_include_public', e.currentTarget.checked)} />
+      <Switch label="Include alliance contracts" checked={form.contract_market_include_alliance ?? true}
+        onChange={(e) => set('contract_market_include_alliance', e.currentTarget.checked)} />
+
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Cargo/drone/charge tolerance" suffix="%" decimalScale={2}
@@ -207,6 +217,9 @@ export default function DoctrineSettings() {
         strategic_reserve_hangar_flag: form.strategic_reserve_hangar_flag,
         strategic_reserve_container_id: form.strategic_reserve_container_id,
         strategic_reserve_include_hulls: form.strategic_reserve_include_hulls,
+        contract_market_system_id: form.contract_market_system_id,
+        contract_market_include_public: form.contract_market_include_public,
+        contract_market_include_alliance: form.contract_market_include_alliance,
       })}>
         Save Settings
       </Button>

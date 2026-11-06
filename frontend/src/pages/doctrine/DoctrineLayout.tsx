@@ -18,6 +18,7 @@ const TABS = [
   { path: '/doctrine/doctrines', label: 'Doctrines' },
   { path: '/doctrine/contracts', label: 'Contracts' },
   { path: '/doctrine/contracts/history', label: 'History' },
+  { path: '/doctrine/contract-market', label: 'Contract Market' },
   { path: '/doctrine/stockpile', label: 'Stockpile' },
   { path: '/doctrine/shopping-list', label: 'Shopping List' },
   { path: '/doctrine/strategic-reserve', label: 'Strategic Reserve' },
@@ -41,6 +42,7 @@ const SYNC_LABELS = { sync_contracts: 'Refresh what I need' }
 function activeTab(pathname: string): string {
   if (pathname === '/doctrine') return '/doctrine'
   if (pathname.startsWith('/doctrine/contracts/history')) return '/doctrine/contracts/history'
+  if (pathname.startsWith('/doctrine/contract-market')) return '/doctrine/contract-market'
   if (pathname.startsWith('/doctrine/contracts')) return '/doctrine/contracts'
   if (pathname.startsWith('/doctrine/stockpile')) return '/doctrine/stockpile'
   if (pathname.startsWith('/doctrine/shopping-list')) return '/doctrine/shopping-list'

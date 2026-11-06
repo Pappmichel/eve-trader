@@ -96,6 +96,12 @@ class DoctrineConfig:
     # Whether a reserve fit needs its hull. A hull in the hangar stays hidden
     # from Production and Trading either way.
     strategic_reserve_include_hulls: bool = True
+    # Contract Market (GitHub issue #428): solar system to scan, plus which
+    # sources to include. Stored separately from doctrine_contracts (owner
+    # snapshot); results live in doctrine_market_* tables.
+    contract_market_system_id: Optional[int] = None
+    contract_market_include_public: bool = True
+    contract_market_include_alliance: bool = True
 
     @property
     def effective_structure_ids(self) -> tuple[int, ...]:
@@ -157,6 +163,10 @@ def validate_doctrine_overrides(overrides: dict) -> None:
         if bad:
             raise ConfigError(f"stockpile_hangar_flags: {bad!r} are not known hangar divisions. "
                                f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
+    if "contract_market_system_id" in overrides:
+        sid = overrides["contract_market_system_id"]
+        if sid is not None and (isinstance(sid, bool) or not isinstance(sid, int) or sid <= 0):
+            raise ConfigError(f"contract_market_system_id: {sid!r} is not a valid solar system id.")
 
 
 _doctrine_config_yaml_cache: dict = {}
