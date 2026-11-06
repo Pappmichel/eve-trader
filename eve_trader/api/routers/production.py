@@ -185,24 +185,36 @@ def peek_cached_unit_build_cost(type_id: int):
     """(unit cost, source) from the in-memory Build or asset plan, or None.
 
     No tenant, no plan, or a plan row without a cost returns None. Never
-    computes a plan and never calls the network.
+    computes a plan and never calls the network. A plan whose job costs are
+    unreliable (adjusted prices or cost indices missing) is skipped so an
+    outage cannot freeze understated planned costs into the ledger.
     """
     try:
         key = _tenant_key()
     except Exception:  # noqa: BLE001
         return None
+
+    def _plan_job_costs_reliable(plan: dict) -> bool:
+        if plan.get("adjusted_prices_available") is False:
+            return False
+        if plan.get("cost_indices_available") is False:
+            return False
+        return True
+
     plan = _last_plan.get(key) or {}
-    for job in plan.get("build_list") or []:
-        tid = getattr(job, "type_id", None)
-        cost = getattr(job, "unit_build_cost", None)
-        if tid is not None and int(tid) == int(type_id) and cost is not None:
-            return float(cost), "build_plan"
+    if _plan_job_costs_reliable(plan):
+        for job in plan.get("build_list") or []:
+            tid = getattr(job, "type_id", None)
+            cost = getattr(job, "unit_build_cost", None)
+            if tid is not None and int(tid) == int(type_id) and cost is not None:
+                return float(cost), "build_plan"
     asset = _last_asset_plan.get(key) or {}
-    for job in asset.get("jobs") or []:
-        tid = getattr(job, "type_id", None)
-        cost = getattr(job, "unit_build_cost", None)
-        if tid is not None and int(tid) == int(type_id) and cost is not None:
-            return float(cost), "asset_plan"
+    if _plan_job_costs_reliable(asset):
+        for job in asset.get("jobs") or []:
+            tid = getattr(job, "type_id", None)
+            cost = getattr(job, "unit_build_cost", None)
+            if tid is not None and int(tid) == int(type_id) and cost is not None:
+                return float(cost), "asset_plan"
     return None
 
 

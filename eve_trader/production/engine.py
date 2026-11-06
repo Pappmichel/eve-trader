@@ -5078,8 +5078,10 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
         if tenant_id is not None and tenant_id in _discover_cache \
                 and (time.time() - cached_at) < _DISCOVER_CACHE_TTL:
             return _discover_cache[tenant_id][:top_n]
-        results = _scan_build_candidates(cfg, client, progress_callback)
-        if tenant_id is not None:
+        results, cacheable = _scan_build_candidates(cfg, client, progress_callback)
+        # Still return the scan when job costs / quotes are unreliable, but
+        # do not freeze it into the TTL cache (would outlast the outage).
+        if tenant_id is not None and cacheable:
             _discover_cache[tenant_id] = results
             _discover_cache_at[tenant_id] = time.time()
         return results[:top_n]
@@ -5087,7 +5089,8 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
 
 @storage.with_batch_session()
 def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsClient"],
-                            progress_callback: Optional[Callable[[dict], None]] = None) -> list[dict]:
+                            progress_callback: Optional[Callable[[dict], None]] = None,
+                            ) -> tuple[list[dict], bool]:
     """The actual (slow - walks every SDE item) scan behind
     discover_build_candidates - split out so the public function can hold
     _discover_cache_lock across the whole scan without an awkwardly deep
@@ -5095,6 +5098,10 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
     connection (storage.batch_session) for the same reason plan_production/
     plan_asset_optimized are - this walks up to ~19,400 SDE items, each
     triggering several storage calls.
+
+    Returns ``(results, cacheable)``. ``cacheable`` is False when the plan
+    context's job costs or market quotes are unreliable, so the caller can
+    still return the rows without writing the process-wide TTL cache.
 
     classify_activity is run for every scanned item in a first pass, *before*
     `_PlanContext` is built, so every real candidate (anything with a
@@ -5196,7 +5203,11 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
         _attach_alchemy_comparisons(results, cfg, ctx)
     if progress_callback is not None:
         _emit_progress(progress_callback, {"batch": total_batches, "total_batches": total_batches})
-    return results
+    cacheable = (
+        getattr(ctx, "job_costs_reliable", True)
+        and getattr(ctx, "prices_available", True)
+    )
+    return results, cacheable
 
 
 def _attach_alchemy_comparisons(results: list[dict], cfg: ProductionConfig, ctx: "_PlanContext") -> None:
@@ -5308,8 +5319,8 @@ def discover_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG,
         if tenant_id is not None and tenant_id in _ship_margin_cache \
                 and (time.time() - cached_at) < _SHIP_MARGIN_CACHE_TTL:
             return _ship_margin_cache[tenant_id]
-        results = _scan_ship_margins(cfg)
-        if tenant_id is not None:
+        results, cacheable = _scan_ship_margins(cfg)
+        if tenant_id is not None and cacheable:
             _ship_margin_cache[tenant_id] = results
             _ship_margin_cache_at[tenant_id] = time.time()
         return results
@@ -5333,7 +5344,7 @@ def _descendant_market_group_ids(root_id: int) -> set[int]:
 
 
 @storage.with_batch_session()
-def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
+def _scan_ship_margins(cfg: ProductionConfig) -> tuple[list[dict], bool]:
     """The actual scan behind discover_ship_margins - split out for the same
     reason _scan_build_candidates is (holds the cache lock across the whole
     scan, not just the read/write). Ships are a much smaller SDE slice than
@@ -5350,7 +5361,9 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
     Margin page's single-item search (see item_margin_detail's docstring).
     Cheap to widen this way: ships are already a small, bounded SDE slice
     (see this function's own docstring above), unlike
-    _scan_build_candidates' full ~19,400-item universe."""
+    _scan_build_candidates' full ~19,400-item universe.
+
+    Returns ``(results, cacheable)`` - see `_scan_build_candidates`."""
     excluded_market_groups = _descendant_market_group_ids(SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID)
     ships = []  # (type_id, type_name, meta_level, activity)
     for type_id, type_name, _volume, market_group_id, meta_level, category_id in storage.load_sde_types_with_market_group():
@@ -5384,7 +5397,11 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
         })
 
     results.sort(key=lambda r: r.get("margin_home") or 0.0, reverse=True)
-    return results
+    cacheable = (
+        getattr(ctx, "job_costs_reliable", True)
+        and getattr(ctx, "prices_available", True)
+    )
+    return results, cacheable
 
 
 def _item_margin_detail_with_context(
@@ -6203,6 +6220,12 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
     return rows
 
 
+class PlannerValuationError(RuntimeError):
+    """Raised by planner_unit_values when job-cost inputs are unreliable so
+    the realized-profit loader skips freezing build valuations for this run
+    (falls back to The Forge average; next rebuild retries)."""
+
+
 @storage.with_batch_session()
 def planner_unit_values(type_ids: Iterable[int],
                         cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, tuple[float, str]]:
@@ -6212,11 +6235,24 @@ def planner_unit_values(type_ids: Iterable[int],
     as _unit_cost decides it. {type_id: (value, source)} with source
     "buy_home", "buy_hub" or "build"; types the planner cannot price are
     left out. Production realized profit values stock without a purchase
-    with this (plan D5/D8)."""
+    with this (plan D5/D8).
+
+    Raises PlannerValuationError when adjusted prices or cost indices are
+    unavailable (including after Fix 1's stale window expires), so a rebuild
+    during an outage does not freeze understated build costs."""
     ids = sorted({int(t) for t in type_ids})
     if not ids:
         return {}
     ctx = _PlanContext(cfg, extra_type_ids=ids)
+    if not ctx.job_costs_reliable:
+        log.warning(
+            "planner_unit_values: job costs unreliable "
+            "(adjusted_prices_available=%s, cost_indices_available=%s); refusing to value",
+            ctx.adjusted_prices_available, ctx.cost_indices_available,
+        )
+        raise PlannerValuationError(
+            "Job cost inputs unavailable; refusing planner valuations for this run"
+        )
     memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
     out: dict[int, tuple[float, str]] = {}

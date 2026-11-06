@@ -638,7 +638,7 @@ def test_bpc_run_values_are_cached_per_tenant(monkeypatch):
 
     def _compute(type_ids):
         computed.append(sorted(type_ids))
-        return {tid: (None if tid == 2 else 7.0) for tid in type_ids}
+        return {tid: (None if tid == 2 else 7.0) for tid in type_ids}, True
 
     monkeypatch.setattr(portfolio, "_compute_bpc_run_values", _compute)
 
