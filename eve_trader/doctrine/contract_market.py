@@ -23,7 +23,7 @@ from .. import storage
 from ..actions import ActionError, _emit_progress
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
-from ..esi_client import ESIClient, ESIError
+from ..esi_client import ESIClient, ESIError, ESIRateLimited
 from ..esi_data.access import shared_owner_ids
 from ..esi_data.selector import select_auth_role
 from ..locations import reader as location_reader
@@ -46,6 +46,12 @@ _KEEP_STATUSES = frozenset({VALIDATION_VALID, VALIDATION_TOLERABLE})
 MAX_NEW_ITEM_FETCHES = 1000
 MIN_SECONDS_BETWEEN_SCANS = 120
 # Above this share of failed item reads the last good result is kept.
+# The corporation route group allows 600 tokens per 15 min at 2 per read, shared
+# with the scheduled contract sync of the same character. Alliance item reads stay
+# well inside that and the rest continue on the next scan.
+MAX_NEW_ALLIANCE_ITEM_FETCHES = 100
+_CORP_CONTRACT_GROUP = "corp-contract"
+_MIN_CORP_TOKENS_LEFT = 150
 _MAX_FAILED_ITEM_SHARE = 0.2
 _VOLUME_MARGIN = 0.9
 _MIN_FAILED_ITEMS_TO_ABORT = 5
@@ -232,6 +238,8 @@ def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int, min_v
         reads += 1
         try:
             raw = client.corporation_contracts(int(corp_id), auth_role=role)
+        except ESIRateLimited as e:
+            raise ActionError(f"{e} The last result was kept.") from e
         except ESIError as e:
             failures += 1
             log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
@@ -267,6 +275,8 @@ def _fetch_items(client: ESIClient, contract: dict, source: str,
             raw_items = client.corporation_contract_items(owner_id, cid, auth_role=role)
         else:
             return None
+    except ESIRateLimited:
+        raise
     except ESIError as e:
         log.info("contract market items for %s failed: %s", cid, e)
         return None
@@ -275,6 +285,13 @@ def _fetch_items(client: ESIClient, contract: dict, source: str,
                         it.get("is_included", True), it.get("is_singleton", False))
         for it in (raw_items or [])
     ]
+
+
+def _corp_budget_left(client: ESIClient, reads_so_far: int) -> bool:
+    if reads_so_far >= MAX_NEW_ALLIANCE_ITEM_FETCHES:
+        return False
+    remaining = client.rate_limit_remaining(_CORP_CONTRACT_GROUP)
+    return remaining is None or remaining >= _MIN_CORP_TOKENS_LEFT
 
 
 def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
@@ -339,7 +356,8 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     known_items = storage.load_all_doctrine_market_items()
     item_rows: list[tuple] = []
     hits: list[tuple] = []
-    new_fetches = failed_items = items_pending = asks_for_items = 0
+    new_fetches = alliance_fetches = failed_items = items_pending = asks_for_items = 0
+    rate_limited: set[str] = set()
     for i, (cid, (source, raw)) in enumerate(sorted(combined.items())):
         if i % 10 == 0:
             _emit_progress(progress_callback, {
@@ -348,12 +366,19 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
             })
         items = known_items.get(cid)
         if items is None:
-            if new_fetches >= MAX_NEW_ITEM_FETCHES:
+            if (new_fetches >= MAX_NEW_ITEM_FETCHES or source in rate_limited
+                    or (source == SOURCE_ALLIANCE and not _corp_budget_left(client, alliance_fetches))):
+                items_pending += 1
+                continue
+            hint = alliance_hints.get(cid) if source == SOURCE_ALLIANCE else None
+            try:
+                items = _fetch_items(client, raw, source, auth_hint=hint)
+            except ESIRateLimited:
+                rate_limited.add(source)
                 items_pending += 1
                 continue
             new_fetches += 1
-            hint = alliance_hints.get(cid) if source == SOURCE_ALLIANCE else None
-            items = _fetch_items(client, raw, source, auth_hint=hint)
+            alliance_fetches += source == SOURCE_ALLIANCE
             if items is None:
                 failed_items += 1
                 continue

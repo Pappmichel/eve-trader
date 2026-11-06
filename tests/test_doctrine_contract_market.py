@@ -101,6 +101,7 @@ def _alliance_raw(**overrides):
 
 
 def _patch_client(monkeypatch, client):
+    client.rate_limit_remaining.return_value = None
     monkeypatch.setattr(contract_market, "ESIClient", lambda tokens=None: client)
     monkeypatch.setattr(contract_market, "TokenManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(contract_market.location_resolver, "resolve_ids", lambda ids, force=False: {})
@@ -468,6 +469,59 @@ def test_unknown_hull_volume_turns_the_filter_off(monkeypatch):
     client = MagicMock()
     client.get_packaged_volume.return_value = None
     assert contract_market._min_contract_volume([_Hull(587)], client) == 0.0
+
+
+def _alliance_setup(monkeypatch, cfg, client):
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
+
+
+def test_alliance_item_reads_stop_at_their_cap_and_continue_next_scan(monkeypatch, cfg):
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw(contract_id=i) for i in range(1, 6)]
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "MAX_NEW_ALLIANCE_ITEM_FETCHES", 2)
+    assert contract_market.scan_contract_market(cfg)["items_pending"] == 3
+    assert client.corporation_contract_items.call_count == 2
+    assert contract_market.scan_contract_market(cfg)["items_pending"] == 1
+
+
+def test_alliance_item_reads_leave_room_for_the_sync(monkeypatch, cfg):
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw()]
+    client.rate_limit_remaining.return_value = 149
+    _alliance_setup(monkeypatch, cfg, client)
+    client.rate_limit_remaining.return_value = 149
+    assert contract_market.scan_contract_market(cfg)["items_pending"] == 1
+    client.corporation_contract_items.assert_not_called()
+
+
+def test_rate_limit_on_items_keeps_what_was_read(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIRateLimited
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw(contract_id=i) for i in (1, 2, 3)]
+    client.corporation_contract_items.side_effect = [[ITEM], ESIRateLimited(600, "corp-contract")]
+    _alliance_setup(monkeypatch, cfg, client)
+    result = contract_market.scan_contract_market(cfg)
+    assert result["matched"] == 1
+    assert result["items_pending"] == 2
+    assert result["items_failed"] == 0
+    assert client.corporation_contract_items.call_count == 2
+
+
+def test_rate_limit_on_the_list_keeps_the_last_result(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIRateLimited
+    client = MagicMock()
+    client.corporation_contracts.side_effect = ESIRateLimited(600, "corp-contract")
+    _alliance_setup(monkeypatch, cfg, client)
+    _seed_previous_scan()
+    with pytest.raises(ActionError, match="try again in 600 s"):
+        contract_market.scan_contract_market(cfg)
+    assert len(storage.list_doctrine_market_contracts()) == 1
 
 
 def test_two_corps_of_one_alliance_read_the_list_once(monkeypatch, cfg):

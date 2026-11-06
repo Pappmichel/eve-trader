@@ -164,3 +164,24 @@ def test_recipient_and_search_helpers(monkeypatch):
         {"type": "character", "id": 10, "name": "ali"},   # limit=1 cut character 11
         {"type": "alliance", "id": 30, "name": "ali"},
     ]
+
+
+def test_long_retry_after_raises_instead_of_sleeping(monkeypatch):
+    from unittest.mock import MagicMock
+    from eve_trader import esi_client as ec
+    sleeps = []
+    monkeypatch.setattr(ec.time, "sleep", sleeps.append)
+    resp = MagicMock(headers={"Retry-After": "600", "X-Ratelimit-Group": "corp-contract"})
+    with pytest.raises(ec.ESIRateLimited) as exc:
+        ec.ESIClient._wait_for_retry(resp, 1)
+    assert exc.value.retry_after == 600 and exc.value.group == "corp-contract"
+    assert sleeps == []
+
+
+def test_short_retry_after_is_slept(monkeypatch):
+    from unittest.mock import MagicMock
+    from eve_trader import esi_client as ec
+    sleeps = []
+    monkeypatch.setattr(ec.time, "sleep", sleeps.append)
+    ec.ESIClient._wait_for_retry(MagicMock(headers={"Retry-After": "5"}), 1)
+    assert sleeps == [5.0]
