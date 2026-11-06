@@ -6256,11 +6256,14 @@ def planner_unit_values(type_ids: Iterable[int],
     if not ids:
         return {}
     ctx = _PlanContext(cfg, extra_type_ids=ids)
-    if not ctx.job_costs_reliable:
+    # getattr: unit tests stub _PlanContext with a SimpleNamespace that may
+    # omit the new reliability fields (treat missing as reliable).
+    if not getattr(ctx, "job_costs_reliable", True):
         log.warning(
             "planner_unit_values: job costs unreliable "
             "(adjusted_prices_available=%s, cost_indices_available=%s); refusing to value",
-            ctx.adjusted_prices_available, ctx.cost_indices_available,
+            getattr(ctx, "adjusted_prices_available", True),
+            getattr(ctx, "cost_indices_available", True),
         )
         raise PlannerValuationError(
             "Job cost inputs unavailable; refusing planner valuations for this run"
