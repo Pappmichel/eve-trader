@@ -1542,6 +1542,7 @@ def replace_sde_data(
     get_type_materials.cache_clear()
     get_invention_recipe.cache_clear()
     get_blueprint_skills.cache_clear()
+    unrefined_type_ids.cache_clear()
     # The PI tool's StaticData and design caches (docs/PI_TECHNICAL_DESIGN.md
     # P-11). Imported lazily: pi.static imports storage.
     from .pi import static as pi_static
@@ -7222,6 +7223,26 @@ def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
             (f"%{query}%", query, limit),
         ).fetchall()
     return rows
+
+
+@lru_cache(maxsize=None)
+def unrefined_type_ids() -> dict[str, int]:
+    """Published SDE types whose name starts with "Unrefined ", keyed by
+    lowercased stripped name. One query for the whole set - Production's
+    alchemy path looks up "Unrefined <product>" for every reaction product
+    and must not run a per-product ILIKE scan. ORDER BY type_id DESC so a
+    later overwrite keeps the lower id on a name clash (same rule as
+    resolve_type_names_exact). Cleared with the other SDE caches on apply."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, type_name FROM sde_types "
+            "WHERE published = 1 AND type_name ILIKE 'Unrefined %' "
+            "ORDER BY type_id DESC",
+        ).fetchall()
+    out: dict[str, int] = {}
+    for type_id, type_name in rows:
+        out[type_name.strip().lower()] = type_id
+    return out
 
 
 def list_all_sde_types() -> list[tuple[int, str]]:
