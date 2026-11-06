@@ -632,6 +632,7 @@ class RefiningSettings(_Base):
     ore_family_skill_levels: dict[str, int]
     scrapmetal_processing_skill_level: int
     refining_tax_rate: float
+    shopping_price_tolerance: float = 0.05
 
 
 # ------------------------------------------------------------ station trading
@@ -1270,3 +1271,4 @@ class ModuleReprocessingSettings(_Base):
     input_hub_region_id: int = 10000002
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int
+    shopping_price_tolerance: float = 0.05
