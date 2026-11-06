@@ -28,6 +28,8 @@ STRUCTURE_OTHER = 60000001
 CONTRACT_PUBLIC = 900001
 CONTRACT_ALLIANCE = 900002
 FAKE_FITTING = "11111111-1111-1111-1111-111111111111"
+CORP_ID = 98000001
+ALLIANCE_ID = 99000001
 
 
 @pytest.fixture
@@ -93,8 +95,9 @@ def _raw(**overrides):
 
 
 def _alliance_raw(**overrides):
-    """A row of the character contract list, which does carry both fields."""
-    return _raw(status="outstanding", availability="alliance", **overrides)
+    """A row of the corporation contract list. ESI says availability "personal"
+    even for an alliance contract (esi-issues #1447); assignee_id identifies it."""
+    return _raw(**{"status": "outstanding", "availability": "personal", "assignee_id": ALLIANCE_ID, **overrides})
 
 
 def _patch_client(monkeypatch, client):
@@ -102,7 +105,6 @@ def _patch_client(monkeypatch, client):
     monkeypatch.setattr(contract_market, "TokenManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(contract_market.location_resolver, "resolve_ids", lambda ids, force=False: {})
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
-    monkeypatch.setattr(contract_market, "list_shared_doctrine_characters", lambda tm=None: [])
 
 
 # ------------------------------------------------------------- pure filters
@@ -116,10 +118,13 @@ def test_public_filter_rejects_courier_and_expired():
         _raw(date_expired="2020-01-01T00:00:00Z")) is False
 
 
-def test_owner_list_filter_needs_outstanding():
-    assert contract_market._is_outstanding_item_exchange(_alliance_raw()) is True
-    assert contract_market._is_outstanding_item_exchange(
-        _raw(status="finished", availability="alliance")) is False
+def test_alliance_filter_goes_by_assignee_not_availability():
+    is_open = contract_market._is_open_alliance_contract
+    assert is_open(_alliance_raw(), ALLIANCE_ID) is True
+    assert is_open(_alliance_raw(), 99000002) is False
+    assert is_open(_alliance_raw(type="courier"), ALLIANCE_ID) is False
+    assert is_open(_alliance_raw(date_expired="2020-01-01T00:00:00Z"), ALLIANCE_ID) is False
+    assert is_open(_raw(status="finished", assignee_id=ALLIANCE_ID), ALLIANCE_ID) is False
 
 
 def test_filter_by_system_keeps_only_target():
@@ -163,17 +168,14 @@ def test_scan_public_and_alliance_match_writes_market_not_doctrine(monkeypatch, 
     client = MagicMock()
     client.public_contracts.return_value = public_raw
     client.public_contract_items.return_value = items
-    client.character_contracts.return_value = alliance_raw
-    client.character_contract_items.return_value = items
+    client.corporation_contracts.return_value = alliance_raw + [
+        _alliance_raw(contract_id=900003, assignee_id=CORP_ID)]  # the corp's own, not the alliance's
+    client.corporation_contract_items.return_value = items
     client.resolve_names.return_value = {111: "Seller One"}
-    client.character_public_info.return_value = {"corporation_id": 98000001}
     _patch_client(monkeypatch, client)
 
-    monkeypatch.setattr(
-        contract_market, "list_shared_doctrine_characters",
-        lambda tm=None: [("doctrine:1", 42, "Scout")],
-    )
-    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
@@ -406,12 +408,12 @@ def test_all_alliance_reads_failing_keeps_the_last_result(monkeypatch, cfg):
     from eve_trader.esi_client import ESIError
     client = MagicMock()
     client.public_contracts.return_value = []
-    client.character_contracts.side_effect = ESIError("503")
+    client.corporation_contracts.side_effect = ESIError("503")
     _scan_setup(monkeypatch, cfg, client)
     cfg.contract_market_include_public = False
     cfg.contract_market_include_alliance = True
-    monkeypatch.setattr(contract_market, "list_shared_doctrine_characters",
-                        lambda tm=None: [("doctrine:1", 42, "Scout")])
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
     _seed_previous_scan()
     with pytest.raises(ActionError, match="last result was kept"):
         contract_market.scan_contract_market(cfg)
@@ -436,6 +438,19 @@ def test_invalid_fit_is_not_listed(monkeypatch, cfg):
     client.public_contract_items.return_value = [ITEM]
     _scan_setup(monkeypatch, cfg, client, status="invalid")
     assert contract_market.scan_contract_market(cfg)["matched"] == 0
+
+
+def test_two_corps_of_one_alliance_read_the_list_once(monkeypatch, cfg):
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw()]
+    client.corporation_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_public = False
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID, CORP_ID + 1])
+    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
+    assert contract_market.scan_contract_market(cfg)["matched"] == 1
+    assert client.corporation_contracts.call_count == 1
 
 
 def test_public_scan_runs_without_a_sharing_character(monkeypatch, cfg):

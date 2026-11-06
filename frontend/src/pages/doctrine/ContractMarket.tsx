@@ -112,9 +112,9 @@ export default function ContractMarket() {
       <HintCard>
         Scan public and alliance item-exchange contracts in one solar system and match them against
         your Doctrine fittings. Results are separate from your own Contracts tab (owner-issued snapshot).
-        ESI has no alliance-wide contract list: Alliance only finds contracts a sharing character or
-        corporation issued, accepted or is assignee of. Public contracts need a place the tool already
-        knows, such as a station or a structure one of your characters has resolved.
+        Alliance contracts come through a corporation that shares Contracts with Doctrine; ESI has no
+        alliance endpoint, so this relies on undocumented behaviour. Public contracts need a place the
+        tool already knows, such as a station or a structure one of your characters has resolved.
         Toggle Public / Alliance under{' '}
         <Text span component={Link} to="/doctrine/settings" c="accent">Settings</Text>.
       </HintCard>

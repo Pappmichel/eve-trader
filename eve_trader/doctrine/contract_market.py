@@ -7,8 +7,11 @@ ampel, alerts and stockpile counts.
 
 ESI facts this relies on (checked live 2026-11-06): GET /contracts/public/
 {region}/ lists open contracts only and has no status or availability field.
-There is no alliance-wide contract list: the character and corporation lists
-only hold contracts that character or corp issued, accepted or is assignee of.
+There is no alliance contract endpoint (esi-issues #1218), but GET /corporations/
+{id}/contracts/ also returns contracts assigned to the corporation's alliance,
+from any member corporation, with readable items. Those rows say availability
+"personal" (esi-issues #1447), so only assignee_id identifies them. The
+documentation does not promise this, so it may change.
 """
 from __future__ import annotations
 
@@ -28,14 +31,12 @@ from ..locations import resolver as location_resolver
 from . import engine
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, VALIDATION_TOLERABLE, VALIDATION_VALID
-from .esi_sync import list_shared_doctrine_characters
 from .models import ContractItemRow
 
 log = logging.getLogger("eve_trader.doctrine.contract_market")
 
 SOURCE_PUBLIC = "public"
 SOURCE_ALLIANCE = "alliance"
-_CHAR_CONTRACTS_SCOPE = "esi-contracts.read_character_contracts.v1"
 _CORP_CONTRACTS_SCOPE = "esi-contracts.read_corporation_contracts.v1"
 # What a buyer can use as is. Invalid fits and non-doctrine ships are not listed.
 _KEEP_STATUSES = frozenset({VALIDATION_VALID, VALIDATION_TOLERABLE})
@@ -70,14 +71,6 @@ def _is_open_public_item_exchange(contract: dict) -> bool:
     """The public list has no status: everything on it is open until it expires."""
     return (contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
             and not _expired(contract.get("date_expired")))
-
-
-def _is_outstanding_item_exchange(contract: dict) -> bool:
-    """For the character and corporation lists, which do carry a status."""
-    return (
-        contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
-        and contract.get("status") == "outstanding"
-    )
 
 
 def _system_region(system_id: int) -> tuple[int, str, int]:
@@ -166,8 +159,8 @@ def _collect_public(client: ESIClient, region_id: int, system_id: int,
     return _filter_by_system(candidates, system_id, system_of), unknown
 
 
-def _corp_auth_role(corp_id: int, tm: TokenManager, client: ESIClient) -> Optional[str]:
-    """First token that can read corp contracts for ``corp_id``."""
+def _corp_reader(corp_id: int, tm: TokenManager, client: ESIClient) -> Optional[tuple[str, Optional[int]]]:
+    """(auth role, alliance id) of the first token that can read this corp's contracts."""
     for rec in tm.list_records():
         role = select_auth_role(rec.character_id, _CORP_CONTRACTS_SCOPE, tokens=tm)
         if role is None:
@@ -177,51 +170,52 @@ def _corp_auth_role(corp_id: int, tm: TokenManager, client: ESIClient) -> Option
         except ESIError:
             continue
         if info.get("corporation_id") == corp_id:
-            return role
+            return role, info.get("alliance_id")
     return None
+
+
+def _is_open_alliance_contract(contract: dict, alliance_id: int) -> bool:
+    """assignee_id, not availability: ESI reports these rows as "personal"."""
+    return (contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
+            and contract.get("status") == "outstanding"
+            and contract.get("assignee_id") == alliance_id
+            and not _expired(contract.get("date_expired")))
 
 
 def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int,
                       progress_callback=None) -> tuple[list[dict], dict[int, tuple[str, str, int]]]:
-    """Alliance-available contracts a Doctrine-shared character or corp is party
-    to (see the module docstring: ESI has no wider list). Returns (contracts,
-    item_auth_hints) where hints map contract_id -> (owner_type, auth_role,
-    owner_id) for the items fetch. Raises ActionError when every read failed,
-    so an outage does not look like an empty alliance market."""
+    """Open contracts assigned to the alliance of a Doctrine-shared corporation.
+    One read per alliance: every member corp gets the same list. Returns
+    (contracts, item_auth_hints) where hints map contract_id -> (owner_type,
+    auth_role, owner_id) for the items fetch. Raises ActionError when every read
+    failed, so an outage does not look like an empty alliance market."""
     _emit_progress(progress_callback, {"phase": "alliance", "message": "Fetching alliance contracts"})
     by_id: dict[int, dict] = {}
     hints: dict[int, tuple[str, str, int]] = {}
+    seen_alliances: set[int] = set()
     reads = 0
     failures = 0
 
-    def take(raw: list[dict], owner_type: str, role: str, owner_id: int) -> None:
-        for c in raw:
-            if not _is_outstanding_item_exchange(c) or c.get("availability") != "alliance":
-                continue
-            cid = int(c["contract_id"])
-            by_id[cid] = c
-            hints.setdefault(cid, (owner_type, role, owner_id))
-
-    for role, character_id, _name in list_shared_doctrine_characters(tm):
-        reads += 1
-        try:
-            take(client.character_contracts(character_id, auth_role=role),
-                 "character", role, character_id)
-        except ESIError as e:
-            failures += 1
-            log.info("alliance scan: character %s contracts failed: %s", character_id, e)
-
     for corp_id in shared_owner_ids("contracts", "doctrine", "corporation"):
-        role = _corp_auth_role(int(corp_id), tm, client)
-        if role is None:
+        reader = _corp_reader(int(corp_id), tm, client)
+        if reader is None:
+            continue
+        role, alliance_id = reader
+        if not alliance_id or alliance_id in seen_alliances:
             continue
         reads += 1
         try:
-            take(client.corporation_contracts(int(corp_id), auth_role=role),
-                 "corporation", role, int(corp_id))
+            raw = client.corporation_contracts(int(corp_id), auth_role=role)
         except ESIError as e:
             failures += 1
             log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
+            continue
+        seen_alliances.add(alliance_id)
+        for c in raw:
+            if _is_open_alliance_contract(c, alliance_id):
+                cid = int(c["contract_id"])
+                by_id[cid] = c
+                hints.setdefault(cid, ("corporation", role, int(corp_id)))
 
     if reads and failures == reads:
         raise ActionError("Every alliance contract read failed. The last result was kept.")
@@ -243,11 +237,8 @@ def _fetch_items(client: ESIClient, contract: dict, source: str,
         if source == SOURCE_PUBLIC:
             raw_items = client.public_contract_items(cid)
         elif auth_hint is not None:
-            owner_type, role, owner_id = auth_hint
-            if owner_type == "corporation":
-                raw_items = client.corporation_contract_items(owner_id, cid, auth_role=role)
-            else:
-                raw_items = client.character_contract_items(owner_id, cid, auth_role=role)
+            _owner_type, role, owner_id = auth_hint
+            raw_items = client.corporation_contract_items(owner_id, cid, auth_role=role)
         else:
             return None
     except ESIError as e:
@@ -280,13 +271,12 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     tm = TokenManager(OAUTH_CONFIG)
 
     # Decided before any ESI call. Public needs no token, so a tenant without a
-    # sharing character still gets the public half.
+    # sharing corporation still gets the public half.
     scan_alliance = bool(cfg.contract_market_include_alliance)
     alliance_skipped = False
-    if scan_alliance and not list_shared_doctrine_characters(tm) and not shared_owner_ids(
-            "contracts", "doctrine", "corporation"):
+    if scan_alliance and not shared_owner_ids("contracts", "doctrine", "corporation"):
         if not cfg.contract_market_include_public:
-            raise ActionError("Alliance scan needs a character sharing Contracts with Doctrine "
+            raise ActionError("Alliance scan needs a corporation sharing Contracts with Doctrine "
                               "(Characters page).")
         scan_alliance = False
         alliance_skipped = True
@@ -434,8 +424,7 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
 
     # Listings stay stored until the next scan: an expired one is gone in game,
     # and alliance rows follow the same sharing rule as every other shared read.
-    alliance_visible = bool(shared_owner_ids("contracts", "doctrine", "character")
-                            or shared_owner_ids("contracts", "doctrine", "corporation"))
+    alliance_visible = bool(shared_owner_ids("contracts", "doctrine", "corporation"))
     contracts = [c for c in contracts if not _expired(c[10])
                  and (c[1] != SOURCE_ALLIANCE or alliance_visible)]
 
