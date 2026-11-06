@@ -414,16 +414,18 @@ def _archive_stock_observation(owner_type: str, owner_id: int) -> None:
     quantity of reprocessable types. Never fails the snapshot sync."""
     if not _archive_for_production("assets", owner_type, owner_id):
         return
-    blocked = _incomplete_assets_owner(owner_type, owner_id)
-    if blocked is not None:
-        bot, boid = blocked
-        log.warning(
-            "stock observation skipped: assets for %s %s are not fresh enough",
-            bot, boid,
-        )
-        return
     try:
+        # Completeness check reads freshness/sharing under the same savepoint
+        # as the archive write: a DB error there must not abort the owner batch.
         with storage.savepoint():
+            blocked = _incomplete_assets_owner(owner_type, owner_id)
+            if blocked is not None:
+                bot, boid = blocked
+                log.warning(
+                    "stock observation skipped: assets for %s %s are not fresh enough",
+                    bot, boid,
+                )
+                return
             from ..realized import ingest as ledger_ingest
             ledger_ingest.archive_stock_observation()
     except Exception:  # noqa: BLE001

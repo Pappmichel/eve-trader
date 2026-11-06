@@ -103,3 +103,21 @@ def test_observation_runs_when_every_other_owner_is_fresh(tenant, monkeypatch):
     monkeypatch.setattr(fetchers, "_archive_for_production", lambda *a, **k: True)
     fetchers._archive_stock_observation("character", ALICE)
     assert called == [1]
+
+
+def test_completeness_check_db_error_does_not_fail_observation(tenant, monkeypatch, caplog):
+    """A DB error in _incomplete_assets_owner must stay inside the savepoint."""
+    monkeypatch.setattr(fetchers, "_archive_for_production", lambda *a, **k: True)
+    monkeypatch.setattr(
+        fetchers, "_incomplete_assets_owner",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+    called = []
+    monkeypatch.setattr(
+        "eve_trader.realized.ingest.archive_stock_observation",
+        lambda: called.append(1) or 0,
+    )
+    with caplog.at_level(logging.ERROR):
+        fetchers._archive_stock_observation("character", ALICE)
+    assert called == []
+    assert any("stock observation failed" in r.message for r in caplog.records)
