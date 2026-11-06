@@ -841,6 +841,7 @@ class FittingStatus(_Base):
     multibuy_missing: list[str] = []
     assemblable_now: Optional[int] = None
     assemblable_bottleneck: Optional[str] = None
+    ready_to_list: Optional[int] = None
 
 
 class DoctrineStatus(_Base):

@@ -16,7 +16,7 @@ from .. import hubs, storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
-from . import buyer_sources, equivalents, parser, reserve, validation
+from . import buyer_sources, equivalents, parser, ready_to_list, reserve, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
@@ -843,7 +843,9 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                     assets_available: bool = True, home: Optional[dict] = None,
                     pooled_contracts: Optional[dict[str, tuple[int, int]]] = None,
                     available_by_type: Optional[dict[int, float]] = None,
-                    candidate: Optional[_Candidate] = None) -> FittingStatus:
+                    candidate: Optional[_Candidate] = None,
+                    ready_to_list_counts: Optional[dict[str, int]] = None,
+                    ready_to_list_computed: bool = False) -> FittingStatus:
     """`home` (Goonmetrics current-price dict, production_pricing.home_prices'
     own return shape) is an optional passthrough for multibuy_cost, same
     "compute once in doctrine_status' loop, don't refetch per fitting"
@@ -858,7 +860,13 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
 
     `available_by_type` (raw stockpile stock, _stockpile_rows) and
     `candidate` feed the "assemblable now" figure; the standalone path
-    reads both itself."""
+    reads both itself.
+
+    `ready_to_list_counts` ({fitting_id: count}, ready_to_list.counts) is the
+    assembled-ship pool in the ready-to-list hangar. Pass
+    `ready_to_list_computed=True` with counts=None when the hangar is unset
+    or assets are not shared (field stays None); the standalone path
+    computes it once when that flag is left false."""
     if pooled_contracts is None:
         pooled_contracts = pooled_contract_counts()
     last_synced_at = storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",))
@@ -879,6 +887,11 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
         if candidate is not None:
             assemblable_now, assemblable_bottleneck = _assemblable_summary(
                 candidate, available_by_type, equivalents_of(cfg))
+
+    if not ready_to_list_computed:
+        ready_to_list_counts = ready_to_list.counts(cfg)
+        ready_to_list_computed = True
+    ready_count = None if ready_to_list_counts is None else ready_to_list_counts.get(fitting.fitting_id, 0)
 
     worst_shortfall_pct = 0.0
     worst_severity = None
@@ -925,17 +938,19 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                           assets_available=assets_available, hull_type_id=fitting.hull_type_id,
                           hull_name=hull_name, multibuy_cost=multibuy_cost,
                           multibuy_missing=multibuy_missing, assemblable_now=assemblable_now,
-                          assemblable_bottleneck=assemblable_bottleneck)
+                          assemblable_bottleneck=assemblable_bottleneck, ready_to_list=ready_count)
 
 
 def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> DoctrineStatus:
     doctrine = doctrine_from_row(doctrine_row)
     fitting_rows = storage.list_fittings_for_doctrine(doctrine.doctrine_id)
     # Shared active-contract pool, computed once tenant-wide for this pass.
-    pooled_contracts = pooled_contract_counts()
+    candidates = load_match_candidates()
+    pooled_contracts = pooled_contract_counts(candidates)
     stockpile_rows, assets_available, available_by_type = _stockpile_rows(
         doctrine.doctrine_id, cfg, pooled_contracts)
-    candidate_by_id = {c.fitting.fitting_id: c for c in load_match_candidates()}
+    candidate_by_id = {c.fitting.fitting_id: c for c in candidates}
+    ready_counts = ready_to_list.counts(cfg, candidates)
 
     # Fetched once for every fitting's multibuy_cost below, not per-fitting -
     # matches this function's existing stockpile_rows-computed-once
@@ -963,7 +978,8 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
         statuses.append(fitting_status(fitting, cfg, stockpile_rows=own_rows, assets_available=assets_available,
                                         home=home, pooled_contracts=pooled_contracts,
                                         available_by_type=available_by_type,
-                                        candidate=candidate_by_id.get(fitting.fitting_id)))
+                                        candidate=candidate_by_id.get(fitting.fitting_id),
+                                        ready_to_list_counts=ready_counts, ready_to_list_computed=True))
 
     contract_rollup = validation.worst_ampel([s.contract_status for s in statuses]) if statuses else AMPEL_GRAY
     stockpile_rollup = validation.worst_ampel([s.stockpile_status for s in statuses]) if statuses else AMPEL_GRAY

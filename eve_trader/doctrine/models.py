@@ -275,6 +275,10 @@ class FittingStatus:
     # first item that stops one more. None while no assets are shared.
     assemblable_now: Optional[int] = None
     assemblable_bottleneck: Optional[str] = None
+    # Assembled ships in the ready-to-list hangar whose fit is valid or
+    # tolerable (doctrine/ready_to_list.py). None when no hangar is set or
+    # that owner does not share assets with Doctrine.
+    ready_to_list: Optional[int] = None
 
 
 @dataclass

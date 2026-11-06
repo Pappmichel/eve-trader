@@ -1500,6 +1500,8 @@ export interface FittingStatus {
   // Complete fits the stockpile holds right now (null without shared assets)
   assemblable_now?: number | null
   assemblable_bottleneck?: string | null
+  // Assembled ships in the ready-to-list hangar (valid or tolerable fit)
+  ready_to_list?: number | null
 }
 
 export interface AssemblableRow {
@@ -1589,6 +1591,11 @@ export interface DoctrineSettings {
   // Optional: only this container in the hangar is the reserve.
   strategic_reserve_container_id: number | null
   strategic_reserve_include_hulls: boolean
+  // Ready-to-list hangar (assembled ships ready to contract). All four or none.
+  ready_to_list_owner_type: 'character' | 'corporation' | null
+  ready_to_list_owner_id: number | null
+  ready_to_list_location_id: number | null
+  ready_to_list_hangar_flag: string | null
 }
 
 export interface ReserveContainerOption {

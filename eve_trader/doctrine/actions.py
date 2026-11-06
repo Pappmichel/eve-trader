@@ -654,6 +654,10 @@ def do_get_settings(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "strategic_reserve_hangar_flag": cfg.strategic_reserve_hangar_flag,
         "strategic_reserve_container_id": cfg.strategic_reserve_container_id,
         "strategic_reserve_include_hulls": cfg.strategic_reserve_include_hulls,
+        "ready_to_list_owner_type": cfg.ready_to_list_owner_type,
+        "ready_to_list_owner_id": cfg.ready_to_list_owner_id,
+        "ready_to_list_location_id": cfg.ready_to_list_location_id,
+        "ready_to_list_hangar_flag": cfg.ready_to_list_hangar_flag,
     }
 
 
