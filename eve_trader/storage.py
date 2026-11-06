@@ -325,6 +325,25 @@ def batch_session():
             _batch_local.conn = None
 
 
+@contextmanager
+def savepoint():
+    """Nested transaction (savepoint) on the active batch connection, or a
+    no-op when no batch is open.
+
+    Use around work whose failures are caught and must not abort the
+    surrounding batch (e.g. best-effort archive steps during an ESI
+    snapshot sync). Outside a batch this yields without opening a
+    connection: wrapping ESI network calls here must not pin a pool
+    connection for the duration of those calls.
+    """
+    active = getattr(_batch_local, "conn", None)
+    if active is None:
+        yield
+        return
+    with active.transaction():
+        yield
+
+
 def with_batch_session():
     """Decorator form of batch_session - wraps a whole function call in one
     shared connection with no changes to the function's own body. Use on any

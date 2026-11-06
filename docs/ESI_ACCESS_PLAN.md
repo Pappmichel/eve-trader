@@ -413,11 +413,15 @@ current**.
 Rule: on a failed fetch, keep the owner's existing rows. Track
 `last_success_at` / `last_error` on the freshness row. When
 `now - last_success_at` exceeds **one config knob** — a multiple of
-that kind's tier interval — **then** clear that owner's partition.
-The multiple is the same knob for every tier (e.g. `esi_stale_clear_multiples`,
-default something like 3: frequent data that has failed for 3× its
-interval is dropped; rare data gets a proportionally longer grace).
-Do not add seven per-kind timeouts.
+that kind's tier interval — **and** the failure shows a **dead owner**
+(HTTP 401/403, or a rejected SSO refresh) — **then** clear that owner's
+partition. A global ESI outage (5xx), rate limit (420/429), network
+error, or non-ESI failure (e.g. SQL) must not clear, even past the age
+limit: Decision 6 is about retired tokens, not about temporary
+unreachability. The multiple is the same knob for every tier (e.g.
+`esi_stale_clear_multiples`, default something like 3: frequent data
+that has failed for 3× its interval is dropped; rare data gets a
+proportionally longer grace). Do not add seven per-kind timeouts.
 
 The Characters cell's **error** state is this freshness row's
 `last_error` while rows still exist; after the clear, the cell reads

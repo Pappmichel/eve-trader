@@ -370,9 +370,30 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
             storage.reset_current_tenant(context_token)
 
 
+def fail_stale_pipeline_runs_on_startup() -> None:
+    """Mark every tenant's leftover `running` pipeline_runs as failed.
+
+    Safe because deploy runs a single uvicorn worker (no --workers) and the
+    CLI never calls start_job — a restart cannot leave a live worker holding
+    a job. Only invoke at process start (`stale_after_seconds=0` would also
+    catch a job that began in this same process).
+    """
+    for tenant_id, _name, _created in storage.list_tenants():
+        with tenant_scope.enter_tenant(str(tenant_id)):
+            storage.fail_stale_pipeline_runs(stale_after_seconds=0)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     _load_default_tenant_config()
+    # Clear hung pipeline_runs left by a previous process before accepting
+    # work. Skip under pytest: tests share a DB and may have their own
+    # running rows (same guard as the Asset Manager warmup below).
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        try:
+            fail_stale_pipeline_runs_on_startup()
+        except Exception:  # noqa: BLE001 - never block app start on cleanup
+            log.exception("failed to clear stale pipeline_runs on startup")
     scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
     # Price the Asset Manager rows in the background so the first page open is
     # not a 20 s wait. Daemon thread: it must neither block start nor shutdown.

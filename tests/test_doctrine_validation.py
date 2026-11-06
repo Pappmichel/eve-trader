@@ -415,3 +415,37 @@ def test_max_assemblable_empty_stock_and_empty_requirement():
     per_set = v.build_stockpile_soll([], hull_type_id=1, stockpile_target=1)
     assert v.max_assemblable(per_set, {})[0] == 0
     assert v.max_assemblable({}, {1: 10}) == (0, {})
+
+
+def test_stockpile_soll_adds_fitted_and_cargo_of_same_type():
+    items = [
+        FittingItem("f1", 1, "high", 200, 1),
+        FittingItem("f1", 2, "cargo", 200, 3),
+    ]
+    soll = v.build_stockpile_soll(items, hull_type_id=HULL, stockpile_target=1)
+    assert soll[200] == (4.0, "exact")
+
+
+def test_max_assemblable_fitted_plus_cargo_needs_full_sum():
+    items = [
+        FittingItem("f1", 1, "high", 200, 4),
+        FittingItem("f1", 2, "cargo", 200, 2),
+    ]
+    per_set = v.build_stockpile_soll(items, hull_type_id=HULL, stockpile_target=1)
+    assert per_set[200] == (6.0, "exact")
+    max_sets, _details = v.max_assemblable(per_set, {HULL: 5, 200: 2})
+    assert max_sets == 0
+
+
+def test_contract_overlap_serves_exact_before_cargo_tolerance():
+    # 1 fitted + 3 cargo: delivering 3 used to pass (exact covered, cargo at
+    # tolerance); after the fix the remainder 2 against consume 3 is critical.
+    exact, consume = {200: 1.0}, {200: 3.0}
+    short = [ContractItemRow(1, 0, HULL, 1, True, True),
+             ContractItemRow(1, 1, 200, 3, True, False)]
+    full = [ContractItemRow(1, 0, HULL, 1, True, True),
+            ContractItemRow(1, 1, 200, 4, True, False)]
+    short_devs = v.compute_deviations(1, exact, consume, short, HULL, cargo_tolerance_pct=0.9)
+    full_devs = v.compute_deviations(1, exact, consume, full, HULL, cargo_tolerance_pct=0.9)
+    assert v.contract_status(short_devs, matched=True) == VALIDATION_INVALID
+    assert v.contract_status(full_devs, matched=True) == VALIDATION_VALID

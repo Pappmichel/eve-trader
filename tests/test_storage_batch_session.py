@@ -150,6 +150,42 @@ def test_save_tenant_token_survives_a_batch_rollback(tenant):
     assert storage.load_all_tenant_tokens()["producer:2"] == {"access_token": "kept"}
 
 
+def test_savepoint_rolls_back_only_its_own_work_inside_a_batch(tenant):
+    # A caught SQL error inside a batch used to abort the whole connection;
+    # savepoint keeps later writes on the same batch viable.
+    with storage.batch_session():
+        with storage.connect() as conn:
+            conn.execute(
+                "INSERT INTO shortlist (item_id, item, category, volume_m3, active) "
+                "VALUES (991, 'kept', 'y', 1.0, 1)"
+            )
+        with pytest.raises(Exception):
+            with storage.savepoint():
+                with storage.connect() as conn:
+                    conn.execute("SELECT 1 FROM definitely_not_a_table")
+        with storage.connect() as conn:
+            conn.execute(
+                "INSERT INTO shortlist (item_id, item, category, volume_m3, active) "
+                "VALUES (992, 'after', 'y', 1.0, 1)"
+            )
+
+    with storage.connect() as conn:
+        rows = {
+            r[0]: r[1]
+            for r in conn.execute(
+                "SELECT item_id, item FROM shortlist WHERE item_id IN (991, 992)"
+            ).fetchall()
+        }
+    assert rows == {991: "kept", 992: "after"}
+
+
+def test_savepoint_is_a_noop_outside_a_batch(tenant, monkeypatch):
+    calls = _count_real_checkouts(monkeypatch)
+    with storage.savepoint():
+        pass
+    assert len(calls) == 0
+
+
 def test_save_tenant_token_from_another_thread_does_not_block_on_an_open_batch(tenant):
     # The 2026-10-03 production deadlock: thread A saved a refreshed token
     # inside its open batch, thread B saved the same role and waited on A's
