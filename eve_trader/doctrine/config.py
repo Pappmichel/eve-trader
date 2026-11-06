@@ -96,6 +96,15 @@ class DoctrineConfig:
     # Whether a reserve fit needs its hull. A hull in the hangar stays hidden
     # from Production and Trading either way.
     strategic_reserve_include_hulls: bool = True
+    # Ready to list (GitHub issue #429, doctrine/ready_to_list.py): one hangar
+    # of assembled ships that are ready to be contracted. All four set or
+    # none, same shape as the strategic reserve. Not an exclude hangar -
+    # assembled ships are never stock.
+    ready_to_list_owner_type: Optional[str] = None      # "character" | "corporation"
+    ready_to_list_owner_id: Optional[int] = None
+    ready_to_list_location_id: Optional[int] = None
+    ready_to_list_hangar_flag: Optional[str] = None
+    ready_to_list_container_id: Optional[int] = None
 
     @property
     def effective_structure_ids(self) -> tuple[int, ...]:
@@ -125,6 +134,25 @@ def fetcher_extra(cfg) -> Optional[dict]:
     return {"structure_ids": list(ids)} if ids else None
 
 
+def _validate_hangar_overrides(overrides: dict, keys: tuple[str, ...], container_key: str,
+                                label: str) -> None:
+    """All-or-none hangar (owner, location, flag) plus optional container.
+    Shared by the strategic reserve and ready-to-list settings."""
+    if not any(key in overrides for key in keys):
+        return
+    values = [overrides.get(key) for key in keys]
+    if any(v is not None for v in values):
+        if any(v is None for v in values):
+            raise ConfigError(f"{label}: owner, location and hangar must be set together.")
+        if values[0] not in ("character", "corporation"):
+            raise ConfigError(f"{keys[0]}: {values[0]!r} is not valid.")
+        if values[3] not in HANGAR_DIVISION_FLAGS:
+            raise ConfigError(f"{keys[3]}: {values[3]!r} is not a known hangar division. "
+                              f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
+    elif overrides.get(container_key) is not None:
+        raise ConfigError(f"{label}: a container needs its hangar.")
+
+
 def validate_doctrine_overrides(overrides: dict) -> None:
     """Beyond the generic type checks (validate_config_overrides), same enum-
     check pattern as production/config.py's validate_production_overrides -
@@ -138,20 +166,16 @@ def validate_doctrine_overrides(overrides: dict) -> None:
         bad = [v for v in values if isinstance(v, bool) or not isinstance(v, int) or v <= 0]
         if bad:
             raise ConfigError(f"{key}: {bad!r} are not valid location ids.")
-    reserve_keys = ("strategic_reserve_owner_type", "strategic_reserve_owner_id",
-                    "strategic_reserve_location_id", "strategic_reserve_hangar_flag")
-    if any(key in overrides for key in reserve_keys):
-        values = [overrides.get(key) for key in reserve_keys]
-        if any(v is not None for v in values):
-            if any(v is None for v in values):
-                raise ConfigError("Strategic reserve: owner, location and hangar must be set together.")
-            if values[0] not in ("character", "corporation"):
-                raise ConfigError(f"strategic_reserve_owner_type: {values[0]!r} is not valid.")
-            if values[3] not in HANGAR_DIVISION_FLAGS:
-                raise ConfigError(f"strategic_reserve_hangar_flag: {values[3]!r} is not a known hangar division. "
-                                  f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
-        elif overrides.get("strategic_reserve_container_id") is not None:
-            raise ConfigError("Strategic reserve: a container needs its hangar.")
+    _validate_hangar_overrides(
+        overrides,
+        ("strategic_reserve_owner_type", "strategic_reserve_owner_id",
+         "strategic_reserve_location_id", "strategic_reserve_hangar_flag"),
+        "strategic_reserve_container_id", "Strategic reserve")
+    _validate_hangar_overrides(
+        overrides,
+        ("ready_to_list_owner_type", "ready_to_list_owner_id",
+         "ready_to_list_location_id", "ready_to_list_hangar_flag"),
+        "ready_to_list_container_id", "Ready to list")
     if "stockpile_hangar_flags" in overrides:
         bad = [f for f in overrides["stockpile_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:

@@ -137,18 +137,25 @@ def _option(*containers):
              "hangar_flag": "CorpSAG5", "containers": [{"item_id": c} for c in containers]}]
 
 
+def _reject_reserve_container(updates, cfg):
+    actions._reject_foreign_container(
+        updates, cfg, owner_type_key="strategic_reserve_owner_type",
+        owner_id_key="strategic_reserve_owner_id", location_key="strategic_reserve_location_id",
+        flag_key="strategic_reserve_hangar_flag", container_key="strategic_reserve_container_id")
+
+
 def test_a_new_container_must_lie_in_the_chosen_hangar(monkeypatch):
     monkeypatch.setattr(reserve, "hangar_options", lambda: _option(OTHER_CONTAINER))
     with pytest.raises(actions.ActionError):
-        actions._reject_foreign_container(RESERVE_CFG, DoctrineConfig())
+        _reject_reserve_container(RESERVE_CFG, DoctrineConfig())
     monkeypatch.setattr(reserve, "hangar_options", lambda: _option(CONTAINER))
-    actions._reject_foreign_container(RESERVE_CFG, DoctrineConfig())
+    _reject_reserve_container(RESERVE_CFG, DoctrineConfig())
 
 
 def test_an_unchanged_container_that_is_gone_stays_saveable(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "t1")
     monkeypatch.setattr(reserve, "hangar_options", lambda: _option())
-    actions._reject_foreign_container(RESERVE_CFG, DoctrineConfig(**RESERVE_CFG))
+    _reject_reserve_container(RESERVE_CFG, DoctrineConfig(**RESERVE_CFG))
 
 
 def test_a_container_change_invalidates_the_cached_plans():

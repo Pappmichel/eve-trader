@@ -152,6 +152,19 @@ export default function DoctrineDetail() {
       },
     },
     {
+      header: 'Ready to list', accessorKey: 'ready_to_list', size: 120,
+      cell: (i) => {
+        const f = i.row.original
+        if (f.ready_to_list == null) return '–'
+        return (
+          <Tooltip withArrow
+            label="Assembled ships in the ready-to-list hangar whose fit is valid or tolerable">
+            <Text size="sm" c={f.ready_to_list > 0 ? undefined : 'danger'}>{f.ready_to_list}</Text>
+          </Tooltip>
+        )
+      },
+    },
+    {
       header: 'Targets (Contract / Stockpile)', id: 'targets', size: 190,
       cell: (i) => {
         const f = i.row.original
