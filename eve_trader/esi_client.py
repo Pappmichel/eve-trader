@@ -677,7 +677,20 @@ class ESIClient:
 
         out: list = []
         for page in range(1, total_pages + 1):
-            out.extend(pages[page])
+            chunk = pages[page]
+            # An empty follow-up page inside X-Pages used to silently shorten
+            # the list (and replace a good snapshot). Retry once; still empty
+            # → fail closed. An empty first page still means [] above.
+            if page > 1 and not chunk:
+                page_resp = _fetch_page(page)
+                if auth_role:
+                    _note_last_modified(page_resp)
+                chunk = page_resp.json()
+                if not chunk:
+                    raise ESIError(
+                        f"Empty ESI page {page}/{total_pages} for {path} after retry"
+                    )
+            out.extend(chunk)
         return out
 
     # -------------------------------------------------- market groups / types
