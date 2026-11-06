@@ -358,11 +358,69 @@ def _archive_contracts_pass(
 
 
 # ------------------------------------------------------------------ assets
+def _assets_observation_max_age_hours() -> float:
+    """Clear-window age for assets: tier interval × stale-clear multiples.
+
+    Read from TRADING_CONFIG / the registry directly — do not import
+    orchestrator (it imports this module).
+    """
+    from ..config import TRADING_CONFIG
+    from .registry import OWNED_DATA_KINDS, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
+
+    cfg = TRADING_CONFIG
+    by_tier = {
+        TIER_FREQUENT: cfg.esi_frequent_interval_hours,
+        TIER_NORMAL: cfg.esi_normal_interval_hours,
+        TIER_RARE: cfg.esi_rare_interval_hours,
+    }
+    tier = next(k.freshness_tier for k in OWNED_DATA_KINDS if k.key == "assets")
+    return float(by_tier[tier]) * float(cfg.esi_stale_clear_multiples)
+
+
+def _incomplete_assets_owner(
+    sync_owner_type: str, sync_owner_id: int,
+) -> Optional[tuple[str, int]]:
+    """First assets-scope owner whose snapshot is missing or past the clear
+    window. The owner being synced is skipped: its success stamp is written
+    only after the fetcher returns."""
+    from ..realized.access import shared_owners
+    from .stale import _hours_since
+
+    owners = shared_owners("assets")
+    if not owners:
+        return None
+    max_age = _assets_observation_max_age_hours()
+    freshness = {
+        (ot, int(oid)): success_at
+        for ot, oid, kind, success_at, _attempt, _err, _as_of in storage.list_esi_freshness()
+        if kind == "assets"
+    }
+    now = datetime.now(timezone.utc)
+    for ot, oid in owners:
+        if ot == sync_owner_type and int(oid) == int(sync_owner_id):
+            continue
+        success_at = freshness.get((ot, int(oid)))
+        if success_at is None:
+            return (ot, int(oid))
+        age = _hours_since(success_at, now)
+        if age is None or age > max_age:
+            return (ot, int(oid))
+    return None
+
+
 def _archive_stock_observation(owner_type: str, owner_id: int) -> None:
     """Reprocessing detection (realized/costing.py): after an asset sync of
     an owner in the realized-profit asset scope, store the tenant-wide
     quantity of reprocessable types. Never fails the snapshot sync."""
     if not _archive_for_production("assets", owner_type, owner_id):
+        return
+    blocked = _incomplete_assets_owner(owner_type, owner_id)
+    if blocked is not None:
+        bot, boid = blocked
+        log.warning(
+            "stock observation skipped: assets for %s %s are not fresh enough",
+            bot, boid,
+        )
         return
     try:
         with storage.savepoint():
