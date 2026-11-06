@@ -4576,12 +4576,16 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     def _plan_passes(byproduct_stock: dict[int, float]
                      ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]],
-                                dict[int, Optional[float]]]:
+                                dict[int, Optional[float]], dict[int, float], "_ReadinessLedger"]:
         """Order pass, then doctrine pass, then the remaining stock-target
         pass, over one fresh set of ledgers started from the order claims
         (D3/D4), merged by job key (see _merge_asset_plan_passes). Returns
         (jobs, the order pass's top_level, stock coverage by type id - the
-        latter also holds reactions the capacity solver sizes, GH #383)."""
+        latter also holds reactions the capacity solver sizes, GH #383 -
+        and the sizing ledger `stock_used` plus the readiness ledger
+        `stock_used_on_hand` the passes left behind, so the capacity-mode
+        reaction jobs and their inputs continue from them instead of
+        starting over)."""
         stock_used = dict(reserved)
         for type_id, qty in target_reserved.items():
             stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
@@ -4599,7 +4603,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             other_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
             stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
         return (_merge_asset_plan_passes(order_jobs, target_jobs, doctrine_jobs), order_top_level,
-                stock_coverage_by_id)
+                stock_coverage_by_id, stock_used, stock_used_on_hand)
 
     # Byproduct discovery pass, same shape and same reasoning as
     # plan_production's own two-pass _expand_all call (see the comment
@@ -4666,7 +4670,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
     elif any(alchemy_memo.values()):
-        provisional_jobs, _, _ = _plan_passes({})
+        provisional_jobs = _plan_passes({})[0]
         # _alchemy_byproduct_stock takes _expand_all's own build_runs shape;
         # rebuild it from the provisional AssetPlanJobs rather than teaching
         # that helper a second one. Non-alchemy jobs simply miss its index.
@@ -4678,7 +4682,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         }
         byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
 
-    jobs, order_top_level, final_coverage = _plan_passes(byproduct_stock)
+    jobs, order_top_level, final_coverage, plan_stock_used, plan_ready_ledger = _plan_passes(byproduct_stock)
 
     if capacity_on:
         # Inject W1 reaction jobs from the solution; readiness stays as today
@@ -4687,7 +4691,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
         # On-hand units already counted as ready for an earlier recipe: two
         # recipes sharing an input (platinum) must not both claim the pile.
-        ready_claimed = _ReadinessLedger(manual_stock, cfg)
+        # Continues the plan's own readiness ledger, so units an order or
+        # stock-target job already counted as Ready are not Ready again here.
+        ready_claimed = plan_ready_ledger
         reaction_location = category_locations.get("Reactions") if ready_at_location else None
         # Stock coverage (GH #383): the walk's own available / buffered
         # demand when it reached the product, else on-hand stock against the
@@ -4799,10 +4805,10 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
         if input_seed:
             # Manufacture / buy non-reaction inputs (fuel blocks, moon mats).
-            stock_used = dict(reserved)
-            for type_id, qty in target_reserved.items():
-                stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
-            stock_used_on_hand = _ReadinessLedger(manual_stock, cfg, reserved_on_hand)
+            # Same ledgers the plan and the reaction jobs above already drew
+            # on: restarting them would hand the same stock out a second time.
+            stock_used = plan_stock_used
+            stock_used_on_hand = ready_claimed
             stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
             # Same as plan_production: round-0 seeds are not netted inside.
             input_seed = _net_seed_against_stock(
