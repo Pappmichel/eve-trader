@@ -1411,7 +1411,9 @@ never stock.
 
 `doctrine/contract_market.py`, tab `/doctrine/contract-market`, tables
 `doctrine_market_*` (never `doctrine_contracts`). Scans one solar system as a
-`pipeline_runner` job, on demand only.
+`pipeline_runner` job, on demand only. Scan and display cover every configured
+doctrine and fitting, including inactive ones and those with no targets; other
+Doctrine calculations stay on active fittings only.
 
 ESI facts, checked live 2026-11-06. Do not re-derive these from the docs, which
 say otherwise:
