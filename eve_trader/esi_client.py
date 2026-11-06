@@ -1693,18 +1693,16 @@ class ESIClient:
         }
 
     def search_entities(self, query: str, limit: int = 8) -> list[dict]:
-        """Public GET /search/ (no auth) over characters, corporations and
-        alliances, for the compose recipient autocomplete. Returns at most
-        `limit` per category as [{"type", "id", "name"}]."""
-        found = self._get(
-            "/search/", params={"categories": "character,corporation,alliance", "search": query,
-                                "strict": "false", "datasource": "tranquility"},
-        )
-        picked: list[tuple[str, int]] = []
-        for kind in ("character", "corporation", "alliance"):
-            picked.extend((kind, int(i)) for i in (found.get(kind) or [])[:limit])
-        names = self.resolve_names_cached([i for _k, i in picked])
-        return [{"type": k, "id": i, "name": names[i]} for k, i in picked if i in names]
+        """Characters, corporations and alliances named exactly `query`, for the
+        compose recipient autocomplete, as [{"type", "id", "name"}]. Exact only:
+        CCP removed the public GET /search/ route, and the search that remains
+        needs a login with a scope this app does not request."""
+        found = self.resolve_recipient_names([query])
+        return [
+            {"type": kind, "id": int(hit["id"]), "name": hit["name"]}
+            for kind in ("character", "corporation", "alliance")
+            for hit in (found.get(kind) or [])[:limit]
+        ]
 
     def resolve_names_cached(self, ids: list[int]) -> dict[int, str]:
         """resolve_names with a shared 1 h in-memory cache (public data).

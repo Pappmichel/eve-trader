@@ -168,7 +168,8 @@ def _resolve_recipients(client: ESIClient, char: dict, role: str, recipients: li
 
 def do_search_recipients(character_id: int, q: str) -> dict:
     """Autocomplete for the compose form: the sender's own mailing lists plus
-    a public ESI search over characters, corporations and alliances."""
+    the characters, corporations and alliances with exactly this name. A failed
+    lookup keeps the list matches; it only fails when nothing else was found."""
     q = (q or "").strip()
     if len(q) < 3:
         raise ActionError("Type at least 3 characters to search.")
@@ -184,7 +185,8 @@ def do_search_recipients(character_id: int, q: str) -> dict:
     try:
         results.extend(client.search_entities(q))
     except ESIError as e:
-        raise _failed("search for recipients", e) from e
+        if not results:
+            raise _failed("search for recipients", e) from e
     return {"results": results[:24]}
 
 
