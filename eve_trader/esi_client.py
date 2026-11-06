@@ -6,6 +6,7 @@ indices - the ESI surface both the Trading and Production tools need.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -22,6 +23,8 @@ import requests
 from . import storage
 from .auth import TokenManager
 from .config import TRADING_CONFIG, TradingConfig
+
+log = logging.getLogger(__name__)
 
 _contact = os.getenv("EVE_CONTACT_EMAIL", "").strip()
 USER_AGENT = (
@@ -299,6 +302,17 @@ class ESIClient:
     _adjusted_prices_cache_at: float = 0.0
     _cost_indices_cache: Optional[dict[int, dict[str, float]]] = None
     _cost_indices_cache_at: float = 0.0
+    # After a failed refresh that still returned a usable stale value, skip
+    # another network attempt for this long so planners do not queue behind
+    # _prices_indices_lock while ESI is down. Only applies when a stale
+    # value can be served; with no cache the call still tries as before.
+    _PRICE_FETCH_FAIL_BACKOFF_SECONDS = 300.0
+    # Absolute ceiling for serving a stale adjusted-prices / cost-indices
+    # cache after a failed refresh. These change slowly; a value older than
+    # this is not trusted and the call raises like a cold miss.
+    PRICE_DATA_MAX_STALE_SECONDS = 72 * 3600
+    _adjusted_prices_fail_at: float = 0.0
+    _cost_indices_fail_at: float = 0.0
 
     # Class-level, short-TTL caches for region_order_stats/structure_orders_raw
     # (GitHub issue #103) - same real order-book data for anyone querying the
@@ -401,6 +415,42 @@ class ESIClient:
             cls._adjusted_prices_cache_at = 0.0
             cls._cost_indices_cache = None
             cls._cost_indices_cache_at = 0.0
+            cls._adjusted_prices_fail_at = 0.0
+            cls._cost_indices_fail_at = 0.0
+
+    @classmethod
+    def adjusted_prices_stale_seconds(cls) -> Optional[float]:
+        """Seconds since the adjusted-prices cache was last refreshed, or
+        None when the cache is empty or still within its normal TTL window
+        (planners treat None as 'fresh enough to not warn')."""
+        with cls._prices_indices_lock:
+            if cls._adjusted_prices_cache is None:
+                return None
+            age = time.time() - cls._adjusted_prices_cache_at
+            if age <= 3600:
+                return None
+            return age
+
+    @classmethod
+    def cost_indices_stale_seconds(cls) -> Optional[float]:
+        """Seconds since the cost-indices cache was last refreshed, or None
+        when the cache is empty or still within its normal TTL window."""
+        with cls._prices_indices_lock:
+            if cls._cost_indices_cache is None:
+                return None
+            age = time.time() - cls._cost_indices_cache_at
+            if age <= 21600:
+                return None
+            return age
+
+    @classmethod
+    def cost_indices_loaded(cls) -> bool:
+        """True when a non-empty cost-indices catalog is in memory (fresh or
+        stale). False means no successful fetch has landed yet this process,
+        so a {} from system_cost_indices_for is an outage, not a missing
+        system."""
+        with cls._prices_indices_lock:
+            return bool(cls._cost_indices_cache)
 
     @classmethod
     def clear_order_book_caches(cls) -> None:
@@ -972,29 +1022,65 @@ class ESIClient:
         adjusted price in one call - so fetch the full list (cached
         class-wide for `cache_seconds`, see _adjusted_prices_cache's own
         comment) and filter locally.
+
+        On fetch failure, a cache younger than PRICE_DATA_MAX_STALE_SECONDS
+        is returned with a warning (better than zeros). A subsequent failure
+        within _PRICE_FETCH_FAIL_BACKOFF_SECONDS reuses that value without
+        another HTTP attempt, so planners do not queue behind the lock.
         """
         with ESIClient._prices_indices_lock:
             now = time.time()
-            if (ESIClient._adjusted_prices_cache is None
-                    or (now - ESIClient._adjusted_prices_cache_at) > cache_seconds):
-                rows = self._get("/markets/prices/", params={"datasource": "tranquility"})
-                # Confirmed real (2026-09-16): a genuine response always
-                # covers thousands of published types - a 200 response that
-                # happens to carry zero rows is an ESI-side anomaly, not a
-                # documented/expected shape. Treat it the same as a real
-                # fetch failure (raise, don't cache) rather than caching a
-                # known-bad empty result for the full cache_seconds window -
-                # that used to silently zero every BuildJobEntry.job_cost
-                # for up to an hour with no error anywhere (production/
-                # engine.py's _PlanContext already logs+falls back on this
-                # exception, see its own comment).
-                if not rows:
-                    raise ESIError("ESI /markets/prices/ returned zero rows - treating as a failed fetch.")
-                ESIClient._adjusted_prices_cache = {
-                    row["type_id"]: row["adjusted_price"] for row in rows if "adjusted_price" in row
-                }
-                ESIClient._adjusted_prices_cache_at = now
             cache = ESIClient._adjusted_prices_cache
+            age = (now - ESIClient._adjusted_prices_cache_at) if cache is not None else None
+            needs_fetch = cache is None or (age is not None and age > cache_seconds)
+            if needs_fetch:
+                in_fail_backoff = (
+                    cache is not None
+                    and ESIClient._adjusted_prices_fail_at > 0
+                    and (now - ESIClient._adjusted_prices_fail_at)
+                    < ESIClient._PRICE_FETCH_FAIL_BACKOFF_SECONDS
+                    and age is not None
+                    and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS
+                )
+                if in_fail_backoff:
+                    pass  # keep cache; skip HTTP for the backoff window
+                else:
+                    try:
+                        rows = self._get("/markets/prices/", params={"datasource": "tranquility"})
+                        # Confirmed real (2026-09-16): a genuine response always
+                        # covers thousands of published types - a 200 response that
+                        # happens to carry zero rows is an ESI-side anomaly, not a
+                        # documented/expected shape. Treat it the same as a real
+                        # fetch failure (raise, don't cache) rather than caching a
+                        # known-bad empty result for the full cache_seconds window -
+                        # that used to silently zero every BuildJobEntry.job_cost
+                        # for up to an hour with no error anywhere (production/
+                        # engine.py's _PlanContext already logs+falls back on this
+                        # exception, see its own comment).
+                        if not rows:
+                            raise ESIError(
+                                "ESI /markets/prices/ returned zero rows - treating as a failed fetch."
+                            )
+                        ESIClient._adjusted_prices_cache = {
+                            row["type_id"]: row["adjusted_price"]
+                            for row in rows if "adjusted_price" in row
+                        }
+                        ESIClient._adjusted_prices_cache_at = now
+                        ESIClient._adjusted_prices_fail_at = 0.0
+                        cache = ESIClient._adjusted_prices_cache
+                    except Exception as e:
+                        if (cache is not None
+                                and age is not None
+                                and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS):
+                            ESIClient._adjusted_prices_fail_at = now
+                            log.warning(
+                                "ESI get_adjusted_prices failed (%s); serving cache %.0fs old",
+                                e, age,
+                            )
+                        else:
+                            raise
+            if cache is None:
+                raise ESIError("ESI adjusted prices unavailable.")
         if type_ids is None:
             return dict(cache)
         return {t: cache.get(t, 0) for t in type_ids}
@@ -1006,19 +1092,58 @@ class ESIClient:
         once (cached class-wide for `cache_seconds`, see
         _adjusted_prices_cache's own comment), then look up `system_id` and
         filter to `activities`. Missing activities are omitted.
+
+        On fetch failure, a cache younger than PRICE_DATA_MAX_STALE_SECONDS
+        is returned with a warning. An empty 200 is treated as failure so it
+        cannot overwrite a good cache. Fail-backoff matches get_adjusted_prices.
         """
         with ESIClient._prices_indices_lock:
             now = time.time()
-            if ESIClient._cost_indices_cache is None or (now - ESIClient._cost_indices_cache_at) > cache_seconds:
-                rows = self._get("/industry/systems/", params={"datasource": "tranquility"})
-                ESIClient._cost_indices_cache = {
-                    row["solar_system_id"]: {
-                        idx["activity"]: idx["cost_index"] for idx in row.get("cost_indices", [])
-                    }
-                    for row in rows
-                }
-                ESIClient._cost_indices_cache_at = now
-            system_indices = ESIClient._cost_indices_cache.get(system_id)
+            cache = ESIClient._cost_indices_cache
+            age = (now - ESIClient._cost_indices_cache_at) if cache is not None else None
+            needs_fetch = cache is None or (age is not None and age > cache_seconds)
+            if needs_fetch:
+                in_fail_backoff = (
+                    cache is not None
+                    and ESIClient._cost_indices_fail_at > 0
+                    and (now - ESIClient._cost_indices_fail_at)
+                    < ESIClient._PRICE_FETCH_FAIL_BACKOFF_SECONDS
+                    and age is not None
+                    and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS
+                )
+                if in_fail_backoff:
+                    pass
+                else:
+                    try:
+                        rows = self._get("/industry/systems/", params={"datasource": "tranquility"})
+                        if not rows:
+                            raise ESIError(
+                                "ESI /industry/systems/ returned zero rows - treating as a failed fetch."
+                            )
+                        ESIClient._cost_indices_cache = {
+                            row["solar_system_id"]: {
+                                idx["activity"]: idx["cost_index"]
+                                for idx in row.get("cost_indices", [])
+                            }
+                            for row in rows
+                        }
+                        ESIClient._cost_indices_cache_at = now
+                        ESIClient._cost_indices_fail_at = 0.0
+                        cache = ESIClient._cost_indices_cache
+                    except Exception as e:
+                        if (cache is not None
+                                and age is not None
+                                and age <= ESIClient.PRICE_DATA_MAX_STALE_SECONDS):
+                            ESIClient._cost_indices_fail_at = now
+                            log.warning(
+                                "ESI get_system_cost_indices failed (%s); serving cache %.0fs old",
+                                e, age,
+                            )
+                        else:
+                            raise
+            if cache is None:
+                raise ESIError("ESI cost indices unavailable.")
+            system_indices = cache.get(system_id)
         if system_indices is None:
             raise ESIError(f"No cost indices found for solar system {system_id}.")
         return {a: system_indices[a] for a in activities if a in system_indices}
