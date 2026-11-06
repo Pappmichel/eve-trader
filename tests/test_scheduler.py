@@ -24,6 +24,8 @@ def _scheduler_isolation(monkeypatch):
     scheduler.last_run_status.clear()
     scheduler._backup_status.clear()
     scheduler._jita_price_cache_status.clear()
+    with scheduler._job_mu:
+        scheduler._running_jobs.clear()
     monkeypatch.setattr(
         esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "assets", "production")],
     )
@@ -297,6 +299,68 @@ def test_run_job_timeout_records_error_without_blocking_later_jobs(monkeypatch):
     scheduler._run_job("test-tenant", "next_job", lambda: follow_up.append("ran"))
     assert follow_up == ["ran"]
     release.set()
+
+
+def test_portfolio_snapshot_failure_backs_off_across_ticks(monkeypatch):
+    """Six ticks with a failing snapshot must attempt it only once."""
+    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [])
+    attempts = []
+
+    def boom(cfg):
+        attempts.append(1)
+        raise RuntimeError("goonmetrics down")
+
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", boom)
+    cfg = TradingConfig(scheduler_enabled=True, portfolio_snapshot_interval_hours=24.0)
+    for _ in range(6):
+        scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
+    assert len(attempts) == 1
+    assert scheduler.last_run_status["test-tenant"]["portfolio_snapshot"]["error"]
+
+
+def test_run_job_skips_restart_while_previous_worker_still_alive(monkeypatch):
+    monkeypatch.setattr(scheduler, "JOB_TIMEOUT_SECONDS", 0.05)
+    started = threading.Event()
+    release = threading.Event()
+    runs = []
+
+    def hang():
+        runs.append(1)
+        started.set()
+        release.wait(timeout=2)
+
+    scheduler._run_job("test-tenant", "hang_job", hang)
+    assert started.wait(timeout=1)
+    first_status = dict(scheduler.last_run_status["test-tenant"]["hang_job"])
+
+    scheduler._run_job("test-tenant", "hang_job", hang)
+    assert runs == [1]
+    assert scheduler.last_run_status["test-tenant"]["hang_job"] == first_status
+    release.set()
+
+
+def test_portfolio_snapshot_due_immediately_after_yesterdays_success(monkeypatch):
+    """A successful run yesterday must not apply failure backoff today."""
+    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(
+        storage, "latest_portfolio_snapshot_date",
+        lambda: dt.date.today() - dt.timedelta(days=1),
+    )
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [])
+    calls = []
+    monkeypatch.setattr(
+        scheduler.portfolio, "take_portfolio_snapshot",
+        lambda cfg: calls.append("ok"),
+    )
+    yesterday = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).isoformat()
+    scheduler.last_run_status["test-tenant"] = {
+        "portfolio_snapshot": {"ran_at": yesterday, "error": None},
+    }
+    cfg = TradingConfig(scheduler_enabled=True, portfolio_snapshot_interval_hours=24.0)
+    scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
+    assert calls == ["ok"]
 
 
 def test_start_is_noop_when_default_tenant_disabled(monkeypatch):
