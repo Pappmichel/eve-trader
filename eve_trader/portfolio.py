@@ -35,6 +35,59 @@ _TOOL_LABELS = {
     "station_trading": "Station Trading",
 }
 
+# Negative cache for `_quotes_available`: a failed Goonmetrics probe can
+# hold the market lock for up to 3×60 s; remember the miss per market for
+# 15 minutes so a failing snapshot does not re-probe on every tick.
+_QUOTES_UNAVAILABLE_TTL = 15 * 60
+_quotes_unavailable_until: dict[str, float] = {}
+_quotes_unavailable_lock = threading.Lock()
+
+
+class MarketQuotesUnavailable(RuntimeError):
+    """Goonmetrics quotes are unreachable; refuse to write a wealth snapshot."""
+
+
+def clear_quotes_unavailable_cache() -> None:
+    with _quotes_unavailable_lock:
+        _quotes_unavailable_until.clear()
+
+
+def _quotes_available() -> bool:
+    """True when Jita (and home, when set) current-price lists can be fetched.
+
+    A successful probe costs nothing afterward: current_prices caches the
+    payload. RequestException, ValueError, or an empty list means unavailable.
+    """
+    import requests
+
+    from .goonmetrics_client import GoonmetricsClient
+    from .production.config import PRODUCTION_CONFIG
+    from .production.pricing import JITA_MARKET
+
+    markets = [JITA_MARKET]
+    home = getattr(PRODUCTION_CONFIG, "home_market", None)
+    if home:
+        markets.append(home)
+
+    now = time.time()
+    with _quotes_unavailable_lock:
+        if any(_quotes_unavailable_until.get(m, 0.0) > now for m in markets):
+            return False
+
+    client = GoonmetricsClient()
+    for market in markets:
+        try:
+            prices = client.current_prices(market)
+        except (requests.RequestException, ValueError):
+            with _quotes_unavailable_lock:
+                _quotes_unavailable_until[market] = time.time() + _QUOTES_UNAVAILABLE_TTL
+            return False
+        if not prices:
+            with _quotes_unavailable_lock:
+                _quotes_unavailable_until[market] = time.time() + _QUOTES_UNAVAILABLE_TTL
+            return False
+    return True
+
 
 def _realized_window(period: str) -> dict:
     key = str(period or "30").strip()
@@ -969,7 +1022,14 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     list and sync times are not snapshot columns. wealth_listed_value,
     wealth_contract_value and wealth_escrow are. Escrow stays NULL until
     a sync stores it. Only the declared snapshot columns are persisted.
+
+    Raises MarketQuotesUnavailable before any computation when Jita (and
+    home, when set) current prices cannot be fetched — a downed quote
+    feed would otherwise write a near-empty wealth row that the calendar
+    date check then keeps all day.
     """
+    if not _quotes_available():
+        raise MarketQuotesUnavailable("market quotes unavailable; refusing portfolio snapshot")
     overview = portfolio_overview(cfg)
     wealth = total_wealth(cfg)
     storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
@@ -984,9 +1044,16 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     scheduler is disabled (the default), so history still fills in one row
     per day purely from normal page usage. Every later read that same day
     is the cheap, plain live read - take_portfolio_snapshot() is never
-    called more than once per day from here."""
+    called more than once per day from here.
+
+    If quotes are down, fall back to a live portfolio_overview so the page
+    stays 200; a later call the same day can still write the snapshot.
+    """
     if storage.latest_portfolio_snapshot_date() != date.today():
-        overview = take_portfolio_snapshot(cfg)
+        try:
+            overview = take_portfolio_snapshot(cfg)
+        except MarketQuotesUnavailable:
+            overview = portfolio_overview(cfg)
     else:
         overview = portfolio_overview(cfg)
     return {**overview, "wealth_change": wealth_change()}
@@ -998,9 +1065,16 @@ def do_get_wealth_change(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     do_get_portfolio_overview (same one write path), so the page keeps
     filling history without reading the overview. Every later read that
     day is only a snapshot-table read - the overview's Production stock
-    value took ~10 s on production and the page no longer shows it."""
+    value took ~10 s on production and the page no longer shows it.
+
+    If quotes are down, return wealth_change() without writing a snapshot
+    so the page stays 200.
+    """
     if storage.latest_portfolio_snapshot_date() != date.today():
-        take_portfolio_snapshot(cfg)
+        try:
+            take_portfolio_snapshot(cfg)
+        except MarketQuotesUnavailable:
+            pass
     return wealth_change()
 
 

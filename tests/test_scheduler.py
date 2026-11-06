@@ -26,6 +26,9 @@ def _scheduler_isolation(monkeypatch):
     scheduler._jita_price_cache_status.clear()
     with scheduler._job_mu:
         scheduler._running_jobs.clear()
+    # Portfolio snapshots refuse without quotes; most scheduler tests stub
+    # take_portfolio_snapshot, but a few call through — keep quotes green.
+    monkeypatch.setattr(scheduler.portfolio, "_quotes_available", lambda: True)
     monkeypatch.setattr(
         esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "assets", "production")],
     )

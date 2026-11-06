@@ -1,8 +1,17 @@
 from dataclasses import dataclass
 from datetime import date
 
+import pytest
+
 from eve_trader import portfolio, storage
 from eve_trader.config import TradingConfig
+
+
+@pytest.fixture(autouse=True)
+def _clear_quotes_unavailable_cache():
+    portfolio.clear_quotes_unavailable_cache()
+    yield
+    portfolio.clear_quotes_unavailable_cache()
 
 
 def _ledger_figures(**overrides):
@@ -86,6 +95,7 @@ def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatc
     # No owner shares anything with "portfolio" - total_wealth stays None
     # (a real "nobody has opted in yet" gap), not 0.0 ("everything is
     # worthless") - confirmed real bug in review.
+    monkeypatch.setattr(portfolio, "_quotes_available", lambda: True)
     monkeypatch.setattr(
         "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
     )
@@ -685,6 +695,7 @@ def test_total_wealth_a_character_shared_only_with_production_is_excluded(monkey
 
 
 def test_take_portfolio_snapshot_includes_total_wealth(monkeypatch):
+    monkeypatch.setattr(portfolio, "_quotes_available", lambda: True)
     monkeypatch.setattr(
         "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
     )
@@ -703,3 +714,98 @@ def test_take_portfolio_snapshot_includes_total_wealth(monkeypatch):
     assert upserted["total_wealth"] == 42.0
     assert upserted["wealth_assets_value"] == 42.0
     assert result["total_wealth"] == 42.0
+
+
+def test_quotes_available_false_on_empty_or_error(monkeypatch):
+    from eve_trader.goonmetrics_client import CurrentPrice
+
+    class Ok:
+        def current_prices(self, market):
+            return [CurrentPrice(type_id=34, updated="", buy=1.0, sell=2.0)]
+
+    class Empty:
+        def current_prices(self, market):
+            return []
+
+    class Boom:
+        def current_prices(self, market):
+            import requests
+            raise requests.RequestException("timeout")
+
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", Empty)
+    assert portfolio._quotes_available() is False
+    portfolio.clear_quotes_unavailable_cache()
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", Boom)
+    assert portfolio._quotes_available() is False
+    portfolio.clear_quotes_unavailable_cache()
+    monkeypatch.setattr("eve_trader.goonmetrics_client.GoonmetricsClient", Ok)
+    assert portfolio._quotes_available() is True
+
+
+def test_take_portfolio_snapshot_refuses_when_quotes_unavailable(monkeypatch):
+    upserted = []
+    monkeypatch.setattr(portfolio, "_quotes_available", lambda: False)
+    monkeypatch.setattr(
+        storage, "upsert_portfolio_snapshot",
+        lambda *a, **k: upserted.append(1),
+    )
+    monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg: (_ for _ in ()).throw(
+        AssertionError("must not compute overview without quotes"),
+    ))
+    with pytest.raises(portfolio.MarketQuotesUnavailable):
+        portfolio.take_portfolio_snapshot(TradingConfig())
+    assert upserted == []
+
+
+def test_take_portfolio_snapshot_writes_after_quotes_recover(monkeypatch):
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.portfolio_figures", lambda: _ledger_figures(),
+    )
+    # _quotes_available is driven via `available` below
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(portfolio, "total_wealth", lambda cfg: {
+        "total_wealth": 1.0, "wealth_assets_value": 1.0, "wealth_blueprints_value": 0.0,
+        "wealth_wallet_balance": 0.0, "wealth_priced_items": 0, "wealth_unpriced_items": 0,
+        "characters_missing_wallet_scope": [],
+    })
+    upserted = []
+    monkeypatch.setattr(
+        storage, "upsert_portfolio_snapshot",
+        lambda snapshot_date, values: upserted.append(values),
+    )
+    available = {"ok": False}
+    monkeypatch.setattr(portfolio, "_quotes_available", lambda: available["ok"])
+    with pytest.raises(portfolio.MarketQuotesUnavailable):
+        portfolio.take_portfolio_snapshot(TradingConfig())
+    available["ok"] = True
+    portfolio.take_portfolio_snapshot(TradingConfig())
+    assert len(upserted) == 1
+
+
+def test_do_get_wealth_change_stays_ok_when_quotes_unavailable(monkeypatch):
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    monkeypatch.setattr(portfolio, "_quotes_available", lambda: False)
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
+    monkeypatch.setattr(
+        portfolio, "take_portfolio_snapshot",
+        lambda cfg: (_ for _ in ()).throw(portfolio.MarketQuotesUnavailable("down")),
+    )
+    assert portfolio.do_get_wealth_change(TradingConfig()) == {
+        "d1": None, "d7": None, "d30": None,
+    }
+
+
+def test_do_get_portfolio_overview_falls_back_live_when_quotes_unavailable(monkeypatch):
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
+    monkeypatch.setattr(
+        portfolio, "take_portfolio_snapshot",
+        lambda cfg: (_ for _ in ()).throw(portfolio.MarketQuotesUnavailable("down")),
+    )
+    monkeypatch.setattr(
+        portfolio, "portfolio_overview",
+        lambda cfg: {"combined_value": 9.0},
+    )
+    result = portfolio.do_get_portfolio_overview(TradingConfig())
+    assert result["combined_value"] == 9.0
+    assert result["wealth_change"] == {"d1": None, "d7": None, "d30": None}
