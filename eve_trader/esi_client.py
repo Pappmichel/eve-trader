@@ -459,12 +459,16 @@ class ESIClient:
 
     @classmethod
     def cost_indices_loaded(cls) -> bool:
-        """True when a non-empty cost-indices catalog is in memory (fresh or
-        stale). False means no successful fetch has landed yet this process,
-        so a {} from system_cost_indices_for is an outage, not a missing
+        """True when a non-empty cost-indices catalog is in memory and not
+        older than PRICE_DATA_MAX_STALE_SECONDS. False means no usable
+        catalog (never fetched, empty, or past the hard stale ceiling), so
+        a {} from system_cost_indices_for is an outage, not a missing
         system."""
         with cls._prices_indices_lock:
-            return bool(cls._cost_indices_cache)
+            if not cls._cost_indices_cache:
+                return False
+            age = time.time() - cls._cost_indices_cache_at
+            return age <= cls.PRICE_DATA_MAX_STALE_SECONDS
 
     @classmethod
     def clear_order_book_caches(cls) -> None:

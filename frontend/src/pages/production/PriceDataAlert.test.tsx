@@ -35,4 +35,9 @@ describe('PriceDataAlert', () => {
     expect(screen.getByText(/Using older ESI industry data/i)).toBeInTheDocument()
     expect(screen.getByText(/about 4 hours ago/i)).toBeInTheDocument()
   })
+
+  it('shows a red alert when market quotes are unavailable', () => {
+    wrap(<PriceDataAlert flags={{ prices_available: false }} />)
+    expect(screen.getByText(/Market quotes are unavailable/i)).toBeInTheDocument()
+  })
 })

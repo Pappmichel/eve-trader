@@ -619,17 +619,18 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
             if cacheable:
                 for tid, value in computed.items():
                     _bpc_cache[(tenant, tid)] = value
-                return {
-                    tid: _bpc_cache[(tenant, tid)]
-                    for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-                }
-            # Unreliable fee/quote inputs: return what we could compute for
-            # this call, but do not write the 6h cache (would keep understated
-            # or unpriced BPCs past the outage).
-            return {
-                tid: value for tid, value in computed.items()
-                if value is not None and tid in type_ids
+            # Always return cached values plus this call's computed ones.
+            # Only the write above depends on cacheable - otherwise a partial
+            # outage would drop already-known BPC values from Total Wealth.
+            out = {
+                tid: _bpc_cache[(tenant, tid)]
+                for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
             }
+            if not cacheable:
+                for tid, value in computed.items():
+                    if value is not None and tid in type_ids:
+                        out[tid] = value
+            return out
         return {
             tid: _bpc_cache[(tenant, tid)]
             for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None

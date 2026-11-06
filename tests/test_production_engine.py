@@ -767,6 +767,83 @@ def test_plan_context_prices_unavailable_when_both_markets_empty(monkeypatch):
     assert ctx.job_costs_reliable is True
 
 
+def test_plan_context_ignores_stale_cost_indices_without_configured_system(monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {34: 5.0})
+    monkeypatch.setattr(esi_client_module.ESIClient, "cost_indices_loaded", classmethod(lambda cls: True))
+    monkeypatch.setattr(esi_client_module.ESIClient, "adjusted_prices_stale_seconds", classmethod(lambda cls: None))
+    monkeypatch.setattr(esi_client_module.ESIClient, "cost_indices_stale_seconds",
+                        classmethod(lambda cls: 80 * 3600))
+
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+    assert ctx.price_data_stale_hours is None
+    assert ctx.cost_indices_available is True
+
+
+def test_plan_context_stale_cost_indices_with_system_set_hours(monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
+    monkeypatch.setattr(pricing_module, "system_cost_indices_for", lambda client, system_id: {"manufacturing": 0.01})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {34: 5.0})
+    monkeypatch.setattr(esi_client_module.ESIClient, "cost_indices_loaded", classmethod(lambda cls: True))
+    monkeypatch.setattr(esi_client_module.ESIClient, "adjusted_prices_stale_seconds", classmethod(lambda cls: None))
+    monkeypatch.setattr(esi_client_module.ESIClient, "cost_indices_stale_seconds",
+                        classmethod(lambda cls: 70 * 3600))
+
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=30000142))
+    assert ctx.cost_indices_available is True
+    assert ctx.price_data_stale_hours == pytest.approx(70.0)
+
+
+def test_plan_context_cost_indices_unavailable_when_catalog_past_ceiling(monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
+    monkeypatch.setattr(pricing_module, "system_cost_indices_for", lambda client, system_id: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {34: 5.0})
+    monkeypatch.setattr(esi_client_module.ESIClient, "cost_indices_loaded", classmethod(lambda cls: False))
+    monkeypatch.setattr(esi_client_module.ESIClient, "adjusted_prices_stale_seconds", classmethod(lambda cls: None))
+    monkeypatch.setattr(esi_client_module.ESIClient, "cost_indices_stale_seconds",
+                        classmethod(lambda cls: 80 * 3600))
+
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=30000142))
+    assert ctx.cost_indices_available is False
+    assert ctx.price_data_stale_hours == pytest.approx(80.0)
+
+
 def test_classify_activity_treats_low_meta_level_invented_item_as_tech_ii(monkeypatch):
     # Real bug found against live SDE data: a Tech III subsystem ("Loki Core
     # - Augmented Nuclear Reactor") has metaLevel=1 - genuinely invented
