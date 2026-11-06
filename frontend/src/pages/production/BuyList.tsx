@@ -33,6 +33,10 @@ export default function BuyList() {
   }, [buyList, selCategories])
 
   const total = useMemo(() => filtered.reduce((sum, e) => sum + (e.total_price ?? 0), 0), [filtered])
+  const unpricedCount = useMemo(
+    () => filtered.filter((e) => e.total_price == null).length,
+    [filtered],
+  )
 
   // Best-hub mode (hub setting 'Best hub'): rows carry the hub their buy is priced at.
   const showHub = buyList.some((e) => e.hub_name)
@@ -119,6 +123,9 @@ export default function BuyList() {
           <Card withBorder padding="sm" w={280}>
             <Text size="xs" c="dimmed" tt="uppercase">Total Buy List Value</Text>
             <Title order={3} c="accent">{isk(total)}</Title>
+            {unpricedCount > 0 && (
+              <Text size="xs" c="dimmed">+ {unpricedCount} row{unpricedCount === 1 ? '' : 's'} without a price</Text>
+            )}
           </Card>
           <MultiSelect
             label="Category" data={categories} value={selCategories} onChange={setSelCategories}

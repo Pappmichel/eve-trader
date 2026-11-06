@@ -840,6 +840,11 @@ def do_refresh_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     if not storage.load_stock_targets() and not storage.list_integrated_special_order_items():
         raise ActionError("No stock targets configured.")
     plan = plan_production(cfg)
+    if plan.get("prices_available") is False:
+        raise ActionError(
+            "Market quotes are unavailable right now; keeping the last good plan. "
+            "Try again once home or hub prices can be fetched."
+        )
     return {
         "stock_targets": len(plan["inventory"]),
         "missing_types": sum(1 for r in plan["inventory"] if r.total_missing > 0),
@@ -857,6 +862,11 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     if not storage.load_stock_targets() and not storage.list_integrated_special_order_items():
         raise ActionError("No stock targets configured.")
     plan = plan_asset_optimized(cfg)
+    if plan.get("prices_available") is False:
+        raise ActionError(
+            "Market quotes are unavailable right now; keeping the last good plan. "
+            "Try again once home or hub prices can be fetched."
+        )
     return {"jobs": len(plan["jobs"]), "plan": plan}
 
 

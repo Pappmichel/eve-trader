@@ -3304,7 +3304,16 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # that read path). Only this function, not plan_asset_optimized / 
     # plan_special_order: those are a different shape, and "the buy list" the
     # Sorting tool means is specifically plan_production / do_refresh_production.
-    storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
+    # Skip the write when quotes or job-cost inputs are missing so a price
+    # outage cannot replace a good pot with zero-ISK finished goods.
+    if getattr(ctx, "prices_available", True) and getattr(ctx, "job_costs_reliable", True):
+        storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
+    else:
+        log.warning(
+            "Skipping save_latest_buy_list (prices_available=%s, job_costs_reliable=%s)",
+            getattr(ctx, "prices_available", True),
+            getattr(ctx, "job_costs_reliable", True),
+        )
 
     result = {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
               **_reliability_fields(ctx),

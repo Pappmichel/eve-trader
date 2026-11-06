@@ -3560,6 +3560,13 @@ def _make_fake_plan_context(stock_targets, manual_stock=None):
             self.cost_indices = {}
             self.adjusted_prices = {}
             self.adjusted_prices_available = True
+            self.cost_indices_available = True
+            self.prices_available = True
+            self.price_data_stale_hours = None
+
+        @property
+        def job_costs_reliable(self):
+            return self.adjusted_prices_available and self.cost_indices_available
     return _FakeCtx
 
 
