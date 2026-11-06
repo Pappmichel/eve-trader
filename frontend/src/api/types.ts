@@ -1591,13 +1591,10 @@ export interface DoctrineSettings {
   strategic_reserve_include_hulls: boolean
   // Contract Market (GitHub issue #428)
   contract_market_system_id: number | null
-  contract_market_include_public: boolean
-  contract_market_include_alliance: boolean
 }
 
 export interface ContractMarketListing {
   contract_id: number
-  source: 'public' | 'alliance'
   issuer_id: number | null
   issuer_name: string | null
   start_location_id: number | null
@@ -1632,10 +1629,7 @@ export interface ContractMarketScanInfo {
   scanned_at: string
   system_id: number
   system_name: string | null
-  include_public: boolean
-  include_alliance: boolean
   public_candidates: number
-  alliance_candidates: number
   matched: number
   unknown_locations: number
   items_pending: number
@@ -1648,8 +1642,6 @@ export interface ContractMarketResponse {
   doctrines: ContractMarketDoctrine[]
   settings: {
     system_id: number | null
-    include_public: boolean
-    include_alliance: boolean
   }
 }
 

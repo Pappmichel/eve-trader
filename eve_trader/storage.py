@@ -8161,7 +8161,7 @@ def doctrine_contract_history_ids(contract_ids: list[int]) -> set[int]:
 
 # ------------------------------------------------------------- Contract Market (GitHub #428)
 _MARKET_CONTRACT_COLUMNS = (
-    "contract_id", "source", "issuer_id", "issuer_name", "start_location_id", "system_id",
+    "contract_id", "issuer_id", "issuer_name", "start_location_id", "system_id",
     "status", "title", "price", "date_issued", "date_expired", "matched_fitting_id",
     "match_score", "validation_status", "scanned_at",
 )
@@ -8179,13 +8179,11 @@ def load_doctrine_market_contract_items(contract_id: int) -> list[tuple]:
 
 
 def get_doctrine_market_scan() -> Optional[tuple]:
-    """(scanned_at, system_id, include_public, include_alliance,
-    public_candidates, alliance_candidates, matched, unknown_locations,
+    """(scanned_at, system_id, public_candidates, matched, unknown_locations,
     items_pending, items_failed, asks_for_items) or None."""
     with connect() as conn:
         return conn.execute(
-            "SELECT scanned_at, system_id, include_public, include_alliance, "
-            "public_candidates, alliance_candidates, matched, unknown_locations, "
+            "SELECT scanned_at, system_id, public_candidates, matched, unknown_locations, "
             "items_pending, items_failed, asks_for_items FROM doctrine_market_scans"
         ).fetchone()
 
@@ -8222,10 +8220,7 @@ def replace_doctrine_market_snapshot(
     *,
     scanned_at: str,
     system_id: int,
-    include_public: bool,
-    include_alliance: bool,
     public_candidates: int,
-    alliance_candidates: int,
     matched: int,
     unknown_locations: int = 0,
     items_pending: int = 0,
@@ -8244,12 +8239,10 @@ def replace_doctrine_market_snapshot(
         conn.execute("DELETE FROM doctrine_market_scans")
         conn.execute(
             "INSERT INTO doctrine_market_scans "
-            "(scanned_at, system_id, include_public, include_alliance, "
-            "public_candidates, alliance_candidates, matched, "
+            "(scanned_at, system_id, public_candidates, matched, "
             "unknown_locations, items_pending, items_failed, asks_for_items) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (scanned_at, system_id, include_public, include_alliance,
-             public_candidates, alliance_candidates, matched,
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (scanned_at, system_id, public_candidates, matched,
              unknown_locations, items_pending, items_failed, asks_for_items),
         )
         if contracts:

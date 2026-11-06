@@ -1,5 +1,5 @@
-"""Contract Market (GitHub issue #428): scan public + alliance item-exchange
-contracts in one solar system and match them against Doctrine fittings.
+"""Contract Market (GitHub issue #428): scan public item-exchange contracts in
+one solar system and match them against Doctrine fittings.
 
 Results are stored in ``doctrine_market_*`` tables only - never in
 ``doctrine_contracts``, which is the owner-issued snapshot used by the
@@ -7,8 +7,8 @@ ampel, alerts and stockpile counts.
 
 ESI facts this relies on (checked live 2026-11-06): GET /contracts/public/
 {region}/ lists open contracts only and has no status or availability field.
-There is no alliance-wide contract list: the character and corporation lists
-only hold contracts that character or corp issued, accepted or is assignee of.
+Alliance contracts are deliberately out: ESI has no endpoint for them, and a
+live read of 3 corporations' and 21 characters' contract lists held none.
 """
 from __future__ import annotations
 
@@ -18,25 +18,15 @@ from typing import Optional
 
 from .. import storage
 from ..actions import ActionError, _emit_progress
-from ..auth import TokenManager
-from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
-from ..esi_data.access import shared_owner_ids
-from ..esi_data.selector import select_auth_role
 from ..locations import reader as location_reader
-from ..locations import resolver as location_resolver
 from . import engine
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, VALIDATION_TOLERABLE, VALIDATION_VALID
-from .esi_sync import list_shared_doctrine_characters
 from .models import ContractItemRow
 
 log = logging.getLogger("eve_trader.doctrine.contract_market")
 
-SOURCE_PUBLIC = "public"
-SOURCE_ALLIANCE = "alliance"
-_CHAR_CONTRACTS_SCOPE = "esi-contracts.read_character_contracts.v1"
-_CORP_CONTRACTS_SCOPE = "esi-contracts.read_corporation_contracts.v1"
 # What a buyer can use as is. Invalid fits and non-doctrine ships are not listed.
 _KEEP_STATUSES = frozenset({VALIDATION_VALID, VALIDATION_TOLERABLE})
 # Item lists never change, so a scan only fetches contracts it has not seen.
@@ -70,14 +60,6 @@ def _is_open_public_item_exchange(contract: dict) -> bool:
     """The public list has no status: everything on it is open until it expires."""
     return (contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
             and not _expired(contract.get("date_expired")))
-
-
-def _is_outstanding_item_exchange(contract: dict) -> bool:
-    """For the character and corporation lists, which do carry a status."""
-    return (
-        contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
-        and contract.get("status") == "outstanding"
-    )
 
 
 def _system_region(system_id: int) -> tuple[int, str, int]:
@@ -119,21 +101,6 @@ def _known_location_systems(location_ids: list[int]) -> dict[int, int]:
             if infos.get(i) is not None and infos[i].solar_system_id is not None}
 
 
-def _resolved_location_systems(location_ids: list[int]) -> dict[int, int]:
-    """Same, after looking unknown ids up. For the small own-contract list only."""
-    ids = sorted({int(i) for i in location_ids if i})
-    known = _known_location_systems(ids)
-    missing = [i for i in ids if i not in known]
-    if missing:
-        try:
-            location_resolver.resolve_ids(missing)
-        except Exception:  # noqa: BLE001 - a resolve failure must not abort the scan
-            log.info("location resolve for contract market failed for %s ids", len(missing),
-                     exc_info=True)
-        known = _known_location_systems(ids)
-    return known
-
-
 def _filter_by_system(contracts: list[dict], system_id: int,
                       system_of: dict[int, int]) -> list[dict]:
     kept = []
@@ -156,7 +123,7 @@ def _collect_public(client: ESIClient, region_id: int, system_id: int,
         raise ActionError(f"Public contracts ESI failed: {e}") from e
     if not raw:
         previous = storage.get_doctrine_market_scan()
-        if previous is not None and int(previous[1]) == system_id and previous[4]:
+        if previous is not None and int(previous[1]) == system_id and previous[2]:
             raise ActionError("ESI returned an empty public contract list for a region that "
                               "had contracts. The last result was kept.")
     candidates = [c for c in raw if _is_open_public_item_exchange(c)]
@@ -166,90 +133,11 @@ def _collect_public(client: ESIClient, region_id: int, system_id: int,
     return _filter_by_system(candidates, system_id, system_of), unknown
 
 
-def _corp_auth_role(corp_id: int, tm: TokenManager, client: ESIClient) -> Optional[str]:
-    """First token that can read corp contracts for ``corp_id``."""
-    for rec in tm.list_records():
-        role = select_auth_role(rec.character_id, _CORP_CONTRACTS_SCOPE, tokens=tm)
-        if role is None:
-            continue
-        try:
-            info = client.character_public_info(rec.character_id)
-        except ESIError:
-            continue
-        if info.get("corporation_id") == corp_id:
-            return role
-    return None
-
-
-def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int,
-                      progress_callback=None) -> tuple[list[dict], dict[int, tuple[str, str, int]]]:
-    """Alliance-available contracts a Doctrine-shared character or corp is party
-    to (see the module docstring: ESI has no wider list). Returns (contracts,
-    item_auth_hints) where hints map contract_id -> (owner_type, auth_role,
-    owner_id) for the items fetch. Raises ActionError when every read failed,
-    so an outage does not look like an empty alliance market."""
-    _emit_progress(progress_callback, {"phase": "alliance", "message": "Fetching alliance contracts"})
-    by_id: dict[int, dict] = {}
-    hints: dict[int, tuple[str, str, int]] = {}
-    reads = 0
-    failures = 0
-
-    def take(raw: list[dict], owner_type: str, role: str, owner_id: int) -> None:
-        for c in raw:
-            if not _is_outstanding_item_exchange(c) or c.get("availability") != "alliance":
-                continue
-            cid = int(c["contract_id"])
-            by_id[cid] = c
-            hints.setdefault(cid, (owner_type, role, owner_id))
-
-    for role, character_id, _name in list_shared_doctrine_characters(tm):
-        reads += 1
-        try:
-            take(client.character_contracts(character_id, auth_role=role),
-                 "character", role, character_id)
-        except ESIError as e:
-            failures += 1
-            log.info("alliance scan: character %s contracts failed: %s", character_id, e)
-
-    for corp_id in shared_owner_ids("contracts", "doctrine", "corporation"):
-        role = _corp_auth_role(int(corp_id), tm, client)
-        if role is None:
-            continue
-        reads += 1
-        try:
-            take(client.corporation_contracts(int(corp_id), auth_role=role),
-                 "corporation", role, int(corp_id))
-        except ESIError as e:
-            failures += 1
-            log.info("alliance scan: corp %s contracts failed: %s", corp_id, e)
-
-    if reads and failures == reads:
-        raise ActionError("Every alliance contract read failed. The last result was kept.")
-
-    candidates = list(by_id.values())
-    system_of = _resolved_location_systems(
-        [c.get("start_location_id") for c in candidates if c.get("start_location_id")])
-    kept = _filter_by_system(candidates, system_id, system_of)
-    kept_ids = {int(c["contract_id"]) for c in kept}
-    return kept, {cid: h for cid, h in hints.items() if cid in kept_ids}
-
-
-def _fetch_items(client: ESIClient, contract: dict, source: str,
-                 auth_hint: Optional[tuple[str, str, int]] = None) -> Optional[list[ContractItemRow]]:
-    """auth_hint: (owner_type, auth_role, owner_id) for alliance items. None
-    when the read failed or no token can read it."""
+def _fetch_items(client: ESIClient, contract: dict) -> Optional[list[ContractItemRow]]:
+    """None when the read failed."""
     cid = int(contract["contract_id"])
     try:
-        if source == SOURCE_PUBLIC:
-            raw_items = client.public_contract_items(cid)
-        elif auth_hint is not None:
-            owner_type, role, owner_id = auth_hint
-            if owner_type == "corporation":
-                raw_items = client.corporation_contract_items(owner_id, cid, auth_role=role)
-            else:
-                raw_items = client.character_contract_items(owner_id, cid, auth_role=role)
-        else:
-            return None
+        raw_items = client.public_contract_items(cid)
     except ESIError as e:
         log.info("contract market items for %s failed: %s", cid, e)
         return None
@@ -266,53 +154,24 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     """Fetch, filter, match and replace the Contract Market snapshot.
 
     ``system_id`` overrides ``cfg.contract_market_system_id`` for this run
-    (and is persisted via the action wrapper when provided). A source that
-    failed outright or too many failed item reads raise ActionError before the
-    replace, so the last good result stays.
+    (and is persisted via the action wrapper when provided). A failed list read
+    or too many failed item reads raise ActionError before the replace, so the
+    last good result stays.
     """
     sid = int(system_id) if system_id is not None else cfg.contract_market_system_id
     if not sid:
         raise ActionError("Pick a solar system for the Contract Market scan.")
-    if not cfg.contract_market_include_public and not cfg.contract_market_include_alliance:
-        raise ActionError("Enable Public and/or Alliance contracts in Doctrine Settings.")
 
     _system_id, system_name, region_id = _system_region(sid)
-    tm = TokenManager(OAUTH_CONFIG)
-
-    # Decided before any ESI call. Public needs no token, so a tenant without a
-    # sharing character still gets the public half.
-    scan_alliance = bool(cfg.contract_market_include_alliance)
-    alliance_skipped = False
-    if scan_alliance and not list_shared_doctrine_characters(tm) and not shared_owner_ids(
-            "contracts", "doctrine", "corporation"):
-        if not cfg.contract_market_include_public:
-            raise ActionError("Alliance scan needs a character sharing Contracts with Doctrine "
-                              "(Characters page).")
-        scan_alliance = False
-        alliance_skipped = True
 
     candidates = engine.load_match_candidates()
     if not candidates:
         raise ActionError("No active Doctrine fittings to match against.")
 
-    client = ESIClient(tokens=tm)
-    public_list: list[dict] = []
-    alliance_list: list[dict] = []
-    alliance_hints: dict[int, tuple[str, str, int]] = {}
-    unknown_locations = 0
-    if cfg.contract_market_include_public:
-        public_list, unknown_locations = _collect_public(
-            client, region_id, _system_id, progress_callback)
-    if scan_alliance:
-        alliance_list, alliance_hints = _collect_alliance(
-            client, tm, _system_id, progress_callback)
-
-    # Alliance wins on id collision (more specific view than public).
-    combined: dict[int, tuple[str, dict]] = {}
-    for c in public_list:
-        combined[int(c["contract_id"])] = (SOURCE_PUBLIC, c)
-    for c in alliance_list:
-        combined[int(c["contract_id"])] = (SOURCE_ALLIANCE, c)
+    client = ESIClient()
+    public_list, unknown_locations = _collect_public(
+        client, region_id, _system_id, progress_callback)
+    combined = {int(c["contract_id"]): c for c in public_list}
 
     _emit_progress(progress_callback, {
         "phase": "match", "message": "Matching contracts",
@@ -323,7 +182,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     item_rows: list[tuple] = []
     hits: list[tuple] = []
     new_fetches = failed_items = items_pending = asks_for_items = 0
-    for i, (cid, (source, raw)) in enumerate(sorted(combined.items())):
+    for i, (cid, raw) in enumerate(sorted(combined.items())):
         if i % 10 == 0:
             _emit_progress(progress_callback, {
                 "phase": "match", "message": f"Matching contracts ({i}/{len(combined)})",
@@ -335,8 +194,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
                 items_pending += 1
                 continue
             new_fetches += 1
-            hint = alliance_hints.get(cid) if source == SOURCE_ALLIANCE else None
-            items = _fetch_items(client, raw, source, auth_hint=hint)
+            items = _fetch_items(client, raw)
             if items is None:
                 failed_items += 1
                 continue
@@ -352,7 +210,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
             cid, raw.get("title"), items, candidates, cfg)
         if fitting_id is None or status not in _KEEP_STATUSES:
             continue
-        hits.append((cid, source, raw, fitting_id, score, status))
+        hits.append((cid, raw, fitting_id, score, status))
 
     if failed_items and (failed_items == new_fetches or (
             failed_items >= _MIN_FAILED_ITEMS_TO_ABORT
@@ -360,7 +218,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
         raise ActionError(f"{failed_items} of {new_fetches} contract item reads failed. "
                           "The last result was kept.")
 
-    issuer_ids = sorted({int(h[2]["issuer_id"]) for h in hits if h[2].get("issuer_id")})
+    issuer_ids = sorted({int(h[1]["issuer_id"]) for h in hits if h[1].get("issuer_id")})
     try:
         names = client.resolve_names(issuer_ids) if issuer_ids else {}
     except ESIError:
@@ -368,10 +226,10 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
 
     scanned_at = _now_iso()
     contract_rows: list[tuple] = []
-    for cid, source, raw, fitting_id, score, status in hits:
+    for cid, raw, fitting_id, score, status in hits:
         issuer_id = raw.get("issuer_id")
         contract_rows.append((
-            cid, source,
+            cid,
             int(issuer_id) if issuer_id is not None else None,
             names.get(int(issuer_id)) if issuer_id is not None else None,
             raw.get("start_location_id"), _system_id,
@@ -385,10 +243,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     storage.replace_doctrine_market_snapshot(
         contract_rows, item_rows,
         scanned_at=scanned_at, system_id=_system_id,
-        include_public=bool(cfg.contract_market_include_public),
-        include_alliance=scan_alliance,
         public_candidates=len(public_list),
-        alliance_candidates=len(alliance_list),
         matched=matched,
         unknown_locations=unknown_locations,
         items_pending=items_pending,
@@ -400,14 +255,12 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
         "system_name": system_name,
         "region_id": region_id,
         "public_candidates": len(public_list),
-        "alliance_candidates": len(alliance_list),
         "matched": matched,
         "scanned_at": scanned_at,
         "unknown_locations": unknown_locations,
         "items_pending": items_pending,
         "items_failed": failed_items,
         "asks_for_items": asks_for_items,
-        "alliance_skipped": alliance_skipped,
     }
 
 
@@ -419,27 +272,19 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         return {
             "scan": None,
             "doctrines": [],
-            "settings": {
-                "system_id": cfg.contract_market_system_id,
-                "include_public": cfg.contract_market_include_public,
-                "include_alliance": cfg.contract_market_include_alliance,
-            },
+            "settings": {"system_id": cfg.contract_market_system_id},
         }
 
-    system_id = scan[1] if scan else (contracts[0][5] if contracts else None)
+    system_id = scan[1] if scan else (contracts[0][4] if contracts else None)
     system_name = None
     if system_id is not None:
         row = storage.get_solar_system(int(system_id))
         system_name = row[1] if row else None
 
-    # Listings stay stored until the next scan: an expired one is gone in game,
-    # and alliance rows follow the same sharing rule as every other shared read.
-    alliance_visible = bool(shared_owner_ids("contracts", "doctrine", "character")
-                            or shared_owner_ids("contracts", "doctrine", "corporation"))
-    contracts = [c for c in contracts if not _expired(c[10])
-                 and (c[1] != SOURCE_ALLIANCE or alliance_visible)]
+    # Listings stay stored until the next scan; an expired one is gone in game.
+    contracts = [c for c in contracts if not _expired(c[9])]
 
-    loc_ids = [c[4] for c in contracts if c[4] is not None]
+    loc_ids = [c[3] for c in contracts if c[3] is not None]
     loc_infos = location_reader.describe(loc_ids) if loc_ids else {}
 
     fittings = {str(r[0]): r for r in storage.list_active_fittings()}
@@ -454,7 +299,7 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     # fitting_id -> contracts
     by_fitting: dict[str, list[dict]] = {}
     for row in contracts:
-        (cid, source, issuer_id, issuer_name, start_location_id, _sys, status, title,
+        (cid, issuer_id, issuer_name, start_location_id, _sys, status, title,
          price, date_issued, date_expired, fitting_id, match_score, validation_status,
          scanned_at) = row
         fid = str(fitting_id) if fitting_id else None
@@ -463,7 +308,6 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         loc = loc_infos.get(int(start_location_id)) if start_location_id else None
         listing = {
             "contract_id": int(cid),
-            "source": source,
             "issuer_id": issuer_id,
             "issuer_name": issuer_name,
             "start_location_id": start_location_id,
@@ -522,16 +366,13 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
 
     scan_view = None
     if scan is not None:
-        (scanned_at, sys_id, include_public, include_alliance, pub_c, all_c, matched,
+        (scanned_at, sys_id, pub_c, matched,
          unknown_locations, items_pending, items_failed, asks_for_items) = scan
         scan_view = {
             "scanned_at": scanned_at.isoformat() if hasattr(scanned_at, "isoformat") else scanned_at,
             "system_id": sys_id,
             "system_name": system_name,
-            "include_public": include_public,
-            "include_alliance": include_alliance,
             "public_candidates": pub_c,
-            "alliance_candidates": all_c,
             "matched": matched,
             "unknown_locations": unknown_locations,
             "items_pending": items_pending,
@@ -542,9 +383,5 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     return {
         "scan": scan_view,
         "doctrines": doctrines_out,
-        "settings": {
-            "system_id": cfg.contract_market_system_id,
-            "include_public": cfg.contract_market_include_public,
-            "include_alliance": cfg.contract_market_include_alliance,
-        },
+        "settings": {"system_id": cfg.contract_market_system_id},
     }

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Accordion, Badge, Button, Group, Stack, Table, Text, Title, Tooltip,
+  Accordion, Badge, Button, Group, Stack, Table, Text, Title,
 } from '@mantine/core'
 import { IconRefresh } from '@tabler/icons-react'
-import { Link } from 'react-router-dom'
 
 import { doctrineApi, sdeApi } from '../../api/client'
 import type { ContractMarketFitting } from '../../api/types'
@@ -16,14 +15,6 @@ import { dateTime, isk } from '../../format'
 
 const QUERY_KEY = ['doctrine', 'contract-market']
 const SCAN_RESULT_KEYS: string[][] = [QUERY_KEY, ['doctrine', 'settings']]
-
-function SourceBadge({ source }: { source: 'public' | 'alliance' }) {
-  return (
-    <Badge size="sm" variant="light" color={source === 'public' ? 'blue' : 'violet'}>
-      {source === 'public' ? 'Public' : 'Alliance'}
-    </Badge>
-  )
-}
 
 function FittingPanel({ fitting }: { fitting: ContractMarketFitting }) {
   return (
@@ -40,7 +31,6 @@ function FittingPanel({ fitting }: { fitting: ContractMarketFitting }) {
         <Table striped highlightOnHover withTableBorder>
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Source</Table.Th>
               <Table.Th>Price</Table.Th>
               <Table.Th>Seller</Table.Th>
               <Table.Th>Title</Table.Th>
@@ -52,7 +42,6 @@ function FittingPanel({ fitting }: { fitting: ContractMarketFitting }) {
           <Table.Tbody>
             {fitting.contracts.map((c) => (
               <Table.Tr key={c.contract_id}>
-                <Table.Td><SourceBadge source={c.source} /></Table.Td>
                 <Table.Td>{isk(c.price)}</Table.Td>
                 <Table.Td>{c.issuer_name ?? (c.issuer_id != null ? String(c.issuer_id) : '–')}</Table.Td>
                 <Table.Td>{c.title || '–'}</Table.Td>
@@ -102,21 +91,13 @@ export default function ContractMarket() {
     doctrineApi.scanContractMarket(systemId ? Number(systemId) : null))
   const scanning = scanJob.runningStatus || scanStart.isPending
 
-  const includePublic = settings?.contract_market_include_public ?? true
-  const includeAlliance = settings?.contract_market_include_alliance ?? true
-  const nothingEnabled = !includePublic && !includeAlliance
-
   return (
     <Stack>
       <Title order={4}>Contract Market</Title>
       <HintCard>
-        Scan public and alliance item-exchange contracts in one solar system and match them against
-        your Doctrine fittings. Results are separate from your own Contracts tab (owner-issued snapshot).
-        ESI has no alliance-wide contract list: Alliance only finds contracts a sharing character or
-        corporation issued, accepted or is assignee of. Public contracts need a place the tool already
-        knows, such as a station or a structure one of your characters has resolved.
-        Toggle Public / Alliance under{' '}
-        <Text span component={Link} to="/doctrine/settings" c="accent">Settings</Text>.
+        Scan public item-exchange contracts in one solar system and match them against your Doctrine
+        fittings. Results are separate from your own Contracts tab. Only contracts at a place the tool
+        already knows can be matched: a station, or a structure one of your characters has resolved.
       </HintCard>
 
       <Group align="flex-end" wrap="wrap">
@@ -128,29 +109,14 @@ export default function ContractMarket() {
           onChange={setSystemId}
           w={280}
         />
-        <Tooltip
-          label={nothingEnabled
-            ? 'Enable Public and/or Alliance in Doctrine Settings first.'
-            : !systemId ? 'Pick a solar system first.' : 'Scan public and alliance contracts in this system.'}
-          multiline w={260}
+        <Button
+          leftSection={<IconRefresh size={14} />}
+          loading={scanning}
+          disabled={!systemId}
+          onClick={() => scanStart.mutate()}
         >
-          <Button
-            leftSection={<IconRefresh size={14} />}
-            loading={scanning}
-            disabled={!systemId || nothingEnabled}
-            onClick={() => scanStart.mutate()}
-          >
-            Scan
-          </Button>
-        </Tooltip>
-        <Group gap="xs">
-          <Badge variant="outline" color={includePublic ? 'blue' : 'gray'}>
-            Public {includePublic ? 'on' : 'off'}
-          </Badge>
-          <Badge variant="outline" color={includeAlliance ? 'violet' : 'gray'}>
-            Alliance {includeAlliance ? 'on' : 'off'}
-          </Badge>
-        </Group>
+          Scan
+        </Button>
       </Group>
 
       {scanning && (
@@ -164,7 +130,7 @@ export default function ContractMarket() {
         <Text size="sm" c="dimmed">
           Last scan {dateTime(data.scan.scanned_at)} in {data.scan.system_name ?? data.scan.system_id}
           {' · '}{data.scan.matched} matched
-          {' · '}{data.scan.public_candidates} public / {data.scan.alliance_candidates} alliance candidates
+          {' · '}{data.scan.public_candidates} public contracts in this system
         </Text>
       )}
       {data?.scan && data.scan.unknown_locations > 0 && (
