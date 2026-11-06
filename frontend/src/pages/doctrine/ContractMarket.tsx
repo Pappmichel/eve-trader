@@ -25,7 +25,21 @@ function SourceBadge({ source }: { source: 'public' | 'alliance' }) {
   )
 }
 
-function FittingPanel({ fitting }: { fitting: ContractMarketFitting }) {
+function FittingPanel({ fitting, scanned }: { fitting: ContractMarketFitting; scanned: boolean }) {
+  if (fitting.count === 0) {
+    return (
+      <Stack gap="xs">
+        {fitting.hull_name && (
+          <Text size="sm" c="dimmed">{fitting.hull_name}</Text>
+        )}
+        <Text size="sm" c="dimmed">
+          {scanned
+            ? 'No contracts for this fitting in the last scan.'
+            : 'Not scanned yet for this fitting.'}
+        </Text>
+      </Stack>
+    )
+  }
   return (
     <Stack gap="xs">
       <Group gap="md">
@@ -66,6 +80,28 @@ function FittingPanel({ fitting }: { fitting: ContractMarketFitting }) {
       </Table.ScrollContainer>
     </Stack>
   )
+}
+
+function FittingCountBadge({
+  count, minPrice, scanned,
+}: { count: number; minPrice: number | null; scanned: boolean }) {
+  if (!scanned) {
+    return <Badge variant="light" color="gray">Not scanned</Badge>
+  }
+  if (count === 0) {
+    return <Badge variant="light" color="red">0 contracts</Badge>
+  }
+  return <Text size="xs" c="dimmed">{count} · min {isk(minPrice)}</Text>
+}
+
+function DoctrineCountBadge({ total, scanned }: { total: number; scanned: boolean }) {
+  if (!scanned) {
+    return <Badge variant="light" color="gray">Not scanned</Badge>
+  }
+  if (total === 0) {
+    return <Badge variant="light" color="red">0 contracts</Badge>
+  }
+  return <Badge variant="light">{total} contract{total === 1 ? '' : 's'}</Badge>
 }
 
 export default function ContractMarket() {
@@ -190,44 +226,52 @@ export default function ContractMarket() {
       {isLoading && <Text size="sm" c="dimmed">Loading…</Text>}
       {isError && <Text size="sm" c="danger">Could not load the last scan.</Text>}
 
+      {!isLoading && data && data.scan === null && data.doctrines.length > 0 && (
+        <Text size="sm" c="dimmed">No scan yet. Pick a system and click Scan.</Text>
+      )}
       {!isLoading && data && data.doctrines.length === 0 && (
-        <Text size="sm" c="dimmed">
-          {data.scan
-            ? 'No Doctrine matches in that system for the last scan.'
-            : 'No scan yet. Pick a system and click Scan.'}
-        </Text>
+        <Text size="sm" c="dimmed">No doctrines configured.</Text>
       )}
 
       {data && data.doctrines.length > 0 && (
         <Accordion multiple variant="separated">
           {data.doctrines.map((d) => {
             const total = d.fittings.reduce((n, f) => n + f.count, 0)
+            const scanned = data.scan !== null
             return (
               <Accordion.Item key={d.doctrine_id ?? d.doctrine_name} value={d.doctrine_id ?? d.doctrine_name}>
                 <Accordion.Control>
                   <Group justify="space-between" pr="md" wrap="nowrap">
                     <Text fw={600}>{d.doctrine_name}</Text>
-                    <Badge variant="light">{total} contract{total === 1 ? '' : 's'}</Badge>
+                    <DoctrineCountBadge total={total} scanned={scanned} />
                   </Group>
                 </Accordion.Control>
                 <Accordion.Panel>
-                  <Accordion multiple variant="contained">
-                    {d.fittings.map((f) => (
-                      <Accordion.Item key={f.fitting_id} value={f.fitting_id}>
-                        <Accordion.Control>
-                          <Group justify="space-between" pr="md" wrap="nowrap">
-                            <Text size="sm">{f.fitting_name}</Text>
-                            <Group gap="xs">
-                              <Text size="xs" c="dimmed">{f.count} · min {isk(f.min_price)}</Text>
+                  {d.fittings.length === 0 ? (
+                    <Text size="sm" c="dimmed">No fittings in this doctrine.</Text>
+                  ) : (
+                    <Accordion multiple variant="contained">
+                      {d.fittings.map((f) => (
+                        <Accordion.Item key={f.fitting_id} value={f.fitting_id}>
+                          <Accordion.Control>
+                            <Group justify="space-between" pr="md" wrap="nowrap">
+                              <Text size="sm">{f.fitting_name}</Text>
+                              <Group gap="xs">
+                                <FittingCountBadge
+                                  count={f.count}
+                                  minPrice={f.min_price}
+                                  scanned={scanned}
+                                />
+                              </Group>
                             </Group>
-                          </Group>
-                        </Accordion.Control>
-                        <Accordion.Panel>
-                          <FittingPanel fitting={f} />
-                        </Accordion.Panel>
-                      </Accordion.Item>
-                    ))}
-                  </Accordion>
+                          </Accordion.Control>
+                          <Accordion.Panel>
+                            <FittingPanel fitting={f} scanned={scanned} />
+                          </Accordion.Panel>
+                        </Accordion.Item>
+                      ))}
+                    </Accordion>
+                  )}
                 </Accordion.Panel>
               </Accordion.Item>
             )

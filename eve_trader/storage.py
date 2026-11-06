@@ -7808,6 +7808,21 @@ def list_active_fittings() -> list[tuple]:
         ).fetchall()
 
 
+def list_all_fittings() -> list[tuple]:
+    """Every fitting of every doctrine (active or not), same columns as
+    list_active_fittings. Active fittings on active doctrines come first so
+    Contract Market matching prefers them on a tie; creation order is the
+    secondary sort. Own-contract / stockpile / shopping paths keep using
+    list_active_fittings."""
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join('f.' + c for c in _FITTING_COLUMNS)} FROM doctrine_fittings f "
+            "JOIN doctrines d ON d.doctrine_id = f.doctrine_id "
+            "ORDER BY (CASE WHEN f.active AND d.active THEN 0 ELSE 1 END), "
+            "d.created_at, f.created_at"
+        ).fetchall()
+
+
 def update_fitting(fitting_id: str, updates: dict) -> None:
     """Always bumps updated_at server-side, even if `updates` only touches
     other fields - it exists specifically to mark "this fitting definition
