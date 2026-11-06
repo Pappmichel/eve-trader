@@ -47,6 +47,7 @@ MAX_NEW_ITEM_FETCHES = 1000
 MIN_SECONDS_BETWEEN_SCANS = 120
 # Above this share of failed item reads the last good result is kept.
 _MAX_FAILED_ITEM_SHARE = 0.2
+_VOLUME_MARGIN = 0.9
 _MIN_FAILED_ITEMS_TO_ABORT = 5
 
 
@@ -71,6 +72,31 @@ def _is_open_public_item_exchange(contract: dict) -> bool:
     """The public list has no status: everything on it is open until it expires."""
     return (contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
             and not _expired(contract.get("date_expired")))
+
+
+def _min_contract_volume(candidates: list, client: ESIClient) -> float:
+    """No contract smaller than the smallest doctrine hull, packaged, can hold a
+    fit. Most contracts are modules and the like: in The Forge 413 of 34,459 reach
+    a packaged frigate's 2,500 m3 (2026-11-06), so this saves nearly all item reads.
+    0 when any hull's volume is unknown, because a wrong guess hides real fits."""
+    volumes = []
+    for hull in {c.fitting.hull_type_id for c in candidates}:
+        volume = storage.get_cached_packaged_volume(hull)
+        if volume is None:
+            try:
+                volume = client.get_packaged_volume(hull)
+            except ESIError:
+                return 0.0
+            if volume is None:
+                return 0.0
+            storage.set_cached_packaged_volume(hull, volume)
+        volumes.append(volume)
+    return min(volumes) * _VOLUME_MARGIN if volumes else 0.0
+
+
+def _big_enough(contract: dict, min_volume: float) -> bool:
+    volume = contract.get("volume")
+    return volume is None or volume >= min_volume
 
 
 def _system_region(system_id: int) -> tuple[int, str, int]:
@@ -139,7 +165,7 @@ def _filter_by_system(contracts: list[dict], system_id: int,
     return kept
 
 
-def _collect_public(client: ESIClient, region_id: int, system_id: int,
+def _collect_public(client: ESIClient, region_id: int, system_id: int, min_volume: float = 0.0,
                     progress_callback=None) -> tuple[list[dict], int]:
     """(contracts in the system, contracts at places this tenant cannot place)."""
     _emit_progress(progress_callback, {"phase": "public", "message": "Fetching public contracts"})
@@ -152,7 +178,7 @@ def _collect_public(client: ESIClient, region_id: int, system_id: int,
         if previous is not None and int(previous[1]) == system_id and previous[4]:
             raise ActionError("ESI returned an empty public contract list for a region that "
                               "had contracts. The last result was kept.")
-    candidates = [c for c in raw if _is_open_public_item_exchange(c)]
+    candidates = [c for c in raw if _is_open_public_item_exchange(c) and _big_enough(c, min_volume)]
     system_of = _known_location_systems(
         [c.get("start_location_id") for c in candidates if c.get("start_location_id")])
     unknown = sum(1 for c in candidates if int(c.get("start_location_id") or 0) not in system_of)
@@ -182,7 +208,7 @@ def _is_open_alliance_contract(contract: dict, alliance_id: int) -> bool:
             and not _expired(contract.get("date_expired")))
 
 
-def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int,
+def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int, min_volume: float = 0.0,
                       progress_callback=None) -> tuple[list[dict], dict[int, tuple[str, str, int]]]:
     """Open contracts assigned to the alliance of a Doctrine-shared corporation.
     One read per alliance: every member corp gets the same list. Returns
@@ -212,7 +238,7 @@ def _collect_alliance(client: ESIClient, tm: TokenManager, system_id: int,
             continue
         seen_alliances.add(alliance_id)
         for c in raw:
-            if _is_open_alliance_contract(c, alliance_id):
+            if _is_open_alliance_contract(c, alliance_id) and _big_enough(c, min_volume):
                 cid = int(c["contract_id"])
                 by_id[cid] = c
                 hints.setdefault(cid, ("corporation", role, int(corp_id)))
@@ -286,16 +312,17 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
         raise ActionError("No active Doctrine fittings to match against.")
 
     client = ESIClient(tokens=tm)
+    min_volume = _min_contract_volume(candidates, client)
     public_list: list[dict] = []
     alliance_list: list[dict] = []
     alliance_hints: dict[int, tuple[str, str, int]] = {}
     unknown_locations = 0
     if cfg.contract_market_include_public:
         public_list, unknown_locations = _collect_public(
-            client, region_id, _system_id, progress_callback)
+            client, region_id, _system_id, min_volume, progress_callback)
     if scan_alliance:
         alliance_list, alliance_hints = _collect_alliance(
-            client, tm, _system_id, progress_callback)
+            client, tm, _system_id, min_volume, progress_callback)
 
     # Alliance wins on id collision (more specific view than public).
     combined: dict[int, tuple[str, dict]] = {}

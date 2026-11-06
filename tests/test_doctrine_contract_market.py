@@ -105,6 +105,7 @@ def _patch_client(monkeypatch, client):
     monkeypatch.setattr(contract_market, "TokenManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(contract_market.location_resolver, "resolve_ids", lambda ids, force=False: {})
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
+    monkeypatch.setattr(contract_market, "_min_contract_volume", lambda *a: 0.0)
 
 
 # ------------------------------------------------------------- pure filters
@@ -438,6 +439,35 @@ def test_invalid_fit_is_not_listed(monkeypatch, cfg):
     client.public_contract_items.return_value = [ITEM]
     _scan_setup(monkeypatch, cfg, client, status="invalid")
     assert contract_market.scan_contract_market(cfg)["matched"] == 0
+
+
+def test_contract_smaller_than_any_hull_is_never_read(monkeypatch, cfg):
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw(contract_id=1, volume=5.0), _raw(contract_id=2, volume=2500.0)]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "_min_contract_volume", lambda *a: 2250.0)
+    result = contract_market.scan_contract_market(cfg)
+    assert result["public_candidates"] == 1
+    client.public_contract_items.assert_called_once_with(2)
+
+
+class _Hull:
+    def __init__(self, hull):
+        self.fitting = type("F", (), {"hull_type_id": hull})
+
+
+def test_min_volume_is_the_smallest_packaged_hull(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", {587: 2500.0, 24698: 15000.0}.get)
+    assert contract_market._min_contract_volume([_Hull(587), _Hull(24698)], MagicMock()) == 2250.0
+
+
+def test_unknown_hull_volume_turns_the_filter_off(monkeypatch):
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda t: None)
+    client = MagicMock()
+    client.get_packaged_volume.return_value = None
+    assert contract_market._min_contract_volume([_Hull(587)], client) == 0.0
 
 
 def test_two_corps_of_one_alliance_read_the_list_once(monkeypatch, cfg):

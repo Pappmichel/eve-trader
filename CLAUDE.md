@@ -1427,6 +1427,9 @@ Rules:
   fills `location_registry` with strangers' structures and burns the ESI error
   budget. What cannot be placed is counted and shown.
 - A failed list read or too many failed item reads keep the last result.
+- A contract smaller than the smallest doctrine hull (packaged) cannot hold a fit
+  and is never read: 413 of 34,459 in The Forge pass. If a hull's volume is
+  unknown, the filter is off.
 - Items of every candidate are stored, because a contract's list never changes.
   Cap per scan `MAX_NEW_ITEM_FETCHES`, minimum interval `MIN_SECONDS_BETWEEN_SCANS`.
 - A contract asking the buyer for items is not listed: its price says nothing
