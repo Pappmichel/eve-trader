@@ -101,7 +101,6 @@ def _alliance_raw(**overrides):
 
 
 def _patch_client(monkeypatch, client):
-    client.rate_limit_remaining.return_value = None
     monkeypatch.setattr(contract_market, "ESIClient", lambda tokens=None: client)
     monkeypatch.setattr(contract_market, "TokenManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(contract_market.location_resolver, "resolve_ids", lambda ids, force=False: {})
@@ -177,7 +176,7 @@ def test_scan_public_and_alliance_match_writes_market_not_doctrine(monkeypatch, 
     _patch_client(monkeypatch, client)
 
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
-    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["doctrine:1"], ALLIANCE_ID))
     monkeypatch.setattr(contract_market.engine, "load_match_candidates", lambda: [object()])
     monkeypatch.setattr(
         contract_market.engine, "match_and_validate_contract",
@@ -415,7 +414,7 @@ def test_all_alliance_reads_failing_keeps_the_last_result(monkeypatch, cfg):
     cfg.contract_market_include_public = False
     cfg.contract_market_include_alliance = True
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
-    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["doctrine:1"], ALLIANCE_ID))
     _seed_previous_scan()
     with pytest.raises(ActionError, match="last result was kept"):
         contract_market.scan_contract_market(cfg)
@@ -476,28 +475,91 @@ def _alliance_setup(monkeypatch, cfg, client):
     cfg.contract_market_include_public = False
     cfg.contract_market_include_alliance = True
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
-    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["doctrine:1"], ALLIANCE_ID))
 
 
-def test_alliance_item_reads_stop_at_their_cap_and_continue_next_scan(monkeypatch, cfg):
+def test_item_reads_spread_over_every_character_of_the_corp(monkeypatch, cfg):
+    client = MagicMock()
+    client.corporation_contracts.return_value = [_alliance_raw(contract_id=i) for i in range(1, 7)]
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["a", "b", "c"], ALLIANCE_ID))
+    assert contract_market.scan_contract_market(cfg)["items_pending"] == 0
+    roles = [c.kwargs["auth_role"] for c in client.corporation_contract_items.call_args_list]
+    assert {r: roles.count(r) for r in roles} == {"a": 2, "b": 2, "c": 2}
+
+
+def test_reads_stop_at_the_budget_per_character_and_continue_next_scan(monkeypatch, cfg):
     client = MagicMock()
     client.corporation_contracts.return_value = [_alliance_raw(contract_id=i) for i in range(1, 6)]
     client.corporation_contract_items.return_value = [ITEM]
     _alliance_setup(monkeypatch, cfg, client)
-    monkeypatch.setattr(contract_market, "MAX_NEW_ALLIANCE_ITEM_FETCHES", 2)
+    monkeypatch.setattr(contract_market, "MAX_READS_PER_CHARACTER", 2)
     assert contract_market.scan_contract_market(cfg)["items_pending"] == 3
     assert client.corporation_contract_items.call_count == 2
     assert contract_market.scan_contract_market(cfg)["items_pending"] == 1
 
 
-def test_alliance_item_reads_leave_room_for_the_sync(monkeypatch, cfg):
+def test_an_empty_bucket_moves_on_to_the_next_character(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIRateLimited
+
+    def items(corp, cid, auth_role):
+        if auth_role == "a":
+            raise ESIRateLimited(600, "corp-contract")
+        return [ITEM]
+
     client = MagicMock()
-    client.corporation_contracts.return_value = [_alliance_raw()]
-    client.rate_limit_remaining.return_value = 149
+    client.corporation_contracts.return_value = [_alliance_raw(contract_id=i) for i in (1, 2)]
+    client.corporation_contract_items.side_effect = items
     _alliance_setup(monkeypatch, cfg, client)
-    client.rate_limit_remaining.return_value = 149
-    assert contract_market.scan_contract_market(cfg)["items_pending"] == 1
-    client.corporation_contract_items.assert_not_called()
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["a", "b"], ALLIANCE_ID))
+    result = contract_market.scan_contract_market(cfg)
+    assert result["items_pending"] == 0
+    assert result["matched"] == 2
+
+
+def test_an_empty_bucket_on_the_list_tries_the_next_character(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIRateLimited
+
+    def contracts(corp, auth_role):
+        if auth_role == "a":
+            raise ESIRateLimited(600, "corp-contract")
+        return [_alliance_raw()]
+
+    client = MagicMock()
+    client.corporation_contracts.side_effect = contracts
+    client.corporation_contract_items.return_value = [ITEM]
+    _alliance_setup(monkeypatch, cfg, client)
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["a", "b"], ALLIANCE_ID))
+    assert contract_market.scan_contract_market(cfg)["alliance_candidates"] == 1
+
+
+def test_items_of_another_system_survive_while_the_contract_is_open(monkeypatch, cfg):
+    other_system = 30000001
+    other_station = STRUCTURE_OTHER
+    client = MagicMock()
+    client.public_contracts.return_value = [
+        _raw(contract_id=1), _raw(contract_id=2, start_location_id=other_station)]
+    client.public_contract_items.return_value = [ITEM]
+    _scan_setup(monkeypatch, cfg, client)
+    _seed_system_and_station(system_id=other_system, station_id=other_station,
+                             name="Elsewhere", station_name="Elsewhere")
+    contract_market.scan_contract_market(cfg)
+    assert client.public_contract_items.call_count == 1
+    contract_market.scan_contract_market(cfg, system_id=other_system)
+    assert client.public_contract_items.call_count == 2
+    contract_market.scan_contract_market(cfg)
+    assert client.public_contract_items.call_count == 2
+
+
+def test_failure_message_names_the_reason(monkeypatch, cfg):
+    from eve_trader.esi_client import ESIError
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw(contract_id=i) for i in range(10, 13)]
+    client.public_contract_items.side_effect = ESIError("HTTP 403 for https://esi/x")
+    _scan_setup(monkeypatch, cfg, client)
+    with pytest.raises(ActionError, match="mostly HTTP 403"):
+        contract_market.scan_contract_market(cfg)
 
 
 def test_rate_limit_on_items_keeps_what_was_read(monkeypatch, cfg):
@@ -513,13 +575,13 @@ def test_rate_limit_on_items_keeps_what_was_read(monkeypatch, cfg):
     assert client.corporation_contract_items.call_count == 2
 
 
-def test_rate_limit_on_the_list_keeps_the_last_result(monkeypatch, cfg):
+def test_every_bucket_empty_on_the_list_keeps_the_last_result(monkeypatch, cfg):
     from eve_trader.esi_client import ESIRateLimited
     client = MagicMock()
     client.corporation_contracts.side_effect = ESIRateLimited(600, "corp-contract")
     _alliance_setup(monkeypatch, cfg, client)
     _seed_previous_scan()
-    with pytest.raises(ActionError, match="try again in 600 s"):
+    with pytest.raises(ActionError, match="last result was kept"):
         contract_market.scan_contract_market(cfg)
     assert len(storage.list_doctrine_market_contracts()) == 1
 
@@ -532,7 +594,7 @@ def test_two_corps_of_one_alliance_read_the_list_once(monkeypatch, cfg):
     cfg.contract_market_include_public = False
     cfg.contract_market_include_alliance = True
     monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID, CORP_ID + 1])
-    monkeypatch.setattr(contract_market, "_corp_reader", lambda *a: ("doctrine:1", ALLIANCE_ID))
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: (["doctrine:1"], ALLIANCE_ID))
     assert contract_market.scan_contract_market(cfg)["matched"] == 1
     assert client.corporation_contracts.call_count == 1
 

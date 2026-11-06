@@ -266,7 +266,6 @@ class ESIClient:
     # should watch X-Esi-Error-Limit-Remain and back off before it runs out,
     # since "once you reach the error limit, all your requests are
     # automatically discarded until the end of the time frame."
-    _rate_limit_remaining: dict[str, int] = {}  # route group -> tokens left at its last response
     _error_limit_lock = threading.Lock()
     _error_limit_remain: int = 100
     _error_limit_reset_at: float = 0.0  # unix timestamp the current window ends
@@ -457,13 +456,6 @@ class ESIClient:
 
     @classmethod
     def _record_error_budget(cls, resp: requests.Response) -> None:
-        group = resp.headers.get("X-Ratelimit-Group")
-        remaining = resp.headers.get("X-Ratelimit-Remaining")
-        if group and remaining is not None:
-            try:
-                cls._rate_limit_remaining[group] = int(remaining)
-            except ValueError:
-                pass
         remain = resp.headers.get("X-Esi-Error-Limit-Remain")
         reset = resp.headers.get("X-Esi-Error-Limit-Reset")
         if remain is None or reset is None:
@@ -554,13 +546,6 @@ class ESIClient:
         if wait > MAX_RETRY_AFTER_WAIT_SECONDS:
             raise ESIRateLimited(wait, resp.headers.get("X-Ratelimit-Group"))
         time.sleep(wait)
-
-    @classmethod
-    def rate_limit_remaining(cls, group: str) -> Optional[int]:
-        """Tokens left in a route group at its last response, None if unseen.
-        ESI's buckets are per character; this holds the last one seen, which is
-        all a caller needs to stop early and leave room for scheduled syncs."""
-        return cls._rate_limit_remaining.get(group)
 
     @staticmethod
     def _retry_after_seconds(resp: requests.Response, attempt: int) -> float:
