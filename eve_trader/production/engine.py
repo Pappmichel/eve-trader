@@ -2641,8 +2641,11 @@ class _PlanContext:
         # False only when at least one system is configured and the ESI
         # catalog never loaded. An empty {} for an unconfigured or unknown
         # system is legitimate and must not warn (falls back to flat rate).
+        # getattr: test doubles that replace ESIClient may omit the new
+        # classmethods; missing means "catalog loaded" (everything fine).
         self.cost_indices_available = (
-            not configured_systems or ESIClient.cost_indices_loaded()
+            not configured_systems
+            or getattr(ESIClient, "cost_indices_loaded", lambda: True)()
         )
         # Per-category cost-index overrides (confirmed with the user
         # 2026-09-16) - a pure DB read, no ESI call, so this is cheap
@@ -2694,8 +2697,8 @@ class _PlanContext:
             self.adjusted_prices_available = False
         ages = [
             s for s in (
-                ESIClient.adjusted_prices_stale_seconds(),
-                ESIClient.cost_indices_stale_seconds(),
+                getattr(ESIClient, "adjusted_prices_stale_seconds", lambda: None)(),
+                getattr(ESIClient, "cost_indices_stale_seconds", lambda: None)(),
             ) if s is not None
         ]
         self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
