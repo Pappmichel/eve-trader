@@ -395,6 +395,7 @@ export interface BuildJobEntry {
   tech_level: string | null
   job_category: string | null
   job_cost: number | null
+  invention_cost_per_unit?: number | null
   margin: number | null
   recipe_source: string | null
   special_order_quantity?: number
@@ -586,6 +587,7 @@ export interface AssetPlanJob {
   decryptor: string | null
   tech_level: string | null
   job_category: string | null
+  invention_cost_per_unit?: number | null
   margin: number | null
   stock_coverage: number | null
   unlock_time_seconds: number
@@ -800,6 +802,7 @@ export interface BuildCandidate {
   daily_movement: number
   potential_daily_profit: number
   meta_level: number | null
+  invention_cost_per_unit?: number | null
   alchemy_comparison?: AlchemyComparison | null
 }
 
@@ -813,6 +816,7 @@ export interface ShipMarginRow {
   margin_home: number | null
   margin_jita: number | null
   meta_level: number | null
+  invention_cost_per_unit?: number | null
 }
 
 export type MaxBuildableMode = 'full' | 'direct'

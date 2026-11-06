@@ -221,6 +221,7 @@ export default function AssetPlanList() {
     },
     { header: 'Job Time (h, total)', id: 'hours', size: 140, accessorFn: (r) => (r.job_runs > 0 ? (r.job_time_seconds * r.shown_runs) / r.job_runs : 0) / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
+    { header: 'Invention Cost/Unit', accessorKey: 'invention_cost_per_unit', size: 160, cell: (i) => isk(i.getValue()) },
     {
       header: 'Margin', accessorKey: 'margin', size: 110,
       cell: (i) => {

@@ -113,6 +113,11 @@ class BuildJobEntry:
     # retain job_cost_rate separately - see engine._build_build_list). None
     # under the same conditions unit_build_cost is None.
     job_cost: Optional[float] = None
+    # Amortized invention cost per unit (Tech II/III only), a slice of
+    # unit_build_cost. Always counted - the invented copy is consumed by the
+    # job, even when an owned one is used - except when a bought BPC already
+    # carries its price. None when there is no priced invention step.
+    invention_cost_per_unit: Optional[float] = None
     # GitHub issue #38: margin if built and sold at the C-J (home) sell quote
     # right now (engine.margin_home) - deliberately not margin_jita,
     # Production sells only at C-J (see CLAUDE.md). None if there's no C-J
@@ -274,6 +279,7 @@ class AssetPlanJob:
     decryptor: Optional[str] = None
     tech_level: Optional[str] = None  # see BuildJobEntry.tech_level
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
+    invention_cost_per_unit: Optional[float] = None  # see BuildJobEntry
     # GitHub issue #38: margin if built and sold at the C-J (home) sell quote
     # right now (engine.margin_home) - see BuildJobEntry's own field comment
     # for why margin_home, not margin_jita.

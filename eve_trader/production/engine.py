@@ -216,6 +216,37 @@ def _unit_material_qty(base_qty: float, material_mult: float) -> float:
     return max(1.0, base_qty * material_mult)
 
 
+def _invention_cost_per_unit(type_id: int, product_qty: float,
+                             chosen: Optional[InventionResult]) -> Optional[float]:
+    """Amortized invention cost per produced unit, or None when there is none
+    to add. The invented BPC is consumed by the job, so its replacement cost
+    belongs in the decision cost even when a copy is already owned. A bought
+    BPC (manual copy cost per run) already carries its own price, so it is not
+    counted twice. `chosen.expected_cost_per_run` is None when an invention
+    input is unpriced - nothing is guessed then."""
+    if chosen is None or chosen.expected_cost_per_run is None:
+        return None
+    if storage.get_manual_blueprint_copy_cost_per_run(type_id) is not None:
+        return None
+    if not product_qty:
+        return None
+    return chosen.expected_cost_per_run / product_qty
+
+
+def _t2_invention_per_unit(type_id: int, t2_memo: dict) -> Optional[float]:
+    """The invention slice of `type_id`'s build cost per unit, read off the
+    `_tech_ii_mods` memo `_unit_cost` filled. None for anything without an
+    invention step (or whose invention inputs are unpriced), so callers can
+    show "-" instead of a 0."""
+    entry = t2_memo.get(type_id)
+    if entry is None or len(entry) < 4:
+        return None
+    bp = storage.get_blueprint_for_product(type_id)
+    if bp is None:
+        return None
+    return _invention_cost_per_unit(type_id, bp[2], entry[3])
+
+
 def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float]]]:
     """Returns (activity_label, blueprint_info). blueprint_info is
     (blueprint_type_id, activity_id, product_qty_per_run), or None if `type_id`
@@ -1444,10 +1475,12 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
         return buy
 
     blueprint_id, activity_id, product_qty = bp
+    invention_per_unit = 0.0
     if activity == "Tech II":
-        material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                selected_decryptors, t2_memo)
+        material_mult, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                     selected_decryptors, t2_memo)
         job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
+        invention_per_unit = _invention_cost_per_unit(type_id, product_qty, chosen) or 0.0
     else:
         material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
     materials = storage.get_blueprint_materials(blueprint_id, activity_id)
@@ -1470,7 +1503,7 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
     # real per-run cost of building this item, on top of materials/job fee.
     bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
     bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
-    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit
+    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit + invention_per_unit
     use_alchemy = False
     if activity == "Reaction" and cfg.alchemy_reactions_enabled:
         alchemy_cost = _alchemy_unit_cost(type_id, cfg, home, jita, memo, selected_decryptors, t2_memo,
@@ -1511,10 +1544,12 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
     if bp is None:
         return buy, None, buy
     blueprint_id, activity_id, product_qty = bp
+    invention_per_unit = 0.0
     if activity == "Tech II":
-        material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                selected_decryptors, t2_memo)
+        material_mult, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                     selected_decryptors, t2_memo)
         job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
+        invention_per_unit = _invention_cost_per_unit(type_id, product_qty, chosen) or 0.0
     else:
         material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
     materials = storage.get_blueprint_materials(blueprint_id, activity_id)
@@ -1531,7 +1566,7 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
     # GitHub issue #40 - see _unit_cost's own comment on this same line.
     bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
     bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
-    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit
+    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit + invention_per_unit
     use_alchemy = False
     if activity == "Reaction" and cfg.alchemy_reactions_enabled:
         alchemy_cost = _alchemy_unit_cost(type_id, cfg, home, jita, memo, selected_decryptors, t2_memo,
@@ -2820,9 +2855,11 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         bp = storage.get_blueprint_for_product(product_type_id)
         product_qty = bp[2] if bp else 1
         product_activity = classify_activity(product_type_id)[0]
+        invention_per_unit = None
         if product_activity == "Tech II" and product_type_id in t2_memo:
-            _, time_mult, decryptor_name, _ = t2_memo[product_type_id]
+            _, time_mult, decryptor_name, chosen = t2_memo[product_type_id]
             job_cost_rate = _job_cost_rate("Tech II", product_type_id, cfg, cost_indices)
+            invention_per_unit = _invention_cost_per_unit(product_type_id, product_qty, chosen)
         else:
             _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
@@ -2855,6 +2892,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             formulas_owned=meta.get("formulas_owned"),
             formulas_needed=meta.get("formulas_needed"),
             job_category=job_category(product_type_id), job_cost=job_cost,
+            invention_cost_per_unit=invention_per_unit,
             recipe_source="alchemy" if alchemy_entry is not None else None,
             # GitHub issue #38: margin_home, not margin_jita - Production
             # sells only at C-J, never Jita (see CLAUDE.md), so the
@@ -4484,6 +4522,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
                         tech_level=classify_activity(job_key)[0],
                         job_category=job_category(type_id),
+                        invention_cost_per_unit=(
+                            _t2_invention_per_unit(type_id, t2_memo) if job_key == type_id else None),
                         stock_coverage=stock_coverage_by_id.get(type_id),
                         # GitHub issue #38: margin_home, not margin_jita - see
                         # plan_production's BuildJobEntry construction for why.
@@ -5191,6 +5231,7 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
         results.append({
             "type_id": type_id, "type_name": type_name, "activity": activity,
             "build_cost": build_cost, "margin": margin, "meta_level": meta_level,
+            "invention_cost_per_unit": _t2_invention_per_unit(type_id, t2_memo),
         })
 
     if results:
@@ -5415,6 +5456,7 @@ def _scan_ship_margins(cfg: ProductionConfig) -> tuple[list[dict], bool]:
             "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
             "jita_price": jita_quote.sell if jita_quote and jita_quote.sell > 0 else None,
             "build_cost": build_cost,
+            "invention_cost_per_unit": _t2_invention_per_unit(type_id, t2_memo),
             "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
             "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
             "meta_level": meta_level,
@@ -5450,6 +5492,7 @@ def _item_margin_detail_with_context(
         "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
         "jita_price": jita_quote.sell if jita_quote and jita_quote.sell > 0 else None,
         "build_cost": build_cost,
+        "invention_cost_per_unit": _t2_invention_per_unit(type_id, t2_memo),
         "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
         "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
     }

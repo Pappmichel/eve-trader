@@ -90,6 +90,7 @@ function ComputeResultView({ result, integrated = false }: { result: SpecialOrde
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h)', id: 'hours', size: 110, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
+    { header: 'Invention Cost/Unit', accessorKey: 'invention_cost_per_unit', size: 160, cell: (i) => isk(i.getValue()) },
     {
       header: 'Job Cost/Unit', accessorKey: 'job_cost', size: 140,
       cell: (i) => (i.getValue() === null ? '–' : isk(i.getValue())),

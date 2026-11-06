@@ -95,6 +95,7 @@ export default function BuildCandidates() {
     { header: 'Activity', accessorKey: 'activity', size: 120 },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 100, cell: (i) => i.getValue() ?? '–' },
     { header: 'Build Cost', accessorKey: 'build_cost', size: 140, cell: (i) => isk(i.getValue()) },
+    { header: 'Invention Cost/Unit', accessorKey: 'invention_cost_per_unit', size: 160, cell: (i) => isk(i.getValue()) },
     { header: 'Margin', accessorKey: 'margin', size: 100, cell: (i) => pct(i.getValue()) },
     { header: 'Daily Movement (units)', accessorKey: 'daily_movement', size: 170, cell: (i) => qty(i.getValue()) },
     {
