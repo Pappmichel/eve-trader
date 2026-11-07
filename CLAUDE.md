@@ -72,7 +72,7 @@ has stored it, plus **In production**: the frozen inputs
 before the owner's asset snapshot and are still running or were delivered
 after it (`realized.db.in_production_input_lines`), priced like assets so a
 job start leaves the total flat; a consumed blueprint copy is priced like a
-copy, never at its original's quote. A Portfolio-only `industry_jobs` share
+copy (see the price matrix), never at its original's quote. A Portfolio-only `industry_jobs` share
 is archived for this. ESI's asset list omits listed and contracted items, and
 the wallet balance is already net of escrow, so those lines are added
 and never subtracted from assets. An unknown escrow is omitted, not
@@ -140,7 +140,7 @@ they laid out side by side:
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
 | What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `realized/loader.py` |
 | What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
-| What is an owned item worth (Portfolio Total Wealth and Capital)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
+| What is an owned item worth (Portfolio Total Wealth and Capital)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
 | What freight did a hub purchase pay? | The courier shipment rate (`sum(reward) / sum(volume)`) when a finished shipment to the home structure was issued at or after the purchase from that station; otherwise the configured hub rate frozen at ingest. Packaged m3 stays the volume frozen at ingest | `realized/costing.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile

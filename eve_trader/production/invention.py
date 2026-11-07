@@ -246,6 +246,18 @@ def attempt_job_fee(t1_blueprint_type_id: int, invented_blueprint_type_id: int, 
     return fee
 
 
+def copy_cost_per_run(blueprint_type_id: int, rates: Optional[FeeRates]) -> Optional[float]:
+    """Job fee of one copy run of `blueprint_type_id` (2% of its
+    manufacturing EIV x the copying rate, same figure `attempt_job_fee`
+    adds for a T1 copy). None without rates or when the EIV is unknown
+    (no recipe, or a material without an adjusted price)."""
+    if rates is None:
+        return None
+    eiv = facility_tax_module.approximate_job_eiv(
+        facility_tax_module.ACTIVITY_COPYING, blueprint_type_id, None, 1, 1, rates.adjusted_prices)
+    return None if eiv is None else eiv * rates.copying_rate
+
+
 def reducible_material_cost(manufacturing_blueprint_id: int, activity_id: int, home: dict, jita: dict,
                              cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[float]:
     """Cost of a blueprint's own build materials that actually scale with ME
