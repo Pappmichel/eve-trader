@@ -3133,7 +3133,7 @@ def test_plan_asset_optimized_readiness_ignores_in_progress_industry_jobs(monkey
 def test_plan_asset_optimized_blockers_list_only_short_direct_materials(monkeypatch, tenant):
     # Blocked tooltip should name *what is missing*, not every input: a fully
     # covered material stays off the list, a partially covered one reports
-    # this job's allocated on-hand share (post smallest-claim-first split),
+    # what was still on hand for this job at its turn (_allocate_ready_runs),
     # and a completely missing one reports covered=0. ItemP needs 10 Common
     # (all on hand) + 10 Rare (3 on hand) + 5 Missing (none).
     bp_by_id = {1: (101, 1, 1)}

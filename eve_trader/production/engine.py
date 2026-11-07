@@ -2639,7 +2639,7 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
 
     Confirmed real bug (2026-08-15, reported after the user physically tried
     to queue jobs off the Asset-Optimized list): plan_asset_optimized's
-    readiness split (_allocate_scarce_stock/min_fraction/runs_ready_now) used
+    readiness split (now _allocate_ready_runs/runs_ready_now) used
     to reuse the same incoming-inclusive _current_stock as its "available"
     pool - when several jobs shared a scarce material with a batch already
     cooking (e.g. Sylramic Fibers), every one of them could show as "Ready
@@ -3974,21 +3974,69 @@ class _ReadinessLedger:
         return min(shortfall, max(0.0, self.free_total(type_id) - self.available(type_id, location_id)))
 
 
-def _allocate_scarce_stock(claims: list[tuple[int, float]], available: float) -> dict[int, float]:
-    """Splits `available` units of a scarce shared material across competing
-    claims (parent_job_type_id, quantity_needed): smallest claim first, each
-    filled completely while stock lasts - maximizes the *count* of claims
-    that end up fully covered, rather than spreading partial coverage across
-    everything (confirmed allocation rule for plan_asset_optimized). Returns
-    {parent_job_type_id: quantity_covered}, one entry per input claim (0.0
-    once stock runs out)."""
-    remaining = available
-    covered: dict[int, float] = {}
-    for parent_id, qty in sorted(claims, key=lambda c: c[1]):
-        take = min(qty, remaining)
-        covered[parent_id] = take
-        remaining -= take
-    return covered
+def _allocate_ready_runs(
+    runs_by_type: dict[int, int],
+    claims_by_parent: dict[int, list[tuple[int, float]]],
+    coverage_by_id: dict[int, Optional[float]],
+    ledger: "_ReadinessLedger",
+    build_location: Callable[[int], Optional[int]],
+) -> tuple[dict[int, int], dict[int, list[AssetPlanBlocker]]]:
+    """Hands physically on-hand stock to one round's jobs as ready runs.
+
+    Jobs go in order of how far behind they are: lowest stock_coverage
+    first (None counts as covered), then fewer runs, then type id. Each job
+    takes, from every one of its direct materials, only what its scarcest
+    material lets it start (floor of runs x the smallest covered fraction);
+    the rest stays for the next job. Decided with the user 2026-11-07: the
+    old smallest-claim-first split per material starved the biggest
+    backlog every time (Scalar Capacitor Unit got no Fullerides at all),
+    and it parked a material on a job another material blocked anyway.
+    A partly covered job still starts its covered runs, so filling whole
+    claims first gained nothing.
+
+    `claims_by_parent` is {job type_id: [(material_id, bare qty)]}; jobs
+    without a claim are fully ready. Claims go through `ledger` at the
+    job's build location (location mode), so no unit is promised twice.
+    Returns ({type_id: ready runs}, {type_id: blockers}); a blocker's
+    `covered` is what was free for that job at its turn, so a material that
+    was available stays off the list even when the job took less of it."""
+    def _priority(type_id: int) -> tuple[float, int, int]:
+        coverage = coverage_by_id.get(type_id)
+        return (1.0 if coverage is None else coverage, runs_by_type[type_id], type_id)
+
+    ready_by_type: dict[int, int] = {}
+    blockers_by_type: dict[int, list[AssetPlanBlocker]] = {}
+    for type_id in sorted(runs_by_type, key=_priority):
+        runs = runs_by_type[type_id]
+        needs: dict[int, float] = {}
+        for material_id, qty in claims_by_parent.get(type_id, []):
+            if qty > 0:
+                needs[material_id] = needs.get(material_id, 0.0) + qty
+        location_id = build_location(type_id)
+        reachable: dict[int, float] = {}
+        fraction = 1.0
+        for material_id, qty in needs.items():
+            reachable[material_id] = min(qty, ledger.available(material_id, location_id))
+            fraction = min(fraction, reachable[material_id] / qty)
+        ready = math.floor(runs * fraction + 1e-9) if runs > 0 else 0
+        ready_by_type[type_id] = ready
+        for material_id, qty in needs.items():
+            take = min(reachable[material_id], math.ceil(qty * ready / runs - 1e-9)) if runs > 0 else 0.0
+            ledger.claim(material_id, location_id, take)
+        blockers: list[AssetPlanBlocker] = []
+        for material_id, qty in needs.items():
+            covered = reachable[material_id]
+            if covered + 1e-9 >= qty:
+                continue
+            sde_material = storage.get_sde_type(material_id)
+            blockers.append(AssetPlanBlocker(
+                type_id=material_id,
+                type_name=sde_material[2] if sde_material else str(material_id),
+                needed=qty, covered=covered,
+                elsewhere=ledger.elsewhere(material_id, location_id, qty - covered),
+            ))
+        blockers_by_type[type_id] = blockers
+    return ready_by_type, blockers_by_type
 
 
 def _unlock_time_by_type(jobs: dict[int, AssetPlanJob]) -> dict[int, float]:
@@ -4371,12 +4419,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     drives how much of *its* materials are needed, so materials can't be
     claimed before their parent's own shortfall is resolved.
 
-    When several jobs need the same scarce intermediate component this round,
-    the available stock is handed to the *smallest* claims first so as many
-    whole jobs as possible become immediately startable, rather than
-    spreading thin partial coverage across everything - maximizes the count
-    of fully-covered claims against one shared pool (confirmed allocation
-    rule). Stock consumption is tracked in a running ledger across rounds
+    When several jobs need the same scarce on-hand material this round,
+    ready runs go to the job furthest behind first (lowest stock_coverage),
+    and each job takes only what its scarcest material lets it start
+    (_allocate_ready_runs; replaced smallest-claim-first on 2026-11-07,
+    which starved the biggest backlog every time). Stock consumption is tracked in a running ledger across rounds
     (stock_used) so a component needed at two different tree depths (a
     genuinely common EVE BOM shape - e.g. a capital component used both
     directly and inside a sub-assembly) doesn't get the same physical stock
@@ -4625,7 +4672,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # Stock targets that are part of an active doctrine fitting get their own
     # pass right after the orders: their whole tree claims stock and
     # readiness before every other target (user request 2026-10-30 - the
-    # smallest-claim-first rule had left a doctrine hull blocked).
+    # then smallest-claim-first rule had left a doctrine hull blocked).
     doctrine_ids = _doctrine_type_ids() if seed_jobs else set()
     doctrine_seed_jobs = {t: q for t, q in seed_jobs.items() if t in doctrine_ids}
     other_seed_jobs = {t: q for t, q in seed_jobs.items() if t not in doctrine_ids}
@@ -4753,17 +4800,23 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     buffer = overbuild * base_qty * material_mult * parent_base_runs
                     buffered_demand[material_id] = buffered_demand.get(material_id, 0.0) + bare_needed + buffer
 
-            # Phase B: readiness (min_fraction) is allocated across the *bare*
-            # per-job claims, smallest first, against stock that's *physically on
-            # hand right now* (_stock_on_hand - excludes still-in-progress
-            # industry jobs, unlike _current_stock) - purely informational,
-            # doesn't drive how much stock gets marked consumed for sizing.
-            # Actual consumption/shortfall sizing uses the *buffered* pooled
+            # Phase B1: readiness. Ready runs are handed out per job against the
+            # *bare* claims and stock that's *physically on hand right now*
+            # (_stock_on_hand - excludes still-in-progress industry jobs, unlike
+            # _current_stock) - purely informational, doesn't drive how much
+            # stock gets marked consumed for sizing (Phase B2 below).
+            claims_by_parent: dict[int, list[tuple[int, float]]] = {}
+            for material_id, claims in next_level_claims.items():
+                for parent_type_id, qty in claims:
+                    claims_by_parent.setdefault(parent_type_id, []).append((material_id, qty))
+            ready_runs_this_round, blockers_this_round = _allocate_ready_runs(
+                runs_this_round, claims_by_parent, stock_coverage_by_id,
+                stock_used_on_hand, _build_location)
+
+            # Phase B2: sizing. Consumption/shortfall uses the *buffered* pooled
             # total against _current_stock's incoming-inclusive availability
-            # instead (a legitimate "don't plan to build even more of something
+            # (a legitimate "don't plan to build even more of something
             # already queued" question, distinct from "can I click start now").
-            min_fraction: dict[int, float] = {type_id: 1.0 for type_id in runs_this_round}
-            blockers_this_round: dict[int, list[AssetPlanBlocker]] = {type_id: [] for type_id in runs_this_round}
             jobs_this_level = {}
             for material_id, claims in next_level_claims.items():
                 _, m_bp = classify_activity(material_id)
@@ -4778,33 +4831,6 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 available = max(0.0, _current_stock(material_id, manual_stock, cfg, m_bp)
                                  + byproduct_stock.get(material_id, 0.0)
                                  - stock_used.get(material_id, 0.0))
-                # Readiness per build location (one group with None unless
-                # location mode is on): each group shares only the stock
-                # its structure holds, smallest claim first.
-                claims_by_location: dict[Optional[int], list[tuple[int, float]]] = {}
-                for parent_type_id, qty in claims:
-                    claims_by_location.setdefault(_build_location(parent_type_id), []).append(
-                        (parent_type_id, qty))
-                covered_by_parent: dict[int, float] = {}
-                for location_id, group in claims_by_location.items():
-                    group_covered = _allocate_scarce_stock(
-                        group, stock_used_on_hand.available(material_id, location_id))
-                    stock_used_on_hand.claim(material_id, location_id, sum(group_covered.values()))
-                    covered_by_parent.update(group_covered)
-
-                sde_material = storage.get_sde_type(material_id)
-                material_name = sde_material[2] if sde_material else str(material_id)
-                for parent_type_id, qty in claims:
-                    covered = covered_by_parent.get(parent_type_id, 0.0)
-                    fraction = covered / qty if qty > 0 else 1.0
-                    if fraction < min_fraction[parent_type_id]:
-                        min_fraction[parent_type_id] = fraction
-                    if covered + 1e-9 < qty:
-                        blockers_this_round[parent_type_id].append(AssetPlanBlocker(
-                            type_id=material_id, type_name=material_name, needed=qty, covered=covered,
-                            elsewhere=stock_used_on_hand.elsewhere(
-                                material_id, _build_location(parent_type_id), qty - covered),
-                        ))
 
                 buffered_total = buffered_demand.get(material_id, 0.0)
                 m_activity = classify_activity(material_id)[0]
@@ -4851,7 +4877,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 name = sde_type[2] if sde_type else str(job_key)
                 base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
                 job_time = base_time * time_mult * runs
-                ready_increment = math.floor(runs * min_fraction[type_id])
+                ready_increment = ready_runs_this_round.get(type_id, runs)
 
                 existing = jobs.get(job_key)
                 round_blockers = _merge_asset_plan_blockers([], blockers_this_round.get(type_id, []))

@@ -1646,6 +1646,13 @@ def _chaining_comparisons(
         if short_inputs:
             affected[product_id] = short_inputs
 
+    # A stored "wait" keeps deferring demand even when no input is short,
+    # so it always gets a row: otherwise it acts but cannot be seen or
+    # switched back (found live 2026-11-07, Fullerides).
+    for product_id, choice in window.chain_choice.items():
+        if choice == "wait" and product_id in layer.product_ids:
+            affected.setdefault(product_id, set())
+
     buy_now_cost = float(base_lp.objective) if base_lp.success else plan.total_cost
     comparisons: list[ChainingComparison] = []
     for product_id, short_ids in sorted(affected.items()):
