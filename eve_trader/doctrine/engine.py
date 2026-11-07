@@ -138,19 +138,26 @@ class _Candidate:
     items: list[FittingItem]
 
 
+def _candidates_from_rows(fitting_rows: list[tuple]) -> list[_Candidate]:
+    """One _Candidate per fitting row, in row order. Every fitting's items come
+    from a single bulk read, not one query per fitting."""
+    fittings = [fitting_from_row(row) for row in fitting_rows]
+    rows_by_fitting = storage.load_fitting_items_bulk([f.fitting_id for f in fittings])
+    candidates = []
+    for fitting in fittings:
+        items = items_from_rows(fitting.fitting_id, rows_by_fitting.get(fitting.fitting_id, []))
+        exact_soll, consume_soll = validation.build_contract_soll(items)
+        candidates.append(_Candidate(fitting=fitting, exact_soll=exact_soll, consume_soll=consume_soll, items=items))
+    return candidates
+
+
 def load_match_candidates() -> list[_Candidate]:
     """Every active fitting (Phase 3 B.5 step 1's candidate pool), in
     doctrine-then-fitting creation order - the same order Phase 3 C.2's
     stockpile allocation treats as priority, and the fallback tiebreak for
     Phase 3 B.5 step 3 when neither the title hint nor a strict score
     difference decides a match."""
-    candidates = []
-    for row in storage.list_active_fittings():
-        fitting = fitting_from_row(row)
-        items = items_from_rows(fitting.fitting_id, storage.load_fitting_items(fitting.fitting_id))
-        exact_soll, consume_soll = validation.build_contract_soll(items)
-        candidates.append(_Candidate(fitting=fitting, exact_soll=exact_soll, consume_soll=consume_soll, items=items))
-    return candidates
+    return _candidates_from_rows(storage.list_active_fittings())
 
 
 def load_all_match_candidates() -> list[_Candidate]:
@@ -158,13 +165,7 @@ def load_all_match_candidates() -> list[_Candidate]:
     fittings on inactive doctrines. Active ones come first (see
     storage.list_all_fittings) so they win the matching tiebreak. Used by
     the Contract Market scan and display only."""
-    candidates = []
-    for row in storage.list_all_fittings():
-        fitting = fitting_from_row(row)
-        items = items_from_rows(fitting.fitting_id, storage.load_fitting_items(fitting.fitting_id))
-        exact_soll, consume_soll = validation.build_contract_soll(items)
-        candidates.append(_Candidate(fitting=fitting, exact_soll=exact_soll, consume_soll=consume_soll, items=items))
-    return candidates
+    return _candidates_from_rows(storage.list_all_fittings())
 
 
 def _fit_identity(candidate: "_Candidate") -> tuple:
@@ -375,13 +376,17 @@ def stockpile_available(asset_rows: list[dict], type_ids, cfg: DoctrineConfig = 
 def _stockpile_rows(doctrine_id: Optional[str], cfg: DoctrineConfig,
                     pooled_contracts: Optional[dict[str, tuple[int, int]]],
                     location_id: Optional[int] = None,
+                    candidates: Optional[list[_Candidate]] = None,
                     ) -> tuple[list[StockpileRow], bool, dict[int, float]]:
     """stockpile_rows_for_doctrine plus the raw stock it read, so callers
-    that also need unallocated stock (Max assemblable) do not read twice."""
+    that also need unallocated stock (Max assemblable) do not read twice.
+    `candidates` is the tenant-wide load_match_candidates() result when the
+    caller already has it (doctrine_status), so it is not loaded again."""
     asset_rows = read_esi("assets", "doctrine")
     assets_available = bool(asset_rows)
 
-    candidates = load_match_candidates()
+    if candidates is None:
+        candidates = load_match_candidates()
     # Pool active contracts across all fittings (tenant-wide) before the
     # doctrine filter, so a shared fit's contracts count for this doctrine too.
     if pooled_contracts is None:
@@ -924,9 +929,14 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     multibuy_cost = None
     multibuy_missing: list[str] = []
     if home is not None:
-        items = storage.load_fitting_items(fitting.fitting_id)
+        # The candidate already holds this fitting's items; only a fitting
+        # outside the candidate pool (inactive doctrine) is read on its own.
+        if candidate is not None and candidate.fitting.fitting_id == fitting.fitting_id:
+            item_quantities = [(item.type_id, item.quantity) for item in candidate.items]
+        else:
+            item_quantities = [(row[2], row[3]) for row in storage.load_fitting_items(fitting.fitting_id)]
         quantities: dict[int, float] = {fitting.hull_type_id: 1.0}
-        for _line_no, _slot_section, type_id, quantity, _is_offline in items:
+        for type_id, quantity in item_quantities:
             quantities[type_id] = quantities.get(type_id, 0.0) + quantity
         total = 0.0
         priced = 0
@@ -962,7 +972,7 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
     candidates = load_match_candidates()
     pooled_contracts = pooled_contract_counts(candidates)
     stockpile_rows, assets_available, available_by_type = _stockpile_rows(
-        doctrine.doctrine_id, cfg, pooled_contracts)
+        doctrine.doctrine_id, cfg, pooled_contracts, candidates=candidates)
     candidate_by_id = {c.fitting.fitting_id: c for c in candidates}
     ready_counts = ready_to_list.counts(cfg, candidates)
 
@@ -973,14 +983,20 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
     # callers to scope type_ids explicitly (see their own docstrings) -
     # these are finished items to price, not materials to recursively
     # expand, so no _structural_material_closure needed here.
+    # Active fittings of an active doctrine are already in `candidates` with
+    # their items; one bulk read covers the rest (active fittings of an
+    # inactive doctrine).
     type_ids: set[int] = set()
-    for row in fitting_rows:
-        fitting = fitting_from_row(row)
-        if not fitting.active:
-            continue
+    active_fittings = [f for f in (fitting_from_row(row) for row in fitting_rows) if f.active]
+    outside_pool = [f.fitting_id for f in active_fittings if f.fitting_id not in candidate_by_id]
+    missing_items = storage.load_fitting_items_bulk(outside_pool) if outside_pool else {}
+    for fitting in active_fittings:
         type_ids.add(fitting.hull_type_id)
-        for _line_no, _slot_section, type_id, _quantity, _is_offline in storage.load_fitting_items(fitting.fitting_id):
-            type_ids.add(type_id)
+        candidate = candidate_by_id.get(fitting.fitting_id)
+        if candidate is not None:
+            type_ids.update(item.type_id for item in candidate.items)
+        else:
+            type_ids.update(row[2] for row in missing_items.get(fitting.fitting_id, []))
     home = production_pricing.home_prices(PRODUCTION_CONFIG, list(type_ids))
 
     statuses = []

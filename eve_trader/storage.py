@@ -7985,6 +7985,27 @@ def load_fitting_items(fitting_id: str) -> list[tuple]:
         ).fetchall()
 
 
+def load_fitting_items_bulk(fitting_ids: list[str]) -> dict[str, list[tuple]]:
+    """`{fitting_id: load_fitting_items(fitting_id)}` for every given id in one
+    query. Every requested id is a key (a fitting without items maps to
+    `[]`), each list in the same (line_no, item_index) order and row shape as
+    `load_fitting_items`."""
+    ids = list(dict.fromkeys(str(f) for f in fitting_ids))
+    out: dict[str, list[tuple]] = {fid: [] for fid in ids}
+    if not ids:
+        return out
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT fitting_id, line_no, slot_section, type_id, quantity, is_offline "
+            "FROM doctrine_fitting_items WHERE fitting_id = ANY(?::uuid[]) "
+            "ORDER BY fitting_id, line_no, item_index",
+            (ids,),
+        ).fetchall()
+    for fitting_id, *item in rows:
+        out[str(fitting_id)].append(tuple(item))
+    return out
+
+
 def replace_fitting_parse_issues(fitting_id: str, rows: list[tuple]) -> None:
     """rows: [(line_no, raw_line, issue_kind, message), ...]."""
     with connect() as conn:
