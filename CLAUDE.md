@@ -1593,22 +1593,37 @@ override (`job_category_facilities.facility_tax_rate`, Logistics page / CLI
 `facilities set --tax-percent`), then the rate observed on the tenant's own last
 jobs at the category's structure for that job activity (1 manufacturing, 11
 reaction), then `ProductionConfig.facility_tax_rate`, which is now only the
-fallback (its Settings label says so). `engine._job_cost_rate` and
-`invention.fee_rates` (invention location, activities 8 and 5) read it there;
-nothing else may add `cfg.facility_tax_rate` to a job cost. Observation lives
-in `production/facility_tax.py`: per `(facility_id, activity)` the median of
-the 3 newest usable jobs started within 30 days, with the date of the newest
-job so the Logistics page shows the age (it also shows the observed rate while
-an override wins). One job's rate is its `industry_job_tax` journal entry
-(`context_id` = job id) divided by the job's EIV. The archive has no EIV, so it
-is an approximation: base ME 0 materials at today's ESI adjusted prices (copy
-and invention x 0.02). A job without a tax entry, a recipe, or an adjusted
-price for every material is skipped, never guessed; a missing observation falls
-back to Settings. Only owners shared with a realized-profit tool count, jobs via
+fallback (its Settings label says so). `engine._job_cost_rate` reads it there;
+nothing else may add `cfg.facility_tax_rate` to a manufacturing/reaction job
+cost. Observation lives in `production/facility_tax.py`: per
+`(facility_id, activity)` the median of the 3 newest usable jobs started within
+30 days, with the date of the newest job so the Logistics page shows the age
+(it also shows the observed rate while an override wins). One job's *tax* rate
+is its `industry_job_tax` journal entry (`context_id` = job id) divided by the
+job's EIV. The archive has no EIV, so it is an approximation: base ME 0
+materials at today's ESI adjusted prices (copy and invention x 0.02). A job
+without a tax entry, a recipe, or an adjusted price for every material is
+skipped, never guessed; a missing observation falls back to Settings. Only
+owners shared with a realized-profit tool count, jobs via
 `access.shared_owners("industry_jobs")` and tax entries via `"wallet"` (D11);
-the read is one query for every job (`db.industry_job_tax_rows`), cached per
-tenant with the facility cache and dropped by `invalidate_facility_cache()`.
-Do not read the observation per item, and do not bind a rate to a station.
+tax rows are one query (`db.industry_job_tax_rows`), cached per tenant with the
+facility cache and dropped by `invalidate_facility_cache()`. Do not read the
+observation per item, and do not bind a rate to a station.
+
+**Invention and copy fees use an observed total rate when available
+(confirmed with the user 2026-11-07).** ESI's job `cost` is facility fee plus
+tax. `facility_tax.observed_total_for_location` takes the median of
+`job.cost / approximate_job_eiv` over the 3 newest invention (activity 8) or
+copy (activity 5) jobs in 30 days at that structure — no journal tax entry
+required (copy jobs often have none). `invention.fee_rates` uses that fraction
+directly as `invention_rate` / `copying_rate` and does **not** add tax or SCC
+on top. Without an observation it falls back to the modelled formula (system
+index × manufacturing structure bonus + observed/Settings tax + SCC). The EIV
+approximation uses today's adjusted prices. Manufacturing and reaction stay on
+`_job_cost_rate` (real per-category rigs). Cost rows are a second scoped query
+(`db.industry_job_cost_rows`); parent resolution for Office/container location
+ids is cached 60 s per tenant+location (including a None miss) so a miss does
+not re-hit `locations.reader` on every item.
 
 ## Manual tracking for Production
 

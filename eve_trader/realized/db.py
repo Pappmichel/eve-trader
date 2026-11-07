@@ -625,6 +625,32 @@ def industry_job_tax_rows(
         ).fetchall()
 
 
+def industry_job_cost_rows(
+    job_owners: list[tuple[str, int]],
+    since: datetime,
+    activity_ids: Iterable[int],
+) -> list[tuple]:
+    """One row per archived job with a positive ESI `cost` (facility fee +
+    tax combined): (job_id, activity_id, blueprint_type_id, product_type_id,
+    runs, licensed_runs, facility_id, start_date, cost). No journal join -
+    copy jobs often have no `industry_job_tax` row but still carry `cost`.
+    Only owners shared with a realized-profit tool (D11). A job archived
+    under two owners counts once."""
+    if not job_owners:
+        return []
+    job_match, job_params = _owner_match_sql(job_owners, "")
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT DISTINCT ON (job_id) job_id, activity_id, blueprint_type_id, "
+            "product_type_id, runs, licensed_runs, facility_id, start_date, cost "
+            "FROM ledger_industry_jobs "
+            "WHERE start_date >= ? AND facility_id IS NOT NULL AND cost IS NOT NULL "
+            "AND cost > 0 AND activity_id = ANY(?) AND " + job_match + " "
+            "ORDER BY job_id, start_date DESC",
+            (since, [int(a) for a in activity_ids], *job_params),
+        ).fetchall()
+
+
 def list_job_inputs_for_owners(
     owners: list[tuple[str, int]],
 ) -> list[tuple]:

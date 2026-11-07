@@ -62,9 +62,13 @@ def _setup(monkeypatch, _apply_production_ledger_schema,
     monkeypatch.setattr(engine, "_security_multiplier_for", lambda profile, cfg: 1.0)
     engine.invalidate_facility_cache(all_tenants=True)
     facility_tax.invalidate(all_tenants=True)
+    facility_tax.clear_parent_cache()
+    invention.clear_invention_system_cache()
     yield
     engine.invalidate_facility_cache(all_tenants=True)
     facility_tax.invalidate(all_tenants=True)
+    facility_tax.clear_parent_cache()
+    invention.clear_invention_system_cache()
 
 
 def _share(owner_id: int, data_kind: str):
@@ -87,20 +91,23 @@ _ids = iter(range(5000, 10**6))
 def _job(days_ago: float, facility: int, rate: float, *, activity: int = 1, runs: int = 1,
          blueprint: int = BP, product: int | None = None, licensed_runs: int | None = None,
          owner: int = ALICE, wallet_owner: int | None = None, tax: float | None = None,
-         eiv: float = 1000.0) -> int:
-    """Archives a job and its industry_job_tax entry; the tax defaults to
-    `rate` x `eiv` (the job's EIV in this file's stub prices)."""
+         eiv: float = 1000.0, cost: float | None = None, with_tax: bool = True) -> int:
+    """Archives a job and optionally its industry_job_tax entry; the tax
+    defaults to `rate` x `eiv` (the job's EIV in this file's stub prices).
+    `cost` is ESI's facility fee + tax; leave None so tax-only observation
+    tests do not also produce a total-rate observation."""
     job_id = next(_ids)
     start = NOW - timedelta(days=days_ago)
     ledger_db.upsert_ledger_industry_jobs([(
         "character", owner, job_id, activity, None, blueprint, product, runs, licensed_runs, None,
-        1.0, facility, None, None, owner, start, start + timedelta(hours=2), None, "active", None,
+        cost, facility, None, None, owner, start, start + timedelta(hours=2), None, "active", None,
     )])
-    isk = (rate * eiv) if tax is None else tax
-    ledger_db.upsert_ledger_wallet_journal([(
-        "character", wallet_owner or owner, 0, job_id + 10**7, start, "industry_job_tax", -isk,
-        job_id, "industry_job_id", None, None, None, None, None,
-    )])
+    if with_tax:
+        isk = (rate * eiv) if tax is None else tax
+        ledger_db.upsert_ledger_wallet_journal([(
+            "character", wallet_owner or owner, 0, job_id + 10**7, start, "industry_job_tax", -isk,
+            job_id, "industry_job_id", None, None, None, None, None,
+        )])
     return job_id
 
 
@@ -450,3 +457,128 @@ def test_invention_location_inside_a_structure_uses_that_structures_rates(tenant
     cost_mult, _, _ = invention.structure_rig_multiplier(cfg.manufacturing_structure_type,
                                                          cfg.manufacturing_rig_tier)
     assert rates.invention_rate == pytest.approx(flat * cost_mult + 0.005 + SCC_SURCHARGE_RATE)
+
+
+# ------------------------------------------------ observed total fee (invention/copy)
+
+
+@pytest.mark.live_fee_rates
+def test_invention_fees_use_the_observed_total_rate_directly(tenant, monkeypatch):
+    # Measured shape: cost/EIV replaces the whole formula; tax and SCC are
+    # not added again (would double-count). Invention EIV here: 200 Trit x 10
+    # x 0.02 = 40; cost 6.152 -> 15.38%.
+    from eve_trader import esi_client as esi_client_module
+    monkeypatch.setattr(esi_client_module, "ESIClient", _NoNetworkClient)
+    _share_all()
+    _job(1, FAC_A, 0.0, activity=8, product=BP_INVENTED, cost=6.152, with_tax=False, eiv=40.0)
+    cfg = _cfg(invention_location_id=FAC_A, manufacturing_system_id=None)
+
+    rates = invention.fee_rates(cfg)
+
+    assert rates is not None
+    assert rates.invention_rate == pytest.approx(6.152 / 40.0)
+    # Formula with Settings tax would be much higher (~20%); prove no add-on.
+    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
+    cost_mult, _, _ = invention.structure_rig_multiplier(cfg.manufacturing_structure_type,
+                                                         cfg.manufacturing_rig_tier)
+    modelled = flat * cost_mult + 0.0025 + SCC_SURCHARGE_RATE
+    assert rates.invention_rate == pytest.approx(0.1538)
+    assert rates.invention_rate != pytest.approx(modelled)
+    assert rates.invention_rate != pytest.approx(0.1538 + 0.0025 + SCC_SURCHARGE_RATE)
+
+
+@pytest.mark.live_fee_rates
+def test_copy_job_without_a_tax_journal_still_sets_the_total_rate(tenant, monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    monkeypatch.setattr(esi_client_module, "ESIClient", _NoNetworkClient)
+    _share_all()
+    # Copy EIV: 100 Trit x 10 x 0.02 x 1 licensed run = 20; cost 2.716 -> 13.58%.
+    _job(1, FAC_A, 0.0, activity=5, licensed_runs=1, cost=2.716, with_tax=False, eiv=20.0)
+    cfg = _cfg(invention_location_id=FAC_A, manufacturing_system_id=None)
+
+    rates = invention.fee_rates(cfg)
+
+    assert rates.copying_rate == pytest.approx(2.716 / 20.0)
+    assert facility_tax.observed_rates() == {}  # no tax journal -> no tax observation
+
+
+@pytest.mark.live_fee_rates
+def test_invention_fees_fall_back_to_the_formula_without_a_total_observation(tenant, monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    monkeypatch.setattr(esi_client_module, "ESIClient", _NoNetworkClient)
+    _share_all()
+    # Tax-only job (cost=None): total observation stays empty, formula + tax.
+    _job(1, FAC_A, 0.0, activity=8, product=BP_INVENTED, tax=0.2, cost=None)
+    cfg = _cfg(invention_location_id=FAC_A, manufacturing_system_id=None)
+
+    rates = invention.fee_rates(cfg)
+
+    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
+    cost_mult, _, _ = invention.structure_rig_multiplier(cfg.manufacturing_structure_type,
+                                                         cfg.manufacturing_rig_tier)
+    assert rates.invention_rate == pytest.approx(flat * cost_mult + 0.005 + SCC_SURCHARGE_RATE)
+
+
+@pytest.mark.live_fee_rates
+def test_unshared_job_owner_does_not_set_the_total_rate(tenant, monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    monkeypatch.setattr(esi_client_module, "ESIClient", _NoNetworkClient)
+    _share_all(ALICE)
+    _job(1, FAC_A, 0.0, activity=8, product=BP_INVENTED, owner=BOB, cost=6.152, with_tax=False)
+    cfg = _cfg(invention_location_id=FAC_A, manufacturing_system_id=None)
+
+    rates = invention.fee_rates(cfg)
+
+    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
+    cost_mult, _, _ = invention.structure_rig_multiplier(cfg.manufacturing_structure_type,
+                                                         cfg.manufacturing_rig_tier)
+    assert rates.invention_rate == pytest.approx(flat * cost_mult + 0.0025 + SCC_SURCHARGE_RATE)
+    assert facility_tax.observed_total_rates() == {}
+
+
+def test_manufacturing_stays_on_tax_observation_not_the_total_rate(tenant):
+    # Total-rate query only covers invention/copy; manufacturing keeps the
+    # tax observation that _job_cost_rate reads through facility_resolution.
+    _share_all()
+    _locate("Large Ships", FAC_A)
+    _job(1, FAC_A, 0.01, activity=1, cost=50.0)
+    cfg = _cfg()
+
+    resolved = _resolve(cfg=cfg)
+    assert resolved["tax_rate"] == pytest.approx(0.01)
+    assert resolved["tax_source"] == "observed"
+    assert (FAC_A, 1) not in facility_tax.observed_total_rates()
+    assert (FAC_A, 1) in facility_tax.observed_rates()
+
+
+
+# ------------------------------------------------ parent-resolve cache (Fix 2)
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_resolve_an_office_parent_at_most_once(tenant, monkeypatch):
+    # Observation lives on the structure; fee_rates is called with an Office
+    # inside it. Without a parent cache that would re-describe every call.
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.locations.reader import LocationInfo
+    monkeypatch.setattr(esi_client_module, "ESIClient", _NoNetworkClient)
+    office = 1_040_000_000_002
+    calls = {"n": 0}
+
+    def describe(ids):
+        calls["n"] += 1
+        return {office: LocationInfo(
+            location_id=office, kind="office", parent_id=FAC_A, solar_system_id=30000142)}
+
+    monkeypatch.setattr("eve_trader.locations.reader.describe", describe)
+    _share_all()
+    _job(1, FAC_A, 0.0, activity=8, product=BP_INVENTED, cost=6.152, with_tax=False, eiv=40.0)
+    cfg = _cfg(invention_location_id=office, manufacturing_system_id=None)
+
+    for _ in range(20):
+        rates = invention.fee_rates(cfg)
+        assert rates.invention_rate == pytest.approx(6.152 / 40.0)
+
+    # Parent cache + invention-system cache share the same describe stub;
+    # both cache a hit, so many fee_rates calls stay at most 2 describes.
+    assert 1 <= calls["n"] <= 2
