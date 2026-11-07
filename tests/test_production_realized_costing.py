@@ -1656,3 +1656,22 @@ def test_fully_covered_wallets_never_carry_the_flag():
     ))
     assert not any(r.fees_missing for r in result.realized_results)
     assert not has_warning(result, "fees_missing")
+
+
+def test_fees_missing_sales_do_not_emit_a_tax_missing_run_warning_per_sale():
+    # 100 sales before the journal start: one fees_missing run warning (per
+    # wallet), no tax_missing run warnings. Each result still carries both
+    # flags so tax_missing_sales stays correct.
+    sales = [
+        sell(FEES_TYPE, 1, 20.0, at(2, 0, minute), tx_id=7100 + minute)
+        for minute in range(100)
+    ]
+    result = rebuild_costing(_fees_missing_ledger(
+        wallet_transactions=[buy(FEES_TYPE, 200, 10.0, at(1, 9), tx_id=7001), *sales],
+        fee_coverage_starts={("character", CHAR, 0): at(3, 0)},
+    ))
+    assert len(result.realized_results) == 100
+    assert all(r.fees_missing and "fees_missing" in r.warnings for r in result.realized_results)
+    assert all("tax_missing" in r.warnings for r in result.realized_results)
+    assert sum(1 for w in result.warnings if w.startswith("fees_missing:")) == 1
+    assert not any(w.startswith("tax_missing:") for w in result.warnings)

@@ -1711,10 +1711,18 @@ class _Costing:
         gross = float(tx.unit_price) * qty
         result_warnings: list[str] = []
         tax = self._sales_tax(tx, gross)
+        fees_missing = self._fees_missing_for(tx)
         if tax is None:
             result_warnings.append("tax_missing")
-            self.warn(f"tax_missing: {tx.ref} sales tax not found in the journal, revenue is gross")
-        if self._fees_missing_for(tx):
+            # When the whole fee side is missing for this wallet, the
+            # per-wallet fees_missing warning below already covers it; a
+            # per-sale tax_missing line would bloat prod_ledger_runs.warnings
+            # by thousands of rows. result_warnings still carries both flags.
+            if not fees_missing:
+                self.warn(
+                    f"tax_missing: {tx.ref} sales tax not found in the journal, revenue is gross"
+                )
+        if fees_missing:
             # No estimate: tax and broker fee stay as archived (missing).
             result_warnings.append(FEES_MISSING_WARNING)
             start = self.ledger.fee_coverage_starts[(tx.owner_type, int(tx.owner_id), int(tx.division))]
