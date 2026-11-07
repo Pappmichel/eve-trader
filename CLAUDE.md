@@ -82,7 +82,11 @@ excluded and are listed. The page
 `/realized-history`, `/capital`, `/attention`) shows the breakdown,
 realized profit for every granted channel, capital at FIFO cost from the
 realized-profit ledger (labeled as such), and an attention list. The
-frontend displays those numbers.
+frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
+`/attention` share one priced computation per tenant for 120 s
+(`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
+price-setting change, manual price, or SDE apply drops it at once, nothing is
+cached while quotes are down, and the snapshot write always computes fresh).
 
 All tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
 one Postgres store (`eve_trader/storage.py`, multi-tenant - see

@@ -14,7 +14,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from . import storage
+from . import storage, wealth_cache
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 from .portfolio_wealth import assemble
@@ -866,6 +866,33 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
     }
 
 
+def _copy_collected(collected: dict, cfg: TradingConfig) -> dict:
+    """A private copy of cached rows: readers (assemble, the breakdown) must
+    never be able to change what the next request reads. `structure_id`
+    comes from the caller's config, so a Settings change shows at once."""
+    import copy
+
+    return {
+        "items": [dict(item) for item in collected["items"]],
+        "wallets": [dict(row) for row in collected["wallets"]],
+        "escrow": None if collected["escrow"] is None else [dict(row) for row in collected["escrow"]],
+        "shares": copy.deepcopy(collected["shares"]),
+        "escrow_known": collected["escrow_known"],
+        "structure_id": cfg.structure_id,
+    }
+
+
+def _collect_wealth_cached(cfg: TradingConfig = TRADING_CONFIG):
+    """`_collect_wealth`, shared for 120 s per tenant by the three read routes
+    (`wealth_cache`). Inside `wealth_cache.bypassed()` (the snapshot write
+    path) it computes anew and neither reads nor fills the cache. Nothing is
+    stored while the quote feed is down, so a Goonmetrics outage cannot
+    outlive itself by two minutes. Freshness and wallet-scope lines are not
+    part of the cached rows; callers read them live."""
+    collected = wealth_cache.get_or_compute(lambda: _collect_wealth(cfg), _quotes_available)
+    return None if collected is None else _copy_collected(collected, cfg)
+
+
 def price_items(items: list[dict]) -> list[dict]:
     """Sets `price` (per unit, None = unpriced) on every item, in place.
 
@@ -959,12 +986,16 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     opt-in). Each data kind's sharing is independent by design (section 4);
     this is just that design's visible edge case for blueprints
     specifically, since (unlike assets/wallet) there's no partial-credit
-    fallback for them."""
+    fallback for them.
+
+    The priced rows are shared for 120 s per tenant (`_collect_wealth_cached`).
+    Every path that writes the result anywhere must call this inside
+    `wealth_cache.bypassed()`."""
     from .production.config import PRODUCTION_CONFIG
     # The freight rate _priced adds to Jita quotes, so the page can state
     # the pricing rule with the number actually used.
     freight = float(PRODUCTION_CONFIG.haul_cost_per_m3 or 0.0)
-    collected = _collect_wealth(cfg)
+    collected = _collect_wealth_cached(cfg)
     if collected is None:
         return {**_EMPTY_WEALTH, "sync": dict(_EMPTY_SYNC), "freight_per_m3": freight}
     result = _wealth_from(collected)
@@ -976,11 +1007,11 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
 def do_get_portfolio_breakdown(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Owner, location, category and top-20 shares of Total Wealth.
 
-    The same rows as total_wealth(), so the three full breakdowns sum to
+    The     same rows as total_wealth(), so the three full breakdowns sum to
     that total. Top 20 is a slice. Unpriced rows are listed and excluded
     from the sums. Names are resolved here; the pure totals do not need them.
     """
-    collected = _collect_wealth(cfg)
+    collected = _collect_wealth_cached(cfg)
     if collected is None:
         return dict(_EMPTY_BREAKDOWN)
     from .realized.names import owner_names
@@ -1072,7 +1103,8 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     if not _quotes_available():
         raise MarketQuotesUnavailable("market quotes unavailable; refusing portfolio snapshot")
     overview = portfolio_overview(cfg)
-    wealth = total_wealth(cfg)
+    with wealth_cache.bypassed():
+        wealth = total_wealth(cfg)
     storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
     return {**overview, **wealth}
 
@@ -1159,9 +1191,11 @@ def do_set_manual_item_price(item_name: str, price: float) -> dict:
         raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
     type_id, resolved_name = exact[0]
     storage.upsert_manual_item_price(type_id, resolved_name, price)
+    wealth_cache.invalidate_current_tenant()
     return {"type_id": type_id, "type_name": resolved_name, "price": price}
 
 
 def do_remove_manual_item_price(type_id: int) -> dict:
     storage.delete_manual_item_price(type_id)
+    wealth_cache.invalidate_current_tenant()
     return {"removed": type_id}

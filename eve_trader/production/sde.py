@@ -20,7 +20,7 @@ from typing import Optional
 
 import requests
 
-from .. import sde_equivalence, storage
+from .. import sde_equivalence, storage, wealth_cache
 from ..pi import constants as pi_constants
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
@@ -636,6 +636,9 @@ def apply_sde(fetched: FetchedSde) -> dict:
     )
     now = datetime.now(timezone.utc).isoformat()
     storage.set_sde_refresh_state(now, fetched.dump_etag, now if trading_inputs_changed else None)
+    # The SDE is global: every tenant's cached Total Wealth rows (categories,
+    # volumes, names) may now be out of date.
+    wealth_cache.invalidate(None)
     return storage.sde_row_counts()
 
 

@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Optional
 
-from .. import storage
+from .. import storage, wealth_cache
 from ..actions import ActionError
 from . import collect, query
 from .scope import ASSET_KINDS, TOOL_KEY, allowed_tools, granted_tools, may_use, owner_scope
@@ -31,7 +31,10 @@ _wanted_cache: dict[tuple, tuple[float, dict[int, list[dict]]]] = {}
 
 
 def invalidate_cache(tenant_id: Optional[str] = None) -> None:
-    """Drop cached rows for one tenant (None = every tenant)."""
+    """Drop cached rows for one tenant (None = every tenant). Also drops
+    Total Wealth's cached priced rows (`wealth_cache`): both read the same
+    synced snapshots and are refreshed by the same events."""
+    wealth_cache.invalidate(tenant_id)
     with _cache_guard:
         for store in (_cache, _wanted_cache):
             for key in [k for k in store if tenant_id is None or k[0] == tenant_id]:
