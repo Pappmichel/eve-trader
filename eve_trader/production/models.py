@@ -654,6 +654,7 @@ class BuildCandidate:
     potential_daily_profit: float
     meta_level: Optional[int]
     alchemy_comparison: Optional[AlchemyComparison] = None
+    invention_cost_per_unit: Optional[float] = None
 
 
 @dataclass
