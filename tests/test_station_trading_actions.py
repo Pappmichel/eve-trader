@@ -34,11 +34,16 @@ def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 0, "Tritanium", 0.01, 0, 0, 0, 0))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Mineral"})
-    monkeypatch.setattr(actions, "confirm_live",
-                         lambda type_ids, **k: {34: OrderStats(sell_percentile=6.0, sell_volume=1.0,
-                                                           buy_percentile=5.0, buy_volume=1.0)})
+    seen = []
+
+    def _confirm(type_ids, station_id, **k):
+        seen.append((type_ids, station_id, k))
+        return {34: OrderStats(sell_percentile=6.0, sell_volume=1.0, buy_percentile=5.0, buy_volume=1.0)}
+    monkeypatch.setattr(actions, "confirm_live", _confirm)
 
     rows = actions._build_shortlist_rows([(34, 0.1, 5000.0, "2026-08-27T00:00:00", True)], cfg)
+
+    assert seen == [([34], cfg.station_id, {"hub_region_id": cfg.hub_region_id})]
 
     assert rows == [{
         "type_id": 34, "name": "Tritanium", "category": "Mineral", "spread_pct": 0.1,
@@ -52,7 +57,7 @@ def test_build_shortlist_rows_unknown_category_when_type_not_in_sde(monkeypatch)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: None)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {})
-    monkeypatch.setattr(actions, "confirm_live", lambda type_ids, **k: {})
+    monkeypatch.setattr(actions, "confirm_live", lambda type_ids, station_id, **k: {})
 
     rows = actions._build_shortlist_rows([(999, 0.1, 5000.0, "2026-08-27T00:00:00", True)], cfg)
 

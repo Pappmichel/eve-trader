@@ -1,5 +1,9 @@
-from eve_trader.esi_client import OrderStats
+import pytest
+
+from eve_trader.esi_client import ESIError, OrderStats
 from eve_trader.goonmetrics_client import CurrentPrice, HistoryPoint
+from eve_trader.station_trading import actions
+from eve_trader.station_trading import esi_sync as st_sync
 from eve_trader.station_trading.candidate_discovery import confirm_live, discover_candidates
 from eve_trader.station_trading.config import StationTradingConfig
 
@@ -97,37 +101,140 @@ def test_sorts_by_spread_times_volume_richest_first():
     assert [r["type_id"] for r in result] == [200, 100]
 
 
-class FakeESIClient:
-    def __init__(self, stats_by_type):
-        self._stats_by_type = stats_by_type
+STATION = 60003760
+ELSEWHERE = 60008494
 
-    def region_order_stats_bulk(self, region_id, type_ids):
-        return {tid: self._stats_by_type[tid] for tid in type_ids}
+
+def _order(order_id, price, is_buy, location_id=STATION, volume=10):
+    return {"order_id": order_id, "price": price, "is_buy_order": is_buy,
+            "location_id": location_id, "volume_remain": volume}
+
+
+class FakeESIClient:
+    """Raw order books per type; records every region/type request."""
+
+    def __init__(self, books):
+        self._books = books
+        self.raw_calls = []
+
+    def region_orders_raw_bulk(self, region_id, type_ids, max_workers=10):
+        self.raw_calls.append((region_id, list(type_ids)))
+        return {tid: self._books.get(tid, []) for tid in type_ids}
 
 
 def test_confirm_live_bounded_to_given_type_ids():
-    stats = {100: OrderStats(sell_percentile=99.0, sell_volume=10.0, buy_percentile=91.0, buy_volume=5.0)}
-    client = FakeESIClient(stats)
+    client = FakeESIClient({100: [_order(1, 99.0, False), _order(2, 91.0, True)],
+                            200: [_order(3, 5.0, False)]})
 
-    result = confirm_live([100], client=client)
+    result = confirm_live([100], STATION, client=client, own_order_ids=set())
 
-    assert result == stats
+    assert list(result) == [100]
+    assert client.raw_calls == [(10000002, [100])]
+    assert result[100] == OrderStats(sell_percentile=99.0, sell_volume=10, buy_percentile=91.0, buy_volume=10)
 
 
 def test_confirm_live_empty_type_ids_makes_no_call():
-    result = confirm_live([], client=FakeESIClient({}))
-    assert result == {}
+    client = FakeESIClient({})
+    assert confirm_live([], STATION, client=client) == {}
+    assert client.raw_calls == []
 
 
 def test_confirm_live_reads_the_given_hub_region():
-    seen = []
+    client = FakeESIClient({})
+    confirm_live([1], STATION, hub_region_id=10000043, client=client, own_order_ids=set())
+    assert client.raw_calls == [(10000043, [1])]
 
-    class _Client:
-        def region_order_stats_bulk(self, region_id, type_ids):
-            seen.append(region_id)
-            return {}
-    confirm_live([1], client=_Client(), hub_region_id=10000043)
-    assert seen == [10000043]
+
+def test_confirm_live_prices_the_station_not_the_region():
+    # Station: sell 100 / buy 70. Elsewhere in the region: sell 90 / buy 85,
+    # which used to flip the margin negative.
+    client = FakeESIClient({100: [
+        _order(1, 100.0, False), _order(2, 70.0, True),
+        _order(3, 90.0, False, ELSEWHERE), _order(4, 85.0, True, ELSEWHERE),
+    ]})
+
+    stats = confirm_live([100], STATION, client=client, own_order_ids=set())[100]
+    assert (stats.buy_percentile, stats.sell_percentile) == (70.0, 100.0)
+
+    cfg = StationTradingConfig()
+    cfg.broker_fee_rate = 0.0147
+    cfg.sales_tax_rate = 0.0337
+    profit, margin = actions._profit(stats.buy_percentile, stats.sell_percentile, cfg)
+    assert profit == pytest.approx(24.131, abs=1e-6)
+    assert round(profit, 2) == 24.13
+    assert round(margin * 100, 1) == 34.0
+
+
+def test_confirm_live_excludes_own_orders():
+    client = FakeESIClient({100: [
+        _order(1, 100.0, False), _order(10, 95.0, False),  # 10 is mine
+        _order(2, 70.0, True), _order(20, 75.0, True),  # 20 is mine
+    ]})
+
+    stats = confirm_live([100], STATION, client=client, own_order_ids={10, 20})[100]
+
+    assert (stats.buy_percentile, stats.sell_percentile) == (70.0, 100.0)
+
+
+def test_confirm_live_reads_own_orders_when_not_given(monkeypatch):
+    class _Client(FakeESIClient):
+        tokens = object()
+
+        def character_orders(self, character_id, auth_role):
+            return [_order(10, 95.0, False), _order(99, 1.0, False, ELSEWHERE)]
+
+    monkeypatch.setattr(st_sync, "list_shared_trader_characters", lambda tm=None: [("trader:1", 1, "Me")])
+    client = _Client({100: [_order(1, 100.0, False), _order(10, 95.0, False), _order(2, 70.0, True)]})
+
+    stats = confirm_live([100], STATION, client=client)[100]
+
+    assert stats.sell_percentile == 100.0  # own order 10 (95.0) is gone
+
+
+def test_confirm_live_without_share_or_token_does_not_error(monkeypatch):
+    class _Client(FakeESIClient):
+        tokens = object()
+
+    def _no_tenant(tm=None):
+        raise RuntimeError("no tenant")
+    monkeypatch.setattr(st_sync, "list_shared_trader_characters", _no_tenant)
+    client = _Client({100: [_order(1, 100.0, False), _order(2, 70.0, True)]})
+
+    stats = confirm_live([100], STATION, client=client)[100]
+
+    assert (stats.buy_percentile, stats.sell_percentile) == (70.0, 100.0)
+
+
+def test_confirm_live_failed_own_order_read_continues(monkeypatch):
+    class _Client(FakeESIClient):
+        tokens = object()
+
+        def character_orders(self, character_id, auth_role):
+            raise ESIError("boom")
+
+    monkeypatch.setattr(st_sync, "list_shared_trader_characters", lambda tm=None: [("trader:1", 1, "Me")])
+    client = _Client({100: [_order(1, 100.0, False)]})
+
+    stats = confirm_live([100], STATION, client=client)[100]
+
+    assert stats.sell_percentile == 100.0
+
+
+def test_confirm_live_empty_station_book_is_none_not_zero():
+    client = FakeESIClient({
+        100: [_order(3, 90.0, False, ELSEWHERE), _order(4, 85.0, True, ELSEWHERE)],  # nothing at station
+        200: [_order(5, 50.0, False)],  # sell side only
+        # 300: no orders at all
+    })
+
+    result = confirm_live([100, 200, 300], STATION, client=client, own_order_ids=set())
+
+    assert (result[100].buy_percentile, result[100].sell_percentile) == (None, None)
+    assert (result[200].buy_percentile, result[200].sell_percentile) == (None, 50.0)
+    assert (result[300].buy_percentile, result[300].sell_percentile) == (None, None)
+    cfg = StationTradingConfig()
+    for tid in (100, 200, 300):
+        assert actions._profit(result[tid].buy_percentile, result[tid].sell_percentile, cfg) == (None, None)
 
 
 def test_discovery_skips_goonmetrics_for_a_non_jita_hub():
