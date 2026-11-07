@@ -351,3 +351,59 @@ def test_plan_production_cold_cache_sde_query_growth_per_target_is_small(monkeyp
     # invention sources, type row, category, skills, ...). What is left are the
     # per-blueprint category and skill lookups, which are not part of the index.
     assert per_target <= 5, (small, large, per_target)
+
+
+# -- startup warm-up ---------------------------------------------------------
+
+
+def _run_lifespan(monkeypatch, started):
+    import asyncio
+
+    from eve_trader import scheduler
+    from eve_trader.api import app as app_module
+
+    class _FakeThread:
+        def __init__(self, target=None, name=None, daemon=None, **kwargs):
+            started.append((name, target, daemon))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(app_module, "_load_default_tenant_config", lambda: None)
+    monkeypatch.setattr(app_module, "fail_stale_pipeline_runs_on_startup", lambda: None)
+    monkeypatch.setattr(scheduler, "start", lambda: None)
+    monkeypatch.setattr(scheduler, "stop", lambda: None)
+    monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
+
+    async def go():
+        async with app_module._lifespan(None):
+            pass
+
+    asyncio.run(go())
+    return app_module
+
+
+def test_lifespan_does_not_warm_under_pytest(monkeypatch):
+    started = []
+    _run_lifespan(monkeypatch, started)
+    assert [name for name, _t, _d in started] == []
+
+
+def test_lifespan_starts_a_daemon_warmup_thread_outside_pytest(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    started = []
+    app_module = _run_lifespan(monkeypatch, started)
+    warm = [(t, d) for name, t, d in started if name == "sde-warmup"]
+    assert warm == [(app_module._warm_sde_caches, True)]
+
+
+def test_warmup_failure_is_logged_and_never_raised(monkeypatch, caplog):
+    from eve_trader.api import app as app_module
+
+    def boom():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(storage, "warm_sde_caches", boom)
+    with caplog.at_level("ERROR"):
+        app_module._warm_sde_caches()  # must not raise
+    assert "SDE cache warm-up failed" in caplog.text

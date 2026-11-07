@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -411,6 +412,11 @@ async def _lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 - never block app start on cleanup
             log.exception("failed to clear stale pipeline_runs on startup")
     scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
+    # Load the SDE recipe index and type rows in the background so the first
+    # planner run after a restart does not pay thousands of one-row queries.
+    # Daemon thread, errors only logged: startup never waits for it.
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        threading.Thread(target=_warm_sde_caches, name="sde-warmup", daemon=True).start()
     # Price the Asset Manager rows in the background so the first page open is
     # not a 20 s wait. Daemon thread: it must neither block start nor shutdown.
     if "PYTEST_CURRENT_TEST" not in os.environ:  # tests start the app against a shared test database
@@ -418,6 +424,17 @@ async def _lifespan(app: FastAPI):
                          daemon=True).start()
     yield
     scheduler.stop()
+
+
+def _warm_sde_caches() -> None:
+    """Thread target for the startup warm-up (storage.warm_sde_caches). Never
+    raises: a failed warm-up only means the caches fill lazily, as before."""
+    started = time.monotonic()
+    try:
+        summary = storage.warm_sde_caches()
+        log.info("SDE caches warmed in %.1fs: %s", time.monotonic() - started, summary)
+    except Exception:  # noqa: BLE001 - never affect the running app
+        log.exception("SDE cache warm-up failed")
 
 
 def _load_default_tenant_config() -> None:
