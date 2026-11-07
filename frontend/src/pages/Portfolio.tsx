@@ -7,7 +7,7 @@ import {
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
 import { Link } from 'react-router-dom'
-import { Area, AreaChart, Bar, ComposedChart, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
+import { Area, AreaChart, Bar, ComposedChart, LineChart, ReferenceLine, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { portfolioApi } from '../api/client'
@@ -522,10 +522,48 @@ function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) 
   )
 }
 
+// Both axes get the same zero line so a cumulative value never reads as being
+// above or below zero relative to the bars. Stacked bars: negatives and
+// positives stack separately, so each side is summed on its own.
+function alignedZeroDomains(rows: RealizedHistory['rows'], channels: string[]) {
+  let barMin = 0, barMax = 0, cumMin = 0, cumMax = 0
+  for (const row of rows) {
+    let pos = 0, neg = 0
+    for (const channel of channels) {
+      const v = (row as unknown as Record<string, number | undefined>)[channel] ?? 0
+      if (v > 0) pos += v
+      else neg += v
+    }
+    barMax = Math.max(barMax, pos); barMin = Math.min(barMin, neg)
+    cumMax = Math.max(cumMax, row.cumulative); cumMin = Math.min(cumMin, row.cumulative)
+  }
+  // Both axes get the same number of round steps below and above zero.
+  const STEPS = 5
+  const below = (min: number, max: number) => (max - min > 0 ? -min / (max - min) : 0)
+  const f = Math.max(below(barMin, barMax), below(cumMin, cumMax))
+  const nb = f > 0 ? Math.min(STEPS - 1, Math.max(1, Math.round(STEPS * f))) : 0
+  const na = STEPS - nb
+  const axis = (min: number, max: number) => {
+    const raw = Math.max(max / na, nb > 0 ? -min / nb : 0)
+    const step = niceCeil(raw > 0 ? raw : 1)
+    const ticks = Array.from({ length: STEPS + 1 }, (_, i) => (i - nb) * step)
+    return { domain: [ticks[0], ticks[STEPS]] as [number, number], ticks }
+  }
+  return { bar: axis(barMin, barMax), cumulative: axis(cumMin, cumMax) }
+}
+
+// Smallest 1 / 2 / 2.5 / 5 x 10^k at or above value.
+function niceCeil(value: number): number {
+  const mag = 10 ** Math.floor(Math.log10(value))
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * mag >= value) return m * mag
+  return 10 * mag
+}
+
 function RealizedHistoryChart({ history }: { history: RealizedHistory | undefined }) {
   const rows = history?.rows ?? []
   const channels = history?.channels ?? []
   const title = history?.bucket === 'week' ? 'Realized profit per week' : 'Realized profit per day'
+  const domains = useMemo(() => alignedZeroDomains(rows, channels), [rows, channels])
   if (rows.length === 0) {
     return (
       <Card withBorder padding="lg" radius="md" className="et-panel">
@@ -537,18 +575,23 @@ function RealizedHistoryChart({ history }: { history: RealizedHistory | undefine
   return (
     <Card withBorder padding="lg" radius="md" className="et-panel">
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
-      <ResponsiveContainer width="100%" height={240}>
+      <Text size="xs" c="dimmed" mb="sm">Bars per {history?.bucket === 'week' ? 'week' : 'day'} on the left axis, cumulative on the right.</Text>
+      <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={rows}>
           <CartesianGrid stroke={COLORS.border} />
           <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
-          <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={90} tickFormatter={(v: number) => isk(v)} />
+          <YAxis yAxisId="bucket" stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={60} tickFormatter={iskCompact}
+            domain={domains.bar.domain} ticks={domains.bar.ticks} />
+          <YAxis yAxisId="cumulative" orientation="right" stroke={COLORS.text} tick={{ fontSize: 11 }} width={60}
+            tickFormatter={iskCompact} domain={domains.cumulative.domain} ticks={domains.cumulative.ticks} />
+          <ReferenceLine yAxisId="bucket" y={0} stroke={COLORS.textDim} />
           <Tooltip contentStyle={tooltipStyle()} formatter={(v, name) => [typeof v === 'number' ? isk(v) : v, name]} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           {channels.map((channel) => (
-            <Bar key={channel} dataKey={channel} name={toolLabel(channel)} stackId="profit"
+            <Bar key={channel} yAxisId="bucket" dataKey={channel} name={toolLabel(channel)} stackId="profit"
               fill={CHANNEL_COLORS[channel] ?? COLORS.textDim} />
           ))}
-          <Line type="monotone" dataKey="cumulative" name="Cumulative" stroke={COLORS.text} dot={false} />
+          <Line yAxisId="cumulative" type="monotone" dataKey="cumulative" name="Cumulative" stroke={COLORS.text} dot={false} />
         </ComposedChart>
       </ResponsiveContainer>
     </Card>
