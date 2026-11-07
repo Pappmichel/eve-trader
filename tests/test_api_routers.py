@@ -2710,9 +2710,10 @@ def test_max_buildable_action_error_maps_to_400(monkeypatch):
 def test_category_facility_set_passes_fields_to_action(monkeypatch):
     captured = {}
 
-    def _set(category, structure_type, rig_tier_basic, rig_tier_advanced):
+    def _set(category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate):
         captured.update(category=category, structure_type=structure_type,
-                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced)
+                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced,
+                        facility_tax_rate=facility_tax_rate)
         return captured
     monkeypatch.setattr(production_actions, "do_set_category_facility", _set)
 
@@ -2721,7 +2722,12 @@ def test_category_facility_set_passes_fields_to_action(monkeypatch):
 
     assert resp.status_code == 200
     assert captured == {"category": "Large Ships", "structure_type": None,
-                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig"}
+                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig",
+                        "facility_tax_rate": None}
+
+    client.post("/api/production/logistics/facilities",
+                json={"category": "Large Ships", "facility_tax_rate": 0.005})
+    assert captured["facility_tax_rate"] == 0.005
 
 
 def test_category_facility_errors_map_to_400(monkeypatch):

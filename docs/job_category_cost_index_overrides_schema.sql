@@ -86,3 +86,9 @@ CREATE POLICY tenant_isolation ON job_category_facilities
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON job_category_facilities TO eve_trader_app;
+
+-- Manual facility tax override per category (a fraction, 0.0025 = 0.25%).
+-- NULL means "not set": the engine then uses the rate observed on the last
+-- own jobs at the category's structure, and the Settings rate when there is
+-- none (production/facility_tax.py, engine.facility_resolution).
+ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS facility_tax_rate DOUBLE PRECISION;

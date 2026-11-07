@@ -1552,6 +1552,31 @@ types. Structure rigs are not in ESI assets unless the corp owns the
 structure, so names are the only automatic source. Data is cached per tenant
 (60 s TTL plus `invalidate_facility_cache()` on every write path).
 
+**Facility tax is observed, never bound to a station or category (confirmed
+with the user 2026-11-07).** A structure owner changes the rate at any time, so
+no fixed rate is stored for a station or category. `engine.facility_resolution`
+resolves it (`tax_rate`, `tax_source`) in this order: the category's manual
+override (`job_category_facilities.facility_tax_rate`, Logistics page / CLI
+`facilities set --tax-percent`), then the rate observed on the tenant's own last
+jobs at the category's structure for that job activity (1 manufacturing, 11
+reaction), then `ProductionConfig.facility_tax_rate`, which is now only the
+fallback (its Settings label says so). `engine._job_cost_rate` and
+`invention.fee_rates` (invention location, activities 8 and 5) read it there;
+nothing else may add `cfg.facility_tax_rate` to a job cost. Observation lives
+in `production/facility_tax.py`: per `(facility_id, activity)` the median of
+the 3 newest usable jobs started within 30 days, with the date of the newest
+job so the Logistics page shows the age (it also shows the observed rate while
+an override wins). One job's rate is its `industry_job_tax` journal entry
+(`context_id` = job id) divided by the job's EIV. The archive has no EIV, so it
+is an approximation: base ME 0 materials at today's ESI adjusted prices (copy
+and invention x 0.02). A job without a tax entry, a recipe, or an adjusted
+price for every material is skipped, never guessed; a missing observation falls
+back to Settings. Only owners shared with a realized-profit tool count, jobs via
+`access.shared_owners("industry_jobs")` and tax entries via `"wallet"` (D11);
+the read is one query for every job (`db.industry_job_tax_rows`), cached per
+tenant with the facility cache and dropped by `invalidate_facility_cache()`.
+Do not read the observation per item, and do not bind a rate to a station.
+
 ## Manual tracking for Production
 
 Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`

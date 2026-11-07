@@ -5,7 +5,7 @@ by natural key and never DELETE on resync (plan Phase 1).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from psycopg.types.json import Jsonb
@@ -588,6 +588,40 @@ def list_industry_jobs_for_owners(
             "FROM ledger_industry_jobs "
             f"WHERE {where} ORDER BY start_date, job_id",
             tuple(params),
+        ).fetchall()
+
+
+def industry_job_tax_rows(
+    job_owners: list[tuple[str, int]],
+    wallet_owners: list[tuple[str, int]],
+    since: datetime,
+    activity_ids: Iterable[int],
+) -> list[tuple]:
+    """One row per archived job started at or after `since` that has an
+    `industry_job_tax` journal entry: (job_id, activity_id, blueprint_type_id,
+    product_type_id, runs, licensed_runs, facility_id, start_date, tax).
+    `tax` is the positive ISK charged (the journal amount is negative). One
+    query for every job; the caller passes only owners shared with a
+    realized-profit tool (access.shared_owners). A job archived under two
+    owners (its character and its corporation) counts once, and the tax is
+    summed per job id from the wallets in scope only."""
+    if not job_owners or not wallet_owners:
+        return []
+    job_match, job_params = _owner_match_sql(job_owners, "i.")
+    wallet_match, wallet_params = _owner_match_sql(wallet_owners, "")
+    with storage.connect() as conn:
+        return conn.execute(
+            "WITH t AS ("
+            "  SELECT context_id AS job_id, SUM(-amount) AS tax FROM ledger_wallet_journal "
+            "  WHERE ref_type = 'industry_job_tax' AND context_id IS NOT NULL "
+            "  AND date >= ? AND " + wallet_match + " GROUP BY context_id) "
+            "SELECT DISTINCT ON (i.job_id) i.job_id, i.activity_id, i.blueprint_type_id, "
+            "i.product_type_id, i.runs, i.licensed_runs, i.facility_id, i.start_date, t.tax "
+            "FROM ledger_industry_jobs i JOIN t ON t.job_id = i.job_id "
+            "WHERE i.start_date >= ? AND i.facility_id IS NOT NULL AND i.activity_id = ANY(?) "
+            "AND " + job_match + " ORDER BY i.job_id, i.start_date DESC",
+            (since - timedelta(days=2), *wallet_params, since,
+             [int(a) for a in activity_ids], *job_params),
         ).fetchall()
 
 

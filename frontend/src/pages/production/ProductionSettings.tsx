@@ -98,8 +98,9 @@ export default function ProductionSettings() {
           onChange={(v) => set('haul_cost_per_m3', Number(v))} />
         <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
           onChange={(v) => set('market_fees', Number(v) / 100)} />
-        <Tooltip label="Job-fee facility tax charged by the structure you build in, on top of the system cost index and the fixed 4% SCC surcharge. Fixed at 0.25% for NPC stations; a player-owned structure's owner can set their own rate." multiline w={280}>
-          <NumberInput label="Facility tax" suffix="%" decimalScale={2} value={form.facility_tax_rate * 100} min={0} max={100} step={0.05}
+        <Tooltip label="Fallback job-fee facility tax, on top of the system cost index and the fixed 4% SCC surcharge. Used only where no rate is known: the Logistics page's per-category override wins, then the rate seen on your own last jobs at that category's structure (a structure owner can change it at any time). NPC stations charge 0.25%." multiline w={300}>
+          <NumberInput label="Facility tax (fallback)" suffix="%" decimalScale={2} value={form.facility_tax_rate * 100} min={0} max={100} step={0.05}
+            description="Only used when no override or observed rate applies - see Logistics."
             onChange={(v) => set('facility_tax_rate', Number(v) / 100)} />
         </Tooltip>
         <NumberInput label="Minimum margin for build list" suffix="%" decimalScale={2} value={form.min_margin * 100} min={0} step={1}

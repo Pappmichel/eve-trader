@@ -136,7 +136,7 @@ from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
-from . import dynamic_targets, invention, pricing, reaction_capacity
+from . import dynamic_targets, facility_tax, invention, pricing, reaction_capacity
 from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -611,12 +611,17 @@ def invalidate_facility_cache(all_tenants: bool = False) -> None:
             _facility_cache.clear()
         else:
             _facility_cache.pop(storage.get_current_tenant(), None)
+    facility_tax.invalidate(all_tenants)
 
 
 def _load_category_facilities() -> dict[str, dict]:
-    """{category: {structure_type, rig_tier_basic, rig_tier_advanced (saved,
-    each None when not set), location_id, structure_name, system_id,
-    security}}. Empty without a tenant (pure unit tests)."""
+    """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
+    tax_rate_override (saved, each None when not set), location_id,
+    structure_name, system_id, security, observed_tax}}. `observed_tax` is
+    {job activity id: facility_tax.ObservedTax} for the category's structure
+    (activity 1 manufacturing, 11 reaction), read once for every category
+    from the same one-query observation. Empty without a tenant (pure unit
+    tests)."""
     tenant_id = storage.get_current_tenant()
     if tenant_id is None:
         return {}
@@ -629,6 +634,7 @@ def _load_category_facilities() -> dict[str, dict]:
     locations = storage.load_category_locations()
     systems = storage.load_category_system_ids()
     names = storage.get_location_names(set(locations.values())) if locations else {}
+    observed = facility_tax.observed_rates() if locations else {}
     result: dict[str, dict] = {}
     for category in set(saved) | set(locations):
         row = saved.get(category, {})
@@ -638,10 +644,16 @@ def _load_category_facilities() -> dict[str, dict]:
             "structure_type": row.get("structure_type"),
             "rig_tier_basic": row.get("rig_tier_basic"),
             "rig_tier_advanced": row.get("rig_tier_advanced"),
+            "tax_rate_override": row.get("facility_tax_rate"),
             "location_id": location_id,
             "structure_name": names.get(location_id) if location_id is not None else None,
             "system_id": system_id,
             "security": storage.get_system_security(system_id) if system_id is not None else None,
+            "observed_tax": {
+                activity_id: observed[(location_id, activity_id)]
+                for activity_id in (facility_tax.ACTIVITY_MANUFACTURING, facility_tax.ACTIVITY_REACTION)
+                if location_id is not None and (location_id, activity_id) in observed
+            },
         }
     with _facility_cache_lock:
         _facility_cache[tenant_id] = (now, result)
@@ -662,7 +674,14 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     category, then the tier its structure's name states, then the global
     profile (ProductionConfig.<profile>_structure_type/_rig_tier). Security
     comes from the category structure's system when it is known, else the
-    profile's flat system."""
+    profile's flat system.
+
+    The facility tax rate resolves the same way (`tax_rate`, `tax_source`
+    "override" | "observed" | "settings", plus the observation's date and job
+    count): the category's saved override, else the rate observed on our own
+    last jobs at the category's structure for this job activity, else
+    `cfg.facility_tax_rate`. A structure owner changes the tax, so no rate
+    is tied to a category or station beyond what was last seen."""
     global_structure, global_rig = _structure_rig(profile, cfg)
     facility = _load_category_facilities().get(category) if category is not None else None
     # Only ship categories have separate Basic/Advanced rigs; elsewhere one
@@ -672,7 +691,17 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     rig_tier, rig_source = global_rig, "global"
     is_reaction = profile == "reaction"
     security_multiplier = _security_multiplier_for(profile, cfg)
+    tax_rate, tax_source = cfg.facility_tax_rate, "settings"
+    tax_observed_at, tax_jobs = None, None
     if facility is not None:
+        override = facility.get("tax_rate_override")
+        job_activity = facility_tax.ACTIVITY_REACTION if is_reaction else facility_tax.ACTIVITY_MANUFACTURING
+        observation = (facility.get("observed_tax") or {}).get(job_activity)
+        if override is not None:
+            tax_rate, tax_source = override, "override"
+        elif observation is not None:
+            tax_rate, tax_source = observation.rate, "observed"
+            tax_observed_at, tax_jobs = observation.observed_at, observation.jobs
         if facility["structure_type"]:
             structure_type, structure_source = facility["structure_type"], "set"
         saved_rig = facility["rig_tier_advanced" if advanced else "rig_tier_basic"]
@@ -689,6 +718,8 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
         "structure_type": structure_type, "structure_source": structure_source,
         "rig_tier": rig_tier, "rig_source": rig_source,
         "security_multiplier": security_multiplier,
+        "tax_rate": tax_rate, "tax_source": tax_source,
+        "tax_observed_at": tax_observed_at, "tax_jobs": tax_jobs,
     }
 
 
@@ -704,13 +735,19 @@ def category_profile(category: str) -> str:
     return "manufacturing"
 
 
-def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple[float, float, float]:
-    """(cost, ME, TE) structure/rig multipliers for building `type_id`, from
-    the structure of its job category (see facility_resolution)."""
+def _item_facility(activity: str, type_id: int, cfg: ProductionConfig) -> dict:
+    """facility_resolution for building `type_id`, from the structure of its
+    job category."""
     profile = _structure_profile(activity, type_id)
     # job_category costs SDE lookups; skip it when no category has a facility.
     category = job_category(type_id) if _load_category_facilities() else None
-    resolved = facility_resolution(category, activity, profile, cfg)
+    return facility_resolution(category, activity, profile, cfg)
+
+
+def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple[float, float, float]:
+    """(cost, ME, TE) structure/rig multipliers for building `type_id`, from
+    the structure of its job category (see facility_resolution)."""
+    resolved = _item_facility(activity, type_id, cfg)
     return structure_rig_multiplier(resolved["structure_type"], resolved["rig_tier"],
                                     resolved["security_multiplier"])
 
@@ -728,7 +765,10 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     bug: every job/build cost estimate understated the true ISK fee by the
     whole facility-tax + surcharge amount, at least ~4.25% of EIV at the NPC
     defaults). SCC surcharge is a fixed CCP-wide rate (not configurable, unlike
-    facility_tax_rate which a player structure's owner can change).
+    the facility tax, which a player structure's owner can change). The
+    facility tax is the category's override, else the rate last observed on
+    our own jobs at the category's structure, else cfg.facility_tax_rate
+    (see facility_resolution and facility_tax.py).
 
     GitHub issue #12: prefers the cost index of the system `type_id`'s own
     job_category is actually configured to build in (Logistik's per-category
@@ -772,7 +812,9 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     specific value set here should always win over a broader one. Falls
     through to the flat fields (and everything below) when no override is
     set for that specific category."""
-    cost_mult, _, _ = _facility_mults(activity, type_id, cfg)
+    facility = _item_facility(activity, type_id, cfg)
+    cost_mult, _, _ = structure_rig_multiplier(facility["structure_type"], facility["rig_tier"],
+                                               facility["security_multiplier"])
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
     is_component_profile = activity == "Reaction" or _is_component(type_id)
 
@@ -802,7 +844,7 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
             index = cost_indices.get(system_profile, {}).get(esi_activity)
 
     index_rate = ACTIVITY_MODS[activity].job_cost_rate if index is None else index
-    return index_rate * cost_mult + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    return index_rate * cost_mult + facility["tax_rate"] + SCC_SURCHARGE_RATE
 
 
 def _owned_bpo_mods(blueprint_id: Optional[int]) -> Optional[tuple[float, float]]:

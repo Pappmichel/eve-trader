@@ -4307,6 +4307,29 @@ export interface CategoryFacilityUpdate {
   structure_type: string | null
   rig_tier_basic: string | null
   rig_tier_advanced: string | null
+  // Facility tax override as a fraction (0.0025 = 0.25%); null = last observed, then Settings.
+  facility_tax_rate: number | null
+}
+
+// Where the facility tax in use comes from: the override saved here, the rate
+// last observed on the tenant's own jobs at the category's structure, or the
+// Settings page fallback.
+export type FacilityTaxSource = 'override' | 'observed' | 'settings'
+
+export interface FacilityTaxObservation {
+  rate: number
+  observed_at: string
+  age_days: number
+  jobs: number
+}
+
+export interface CategoryFacilityTax {
+  saved: number | null
+  // Shown even while an override wins.
+  observed: FacilityTaxObservation | null
+  effective: number
+  source: FacilityTaxSource
+  settings_rate: number
 }
 
 export interface CategoryFacilityRow {
@@ -4319,6 +4342,7 @@ export interface CategoryFacilityRow {
   split_by_tech: boolean
   saved: Omit<CategoryFacilityUpdate, 'category'>
   from_name: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
+  tax: CategoryFacilityTax
   effective: {
     structure_type: string
     structure_source: FacilitySource
