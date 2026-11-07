@@ -110,27 +110,37 @@ JOB_BASE_EIV_FRACTION = 0.02
 
 @dataclass(frozen=True)
 class FeeRates:
-    """Inputs for attempt_job_fee: ESI adjusted prices and the full job-cost
-    rate (system index x structure cost bonus + facility tax + SCC
-    surcharge, same shape as engine._job_cost_rate) for invention and
-    copying."""
+    """Inputs for attempt_job_fee: ESI adjusted prices and the per-activity
+    fee rate for invention and copying. Each rate is either the observed
+    total (`job.cost / EIV`) or the modelled
+    index x structure bonus + tax + SCC (see `fee_rates`)."""
     adjusted_prices: dict[int, float]
     invention_rate: float
     copying_rate: float
 
 
 def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
-    """Invention and copy job fees use the cost index of the invention
-    location's solar system (cfg.invention_location_id, resolved through
-    locations.reader so Offices and containers map to their structure),
-    falling back to cfg.manufacturing_system_id, then the flat Tech II rate
-    like engine._job_cost_rate. The structure cost bonus still comes from
-    the manufacturing profile (there is no separate invention structure
-    profile). The facility tax is the rate last observed on our own invention
-    and copy jobs at the invention location (activities 8 and 5), else
-    cfg.facility_tax_rate. None if ESI's adjusted prices can't be read - the fees are
-    then left out (0) rather than guessed. Both ESI reads are cached
-    class-wide by ESIClient; system resolution is cached per tenant+location.
+    """Invention and copy job fees.
+
+    When the invention location has an observed *total* rate
+    (`job.cost / approximate EIV` from our own recent invention or copy
+    jobs, see `facility_tax.observed_total_for_location`), that fraction is
+    used directly as `invention_rate` / `copying_rate`. It already includes
+    facility fee and tax, so tax and SCC are **not** added again. The EIV in
+    that observation uses today's adjusted prices (an approximation).
+
+    Without an observation the fallback is the modelled formula: cost index
+    of the invention location's solar system (cfg.invention_location_id via
+    locations.reader, else manufacturing_system_id, else the flat Tech II
+    rate) times the manufacturing structure cost bonus (there is no separate
+    invention structure / rig profile), plus the facility tax last observed
+    on our own jobs at that location (else cfg.facility_tax_rate) plus SCC.
+    Manufacturing and reaction job costs stay on `_job_cost_rate` and are
+    not affected here.
+
+    None if ESI's adjusted prices can't be read - the fees are then left out
+    (0) rather than guessed. ESI reads are cached class-wide by ESIClient;
+    system and location-parent resolution are cached per tenant+location.
     """
     from ..esi_client import ESIClient
 
@@ -140,30 +150,40 @@ def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
     except Exception as e:  # noqa: BLE001 - best-effort, same as engine._PlanContext
         logger.warning("Invention job fees left out: ESI adjusted prices unavailable (%s)", e)
         return None
-    indices: dict[str, float] = {}
-    system_id = _invention_system_id(cfg)
-    if system_id is not None:
-        try:
-            indices = client.get_system_cost_indices(
-                system_id, activities=("invention", "copying"),
-            )
-        except Exception:  # noqa: BLE001 - falls back to the flat rate below
-            indices = {}
-    cost_mult, _, _ = structure_rig_multiplier(cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier)
-    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
 
-    def facility_tax(activity_id: int) -> float:
-        # Rate last observed on our own jobs at the invention location, else
-        # the Settings rate (production/facility_tax.py).
-        observed = facility_tax_module.observed_for_location(cfg.invention_location_id, activity_id)
-        return cfg.facility_tax_rate if observed is None else observed.rate
+    inv_total = facility_tax_module.observed_total_for_location(
+        cfg.invention_location_id, facility_tax_module.ACTIVITY_INVENTION)
+    copy_total = facility_tax_module.observed_total_for_location(
+        cfg.invention_location_id, facility_tax_module.ACTIVITY_COPYING)
+
+    indices: dict[str, float] = {}
+    cost_mult = 1.0
+    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
+    if inv_total is None or copy_total is None:
+        system_id = _invention_system_id(cfg)
+        if system_id is not None:
+            try:
+                indices = client.get_system_cost_indices(
+                    system_id, activities=("invention", "copying"),
+                )
+            except Exception:  # noqa: BLE001 - falls back to the flat rate below
+                indices = {}
+        cost_mult, _, _ = structure_rig_multiplier(
+            cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier)
+
+    def formula(activity_id: int, index_key: str) -> float:
+        tax_obs = facility_tax_module.observed_for_location(
+            cfg.invention_location_id, activity_id)
+        tax = cfg.facility_tax_rate if tax_obs is None else tax_obs.rate
+        return indices.get(index_key, flat) * cost_mult + tax + SCC_SURCHARGE_RATE
 
     return FeeRates(
         adjusted_prices=adjusted,
-        invention_rate=(indices.get("invention", flat) * cost_mult
-                        + facility_tax(facility_tax_module.ACTIVITY_INVENTION) + SCC_SURCHARGE_RATE),
-        copying_rate=(indices.get("copying", flat) * cost_mult
-                      + facility_tax(facility_tax_module.ACTIVITY_COPYING) + SCC_SURCHARGE_RATE),
+        # Observed total already includes fee + tax; do not add tax/SCC.
+        invention_rate=(inv_total.rate if inv_total is not None
+                        else formula(facility_tax_module.ACTIVITY_INVENTION, "invention")),
+        copying_rate=(copy_total.rate if copy_total is not None
+                      else formula(facility_tax_module.ACTIVITY_COPYING, "copying")),
     )
 
 
