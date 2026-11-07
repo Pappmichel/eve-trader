@@ -441,12 +441,15 @@ def test_recipe_inputs_per_run_are_continuous(monkeypatch):
 
 @pg_helpers.postgres_required()
 def test_capacity_reason_none_when_buy_is_cheaper(monkeypatch, reaction_bom, tenant):
-    # Buy cheaper than build → ordinary buy, not a capacity badge.
+    # Buy cheaper than build → ordinary buy, not a capacity badge. Without
+    # end-product values (the cost-only path); with them the free slots
+    # would react it anyway (user decision 2026-11-07).
     def _expensive_build(type_id, cfg, home, jita, cost_memo, *a, **k):
         cost_memo[type_id] = 50_000.0
         return 50_000.0
 
     monkeypatch.setattr(engine, "_unit_cost", _expensive_build)
+    monkeypatch.setattr(engine, "_reaction_unit_values", lambda *a, **k: {})
     monkeypatch.setattr(
         engine.pricing, "buy_price",
         lambda type_id, *a, **k: {

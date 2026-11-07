@@ -108,3 +108,27 @@ def test_same_type_at_two_depths_is_two_requests(ledger):
         tier=_flat_tier)
     assert ready == {(0, 1): 1, (1, 1): 0}
     assert led.free_total(9) == 5.0
+
+
+def test_reaction_unit_values_spread_end_product_value(monkeypatch):
+    from eve_trader.goonmetrics_client import CurrentPrice
+    # E (worth 1000, 2 missing) needs 10 C per unit; C needs 5 R per unit,
+    # so E needs 50 R. F (worth 300, 1 missing) needs 3 R directly. Bought
+    # material B and the unpriced target U add nothing.
+    E, F, C, R, B, U = 1, 2, 3, 4, 5, 6
+    recipes = {E: ("Tech I", (101, 1, 1)), F: ("Tech I", (102, 1, 1)),
+               C: ("Tech I", (103, 1, 1)), R: ("Reaction", (104, 11, 100)),
+               B: ("Tech I", (105, 1, 1)), U: ("Tech I", (106, 1, 1))}
+    materials = {101: [(C, 10), (B, 7)], 102: [(R, 3)], 103: [(R, 5)], 105: [(R, 99)],
+                 106: [(R, 1)]}
+    monkeypatch.setattr(engine, "classify_activity", lambda t: recipes.get(t, ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp, act: materials.get(bp, []))
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                        lambda t, *a, **k: "Buy" if t == B else "Build")
+    home = {E: CurrentPrice(E, "", 0.0, 1000.0), F: CurrentPrice(F, "", 0.0, 300.0)}
+
+    values = engine._reaction_unit_values(
+        {E: 2.0, F: 1.0, U: 5.0}, ProductionConfig(), home, {}, {}, {}, {}, {})
+
+    assert values == pytest.approx({R: (1000.0 * 2 + 300.0) / (50.0 * 2 + 3.0)})

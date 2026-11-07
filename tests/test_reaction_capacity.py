@@ -139,6 +139,29 @@ def test_alchemy_fills_idle_slots_without_cutting_normal_runs():
     assert plan.buy.get(1, 0.0) < 1e-6
 
 
+def test_end_product_value_decides_which_product_gets_the_slot():
+    # One slot, two products. Reacting A saves far more ISK against buying,
+    # so the cost model reacts A. B enables much more end-product value per
+    # unit (buy_premium), so with it the slot goes to B and A is bought.
+    from dataclasses import replace
+    a = _recipe("normal:1", 1, fee=1_000.0, fit=2, outputs={1: 100.0})
+    b = _recipe("normal:2", 2, fee=1_000.0, fit=2, outputs={2: 100.0})
+    layer = ReactionLayer(recipes=[a, b])
+    window = _window({1: 200.0, 2: 200.0}, slots=1, slots2=0,
+                     on_hand={9000: 10_000.0},
+                     prices={1: 100_000.0, 2: 20_000.0, 9000: 1.0})
+
+    by_cost = {r.recipe_key: r for r in solve(layer, window).recipes}
+    assert "normal:1" in by_cost and "normal:2" not in by_cost
+
+    valued = solve(layer, replace(window, buy_premium={1: 1_000.0, 2: 1_000_000.0}))
+    by_value = {r.recipe_key: r for r in valued.recipes}
+    assert "normal:2" in by_value and "normal:1" not in by_value
+    # Reported cost stays real ISK: the premium is objective-only.
+    assert valued.buy.get(1, 0.0) >= 200.0 - 1e-6
+    assert valued.w1_cost < 1_000_000.0 * 200
+
+
 def test_fit_runs_floor_of_cycle():
     assert fit_runs(3 * 3600, 13.0) == 104
     assert fit_runs(14 * 86400, 13.0) == 0
