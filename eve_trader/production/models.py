@@ -672,6 +672,7 @@ class ShipMarginRow:
     margin_home: Optional[float]
     margin_jita: Optional[float]
     meta_level: Optional[int] = None
+    invention_cost_per_unit: Optional[float] = None
 
 
 @dataclass
