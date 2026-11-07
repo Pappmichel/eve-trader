@@ -355,9 +355,11 @@ def test_facilities_list_prints_effective_rigs_and_sources(monkeypatch):
 def test_facilities_set_passes_options(monkeypatch):
     captured = {}
 
-    def _set(category, structure_type=None, rig_tier_basic=None, rig_tier_advanced=None):
+    def _set(category, structure_type=None, rig_tier_basic=None, rig_tier_advanced=None,
+             facility_tax_rate=None):
         captured.update(category=category, structure_type=structure_type,
-                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced)
+                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced,
+                        facility_tax_rate=facility_tax_rate)
         return captured
     monkeypatch.setattr(production_actions, "do_set_category_facility", _set)
 
@@ -366,4 +368,33 @@ def test_facilities_set_passes_options(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert captured == {"category": "Large Ships", "structure_type": None,
-                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig"}
+                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig",
+                        "facility_tax_rate": None}
+
+
+def test_facilities_set_tax_percent_is_passed_as_a_fraction(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_set_category_facility",
+                        lambda category, **kwargs: captured.update(category=category, **kwargs))
+
+    result = runner.invoke(cli.main, ["production", "facilities", "set", "Large Ships", "--tax-percent", "0.5"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["facility_tax_rate"] == pytest.approx(0.005)
+
+
+def test_facilities_list_prints_the_facility_tax_source_and_age(monkeypatch):
+    row = {
+        "category": "Large Ships", "structure_name": "X", "split_by_tech": False,
+        "effective": {"structure_type": "Raitaru (M Engineering Complex)", "structure_source": "global",
+                      "rig_tier_basic": "T1-Rig", "rig_source_basic": "name",
+                      "rig_tier_advanced": None, "rig_source_advanced": None, "security_multiplier": 1.0},
+        "tax": {"saved": None, "effective": 0.005, "source": "observed", "settings_rate": 0.0025,
+                "observed": {"rate": 0.005, "observed_at": "2026-11-05T10:00:00+00:00", "age_days": 2.4, "jobs": 3}},
+    }
+    monkeypatch.setattr(production_actions, "do_list_category_facilities", lambda: {"categories": [row]})
+
+    result = runner.invoke(cli.main, ["production", "facilities", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "0.50% (observed, 3 jobs, 2d ago)" in result.output

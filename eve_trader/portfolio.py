@@ -201,6 +201,9 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
             "estimated": False if empty else bool(data.get("estimated")),
             "empty": empty,
             "sales_count": None if empty else _sales_count(data),
+            # Sales before their wallet's journal: no tax or fee on record.
+            "fees_missing_sales": 0 if empty else int(data.get("fees_missing_sales") or 0),
+            "fees_missing_revenue": 0.0 if empty else float(data.get("fees_missing_revenue") or 0.0),
             "link": _CARD_LINKS[tool],
         })
     rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
@@ -208,6 +211,8 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
     return {
         "rows": rows,
         "total": sum(ready) if ready else None,
+        "fees_missing_sales": sum(row["fees_missing_sales"] for row in rows),
+        "fees_missing_revenue": sum(row["fees_missing_revenue"] for row in rows),
         "period": str(period or "30"),
         "freight": None if not saw_figure else {"courier": courier, "configured": configured},
     }

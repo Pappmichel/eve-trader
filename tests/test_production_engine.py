@@ -2346,9 +2346,10 @@ def test_discover_ship_margins_populates_prices_and_both_margins(monkeypatch, te
 
     assert results == [{
         "type_id": 1, "type_name": "Some Ship", "activity": "Tech I",
-        "home_price": 200.0, "jita_price": None, "build_cost": 100.0,
-        "margin_home": 0.5, "margin_jita": None, "meta_level": None,
-    }]
+            "home_price": 200.0, "jita_price": None, "build_cost": 100.0,
+            "invention_cost_per_unit": None,
+            "margin_home": 0.5, "margin_jita": None, "meta_level": None,
+        }]
 
 
 @pg_helpers.postgres_required()

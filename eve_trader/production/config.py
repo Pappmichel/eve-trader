@@ -63,7 +63,7 @@ class ProductionConfig:
     # their jita_* names. Read via this field only (one place per tool).
     hub_region_id: int = 10000002
     haul_cost_per_m3: float = 900.0       # ISK/m3 to move goods to the home structure
-    facility_tax_rate: float = 0.0025     # job-fee facility tax, additive on top of the system cost index
+    facility_tax_rate: float = 0.0025     # FALLBACK job-fee facility tax (additive on top of the system cost index); a category override, then the rate observed on our own last jobs (production/facility_tax.py) win
                                             # (see engine.py _job_cost_rate) - EVE's real formula is
                                             # `EIV * (cost_index * structure_bonus + facility_tax + SCC_surcharge)`,
                                             # confirmed against wiki.eveuniversity.org/Manufacturing. Fixed at

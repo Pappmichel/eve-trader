@@ -136,7 +136,7 @@ from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
-from . import dynamic_targets, invention, pricing, reaction_capacity
+from . import dynamic_targets, facility_tax, invention, pricing, reaction_capacity
 from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -203,6 +203,48 @@ def _material_qty(base_qty: float, material_mult: float, runs: float) -> float:
     base_qty=1 material (common in blueprints) gets silently under-counted by
     its full ME reduction instead of being floored at `runs`."""
     return max(runs, math.ceil(round(base_qty * material_mult * runs, 2)))
+
+
+def _unit_material_qty(base_qty: float, material_mult: float) -> float:
+    """Per-run material quantity for the *cost estimate* (buy-vs-build unit
+    cost): the ME-reduced quantity floored at 1 unit, without the per-run
+    ceil `_material_qty` applies. A real job rounds up once for the whole
+    batch of runs, so a one-run ceil here overstates the per-unit cost of
+    every batch larger than one run (a 0.9 -> 1 unit rounding is up to ~10 %
+    per run). Job planning and demand expansion keep using `_material_qty`
+    with the real run count."""
+    return max(1.0, base_qty * material_mult)
+
+
+def _invention_cost_per_unit(type_id: int, product_qty: float,
+                             chosen: Optional[InventionResult]) -> Optional[float]:
+    """Amortized invention cost per produced unit, or None when there is none
+    to add. The invented BPC is consumed by the job, so its replacement cost
+    belongs in the decision cost even when a copy is already owned. A bought
+    BPC (manual copy cost per run) already carries its own price, so it is not
+    counted twice. `chosen.expected_cost_per_run` is None when an invention
+    input is unpriced - nothing is guessed then."""
+    if chosen is None or chosen.expected_cost_per_run is None:
+        return None
+    if storage.get_manual_blueprint_copy_cost_per_run(type_id) is not None:
+        return None
+    if not product_qty:
+        return None
+    return chosen.expected_cost_per_run / product_qty
+
+
+def _t2_invention_per_unit(type_id: int, t2_memo: dict) -> Optional[float]:
+    """The invention slice of `type_id`'s build cost per unit, read off the
+    `_tech_ii_mods` memo `_unit_cost` filled. None for anything without an
+    invention step (or whose invention inputs are unpriced), so callers can
+    show "-" instead of a 0."""
+    entry = t2_memo.get(type_id)
+    if entry is None or len(entry) < 4:
+        return None
+    bp = storage.get_blueprint_for_product(type_id)
+    if bp is None:
+        return None
+    return _invention_cost_per_unit(type_id, bp[2], entry[3])
 
 
 def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float]]]:
@@ -375,7 +417,7 @@ def _reaction_run_cost_and_time(recipe: tuple[int, int, float], product_type_id:
     material_cost = 0.0
     eiv = 0.0
     for material_id, base_qty in materials:
-        qty = _material_qty(base_qty, material_mult, 1)
+        qty = _unit_material_qty(base_qty, material_mult)
         volume = _haul_volume(material_id, cfg)
         unit = pricing.buy_price(material_id, home, jita, volume, cfg)
         if unit is None:
@@ -611,12 +653,17 @@ def invalidate_facility_cache(all_tenants: bool = False) -> None:
             _facility_cache.clear()
         else:
             _facility_cache.pop(storage.get_current_tenant(), None)
+    facility_tax.invalidate(all_tenants)
 
 
 def _load_category_facilities() -> dict[str, dict]:
-    """{category: {structure_type, rig_tier_basic, rig_tier_advanced (saved,
-    each None when not set), location_id, structure_name, system_id,
-    security}}. Empty without a tenant (pure unit tests)."""
+    """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
+    tax_rate_override (saved, each None when not set), location_id,
+    structure_name, system_id, security, observed_tax}}. `observed_tax` is
+    {job activity id: facility_tax.ObservedTax} for the category's structure
+    (activity 1 manufacturing, 11 reaction), read once for every category
+    from the same one-query observation. Empty without a tenant (pure unit
+    tests)."""
     tenant_id = storage.get_current_tenant()
     if tenant_id is None:
         return {}
@@ -629,6 +676,7 @@ def _load_category_facilities() -> dict[str, dict]:
     locations = storage.load_category_locations()
     systems = storage.load_category_system_ids()
     names = storage.get_location_names(set(locations.values())) if locations else {}
+    observed = facility_tax.observed_rates() if locations else {}
     result: dict[str, dict] = {}
     for category in set(saved) | set(locations):
         row = saved.get(category, {})
@@ -638,10 +686,16 @@ def _load_category_facilities() -> dict[str, dict]:
             "structure_type": row.get("structure_type"),
             "rig_tier_basic": row.get("rig_tier_basic"),
             "rig_tier_advanced": row.get("rig_tier_advanced"),
+            "tax_rate_override": row.get("facility_tax_rate"),
             "location_id": location_id,
             "structure_name": names.get(location_id) if location_id is not None else None,
             "system_id": system_id,
             "security": storage.get_system_security(system_id) if system_id is not None else None,
+            "observed_tax": {
+                activity_id: observed[(location_id, activity_id)]
+                for activity_id in (facility_tax.ACTIVITY_MANUFACTURING, facility_tax.ACTIVITY_REACTION)
+                if location_id is not None and (location_id, activity_id) in observed
+            },
         }
     with _facility_cache_lock:
         _facility_cache[tenant_id] = (now, result)
@@ -662,7 +716,14 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     category, then the tier its structure's name states, then the global
     profile (ProductionConfig.<profile>_structure_type/_rig_tier). Security
     comes from the category structure's system when it is known, else the
-    profile's flat system."""
+    profile's flat system.
+
+    The facility tax rate resolves the same way (`tax_rate`, `tax_source`
+    "override" | "observed" | "settings", plus the observation's date and job
+    count): the category's saved override, else the rate observed on our own
+    last jobs at the category's structure for this job activity, else
+    `cfg.facility_tax_rate`. A structure owner changes the tax, so no rate
+    is tied to a category or station beyond what was last seen."""
     global_structure, global_rig = _structure_rig(profile, cfg)
     facility = _load_category_facilities().get(category) if category is not None else None
     # Only ship categories have separate Basic/Advanced rigs; elsewhere one
@@ -672,7 +733,17 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     rig_tier, rig_source = global_rig, "global"
     is_reaction = profile == "reaction"
     security_multiplier = _security_multiplier_for(profile, cfg)
+    tax_rate, tax_source = cfg.facility_tax_rate, "settings"
+    tax_observed_at, tax_jobs = None, None
     if facility is not None:
+        override = facility.get("tax_rate_override")
+        job_activity = facility_tax.ACTIVITY_REACTION if is_reaction else facility_tax.ACTIVITY_MANUFACTURING
+        observation = (facility.get("observed_tax") or {}).get(job_activity)
+        if override is not None:
+            tax_rate, tax_source = override, "override"
+        elif observation is not None:
+            tax_rate, tax_source = observation.rate, "observed"
+            tax_observed_at, tax_jobs = observation.observed_at, observation.jobs
         if facility["structure_type"]:
             structure_type, structure_source = facility["structure_type"], "set"
         saved_rig = facility["rig_tier_advanced" if advanced else "rig_tier_basic"]
@@ -689,6 +760,8 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
         "structure_type": structure_type, "structure_source": structure_source,
         "rig_tier": rig_tier, "rig_source": rig_source,
         "security_multiplier": security_multiplier,
+        "tax_rate": tax_rate, "tax_source": tax_source,
+        "tax_observed_at": tax_observed_at, "tax_jobs": tax_jobs,
     }
 
 
@@ -704,13 +777,19 @@ def category_profile(category: str) -> str:
     return "manufacturing"
 
 
-def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple[float, float, float]:
-    """(cost, ME, TE) structure/rig multipliers for building `type_id`, from
-    the structure of its job category (see facility_resolution)."""
+def _item_facility(activity: str, type_id: int, cfg: ProductionConfig) -> dict:
+    """facility_resolution for building `type_id`, from the structure of its
+    job category."""
     profile = _structure_profile(activity, type_id)
     # job_category costs SDE lookups; skip it when no category has a facility.
     category = job_category(type_id) if _load_category_facilities() else None
-    resolved = facility_resolution(category, activity, profile, cfg)
+    return facility_resolution(category, activity, profile, cfg)
+
+
+def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple[float, float, float]:
+    """(cost, ME, TE) structure/rig multipliers for building `type_id`, from
+    the structure of its job category (see facility_resolution)."""
+    resolved = _item_facility(activity, type_id, cfg)
     return structure_rig_multiplier(resolved["structure_type"], resolved["rig_tier"],
                                     resolved["security_multiplier"])
 
@@ -728,7 +807,10 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     bug: every job/build cost estimate understated the true ISK fee by the
     whole facility-tax + surcharge amount, at least ~4.25% of EIV at the NPC
     defaults). SCC surcharge is a fixed CCP-wide rate (not configurable, unlike
-    facility_tax_rate which a player structure's owner can change).
+    the facility tax, which a player structure's owner can change). The
+    facility tax is the category's override, else the rate last observed on
+    our own jobs at the category's structure, else cfg.facility_tax_rate
+    (see facility_resolution and facility_tax.py).
 
     GitHub issue #12: prefers the cost index of the system `type_id`'s own
     job_category is actually configured to build in (Logistik's per-category
@@ -772,7 +854,9 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     specific value set here should always win over a broader one. Falls
     through to the flat fields (and everything below) when no override is
     set for that specific category."""
-    cost_mult, _, _ = _facility_mults(activity, type_id, cfg)
+    facility = _item_facility(activity, type_id, cfg)
+    cost_mult, _, _ = structure_rig_multiplier(facility["structure_type"], facility["rig_tier"],
+                                               facility["security_multiplier"])
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
     is_component_profile = activity == "Reaction" or _is_component(type_id)
 
@@ -802,7 +886,7 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
             index = cost_indices.get(system_profile, {}).get(esi_activity)
 
     index_rate = ACTIVITY_MODS[activity].job_cost_rate if index is None else index
-    return index_rate * cost_mult + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    return index_rate * cost_mult + facility["tax_rate"] + SCC_SURCHARGE_RATE
 
 
 def _owned_bpo_mods(blueprint_id: Optional[int]) -> Optional[tuple[float, float]]:
@@ -1374,7 +1458,7 @@ def _alchemy_unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: di
                              cost_indices, adjusted_prices, depth + 1, alchemy_memo)
         if m_cost is None:
             return None
-        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        material_cost += _unit_material_qty(base_qty, material_mult) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
     run_cost = material_cost + eiv * job_cost_rate
 
@@ -1433,10 +1517,12 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
         return buy
 
     blueprint_id, activity_id, product_qty = bp
+    invention_per_unit = 0.0
     if activity == "Tech II":
-        material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                selected_decryptors, t2_memo)
+        material_mult, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                     selected_decryptors, t2_memo)
         job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
+        invention_per_unit = _invention_cost_per_unit(type_id, product_qty, chosen) or 0.0
     else:
         material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
     materials = storage.get_blueprint_materials(blueprint_id, activity_id)
@@ -1449,7 +1535,7 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
         if m_cost is None:
             memo[type_id] = buy
             return buy
-        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        material_cost += _unit_material_qty(base_qty, material_mult) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
 
     job_cost = eiv * job_cost_rate
@@ -1459,7 +1545,7 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
     # real per-run cost of building this item, on top of materials/job fee.
     bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
     bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
-    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit
+    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit + invention_per_unit
     use_alchemy = False
     if activity == "Reaction" and cfg.alchemy_reactions_enabled:
         alchemy_cost = _alchemy_unit_cost(type_id, cfg, home, jita, memo, selected_decryptors, t2_memo,
@@ -1500,10 +1586,12 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
     if bp is None:
         return buy, None, buy
     blueprint_id, activity_id, product_qty = bp
+    invention_per_unit = 0.0
     if activity == "Tech II":
-        material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                selected_decryptors, t2_memo)
+        material_mult, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                     selected_decryptors, t2_memo)
         job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
+        invention_per_unit = _invention_cost_per_unit(type_id, product_qty, chosen) or 0.0
     else:
         material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
     materials = storage.get_blueprint_materials(blueprint_id, activity_id)
@@ -1514,13 +1602,13 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
                              cost_indices, adjusted_prices, depth=1, alchemy_memo=alchemy_memo)
         if m_cost is None:
             return buy, None, buy
-        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        material_cost += _unit_material_qty(base_qty, material_mult) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
     job_cost = eiv * job_cost_rate
     # GitHub issue #40 - see _unit_cost's own comment on this same line.
     bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
     bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
-    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit
+    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit + invention_per_unit
     use_alchemy = False
     if activity == "Reaction" and cfg.alchemy_reactions_enabled:
         alchemy_cost = _alchemy_unit_cost(type_id, cfg, home, jita, memo, selected_decryptors, t2_memo,
@@ -2472,7 +2560,23 @@ def _reaction_cycle_demand(
 
 def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optional[float],
                     jita_market_stock: Optional[float], current_stock: float, cfg: ProductionConfig) -> float:
-    """Total shortfall to build/buy for a stock target: backup_stock (an
+    """Total shortfall to build/buy for a stock target - see `_stock_allocation`."""
+    return _stock_allocation(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)[0]
+
+
+def _stock_allocation(type_id: int, backup_stock: float, home_market_stock: Optional[float],
+                       jita_market_stock: Optional[float], current_stock: float, cfg: ProductionConfig
+                       ) -> tuple[float, float]:
+    """`(missing, reserved)` of one stock target: `missing` is `_total_missing`'s
+    value, `reserved` is the owned stock that same allocation commits to the
+    target - the backup reserve plus what is applied to the home and Jita
+    listing shortfalls - capped at `current_stock` by construction. The
+    planners hold `reserved` back from other jobs' material needs, so a unit
+    that `missing` already counts as covering a listing target is not also
+    consumed as a material (which would leave neither the listing nor the
+    job covered).
+
+    Total shortfall to build/buy for a stock target: backup_stock (an
     internal reserve, netted against owned current_stock - _current_stock)
     *plus* whatever's still short of the home/Jita market-*listing* targets,
     each netted against what's actually listed for sale there right now
@@ -2512,6 +2616,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
     buying either, since both compete on the same C-J sell price)."""
     missing = max(0.0, backup_stock - current_stock)
     surplus_stock = max(0.0, current_stock - backup_stock)  # owned units left over once the backup reserve is covered
+    reserved = max(0.0, min(current_stock, backup_stock))
     if home_market_stock:
         home_listed = (
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
@@ -2521,6 +2626,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         applied = min(surplus_stock, home_short)
         missing += home_short - applied
         surplus_stock -= applied
+        reserved += applied
     if jita_market_stock:
         jita_listed = (_sell_order_qty_in_region(type_id, _listing_region_id(cfg))
                        + storage.manual_listed_stock_qty(type_id, "jita"))
@@ -2528,7 +2634,8 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         applied = min(surplus_stock, jita_short)
         missing += jita_short - applied
         surplus_stock -= applied
-    return missing
+        reserved += applied
+    return missing, reserved
 
 
 def market_listing_shortfall_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, float]:
@@ -2809,9 +2916,11 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         bp = storage.get_blueprint_for_product(product_type_id)
         product_qty = bp[2] if bp else 1
         product_activity = classify_activity(product_type_id)[0]
+        invention_per_unit = None
         if product_activity == "Tech II" and product_type_id in t2_memo:
-            _, time_mult, decryptor_name, _ = t2_memo[product_type_id]
+            _, time_mult, decryptor_name, chosen = t2_memo[product_type_id]
             job_cost_rate = _job_cost_rate("Tech II", product_type_id, cfg, cost_indices)
+            invention_per_unit = _invention_cost_per_unit(product_type_id, product_qty, chosen)
         else:
             _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
@@ -2844,6 +2953,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             formulas_owned=meta.get("formulas_owned"),
             formulas_needed=meta.get("formulas_needed"),
             job_category=job_category(product_type_id), job_cost=job_cost,
+            invention_cost_per_unit=invention_per_unit,
             recipe_source="alchemy" if alchemy_entry is not None else None,
             # GitHub issue #38: margin_home, not margin_jita - Production
             # sells only at C-J, never Jita (see CLAUDE.md), so the
@@ -3069,8 +3179,11 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         current_stock = _current_stock(type_id, manual_stock, cfg, bp)
         reserved_here = reserved.get(type_id, 0.0)
         available = max(0.0, current_stock - reserved_here)
-        missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, available, cfg)
-        stock_used[type_id] = stock_used.get(type_id, 0.0) + min(available, backup_stock)
+        missing, target_reserve = _stock_allocation(
+            type_id, backup_stock, home_market_stock, jita_market_stock, available, cfg)
+        # Stock committed to this target (backup plus what covers its home/Jita
+        # listing shortfall) is not also handed to other jobs as a material.
+        stock_used[type_id] = stock_used.get(type_id, 0.0) + target_reserve
         inventory.append(InventoryRow(
             type_id=type_id, type_name=type_name, activity=activity,
             backup_stock=backup_stock, current_stock=available, total_missing=missing,
@@ -4006,8 +4119,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     Dual role: if the same type_id is *both* a directly-configured stock
     target *and* a shared material of another job, the stock filling its own
-    backup_stock is reserved in the sizing ledger up front (the same
-    min(current_stock, backup_stock) plan_production records), so another
+    backup_stock - plus the stock that covers its home/Jita listing targets
+    - is reserved in the sizing ledger up front (the same
+    `_stock_allocation` reserve plan_production records), so another
     job's claim only sees the rest - before 2026-10-11 the stock was netted
     in both roles and this list built fewer of the item than the regular
     Bauliste. Readiness is not reserved this way: the units physically exist
@@ -4199,8 +4313,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # this item's own backup_stock is not also handed to another job
         # that needs it as a material (sizing ledger only - readiness still
         # sees the physical units).
-        target_reserved[type_id] = target_reserved.get(type_id, 0.0) + min(current_stock, backup_stock)
-        missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
+        missing, target_reserve = _stock_allocation(
+            type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
+        target_reserved[type_id] = target_reserved.get(type_id, 0.0) + target_reserve
         if missing <= 0:
             continue
         _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
@@ -4473,6 +4588,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
                         tech_level=classify_activity(job_key)[0],
                         job_category=job_category(type_id),
+                        invention_cost_per_unit=(
+                            _t2_invention_per_unit(type_id, t2_memo) if job_key == type_id else None),
                         stock_coverage=stock_coverage_by_id.get(type_id),
                         # GitHub issue #38: margin_home, not margin_jita - see
                         # plan_production's BuildJobEntry construction for why.
@@ -4501,12 +4618,16 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     def _plan_passes(byproduct_stock: dict[int, float]
                      ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]],
-                                dict[int, Optional[float]]]:
+                                dict[int, Optional[float]], dict[int, float], "_ReadinessLedger"]:
         """Order pass, then doctrine pass, then the remaining stock-target
         pass, over one fresh set of ledgers started from the order claims
         (D3/D4), merged by job key (see _merge_asset_plan_passes). Returns
         (jobs, the order pass's top_level, stock coverage by type id - the
-        latter also holds reactions the capacity solver sizes, GH #383)."""
+        latter also holds reactions the capacity solver sizes, GH #383 -
+        and the sizing ledger `stock_used` plus the readiness ledger
+        `stock_used_on_hand` the passes left behind, so the capacity-mode
+        reaction jobs and their inputs continue from them instead of
+        starting over)."""
         stock_used = dict(reserved)
         for type_id, qty in target_reserved.items():
             stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
@@ -4524,7 +4645,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             other_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
             stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
         return (_merge_asset_plan_passes(order_jobs, target_jobs, doctrine_jobs), order_top_level,
-                stock_coverage_by_id)
+                stock_coverage_by_id, stock_used, stock_used_on_hand)
 
     # Byproduct discovery pass, same shape and same reasoning as
     # plan_production's own two-pass _expand_all call (see the comment
@@ -4591,7 +4712,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
     elif any(alchemy_memo.values()):
-        provisional_jobs, _, _ = _plan_passes({})
+        provisional_jobs = _plan_passes({})[0]
         # _alchemy_byproduct_stock takes _expand_all's own build_runs shape;
         # rebuild it from the provisional AssetPlanJobs rather than teaching
         # that helper a second one. Non-alchemy jobs simply miss its index.
@@ -4603,7 +4724,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         }
         byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
 
-    jobs, order_top_level, final_coverage = _plan_passes(byproduct_stock)
+    jobs, order_top_level, final_coverage, plan_stock_used, plan_ready_ledger = _plan_passes(byproduct_stock)
 
     if capacity_on:
         # Inject W1 reaction jobs from the solution; readiness stays as today
@@ -4612,7 +4733,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
         # On-hand units already counted as ready for an earlier recipe: two
         # recipes sharing an input (platinum) must not both claim the pile.
-        ready_claimed = _ReadinessLedger(manual_stock, cfg)
+        # Continues the plan's own readiness ledger, so units an order or
+        # stock-target job already counted as Ready are not Ready again here.
+        ready_claimed = plan_ready_ledger
         reaction_location = category_locations.get("Reactions") if ready_at_location else None
         # Stock coverage (GH #383): the walk's own available / buffered
         # demand when it reached the product, else on-hand stock against the
@@ -4724,10 +4847,10 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
         if input_seed:
             # Manufacture / buy non-reaction inputs (fuel blocks, moon mats).
-            stock_used = dict(reserved)
-            for type_id, qty in target_reserved.items():
-                stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
-            stock_used_on_hand = _ReadinessLedger(manual_stock, cfg, reserved_on_hand)
+            # Same ledgers the plan and the reaction jobs above already drew
+            # on: restarting them would hand the same stock out a second time.
+            stock_used = plan_stock_used
+            stock_used_on_hand = ready_claimed
             stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
             # Same as plan_production: round-0 seeds are not netted inside.
             input_seed = _net_seed_against_stock(
@@ -5180,6 +5303,7 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
         results.append({
             "type_id": type_id, "type_name": type_name, "activity": activity,
             "build_cost": build_cost, "margin": margin, "meta_level": meta_level,
+            "invention_cost_per_unit": _t2_invention_per_unit(type_id, t2_memo),
         })
 
     if results:
@@ -5404,6 +5528,7 @@ def _scan_ship_margins(cfg: ProductionConfig) -> tuple[list[dict], bool]:
             "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
             "jita_price": jita_quote.sell if jita_quote and jita_quote.sell > 0 else None,
             "build_cost": build_cost,
+            "invention_cost_per_unit": _t2_invention_per_unit(type_id, t2_memo),
             "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
             "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
             "meta_level": meta_level,
@@ -5439,6 +5564,7 @@ def _item_margin_detail_with_context(
         "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
         "jita_price": jita_quote.sell if jita_quote and jita_quote.sell > 0 else None,
         "build_cost": build_cost,
+        "invention_cost_per_unit": _t2_invention_per_unit(type_id, t2_memo),
         "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
         "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
     }

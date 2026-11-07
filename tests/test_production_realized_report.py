@@ -176,6 +176,12 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert summary["estimated"] is False
     assert summary["tax_missing_sales"] == 1
     assert summary["flags"]["tax_missing"] is True
+    # This wallet has transactions and no journal at all: the sale has no
+    # tax and no fee on record, flagged with count and ISK, nothing estimated.
+    assert summary["fees_missing_sales"] == 1
+    assert summary["fees_missing_revenue"] == pytest.approx(500.0)
+    assert summary["fees_missing_profit"] == pytest.approx(260.0)
+    assert summary["flags"]["fees_missing"] is True
     assert summary["inventory_at_cost"] == pytest.approx(240.0)
     structure = {line["key"]: line for line in summary["cost_structure"]}
     assert structure["freight_configured"]["label"] == "Freight (configured rate)"
@@ -192,10 +198,13 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert products["rows"][0]["flags"]["price_missing"] is False
     assert products["rows"][0]["flags"]["tax_missing"] is True
     assert "tax_missing" in products["rows"][0]["warnings"]
+    assert products["rows"][0]["flags"]["fees_missing"] is True
+    assert "fees_missing" in products["rows"][0]["warnings"]
 
     detail = production_actions.do_get_realized_product(TYPE_B, days=DAYS)
     sale_ref = detail["sales"][0]["sale_ref"]
     assert detail["sales"][0]["flags"]["tax_missing"] is True
+    assert detail["sales"][0]["flags"]["fees_missing"] is True
     assert detail["sales"][0]["location_id"] == LOC_SELL
 
     chain = production_actions.do_get_realized_sale_chain(sale_ref)

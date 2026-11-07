@@ -123,6 +123,10 @@ def test_station_report_keeps_the_station_pool_and_other_channels_out(tenant):
     assert summary["revenue"] == pytest.approx(42.0)
     assert summary["cost_of_goods_sold"] == pytest.approx(25.0)
     assert summary["realized_profit"] == pytest.approx(17.0)
+    # CAROL's wallet has no journal: both station sales lack tax and fee.
+    assert summary["fees_missing_sales"] == 2
+    assert summary["fees_missing_revenue"] == pytest.approx(42.0)
+    assert summary["flags"]["fees_missing"] is True
     assert summary["units_sold"] == pytest.approx(2.0)
     assert summary["avg_buy"] == pytest.approx(12.5)
     assert summary["avg_sell_net"] == pytest.approx(21.0)

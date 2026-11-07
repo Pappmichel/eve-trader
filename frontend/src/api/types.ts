@@ -176,6 +176,24 @@ export interface SparklineSeries {
   ref: [string, number][]
 }
 
+// What the wallet charged on the last `window_days` of market sales
+// (GET /realized/observed-fees, one per channel). `quote` is the fee share of
+// gross; `suggested` is the value for the setting named by `setting`
+// (Trading's haircut is the share kept, 1 - quote). No value -> `reason`.
+export interface ObservedSellFees {
+  setting: 'market_fees' | 'structure_sell_haircut'
+  window_days: number
+  min_sales: number
+  sales: number
+  quote: number | null
+  suggested: number | null
+  sales_tax_rate: number | null
+  broker_fee_rate: number | null
+  reason: 'no_run' | 'needs_rebuild' | 'too_few_sales' | 'no_basis' | null
+  message: string | null
+  relist_note: string
+}
+
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number
@@ -395,6 +413,7 @@ export interface BuildJobEntry {
   tech_level: string | null
   job_category: string | null
   job_cost: number | null
+  invention_cost_per_unit?: number | null
   margin: number | null
   recipe_source: string | null
   special_order_quantity?: number
@@ -586,6 +605,7 @@ export interface AssetPlanJob {
   decryptor: string | null
   tech_level: string | null
   job_category: string | null
+  invention_cost_per_unit?: number | null
   margin: number | null
   stock_coverage: number | null
   unlock_time_seconds: number
@@ -800,6 +820,7 @@ export interface BuildCandidate {
   daily_movement: number
   potential_daily_profit: number
   meta_level: number | null
+  invention_cost_per_unit?: number | null
   alchemy_comparison?: AlchemyComparison | null
 }
 
@@ -813,6 +834,7 @@ export interface ShipMarginRow {
   margin_home: number | null
   margin_jita: number | null
   meta_level: number | null
+  invention_cost_per_unit?: number | null
 }
 
 export type MaxBuildableMode = 'full' | 'direct'
@@ -3227,6 +3249,8 @@ export interface RealizedFlags {
   assumed_decryptor: boolean
   coverage: number | null
   tax_missing: boolean
+  /** Sale before its wallet's journal: no tax or broker fee on record, none estimated. */
+  fees_missing?: boolean
   detail_missing: boolean
   /** null on a job means the bonus is unknown, not absent. */
   no_structure_bonus: boolean | null
@@ -3279,6 +3303,9 @@ export interface TradingRealizedSummary {
   sale_count: number
   price_missing: boolean
   tax_missing_sales: number
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
+  fees_missing_profit?: number
   cost_structure: CostStructureLine[]
   by_day: RealizedDay[]
   flags: RealizedFlags
@@ -3409,6 +3436,9 @@ export interface StationRealizedSummary {
   turnover_days: number | null
   price_missing: boolean
   tax_missing_sales: number
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
+  fees_missing_profit?: number
   freight_from_couriers?: number
   freight_configured?: number
   fees_by_day: StationRealizedFeeDay[]
@@ -3584,6 +3614,8 @@ export interface RealizedToolCard {
   estimated: boolean
   empty: boolean
   sales_count: number | null
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
   link: string
 }
 
@@ -3595,6 +3627,8 @@ export interface RealizedFreight {
 export interface RealizedToolCards {
   rows: RealizedToolCard[]
   total: number | null
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
   period: string
   freight: RealizedFreight | null
 }
@@ -3639,6 +3673,9 @@ export interface RealizedSummary {
   units_sold: number
   price_missing: boolean
   tax_missing_sales: number
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
+  fees_missing_profit?: number
   fees_without_sale: number
   fees_on_other_trading: number
   capital_in_bpos: number
@@ -4307,6 +4344,29 @@ export interface CategoryFacilityUpdate {
   structure_type: string | null
   rig_tier_basic: string | null
   rig_tier_advanced: string | null
+  // Facility tax override as a fraction (0.0025 = 0.25%); null = last observed, then Settings.
+  facility_tax_rate: number | null
+}
+
+// Where the facility tax in use comes from: the override saved here, the rate
+// last observed on the tenant's own jobs at the category's structure, or the
+// Settings page fallback.
+export type FacilityTaxSource = 'override' | 'observed' | 'settings'
+
+export interface FacilityTaxObservation {
+  rate: number
+  observed_at: string
+  age_days: number
+  jobs: number
+}
+
+export interface CategoryFacilityTax {
+  saved: number | null
+  // Shown even while an override wins.
+  observed: FacilityTaxObservation | null
+  effective: number
+  source: FacilityTaxSource
+  settings_rate: number
 }
 
 export interface CategoryFacilityRow {
@@ -4319,6 +4379,7 @@ export interface CategoryFacilityRow {
   split_by_tech: boolean
   saved: Omit<CategoryFacilityUpdate, 'category'>
   from_name: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
+  tax: CategoryFacilityTax
   effective: {
     structure_type: string
     structure_source: FacilitySource

@@ -134,6 +134,11 @@ def test_trading_report_keeps_only_trading_wallet_owners(tenant):
     assert summary["realized_profit"] == pytest.approx(30.0)
     assert summary["units_sold"] == pytest.approx(1.0)
     assert summary["margin"] == pytest.approx(30.0 / 40.0)
+    # ALICE's wallet has transactions but no journal: the sale has no tax or
+    # fee on record. Trading reads the same flag from the shared rows.
+    assert summary["fees_missing_sales"] == 1
+    assert summary["fees_missing_revenue"] == pytest.approx(40.0)
+    assert summary["flags"]["fees_missing"] is True
 
     rows = trade_actions.do_get_trading_realized_items(days=30)["rows"]
     assert [row["type_id"] for row in rows] == [WIDGET]

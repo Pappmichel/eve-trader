@@ -24,7 +24,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
-from ...realized import access, db, names as display_names
+from ...realized import access, db, names as display_names, sell_fees
+from ...realized.sell_fees import RELIST_NOTE
 from ...realized.costing import (
     ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, FREIGHT_CONFIGURED,
     CostComponents, freight_label, freight_split,
@@ -158,7 +159,7 @@ def _cost_structure(components: CostComponents, sales_tax: float) -> list[dict]:
 def _flags(*, estimated: bool, price_missing: bool, assumed_me: bool = False,
            assumed_decryptor: bool = False, coverage: Optional[float] = None,
            tax_missing: bool = False, detail_missing: bool = False,
-           no_structure_bonus: Optional[bool] = None) -> dict:
+           no_structure_bonus: Optional[bool] = None, fees_missing: bool = False) -> dict:
     return {
         "estimated": bool(estimated),
         "price_missing": bool(price_missing),
@@ -166,6 +167,7 @@ def _flags(*, estimated: bool, price_missing: bool, assumed_me: bool = False,
         "assumed_decryptor": bool(assumed_decryptor),
         "coverage": coverage,
         "tax_missing": bool(tax_missing),
+        "fees_missing": bool(fees_missing),
         "detail_missing": bool(detail_missing),
         "no_structure_bonus": no_structure_bonus,
     }
@@ -202,6 +204,9 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "sale_count": 0,
         "price_missing": False,
         "tax_missing_sales": 0,
+        "fees_missing_sales": 0,
+        "fees_missing_revenue": 0.0,
+        "fees_missing_profit": 0.0,
         "fees_without_sale": 0.0,
         "fees_on_other_trading": 0.0,
         "capital_in_bpos": 0.0,
@@ -287,6 +292,20 @@ def run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
 def production_scope() -> dict:
     """Public wrapper of `_production_scope` (same reasoning as run_state)."""
     return _production_scope()
+
+
+def observed_sell_fees() -> dict:
+    """What the wallet charged on Production's market sales of the last 30 days,
+    as the value for `market_fees` (broker fee + sales tax as a share of gross).
+    Shown beside the setting; applying it is the user's click. No value when the
+    report check fails (no run, shared wallets changed) or under 20 sales."""
+    run, _t0, sharing_changed = _run_state()
+    data = sell_fees.observed_quote(
+        run=run, sharing_changed=sharing_changed, scope=_production_scope())
+    data["setting"] = "market_fees"
+    data["suggested"] = None if data["quote"] is None else round(data["quote"], 4)
+    data["relist_note"] = RELIST_NOTE
+    return data
 
 
 def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int,
@@ -384,6 +403,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         profit = _num(totals[2])
         tax = _num(totals[10])
         tax_missing_sales = int(totals[11]) if sales_count else 0
+        fees_missing_sales = int(totals[16]) if sales_count else 0
         fee_start = start_at.date()
         # Exclusive end: a fee day is in the period when it is >= start's UTC
         # day and < the UTC day after the last instant included.
@@ -401,7 +421,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         ]
     flags = _flags(
         estimated=estimated, price_missing=price_missing, coverage=cov,
-        tax_missing=tax_missing_sales > 0,
+        tax_missing=tax_missing_sales > 0, fees_missing=fees_missing_sales > 0,
     )
     return {
         "period": period,
@@ -416,6 +436,9 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "sale_count": sales_count,
         "price_missing": price_missing,
         "tax_missing_sales": tax_missing_sales,
+        "fees_missing_sales": fees_missing_sales,
+        "fees_missing_revenue": _num(totals[17]) if fees_missing_sales else 0.0,
+        "fees_missing_profit": _num(totals[18]) if fees_missing_sales else 0.0,
         "fees_without_sale": fees_without,
         "fees_on_other_trading": fees_other,
         "capital_in_bpos": capital,
@@ -473,6 +496,7 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
             estimated=estimated, price_missing=price_missing,
             assumed_me=bool(assumed[0]), assumed_decryptor=bool(assumed[1]),
             coverage=cov, tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
     }
 
@@ -538,6 +562,7 @@ def _sale_dict(row, names: dict) -> dict:
         "flags": _flags(
             estimated=estimated, price_missing=price_missing,
             coverage=cov, tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
         "source": None if len(row) <= 21 or row[21] is None else str(row[21]),
     }

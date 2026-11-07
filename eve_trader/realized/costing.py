@@ -170,6 +170,8 @@ CANCELLED_STATUSES = frozenset({"cancelled", "reverted"})
 COMPLETED_STATUSES = frozenset({"delivered", "ready"})
 
 FEE_REF_TYPES = frozenset({"brokers_fee", "market_provider_tax"})
+# Result warning for a market sale before its wallet's journal starts.
+FEES_MISSING_WARNING = "fees_missing"
 MARKET_TRANSACTION_REF_TYPE = "market_transaction"
 TRANSACTION_TAX_REF_TYPE = "transaction_tax"
 REPROCESSING_TAX_REF_TYPE = "reprocessing_tax"
@@ -582,6 +584,12 @@ class LedgerSnapshot:
     reprocess_recipes: Mapping[int, ReprocessRecipe] = field(default_factory=dict)
     compression_links: Sequence[CompressionLink] = ()
     reprocess_detection_blocked: Optional[str] = None
+    # (owner_type, owner_id, division) -> oldest archived journal entry, for
+    # each wallet whose journal does not reach back to its oldest
+    # transaction (None: no journal at all). A market sale at or before it
+    # has no archived sales tax or broker fee and is flagged `fees_missing`.
+    # Absent wallets are fully covered. T0 stays shared and does not move.
+    fee_coverage_starts: Mapping[tuple, Optional[datetime]] = field(default_factory=dict)
 
 
 # ====================================================================== outputs
@@ -674,6 +682,12 @@ class RealizedResult:
     @property
     def estimated(self) -> bool:
         return self.price_missing or self.coverage_share < ESTIMATED_COVERAGE_THRESHOLD
+
+    @property
+    def fees_missing(self) -> bool:
+        """The sale lies before its wallet's journal: sales tax and broker
+        fee were never archived. Nothing is estimated in their place."""
+        return FEES_MISSING_WARNING in self.warnings
 
 
 @dataclass
@@ -1573,6 +1587,11 @@ class _Costing:
         for tx in self.ledger.wallet_transactions:
             if tx.date < self.t0:
                 continue
+            if self._fees_missing_for(tx):
+                # Before its wallet's journal: the day's pool holds only the
+                # fees that were archived, so it must not be spread over a
+                # fill whose own fee was never recorded.
+                continue
             key = (tx.owner_type, int(tx.owner_id), int(tx.type_id), int(tx.location_id), bool(tx.is_buy))
             if key in own_orders:
                 fills[(tx.owner_type, int(tx.owner_id), _day(tx.date))].append(tx)
@@ -1585,6 +1604,21 @@ class _Costing:
                 continue
             for tx in day_fills:
                 self.fee_by_tx[tx.key] = amount * float(tx.unit_price) * float(tx.quantity) / total_value
+
+    def _fees_missing_for(self, tx: WalletTransaction) -> bool:
+        """True when `tx` is at or before the start of its wallet's journal
+        (or the wallet has no journal): its sales tax and broker fee were
+        never archived. The oldest journal second counts as missing too: a
+        truncated journal can keep a transaction's tax entry and lose its
+        market_transaction entry."""
+        coverage = self.ledger.fee_coverage_starts
+        if not coverage:
+            return False
+        key = (tx.owner_type, int(tx.owner_id), int(tx.division))
+        if key not in coverage:
+            return False
+        start = coverage[key]
+        return start is None or tx.date <= start
 
     def _sales_tax(self, tx: WalletTransaction, gross: float) -> Optional[float]:
         mt = self._mt_by_tx.get(tx.key)
@@ -1677,9 +1711,26 @@ class _Costing:
         gross = float(tx.unit_price) * qty
         result_warnings: list[str] = []
         tax = self._sales_tax(tx, gross)
+        fees_missing = self._fees_missing_for(tx)
         if tax is None:
             result_warnings.append("tax_missing")
-            self.warn(f"tax_missing: {tx.ref} sales tax not found in the journal, revenue is gross")
+            # When the whole fee side is missing for this wallet, the
+            # per-wallet fees_missing warning below already covers it; a
+            # per-sale tax_missing line would bloat prod_ledger_runs.warnings
+            # by thousands of rows. result_warnings still carries both flags.
+            if not fees_missing:
+                self.warn(
+                    f"tax_missing: {tx.ref} sales tax not found in the journal, revenue is gross"
+                )
+        if fees_missing:
+            # No estimate: tax and broker fee stay as archived (missing).
+            result_warnings.append(FEES_MISSING_WARNING)
+            start = self.ledger.fee_coverage_starts[(tx.owner_type, int(tx.owner_id), int(tx.division))]
+            since = "no journal archived" if start is None else f"journal starts {start.isoformat()}"
+            self.warn(
+                f"fees_missing: {tx.owner_type} {int(tx.owner_id)} division {int(tx.division)} "
+                f"has sales without sales tax or broker fee ({since})"
+            )
         if self.ledger.home_structure_id is not None and int(tx.location_id) != int(self.ledger.home_structure_id):
             result_warnings.append("outside_home_structure")
             self.warn(f"outside_home_structure: {tx.ref} type {type_id} sold at {tx.location_id}")

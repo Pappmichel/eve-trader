@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import storage
-from ..realized import access, db, names as display_names
+from ..realized import access, db, names as display_names, sell_fees
+from ..realized.sell_fees import RELIST_NOTE
 from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 
 CHANNEL = "trading"
@@ -86,7 +87,7 @@ def _margin(profit: float, revenue: float) -> Optional[float]:
 
 
 def _flags(*, estimated: bool, price_missing: bool, coverage: Optional[float] = None,
-           tax_missing: bool = False) -> dict:
+           tax_missing: bool = False, fees_missing: bool = False) -> dict:
     return {
         "estimated": bool(estimated),
         "price_missing": bool(price_missing),
@@ -94,6 +95,7 @@ def _flags(*, estimated: bool, price_missing: bool, coverage: Optional[float] = 
         "assumed_decryptor": False,
         "coverage": coverage,
         "tax_missing": bool(tax_missing),
+        "fees_missing": bool(fees_missing),
         "detail_missing": False,
         "no_structure_bonus": None,
     }
@@ -112,6 +114,20 @@ def _run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
     t0 = None if run[2] is None else _as_utc(run[2])
     changed = run[4] is None or run[4] != access.owner_scope_hash()
     return run, t0, changed
+
+
+def observed_sell_fees() -> dict:
+    """What the wallet charged on Trading's market sales of the last 30 days,
+    as the value for `structure_sell_haircut` (the share of the sell price that
+    is kept: 1 - (broker fee + sales tax) / gross). Shown beside the setting;
+    applying it is the user's click. No value when the report check fails (no
+    run, shared wallets changed) or under 20 sales."""
+    run, _t0, sharing_changed = _run_state()
+    data = sell_fees.observed_quote(run=run, sharing_changed=sharing_changed, scope=_scope())
+    data["setting"] = "structure_sell_haircut"
+    data["suggested"] = None if data["quote"] is None else round(1.0 - data["quote"], 4)
+    data["relist_note"] = RELIST_NOTE
+    return data
 
 
 def _status(run, t0, archive_since, wallet_sync, results_ever: int, *,
@@ -229,6 +245,9 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "sale_count": 0,
         "price_missing": False,
         "tax_missing_sales": 0,
+        "fees_missing_sales": 0,
+        "fees_missing_revenue": 0.0,
+        "fees_missing_profit": 0.0,
         "cost_structure": _cost_structure(zero, 0.0),
         "by_day": [],
         "flags": _flags(estimated=False, price_missing=False, coverage=None),
@@ -280,11 +299,14 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "sale_count": sales_count,
         "price_missing": price_missing,
         "tax_missing_sales": int(totals[11]) if sales_count else 0,
+        "fees_missing_sales": int(totals[16]) if sales_count else 0,
+        "fees_missing_revenue": _num(totals[17]) if sales_count and int(totals[16]) else 0.0,
+        "fees_missing_profit": _num(totals[18]) if sales_count and int(totals[16]) else 0.0,
         "cost_structure": _cost_structure(components, tax),
         "by_day": by_day,
         "flags": _flags(
             estimated=estimated, price_missing=price_missing, coverage=cov,
-            tax_missing=int(totals[11]) > 0,
+            tax_missing=int(totals[11]) > 0, fees_missing=int(totals[16]) > 0,
         ),
     }
 
@@ -314,6 +336,7 @@ def _item_row(type_id: int, totals: tuple, warnings: list[str], names: dict) -> 
         "flags": _flags(
             estimated=estimated, price_missing=price_missing, coverage=cov,
             tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
     }
 
@@ -375,6 +398,7 @@ def _sale_dict(row, names: dict, locations: dict[int, str]) -> dict:
         "flags": _flags(
             estimated=estimated, price_missing=price_missing, coverage=cov,
             tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
         "source": None if len(row) <= 21 or row[21] is None else str(row[21]),
     }

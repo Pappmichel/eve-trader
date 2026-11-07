@@ -34,6 +34,10 @@ function MarginDetailCard({ row, hub }: { row: ShipMarginRow; hub: string }) {
           <Text>{row.build_cost === null ? '–' : isk(row.build_cost)}</Text>
         </div>
         <div>
+          <Text size="xs" c="dimmed">Invention Cost/Unit</Text>
+          <Text>{isk(row.invention_cost_per_unit)}</Text>
+        </div>
+        <div>
           <Text size="xs" c="dimmed">Margin (Home)</Text>
           <Text c={row.margin_home !== null && row.margin_home > 0 ? 'accent' : undefined}>
             {row.margin_home === null ? '–' : pct(row.margin_home)}
@@ -90,6 +94,7 @@ export default function Margin() {
     { header: 'Home Price', accessorKey: 'home_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
     { header: `${hub} Price`, accessorKey: 'jita_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
     { header: 'Build Cost', accessorKey: 'build_cost', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
+    { header: 'Invention Cost/Unit', accessorKey: 'invention_cost_per_unit', size: 160, cell: (i) => isk(i.getValue()) },
     { header: 'Margin (Home)', accessorKey: 'margin_home', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
     { header: `Margin (${hub})`, accessorKey: 'margin_jita', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
   ], [hub])

@@ -246,7 +246,8 @@ possible. Attribution (D12):
 
 ## 6. Cutover, opening inventory and coverage
 
-**Cutover T0.** ESI windows differ (wallet about 30 days, completed jobs about
+**Cutover T0.** (COSTING_VERSION 6 changed one rule below: the push-forward to
+a truncated journal's start is gone; see section 11, last bullet.) ESI windows differ (wallet about 30 days, completed jobs about
 90 days, order history 90 days). Costing starts at one date T0 = the start of
 the *shortest* complete window when the archive went live. In practice that
 is the journal: transactions reach 30 days back, the journal only its newest
@@ -544,6 +545,10 @@ Trading's).
   moment; everything before T0 is opening inventory.
 - Corp jobs in a corp shared with other tenants may use materials another
   member paid for.
+- Superseded for section 6 (COSTING_VERSION 6): T0 is no longer moved to a
+  truncated journal's start. A sale before its wallet's journal start keeps
+  its place and is flagged `fees_missing` (no sales tax or broker fee on
+  record, nothing estimated).
 
 ## 12. Review log (2026-10-17)
 

@@ -35,6 +35,7 @@ export function FlagMarkers({ flags, job = false, showCoverage = true }: {
       {flags.assumed_me && <Marker label="assumed ME" tip="Material efficiency was assumed, not read from the blueprint." color="warn" />}
       {flags.assumed_decryptor && <Marker label="assumed decryptor" tip="The decryptor was derived, not stored on the job." color="warn" />}
       {flags.tax_missing && <Marker label="tax missing" tip="No sales-tax journal entry; revenue is gross." color="warn" />}
+      {flags.fees_missing && <Marker label="fees missing" tip="Sold before this wallet's journal starts: no sales tax or broker fee on record, none estimated." color="warn" />}
       {flags.detail_missing && <Marker label="detail missing" tip="The cost chain could not be expanded fully." color="warn" />}
       {showCoverage && flags.coverage != null && <CoverageBadge coverage={flags.coverage} />}
       {(job || flags.no_structure_bonus !== null) && (

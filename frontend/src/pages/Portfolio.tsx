@@ -110,6 +110,11 @@ function RealizedProfitCard({ row }: { row: RealizedToolCard }) {
         <Group gap={6} mt={4}>
           <CoverageBadge coverage={row.coverage} />
           {row.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
+          {(row.fees_missing_sales ?? 0) > 0 && (
+            <Badge size="xs" color="warn" variant="light">
+              fees missing ({qty(row.fees_missing_sales ?? 0)} sales, {isk(row.fees_missing_revenue ?? 0)})
+            </Badge>
+          )}
         </Group>
       )}
       <Anchor component={Link} to={row.link} size="xs">Open report</Anchor>

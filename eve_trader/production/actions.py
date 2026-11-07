@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -18,7 +18,7 @@ from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from ..paste_parser import resolve_paste
-from . import dynamic_targets, esi_sync, invention, jobs, order_integrity, pricing, sde
+from . import dynamic_targets, esi_sync, facility_tax, invention, jobs, order_integrity, pricing, sde
 from .engine import production_excluded_hangar
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES
@@ -585,8 +585,13 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
     category structure's name states, and what the engine actually uses
     (with its source: "set", "name" or "global"). Ship categories have a
     separate rig for Tech II/III hulls; other categories use one rig for
-    every tech level (`advanced` is None for them)."""
+    every tech level (`advanced` is None for them). `tax` is the facility
+    tax: the saved override, the rate last observed on our own jobs at the
+    category's structure (with its date and age, shown even while an
+    override wins), and the one in use with its source ("override",
+    "observed" or "settings")."""
     facilities = _load_category_facilities()
+    now = datetime.now(timezone.utc)
     rows = []
     for category in JOB_CATEGORIES:
         facility = facilities.get(category, {})
@@ -595,7 +600,20 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
         split = category in SPLIT_BY_TECH_CATEGORIES
         basic = facility_resolution(category, "Tech I", profile, cfg)
         advanced = facility_resolution(category, "Tech II", profile, cfg) if split else None
+        job_activity = (facility_tax.ACTIVITY_REACTION if profile == "reaction"
+                        else facility_tax.ACTIVITY_MANUFACTURING)
+        observation = (facility.get("observed_tax") or {}).get(job_activity)
         rows.append({
+            "tax": {
+                "saved": facility.get("tax_rate_override"),
+                "observed": None if observation is None else {
+                    "rate": observation.rate, "observed_at": observation.observed_at.isoformat(),
+                    "age_days": observation.age_days(now), "jobs": observation.jobs,
+                },
+                "effective": basic["tax_rate"],
+                "source": basic["tax_source"],
+                "settings_rate": cfg.facility_tax_rate,
+            },
             "category": category,
             "profile": profile,
             "location_id": facility.get("location_id"),
@@ -606,6 +624,7 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
                 "structure_type": facility.get("structure_type"),
                 "rig_tier_basic": facility.get("rig_tier_basic"),
                 "rig_tier_advanced": facility.get("rig_tier_advanced") if split else None,
+                "facility_tax_rate": facility.get("tax_rate_override"),
             },
             "from_name": {"rig_tier_basic": named_basic, "rig_tier_advanced": named_advanced if split else None},
             "effective": {
@@ -623,10 +642,13 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
 
 def do_set_category_facility(category: str, structure_type: Optional[str] = None,
                              rig_tier_basic: Optional[str] = None,
-                             rig_tier_advanced: Optional[str] = None) -> dict:
-    """Saves the structure type and rig tiers for one job category. None
-    means "not set" (the engine then reads the structure name, then the
-    global profile); all three None removes the row."""
+                             rig_tier_advanced: Optional[str] = None,
+                             facility_tax_rate: Optional[float] = None) -> dict:
+    """Saves the structure type, rig tiers and facility tax override for one
+    job category. None means "not set" (the engine then reads the structure
+    name, then the global profile; for the tax the rate observed on our own
+    jobs, then the Settings rate); all four None removes the row.
+    `facility_tax_rate` is a fraction (0.0025 = 0.25%)."""
     if category not in JOB_CATEGORIES:
         raise ActionError(f"Unknown category '{category}'. Options: {', '.join(JOB_CATEGORIES)}")
     if structure_type is not None and structure_type not in STRUCTURE_TYPES:
@@ -636,14 +658,19 @@ def do_set_category_facility(category: str, structure_type: Optional[str] = None
             raise ActionError(f"Unknown rig tier '{tier}'. Options: {', '.join(RIG_TIERS)}")
     if rig_tier_advanced is not None and category not in SPLIT_BY_TECH_CATEGORIES:
         raise ActionError(f"'{category}' uses one rig for every tech level; set the Tech I rig only.")
-    if structure_type is None and rig_tier_basic is None and rig_tier_advanced is None:
+    if facility_tax_rate is not None and not 0 <= facility_tax_rate <= 1:
+        raise ActionError(f"Facility tax must be between 0% and 100%, got {facility_tax_rate * 100:g}%.")
+    if (structure_type is None and rig_tier_basic is None and rig_tier_advanced is None
+            and facility_tax_rate is None):
         storage.delete_category_facility(category)
     else:
-        storage.upsert_category_facility(category, structure_type, rig_tier_basic, rig_tier_advanced)
+        storage.upsert_category_facility(category, structure_type, rig_tier_basic, rig_tier_advanced,
+                                         facility_tax_rate)
     invalidate_facility_cache()
-    invalidate_discover_cache()  # rigs change every build cost in this category
+    invalidate_discover_cache()  # rigs and tax change every build cost in this category
     return {"category": category, "structure_type": structure_type,
-            "rig_tier_basic": rig_tier_basic, "rig_tier_advanced": rig_tier_advanced}
+            "rig_tier_basic": rig_tier_basic, "rig_tier_advanced": rig_tier_advanced,
+            "facility_tax_rate": facility_tax_rate}
 
 
 def do_clear_category_facility(category: str) -> dict:
@@ -2141,6 +2168,14 @@ def do_get_realized_summary(days: int | None = None, start: str | None = None,
     from .realized import report
     period = _realized_period(days, start, end, since_t0)
     return report.summary(**period)
+
+
+def do_get_realized_observed_fees() -> dict:
+    """Read-only: the sell-fee rate the wallet charged on the last 30 days of
+    Production sales, for the Settings page's "Use this value" button. It never
+    changes `market_fees`; the user applies it through `do_update_settings`."""
+    from .realized import report
+    return report.observed_sell_fees()
 
 
 def do_get_realized_products(days: int | None = None, start: str | None = None,

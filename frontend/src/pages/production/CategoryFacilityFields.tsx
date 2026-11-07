@@ -1,6 +1,33 @@
-import { Group, Select, Text } from '@mantine/core'
+import { useEffect, useState } from 'react'
+import { Group, NumberInput, Select, Text } from '@mantine/core'
 
-import type { CategoryFacilityRow, CategoryFacilityUpdate, FacilitySource } from '../../api/types'
+import type { CategoryFacilityRow, CategoryFacilityTax, CategoryFacilityUpdate, FacilitySource } from '../../api/types'
+
+// 2 decimals: real facility taxes are fractions of a percent (0.25%, 0.5%).
+const taxPct = (rate: number) => `${(rate * 100).toFixed(2)}%`
+
+function ageText(days: number): string {
+  if (days < 1) return 'today'
+  const whole = Math.round(days)
+  return whole === 1 ? '1 day ago' : `${whole} days ago`
+}
+
+// What the facility tax in use is and where it comes from. An observed rate is
+// the median of the last jobs at this category's structure and ages: the
+// structure owner can change it at any time.
+export function facilityTaxSummary(tax: CategoryFacilityTax): string {
+  const observed = tax.observed
+  const seen = observed
+    ? `${taxPct(observed.rate)} from ${observed.jobs} ${observed.jobs === 1 ? 'job' : 'jobs'}, newest ${ageText(observed.age_days)}`
+    : null
+  if (tax.source === 'override') {
+    return `Facility tax in use: ${taxPct(tax.effective)} (override set here)${seen ? `. Last seen: ${seen}` : ''}`
+  }
+  if (tax.source === 'observed') {
+    return `Facility tax in use: ${taxPct(tax.effective)} (observed on your last jobs: ${seen})`
+  }
+  return `Facility tax in use: ${taxPct(tax.effective)} (Settings page, no recent job of yours at this structure)`
+}
 
 const SOURCE_TEXT: Record<FacilitySource, string> = {
   set: 'set here',
@@ -37,6 +64,17 @@ export function CategoryFacilityFields({
 }) {
   const save = (patch: Partial<CategoryFacilityUpdate>) => onSave({ category: row.category, ...row.saved, ...patch })
   const toValue = (v: string | null) => (v ? v : null)
+  const savedTax = row.saved.facility_tax_rate
+  const [taxDraft, setTaxDraft] = useState<number | string>(savedTax == null ? '' : +(savedTax * 100).toFixed(4))
+  useEffect(() => {
+    setTaxDraft(savedTax == null ? '' : +(savedTax * 100).toFixed(4))
+  }, [savedTax])
+  const commitTax = () => {
+    const next = taxDraft === '' ? null : Number(taxDraft) / 100
+    if (next === null ? savedTax !== null : savedTax === null || Math.abs(next - savedTax) > 1e-9) {
+      save({ facility_tax_rate: next })
+    }
+  }
   const [basicAuto, basicSource] = autoFallback(row, 'basic')
   const [advancedAuto, advancedSource] = autoFallback(row, 'advanced')
   const structureAuto = row.effective.structure_source === 'set' ? 'Auto' : `Auto: ${row.effective.structure_type}`
@@ -72,6 +110,12 @@ export function CategoryFacilityFields({
         {row.split_by_tech && row.effective.rig_tier_advanced ? ` / ${row.effective.rig_tier_advanced} (Tech II/III)` : ''}
         {' '}x{row.effective.security_multiplier.toFixed(1)} security
       </Text>
+      <NumberInput
+        size="xs" mt={4} label="Facility tax override" suffix="%" decimalScale={2} min={0} max={100} step={0.05}
+        placeholder="Auto" disabled={saving} value={taxDraft}
+        onChange={setTaxDraft} onBlur={commitTax}
+      />
+      <Text size="xs" c="dimmed" mt={2}>{facilityTaxSummary(row.tax)}</Text>
     </>
   )
 }

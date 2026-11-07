@@ -100,7 +100,7 @@ def _turnover_days(quantity: float, weighted_seconds: float) -> Optional[float]:
 
 
 def _flags(*, estimated: bool, price_missing: bool, coverage: Optional[float] = None,
-           tax_missing: bool = False) -> dict:
+           tax_missing: bool = False, fees_missing: bool = False) -> dict:
     return {
         "estimated": bool(estimated),
         "price_missing": bool(price_missing),
@@ -108,6 +108,7 @@ def _flags(*, estimated: bool, price_missing: bool, coverage: Optional[float] = 
         "assumed_decryptor": False,
         "coverage": coverage,
         "tax_missing": bool(tax_missing),
+        "fees_missing": bool(fees_missing),
         "detail_missing": False,
         "no_structure_bonus": None,
     }
@@ -257,6 +258,9 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "turnover_days": None,
         "price_missing": False,
         "tax_missing_sales": 0,
+        "fees_missing_sales": 0,
+        "fees_missing_revenue": 0.0,
+        "fees_missing_profit": 0.0,
         "freight_from_couriers": 0.0,
         "freight_configured": 0.0,
         "fees_by_day": [],
@@ -347,6 +351,9 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "turnover_days": _turnover_days(dated_qty, dated_seconds),
         "price_missing": price_missing,
         "tax_missing_sales": int(totals[11]) if sales_count else 0,
+        "fees_missing_sales": int(totals[16]) if sales_count else 0,
+        "fees_missing_revenue": _num(totals[17]) if sales_count and int(totals[16]) else 0.0,
+        "fees_missing_profit": _num(totals[18]) if sales_count and int(totals[16]) else 0.0,
         "freight_from_couriers": freight_from_couriers,
         "freight_configured": freight_configured,
         "fees_by_day": fees,
@@ -355,7 +362,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "open_position_units": sum(row["quantity"] for row in position),
         "flags": _flags(
             estimated=estimated, price_missing=price_missing, coverage=cov,
-            tax_missing=int(totals[11]) > 0,
+            tax_missing=int(totals[11]) > 0, fees_missing=int(totals[16]) > 0,
         ),
     }
 
@@ -390,6 +397,7 @@ def _item_row(type_id: int, totals: tuple, warnings: list[str], names: dict,
         "flags": _flags(
             estimated=estimated, price_missing=price_missing, coverage=cov,
             tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
     }
 
@@ -446,6 +454,7 @@ def _sale_dict(row, names: dict, locations: dict[int, str]) -> dict:
         "flags": _flags(
             estimated=estimated, price_missing=price_missing, coverage=cov,
             tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
         "source": None if len(row) <= 21 or row[21] is None else str(row[21]),
     }

@@ -56,6 +56,11 @@ def test_realized_cards_sum_ready_tools_and_skip_an_empty_one(monkeypatch):
     assert seen[0][1]["since_t0"] is False
     assert seen[0][1]["days"] == 30
 
+    # Sales without tax or fee on record are counted per card and in total,
+    # and an empty tool contributes none.
+    assert cards["fees_missing_sales"] == 0
+    assert by_tool["trading"]["fees_missing_sales"] == 0
+
     one = portfolio.realized_cards(["doctrine"])
     assert one["total"] == 65.0
     assert one["rows"][0]["profit"] == 65.0
@@ -63,6 +68,29 @@ def test_realized_cards_sum_ready_tools_and_skip_an_empty_one(monkeypatch):
     both = portfolio.realized_cards(["production", "station_trading"])
     assert both["total"] == 14.0
     assert {row["tool"] for row in both["rows"]} == {"production", "station_trading"}
+
+
+def test_realized_cards_carry_the_fees_missing_count_and_isk(monkeypatch):
+    monkeypatch.setattr(
+        "eve_trader.production.realized.report.summary",
+        lambda **_kw: _summary(
+            realized_profit=10.0, fees_missing_sales=3, fees_missing_revenue=1500.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.summary",
+        lambda **_kw: _summary(
+            realized_profit=5.0, fees_missing_sales=2, fees_missing_revenue=500.0,
+        ),
+    )
+    cards = portfolio.realized_cards(["production", "trading"])
+    by_tool = {row["tool"]: row for row in cards["rows"]}
+    assert by_tool["production"]["fees_missing_sales"] == 3
+    assert by_tool["production"]["fees_missing_revenue"] == 1500.0
+    assert cards["fees_missing_sales"] == 5
+    assert cards["fees_missing_revenue"] == 2000.0
+    # The profit is shown as returned, never adjusted for the missing fees.
+    assert cards["total"] == 15.0
 
 
 def test_realized_cards_periods_and_since_t0_uses_the_ledger_window(monkeypatch):

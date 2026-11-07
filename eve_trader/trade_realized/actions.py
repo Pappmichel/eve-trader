@@ -74,6 +74,14 @@ def do_get_trading_realized_sale(sale_ref: str) -> dict:
     return found
 
 
+def do_get_trading_realized_observed_fees() -> dict:
+    """Read-only: the sell haircut the wallet implies for the last 30 days of
+    Trading sales, for the Settings page's "Use this value" button. It never
+    changes `structure_sell_haircut`; the user applies it through the normal
+    settings save."""
+    return report.observed_sell_fees()
+
+
 def do_get_trading_realized_inventory() -> dict:
     return report.inventory()
 

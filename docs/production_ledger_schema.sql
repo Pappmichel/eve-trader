@@ -729,6 +729,12 @@ ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_configur
 ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
 
+-- Per-wallet fee coverage. A market sale at or before the start of its own
+-- wallet's (truncated) journal has no archived sales tax or broker fee. It
+-- stays in the results and is flagged here; nothing is estimated. Derived
+-- column: a rebuild replaces it (COSTING_VERSION 6 forces one).
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS fees_missing BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- ====================================================== reprocessing detection
 -- ESI has no reprocessing event. Every asset sync of an owner shared with a
 -- realized tool stores the tenant-wide quantity of each reprocessable type

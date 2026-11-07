@@ -177,9 +177,26 @@ tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 5). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 6). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
+
+**T0 and fee coverage are separate (confirmed with the user 2026-11-07).**
+Cutover T0 is the oldest archived transaction of any shared wallet and stays
+shared for jobs, opening and coverage (plan section 6). A truncated journal
+no longer pushes it forward, and sharing one more busy wallet does not hide
+the others' history. Each wallet (owner, division) instead has its own fee
+coverage: when its journal starts after its oldest transaction (or it has no
+journal at all), a market sale at or before that start keeps its place in the
+results with the flag `fees_missing` (`prod_realized_results.fees_missing`,
+warning `fees_missing`). Its sales tax and broker fee were never archived;
+nothing is estimated (revenue is gross, fee 0, `tax_missing` too), and those
+fills are left out of the daily broker-fee distribution so a partly covered
+day's pool is not spread over them. `realized_totals` counts them and sums
+their revenue/profit; every channel report and the Portfolio cards carry
+`fees_missing_sales` / `fees_missing_revenue`. Buy fills before a journal
+start also lack their fee share inside their layer (not flagged). Doctrine's
+contract sales never carry the flag.
 
 Finished item-exchange contracts (`status = 'finished'`, `date_completed`
 set) enter costing through `LedgerSnapshot.contracts`. A contract whose
@@ -229,6 +246,22 @@ discover cache); otherwise the row stores NULL. No new network call runs on
 that path. The products report exposes `planned_cost_per_unit` and
 `planned_coverage`. Hidden archive rows of a kind can be counted and deleted
 per owner while that kind is not shared with Production.
+
+**Observed sell fees (click to apply, never automatic).** `GET /api/production/
+realized/observed-fees` and `GET /api/trading/realized/observed-fees`
+(`realized/sell_fees.py`, per-channel `observed_sell_fees()` in each report)
+show what the wallet actually charged: (sales tax + broker fee) / gross over the
+channel's market sales of the last 30 days, in the report's own owner scope.
+Production's figure is for `market_fees`; Trading's is `1 - quote` for
+`structure_sell_haircut`. Two fields, two channels, never merged. No value (with a
+`reason`) when there is no ledger run, the shared wallets changed since it
+(`needs_rebuild`, same fingerprint check as the report), or under 20 market sales
+with a known sales tax. The Settings pages show "Actual last 30 days: x % (n
+sales)" and a "Use this value" button that goes through the normal settings save;
+nothing changes a setting on its own, because a corporation wallet mixes other
+members' sales into the figure. The broker fee per sale is costing's pro-rata
+attribution (a day's real order fees spread over that day's order-based fills),
+and relist fees count only as far as a sale got them, so the figure is an estimate.
 
 ## Architecture: actions.py is the one entry point
 
@@ -1551,6 +1584,46 @@ where it says so; the CEZ/KFEZ/GEZ prefixes are owner tags, not structure
 types. Structure rigs are not in ESI assets unless the corp owns the
 structure, so names are the only automatic source. Data is cached per tenant
 (60 s TTL plus `invalidate_facility_cache()` on every write path).
+
+**Facility tax is observed, never bound to a station or category (confirmed
+with the user 2026-11-07).** A structure owner changes the rate at any time, so
+no fixed rate is stored for a station or category. `engine.facility_resolution`
+resolves it (`tax_rate`, `tax_source`) in this order: the category's manual
+override (`job_category_facilities.facility_tax_rate`, Logistics page / CLI
+`facilities set --tax-percent`), then the rate observed on the tenant's own last
+jobs at the category's structure for that job activity (1 manufacturing, 11
+reaction), then `ProductionConfig.facility_tax_rate`, which is now only the
+fallback (its Settings label says so). `engine._job_cost_rate` reads it there;
+nothing else may add `cfg.facility_tax_rate` to a manufacturing/reaction job
+cost. Observation lives in `production/facility_tax.py`: per
+`(facility_id, activity)` the median of the 3 newest usable jobs started within
+30 days, with the date of the newest job so the Logistics page shows the age
+(it also shows the observed rate while an override wins). One job's *tax* rate
+is its `industry_job_tax` journal entry (`context_id` = job id) divided by the
+job's EIV. The archive has no EIV, so it is an approximation: base ME 0
+materials at today's ESI adjusted prices (copy and invention x 0.02). A job
+without a tax entry, a recipe, or an adjusted price for every material is
+skipped, never guessed; a missing observation falls back to Settings. Only
+owners shared with a realized-profit tool count, jobs via
+`access.shared_owners("industry_jobs")` and tax entries via `"wallet"` (D11);
+tax rows are one query (`db.industry_job_tax_rows`), cached per tenant with the
+facility cache and dropped by `invalidate_facility_cache()`. Do not read the
+observation per item, and do not bind a rate to a station.
+
+**Invention and copy fees use an observed total rate when available
+(confirmed with the user 2026-11-07).** ESI's job `cost` is facility fee plus
+tax. `facility_tax.observed_total_for_location` takes the median of
+`job.cost / approximate_job_eiv` over the 3 newest invention (activity 8) or
+copy (activity 5) jobs in 30 days at that structure — no journal tax entry
+required (copy jobs often have none). `invention.fee_rates` uses that fraction
+directly as `invention_rate` / `copying_rate` and does **not** add tax or SCC
+on top. Without an observation it falls back to the modelled formula (system
+index × manufacturing structure bonus + observed/Settings tax + SCC). The EIV
+approximation uses today's adjusted prices. Manufacturing and reaction stay on
+`_job_cost_rate` (real per-category rigs). Cost rows are a second scoped query
+(`db.industry_job_cost_rows`); parent resolution for Office/container location
+ids is cached 60 s per tenant+location (including a None miss) so a miss does
+not re-hit `locations.reader` on every item.
 
 ## Manual tracking for Production
 

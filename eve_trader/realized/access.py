@@ -229,23 +229,37 @@ def delete_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> int
 
 
 def cutover_t0_for_production():
-    """Cutover T0 = start of the shortest complete window (plan section 6).
+    """Cutover T0 = the oldest archived transaction of any shared wallet.
 
-    Transactions reach 30 days back, the journal only its newest 10,000
-    entries (Phase 0 13a) - about a week for a busy seller. A wallet whose
-    oldest archived transaction is older than its oldest archived journal
-    entry lost journal history, so sales before that point have no sales tax
-    or broker fees: T0 moves to the latest such journal start. A quiet
-    wallet whose journal simply starts with its first activity is not
-    truncated and does not move T0. None while no wallet is archived."""
+    Jobs, the opening inventory and coverage start here (plan section 6).
+    A truncated journal does NOT move it: transactions reach 30 days back,
+    the journal only its newest 10,000 entries (Phase 0 13a), and pushing T0
+    to a journal start would hide every other wallet's earlier history
+    whenever one busy wallet is shared. What a truncated journal costs is
+    the sales tax and broker fee of the sales before it, which
+    `fee_coverage_starts_for_production` reports per wallet so costing can
+    flag those sales. None while no wallet is archived."""
     owners = shared_owners("wallet")
     if not owners:
         return None
     starts = db.wallet_window_starts(owners)
     if not starts:
         return None
-    t0 = min(row[3] for row in starts)
-    for _ot, _oid, _div, tx_start, journal_start in starts:
-        if journal_start is not None and tx_start < journal_start:
-            t0 = max(t0, journal_start)
-    return t0
+    return min(row[3] for row in starts)
+
+
+def fee_coverage_starts_for_production() -> dict:
+    """(owner_type, owner_id, division) -> the oldest archived journal entry,
+    for each shared wallet whose journal does not reach back to its oldest
+    transaction. The value is None for a wallet with transactions and no
+    journal at all. A quiet wallet whose journal starts with its first
+    activity is complete and absent. Sales at or before the start have no
+    sales tax or broker fee on record."""
+    owners = shared_owners("wallet")
+    if not owners:
+        return {}
+    coverage: dict = {}
+    for owner_type, owner_id, division, tx_start, journal_start in db.wallet_window_starts(owners):
+        if journal_start is None or tx_start < journal_start:
+            coverage[(owner_type, int(owner_id), int(division))] = journal_start
+    return coverage
