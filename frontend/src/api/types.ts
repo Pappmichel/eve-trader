@@ -176,6 +176,24 @@ export interface SparklineSeries {
   ref: [string, number][]
 }
 
+// What the wallet charged on the last `window_days` of market sales
+// (GET /realized/observed-fees, one per channel). `quote` is the fee share of
+// gross; `suggested` is the value for the setting named by `setting`
+// (Trading's haircut is the share kept, 1 - quote). No value -> `reason`.
+export interface ObservedSellFees {
+  setting: 'market_fees' | 'structure_sell_haircut'
+  window_days: number
+  min_sales: number
+  sales: number
+  quote: number | null
+  suggested: number | null
+  sales_tax_rate: number | null
+  broker_fee_rate: number | null
+  reason: 'no_run' | 'needs_rebuild' | 'too_few_sales' | 'no_basis' | null
+  message: string | null
+  relist_note: string
+}
+
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number

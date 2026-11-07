@@ -230,6 +230,22 @@ that path. The products report exposes `planned_cost_per_unit` and
 `planned_coverage`. Hidden archive rows of a kind can be counted and deleted
 per owner while that kind is not shared with Production.
 
+**Observed sell fees (click to apply, never automatic).** `GET /api/production/
+realized/observed-fees` and `GET /api/trading/realized/observed-fees`
+(`realized/sell_fees.py`, per-channel `observed_sell_fees()` in each report)
+show what the wallet actually charged: (sales tax + broker fee) / gross over the
+channel's market sales of the last 30 days, in the report's own owner scope.
+Production's figure is for `market_fees`; Trading's is `1 - quote` for
+`structure_sell_haircut`. Two fields, two channels, never merged. No value (with a
+`reason`) when there is no ledger run, the shared wallets changed since it
+(`needs_rebuild`, same fingerprint check as the report), or under 20 market sales
+with a known sales tax. The Settings pages show "Actual last 30 days: x % (n
+sales)" and a "Use this value" button that goes through the normal settings save;
+nothing changes a setting on its own, because a corporation wallet mixes other
+members' sales into the figure. The broker fee per sale is costing's pro-rata
+attribution (a day's real order fees spread over that day's order-based fills),
+and relist fees count only as far as a sale got them, so the figure is an estimate.
+
 ## Architecture: actions.py is the one entry point
 
 `eve_trader/actions.py` and `eve_trader/production/actions.py` hold every

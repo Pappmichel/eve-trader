@@ -24,7 +24,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
-from ...realized import access, db, names as display_names
+from ...realized import access, db, names as display_names, sell_fees
+from ...realized.sell_fees import RELIST_NOTE
 from ...realized.costing import (
     ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, FREIGHT_CONFIGURED,
     CostComponents, freight_label, freight_split,
@@ -287,6 +288,20 @@ def run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
 def production_scope() -> dict:
     """Public wrapper of `_production_scope` (same reasoning as run_state)."""
     return _production_scope()
+
+
+def observed_sell_fees() -> dict:
+    """What the wallet charged on Production's market sales of the last 30 days,
+    as the value for `market_fees` (broker fee + sales tax as a share of gross).
+    Shown beside the setting; applying it is the user's click. No value when the
+    report check fails (no run, shared wallets changed) or under 20 sales."""
+    run, _t0, sharing_changed = _run_state()
+    data = sell_fees.observed_quote(
+        run=run, sharing_changed=sharing_changed, scope=_production_scope())
+    data["setting"] = "market_fees"
+    data["suggested"] = None if data["quote"] is None else round(data["quote"], 4)
+    data["relist_note"] = RELIST_NOTE
+    return data
 
 
 def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int,

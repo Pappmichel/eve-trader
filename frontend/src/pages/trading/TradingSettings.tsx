@@ -7,12 +7,14 @@ import type { TradingSettings as TradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
 import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { hubLabel } from '../../tradingHubs'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
+  const { data: observedFees } = useQuery({ queryKey: ['trading', 'realized', 'observed-fees'], queryFn: tradingApi.realizedObservedFees })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
@@ -40,9 +42,13 @@ export default function TradingSettings() {
         <NumberInput label={`Freight cost ${hubLabel(form.jita_region_id)}→structure (ISK/m³)`}
           value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
-        <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
-          value={form.structure_sell_haircut * 100} min={0} max={100} step={1}
-          onChange={(v) => set('structure_sell_haircut', Number(v) / 100)} />
+        <Stack gap={4}>
+          <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
+            value={form.structure_sell_haircut * 100} min={0} max={100} step={1}
+            onChange={(v) => set('structure_sell_haircut', Number(v) / 100)} />
+          <ObservedSellFeeHint fees={observedFees} current={form.structure_sell_haircut} applying={save.isPending}
+            onApply={(v) => { set('structure_sell_haircut', v); save.mutate({ ...form, structure_sell_haircut: v }) }} />
+        </Stack>
         <NumberInput label="Minimum profit/unit (ISK)" value={form.min_profit_threshold} min={0} step={100}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
         <NumberInput label="Minimum margin for 'Import'" suffix="%" decimalScale={2}

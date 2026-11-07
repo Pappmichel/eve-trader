@@ -1527,6 +1527,36 @@ def fees_by_day(
         ).fetchall()
 
 
+def sell_fee_totals(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> tuple:
+    """(sales, gross, sales_tax, broker_fee) over the market sales in the window.
+
+    Only a market sale whose sales tax and gross were both stored counts: a
+    missing tax is unknown, not zero, and would pull the quote down. Contract
+    sales have no tax or broker fee by design and are not market fees at all.
+    `broker_fee` is the amount costing attributed to the sale (D12: a day's
+    real order fees spread pro rata over that day's order-based fills)."""
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(gross), 0), COALESCE(SUM(sales_tax), 0), "
+            "COALESCE(SUM(broker_fee), 0) "
+            "FROM prod_realized_results "
+            "WHERE source = 'market' AND sales_tax IS NOT NULL AND gross IS NOT NULL "
+            "AND gross > 0 AND sale_date >= ? AND sale_date < ?" + scope,
+            (start, end, *extra),
+        ).fetchone()
+    return (int(row[0]), float(row[1]), float(row[2]), float(row[3]))
+
+
 def realized_by_type(
     start: datetime,
     end: datetime,

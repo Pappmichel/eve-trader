@@ -2570,6 +2570,19 @@ def test_trading_realized_routes_call_the_trading_actions(monkeypatch):
     assert client.get("/api/trading/realized/rebuild/status").json()["status"] == "idle"
 
 
+def test_observed_sell_fee_routes_call_the_read_only_actions(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_get_realized_observed_fees",
+                        lambda: {"setting": "market_fees", "quote": 0.0537, "suggested": 0.0537, "sales": 25})
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_observed_fees",
+                        lambda: {"setting": "structure_sell_haircut", "quote": 0.0537,
+                                 "suggested": 0.9463, "sales": 25})
+
+    prod = client.get("/api/production/realized/observed-fees").json()
+    assert prod["setting"] == "market_fees" and prod["suggested"] == 0.0537
+    trade = client.get("/api/trading/realized/observed-fees").json()
+    assert trade["setting"] == "structure_sell_haircut" and trade["suggested"] == 0.9463
+
+
 def test_trading_realized_bad_period_is_400():
     resp = client.get("/api/trading/realized/summary", params={"days": 0})
     assert resp.status_code == 400

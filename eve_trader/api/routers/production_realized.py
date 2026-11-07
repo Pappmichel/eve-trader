@@ -436,6 +436,11 @@ def realized_summary(days: Optional[int] = None, start: Optional[str] = None,
     return _wrap(actions.do_get_realized_summary, days=days, start=start, end=end, since_t0=since_t0)
 
 
+@router.get("/realized/observed-fees")
+def realized_observed_fees():
+    return _wrap(actions.do_get_realized_observed_fees)
+
+
 @router.get("/realized/products", response_model=ProductList)
 def realized_products(days: Optional[int] = None, start: Optional[str] = None,
                       end: Optional[str] = None, since_t0: bool = False):

@@ -2170,6 +2170,14 @@ def do_get_realized_summary(days: int | None = None, start: str | None = None,
     return report.summary(**period)
 
 
+def do_get_realized_observed_fees() -> dict:
+    """Read-only: the sell-fee rate the wallet charged on the last 30 days of
+    Production sales, for the Settings page's "Use this value" button. It never
+    changes `market_fees`; the user applies it through `do_update_settings`."""
+    from .realized import report
+    return report.observed_sell_fees()
+
+
 def do_get_realized_products(days: int | None = None, start: str | None = None,
                              end: str | None = None, since_t0: bool = False) -> dict:
     from .realized import report

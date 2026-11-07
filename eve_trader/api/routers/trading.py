@@ -287,6 +287,11 @@ def trading_realized_sale(sale_ref: str):
     return _wrap(trade_realized_actions.do_get_trading_realized_sale, sale_ref=sale_ref)
 
 
+@router.get("/realized/observed-fees")
+def trading_realized_observed_fees():
+    return _wrap(trade_realized_actions.do_get_trading_realized_observed_fees)
+
+
 @router.get("/realized/inventory")
 def trading_realized_inventory():
     return _wrap(trade_realized_actions.do_get_trading_realized_inventory)
