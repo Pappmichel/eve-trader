@@ -6,11 +6,12 @@ Trading's own history_backtest.py -> shortlist.py split).
 discover_candidates does one Goonmetrics current-price dump for the whole
 Jita market (already a single HTTP call, see GoonmetricsClient.
 current_prices) and ranks by bid-ask spread + real daily-traded volume -
-never touches ESI. confirm_live is the only place this tool ever calls
-ESIClient.region_order_stats_bulk, and only against an already-narrowed,
-persisted shortlist - see that function's own docstring for why (no
-bulk-region endpoint exists, so pricing "everything Goonmetrics knows
-about Jita" would mean one ESI call per item across the whole market).
+never touches ESI. confirm_live is the only place this tool prices the
+live station order book (ESIClient.region_orders_raw_bulk, filtered to
+the station), and only against an already-narrowed, persisted shortlist -
+see that function's own docstring for why (no bulk-region endpoint exists,
+so pricing "everything Goonmetrics knows about Jita" would mean one ESI
+call per item across the whole market).
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from typing import Optional
 
 import logging
 
-from ..esi_client import ESIClient, OrderStats
+from ..esi_client import ESIClient, OrderStats, _summarize_orders
 from ..goonmetrics_client import GoonmetricsClient
 from .config import StationTradingConfig
 
@@ -91,13 +92,56 @@ def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | N
     return results[:top_n] if top_n is not None else results
 
 
-def confirm_live(type_ids: list[int], client: ESIClient | None = None,
-                 hub_region_id: int = JITA_REGION_ID) -> dict[int, OrderStats]:
-    """Live ESI order-book confirmation for an already-bounded set of
-    type_ids (the persisted shortlist, never the whole market - see this
-    module's own docstring). Jita's trade hub is a public NPC station, so
-    no auth_role/character is needed."""
+def own_station_order_ids(client: ESIClient, station_id: int) -> set[int]:
+    """order_ids of the trader's own open orders at `station_id`, read live
+    like undercut.py does (character_orders per shared trader character).
+    Best effort: with no shared character, no token, or an ESI failure for a
+    character, that character contributes nothing and this never raises -
+    the shortlist then simply keeps own orders in the book."""
+    try:
+        from .esi_sync import list_shared_trader_characters
+        traders = [(character_id, role) for role, character_id, _name
+                   in list_shared_trader_characters(client.tokens)]
+    except Exception as e:  # no tenant/share/token: continue without exclusion
+        log.info("Station Trading own-order exclusion skipped: %s", e)
+        return set()
+    ids: set[int] = set()
+    for character_id, role in traders:
+        try:
+            for o in client.character_orders(character_id, auth_role=role):
+                if o.get("location_id") == station_id and o.get("order_id") is not None:
+                    ids.add(o["order_id"])
+        except Exception as e:
+            log.info("Station Trading own-order read failed for character %s: %s", character_id, e)
+    return ids
+
+
+def confirm_live(type_ids: list[int], station_id: int, hub_region_id: int = JITA_REGION_ID,
+                 client: ESIClient | None = None,
+                 own_order_ids: set[int] | None = None) -> dict[int, OrderStats]:
+    """Live order-book confirmation at the configured station for an
+    already-bounded set of type_ids (the persisted shortlist, never the
+    whole market - see this module's own docstring).
+
+    Reads the region's raw order books through `region_orders_raw_bulk` (the
+    same class-wide cached `region_orders_raw` undercut.py uses), keeps only
+    orders with `location_id == station_id`, drops the trader's own orders
+    (`own_order_ids`; read via `own_station_order_ids` when not given) and
+    summarizes each side with the usual 5th-percentile `_summarize_orders`.
+    A side with no order at the station is None, never 0, so a margin cannot
+    be computed from a region-wide price the station does not offer. The
+    station's market is public (NPC trade hub); only the own-order read
+    needs a token."""
     if not type_ids:
         return {}
     client = client or ESIClient()
-    return client.region_order_stats_bulk(hub_region_id, type_ids)
+    if own_order_ids is None:
+        own_order_ids = own_station_order_ids(client, station_id)
+    raw_by_type = client.region_orders_raw_bulk(hub_region_id, list(type_ids))
+    return {
+        type_id: _summarize_orders([
+            o for o in raw_by_type.get(type_id, [])
+            if o.get("location_id") == station_id and o.get("order_id") not in own_order_ids
+        ])
+        for type_id in type_ids
+    }
