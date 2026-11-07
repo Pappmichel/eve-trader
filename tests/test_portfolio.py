@@ -14,6 +14,15 @@ def _clear_quotes_unavailable_cache():
     portfolio.clear_quotes_unavailable_cache()
 
 
+@pytest.fixture(autouse=True)
+def _quotes_up_for_wealth_cache(request, monkeypatch):
+    """total_wealth() asks _quotes_available() before it caches its rows,
+    which would probe Goonmetrics. Tests of that probe itself keep the real
+    function; every other test sets its own stub when it needs one."""
+    if "quotes_available" not in request.node.name:
+        monkeypatch.setattr(portfolio, "_quotes_available", lambda: True)
+
+
 def _ledger_figures(**overrides):
     figures = {
         "trading_realized_profit": 0.0,

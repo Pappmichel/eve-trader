@@ -19,7 +19,7 @@ from typing import Any, Optional, Mapping
 import yaml
 from dotenv import load_dotenv
 
-from . import storage
+from . import storage, wealth_cache
 
 load_dotenv()
 
@@ -902,6 +902,12 @@ def save_tenant_config_overrides(scope: str, updates: dict[str, Any], *live_conf
 
     for cfg in live_configs:
         apply_config_overrides(cfg, updates)
+
+    if scope in ("trading", "production"):
+        # Total Wealth prices owned items with Production's haul_cost_per_m3 /
+        # home_market (and Trading's structure), and caches the priced rows
+        # for 120 s; a save must show on the next read.
+        wealth_cache.invalidate_current_tenant()
 
 
 def resolve_and_set_trading_config(tenant_id: str) -> contextvars.Token:

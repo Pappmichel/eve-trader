@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
-from .. import storage
+from .. import storage, wealth_cache
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
@@ -566,6 +566,23 @@ def _resolve_locations() -> dict:
 
 
 def _sync(
+    sharing: list[tuple[str, int, str, str]],
+    *,
+    client: Optional[ESIClient],
+    tool_key: Optional[str],
+    extra: Optional[dict] = None,
+) -> dict:
+    try:
+        return _sync_owners(sharing, client=client, tool_key=tool_key, extra=extra)
+    finally:
+        # Owners commit one by one, so even a pass that raised may have
+        # written new snapshots. Total Wealth caches its priced rows per
+        # tenant for 120 s (wealth_cache); a sync must show on the next read.
+        # Tenant-scoped like asset_manager.actions.invalidate_cache.
+        wealth_cache.invalidate_current_tenant()
+
+
+def _sync_owners(
     sharing: list[tuple[str, int, str, str]],
     *,
     client: Optional[ESIClient],
