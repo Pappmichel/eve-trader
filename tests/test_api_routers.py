@@ -1640,8 +1640,9 @@ def test_get_ship_margins_serializes_action_result(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == [{
         "type_id": 1, "type_name": "Rifter", "activity": "Tech I", "home_price": 1000.0, "jita_price": 900.0,
-        "build_cost": 500.0, "margin_home": 1.0, "margin_jita": 0.8, "meta_level": None,
-    }]
+            "build_cost": 500.0, "margin_home": 1.0, "margin_jita": 0.8, "meta_level": None,
+            "invention_cost_per_unit": None,
+        }]
 
 
 def test_get_ship_margins_action_error_maps_to_400(monkeypatch):

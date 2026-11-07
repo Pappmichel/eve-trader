@@ -217,6 +217,10 @@ class ReactionPlan:
     # W1 leaves unfilled (no slot or formula was worth spending on them).
     buffer_target: Mapping[int, float] = field(default_factory=dict)
     buffer_open: Mapping[int, float] = field(default_factory=dict)
+    # False when the solver reported a failure for this plan (a "Solver: ..."
+    # warning). A time limit or an LP solution rounded to whole jobs is a
+    # degraded result, not a failure, and leaves this True.
+    solve_ok: bool = True
 
 
 @dataclass(frozen=True)
@@ -449,9 +453,10 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         qty > float(base.unmet_demand.get(p, 0.0)) * (1 + 1e-6) + 1.0
         for p, qty in soft.unmet_demand.items()
     )
-    if worse:
-        # The buffer solve left need uncovered that the first solve covered
-        # (solver failure): keep the plan without buffer.
+    if worse or not soft.solve_ok:
+        # The buffer solve left need uncovered that the first solve covered,
+        # or reported a solver failure of its own (its unmet demand can look
+        # fine while the plan is not usable): keep the plan without buffer.
         return replace(
             base,
             warnings=tuple(dict.fromkeys(
@@ -466,6 +471,7 @@ def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         soft,
         unmet_demand=unmet,
         warnings=tuple(dict.fromkeys([*base.warnings, *soft.warnings])),
+        solve_ok=base.solve_ok and soft.solve_ok,
         buffer_target=buffer,
     )
 
@@ -496,6 +502,7 @@ def _solve_core(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         # slack so the handling below can react to it.
         primary = _solve_mip(layer, window, allow_defer=allow_defer)
     extra_warnings: list[str] = []
+    solve_ok = True
     if primary.mip_time_limit:
         extra_warnings.append(
             f"MIP time limit reached ({_MIP_TIME_LIMIT_SECONDS:g}s); "
@@ -503,6 +510,7 @@ def _solve_core(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         )
     elif primary.message and "Optimal" not in primary.message and primary.success:
         extra_warnings.append(f"Solver: {primary.message}")
+        solve_ok = False
 
     # Hard W1 slots: slack without Manual Build (only reachable through the
     # fallback above, or a Manual Build recipe that got no job) is a solver
@@ -573,6 +581,7 @@ def _solve_core(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
         formulas_to_buy_isk=plan.formulas_to_buy_isk,
         buffer_target=plan.buffer_target,
         buffer_open=plan.buffer_open,
+        solve_ok=solve_ok and plan.solve_ok,
     )
 
 
@@ -1315,6 +1324,13 @@ def _split_buy1(
     return now, later
 
 
+def _raw_solve_failed(raw: _RawSolve) -> bool:
+    """A solve the solver reported as failed (no usable solution and a message
+    that is not just a time limit): the plan then carries a "Solver: ..."
+    warning and `solve_ok` is False."""
+    return bool(not raw.success and raw.message and not raw.mip_time_limit)
+
+
 def _postprocess(
     layer: ReactionLayer,
     window: ReactionWindow,
@@ -1363,7 +1379,7 @@ def _postprocess(
             layer, window, hard_window, raw, drop, runs1, recomputed, buy_later)
         for drop in dropped_runs
     ]
-    if not raw.success and raw.message and not raw.mip_time_limit:
+    if _raw_solve_failed(raw):
         warnings.append(f"Solver: {raw.message}")
     if slot_slack1 > _EPS or raw.slot_slack1 > _EPS:
         if any(
@@ -1509,6 +1525,7 @@ def _finalize(
         formulas_to_buy_isk=formulas_isk,
         buffer_target={p: window.buffer_of(p) for p in window.buffer},
         buffer_open=buffer_open,
+        solve_ok=not _raw_solve_failed(raw),
     )
 
 

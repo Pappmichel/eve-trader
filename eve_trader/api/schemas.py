@@ -216,6 +216,9 @@ class BuildJobEntry(_Base):
     tech_level: Optional[str] = None
     job_category: Optional[str] = None
     job_cost: Optional[float] = None
+    # Amortized invention cost per unit (Tech II/III only), already part of
+    # unit_build_cost; None when the item has no priced invention step.
+    invention_cost_per_unit: Optional[float] = None
     margin: Optional[float] = None
     recipe_source: Optional[str] = None
     special_order_quantity: float = 0.0
@@ -320,6 +323,7 @@ class AssetPlanJob(_Base):
     decryptor: Optional[str] = None
     tech_level: Optional[str] = None
     job_category: Optional[str] = None
+    invention_cost_per_unit: Optional[float] = None  # see BuildJobEntry
     margin: Optional[float] = None
     stock_coverage: Optional[float] = None
     unlock_time_seconds: float = 0.0
@@ -455,6 +459,7 @@ class BuildCandidate(_Base):
     daily_movement: float
     potential_daily_profit: float
     meta_level: Optional[int] = None
+    invention_cost_per_unit: Optional[float] = None
     alchemy_comparison: Optional[AlchemyComparison] = None
 
 
@@ -468,6 +473,7 @@ class ShipMarginRow(_Base):
     margin_home: Optional[float] = None
     margin_jita: Optional[float] = None
     meta_level: Optional[int] = None
+    invention_cost_per_unit: Optional[float] = None
 
 
 class MaterialTreeNode(_Base):
