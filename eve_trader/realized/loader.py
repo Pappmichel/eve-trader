@@ -66,8 +66,9 @@ log = logging.getLogger(__name__)
 # contract flows. 3: stock without a purchase is valued at the planner's
 # price instead of The Forge daily average. 4: sale channels, station pool
 # and hub freight (unified plan Phase 2). 5: reprocessing detection.
-# NULL counts as older.
-COSTING_VERSION = 5
+# 6: T0 is no longer pushed forward by a truncated journal; sales before a
+# wallet's journal start stay and are flagged fees_missing. NULL counts as older.
+COSTING_VERSION = 6
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
@@ -1021,6 +1022,10 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         doctrine_contract_owners=frozenset(
             access.shared_owners_for("contracts", "doctrine"),
         ),
+        fee_coverage_starts={
+            key: None if start is None else _as_utc(start)
+            for key, start in access.fee_coverage_starts_for_production().items()
+        },
         **reprocess,
     )
 
@@ -1084,6 +1089,7 @@ def _result_row(result) -> tuple:
         None if result.issuer_id is None else int(result.issuer_id),
         float(result.components.freight_courier),
         float(result.components.freight_configured),
+        bool(result.fees_missing),
     )
 
 

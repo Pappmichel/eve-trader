@@ -1575,3 +1575,84 @@ def test_station_pool_sale_drops_courier_freight():
     assert layer.freight_rate_per_m3 == pytest.approx(800.0)
     assert layer.quantity_left == 0
 
+
+
+# ------------------------------------------------- per-wallet fee coverage
+FEES_TYPE = 777
+
+
+def _fees_missing_ledger(**overrides):
+    kw = dict(
+        wallet_transactions=[buy(FEES_TYPE, 20, 10.0, at(1, 9), tx_id=7001)],
+        production_type_ids={FEES_TYPE},
+        esi_stock_by_type={FEES_TYPE: 0},
+        reference_prices={(FEES_TYPE, at(1).date()): 10.0},
+    )
+    kw.update(overrides)
+    return snapshot(**kw)
+
+
+def test_sale_before_the_wallets_journal_is_kept_flagged_and_not_estimated():
+    early = sell(FEES_TYPE, 2, 20.0, at(2, 10), tx_id=7002)
+    late = sell(FEES_TYPE, 2, 20.0, at(4, 10), tx_id=7003)
+    result = rebuild_costing(_fees_missing_ledger(
+        wallet_transactions=[buy(FEES_TYPE, 20, 10.0, at(1, 9), tx_id=7001), early, late],
+        journal_entries=tax_pair(late, 10, 2.0),
+        fee_coverage_starts={("character", CHAR, 0): at(3, 0)},
+    ))
+    first, second = sorted(result.realized_results, key=lambda r: r.sale_date)
+    assert first.fees_missing and "fees_missing" in first.warnings
+    # Nothing is guessed: gross revenue, no tax, no fee.
+    assert first.sales_tax is None and first.broker_fee == 0
+    assert first.revenue == pytest.approx(40.0)
+    assert not second.fees_missing
+    assert second.sales_tax == pytest.approx(2.0)
+    assert has_warning(result, "fees_missing")
+
+
+def test_wallet_without_any_journal_flags_all_its_sales_but_not_another_wallet():
+    mine = sell(FEES_TYPE, 1, 20.0, at(2, 10), tx_id=7002)
+    other = sell(FEES_TYPE, 1, 20.0, at(2, 11), owner=OTHER_CHAR, tx_id=7003)
+    result = rebuild_costing(_fees_missing_ledger(
+        wallet_transactions=[buy(FEES_TYPE, 20, 10.0, at(1, 9), tx_id=7001), mine, other],
+        journal_entries=tax_pair(other, 10, 1.0),
+        fee_coverage_starts={("character", CHAR, 0): None},
+    ))
+    by_owner = {r.owner_id: r for r in result.realized_results}
+    assert by_owner[CHAR].fees_missing
+    assert not by_owner[OTHER_CHAR].fees_missing
+
+
+def test_the_oldest_journal_second_is_not_trusted_for_fees():
+    at_start = sell(FEES_TYPE, 1, 20.0, at(3, 0), tx_id=7002)
+    after = sell(FEES_TYPE, 1, 20.0, at(3, 0, 1), tx_id=7003)
+    result = rebuild_costing(_fees_missing_ledger(
+        wallet_transactions=[buy(FEES_TYPE, 20, 10.0, at(1, 9), tx_id=7001), at_start, after],
+        fee_coverage_starts={("character", CHAR, 0): at(3, 0)},
+    ))
+    first, second = sorted(result.realized_results, key=lambda r: r.sale_date)
+    assert first.fees_missing and not second.fees_missing
+
+
+def test_partly_covered_fee_day_is_spread_only_over_covered_fills():
+    uncovered = sell(FEES_TYPE, 2, 20.0, at(3, 1), tx_id=7002)
+    covered = sell(FEES_TYPE, 2, 20.0, at(3, 9), tx_id=7003)
+    result = rebuild_costing(_fees_missing_ledger(
+        wallet_transactions=[buy(FEES_TYPE, 20, 10.0, at(1, 9), tx_id=7001), uncovered, covered],
+        market_orders=[MarketOrder("character", CHAR, 1, FEES_TYPE, HOME, False, 20.0)],
+        journal_entries=[JournalEntry("character", CHAR, 1, at(3, 9), "brokers_fee", -60.0)],
+        fee_coverage_starts={("character", CHAR, 0): at(3, 6)},
+    ))
+    first, second = sorted(result.realized_results, key=lambda r: r.sale_date)
+    assert first.fees_missing and first.broker_fee == 0
+    # The whole archived pool belongs to the fill that has its own journal.
+    assert not second.fees_missing and second.broker_fee == pytest.approx(60.0)
+
+
+def test_fully_covered_wallets_never_carry_the_flag():
+    sale = sell(FEES_TYPE, 1, 20.0, at(2, 10), tx_id=7002)
+    result = rebuild_costing(_fees_missing_ledger(
+        wallet_transactions=[buy(FEES_TYPE, 20, 10.0, at(1, 9), tx_id=7001), sale],
+    ))
+    assert not any(r.fees_missing for r in result.realized_results)
+    assert not has_warning(result, "fees_missing")

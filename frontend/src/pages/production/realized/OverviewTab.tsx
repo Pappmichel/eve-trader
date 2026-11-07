@@ -56,6 +56,11 @@ export function OverviewTab({ summary, period }: { summary: RealizedSummary; per
               {summary.tax_missing_sales > 0 && (
                 <Badge color="warn" variant="light" w="fit-content">tax missing ({summary.tax_missing_sales} sales)</Badge>
               )}
+              {(summary.fees_missing_sales ?? 0) > 0 && (
+                <Badge color="warn" variant="light" w="fit-content">
+                  fees missing ({summary.fees_missing_sales} sales, {isk(summary.fees_missing_revenue ?? 0)} revenue)
+                </Badge>
+              )}
               <Text size="xs" c="dimmed">
                 Manual costs {isk(summary.manual_costs)} · Manual revenues {isk(summary.manual_revenues)}
               </Text>

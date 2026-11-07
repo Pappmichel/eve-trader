@@ -177,9 +177,26 @@ tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 5). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 6). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
+
+**T0 and fee coverage are separate (confirmed with the user 2026-11-07).**
+Cutover T0 is the oldest archived transaction of any shared wallet and stays
+shared for jobs, opening and coverage (plan section 6). A truncated journal
+no longer pushes it forward, and sharing one more busy wallet does not hide
+the others' history. Each wallet (owner, division) instead has its own fee
+coverage: when its journal starts after its oldest transaction (or it has no
+journal at all), a market sale at or before that start keeps its place in the
+results with the flag `fees_missing` (`prod_realized_results.fees_missing`,
+warning `fees_missing`). Its sales tax and broker fee were never archived;
+nothing is estimated (revenue is gross, fee 0, `tax_missing` too), and those
+fills are left out of the daily broker-fee distribution so a partly covered
+day's pool is not spread over them. `realized_totals` counts them and sums
+their revenue/profit; every channel report and the Portfolio cards carry
+`fees_missing_sales` / `fees_missing_revenue`. Buy fills before a journal
+start also lack their fee share inside their layer (not flagged). Doctrine's
+contract sales never carry the flag.
 
 Finished item-exchange contracts (`status = 'finished'`, `date_completed`
 set) enter costing through `LedgerSnapshot.contracts`. A contract whose

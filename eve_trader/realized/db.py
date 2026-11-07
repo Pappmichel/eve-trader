@@ -1195,8 +1195,8 @@ def replace_derived_costing(
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, source, channel, "
                 "owner_type, owner_id, fitting_id, issuer_id, "
-                "cost_freight_courier, cost_freight_configured) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "cost_freight_courier, cost_freight_configured, fees_missing) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 result_params,
             )
         if draws:
@@ -1427,7 +1427,9 @@ def realized_totals(
 ) -> tuple:
     """One row of period aggregates. Sums ignore NULL sales tax; the tax-null
     count is separate so a missing tax is not reported as zero tax. A
-    contract sale stores NULL tax on purpose and is not a missing tax."""
+    contract sale stores NULL tax on purpose and is not a missing tax.
+    Indices 16-18: sales flagged `fees_missing` (before their wallet's
+    journal), and their revenue and profit as stored (gross, no fee)."""
     scope, extra = _result_scope_sql(
         channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
     )
@@ -1442,7 +1444,10 @@ def realized_totals(
             "COALESCE(SUM(sales_tax), 0), "
             "COUNT(*) FILTER (WHERE sales_tax IS NULL AND source IS DISTINCT FROM 'contract'), "
             "COALESCE(BOOL_OR(price_missing), FALSE), COUNT(*), "
-            "COALESCE(SUM(cost_freight_courier), 0), COALESCE(SUM(cost_freight_configured), 0) "
+            "COALESCE(SUM(cost_freight_courier), 0), COALESCE(SUM(cost_freight_configured), 0), "
+            "COUNT(*) FILTER (WHERE fees_missing), "
+            "COALESCE(SUM(revenue) FILTER (WHERE fees_missing), 0), "
+            "COALESCE(SUM(profit) FILTER (WHERE fees_missing), 0) "
             "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
             + scope,
             (start, end, *extra),

@@ -159,7 +159,7 @@ def _cost_structure(components: CostComponents, sales_tax: float) -> list[dict]:
 def _flags(*, estimated: bool, price_missing: bool, assumed_me: bool = False,
            assumed_decryptor: bool = False, coverage: Optional[float] = None,
            tax_missing: bool = False, detail_missing: bool = False,
-           no_structure_bonus: Optional[bool] = None) -> dict:
+           no_structure_bonus: Optional[bool] = None, fees_missing: bool = False) -> dict:
     return {
         "estimated": bool(estimated),
         "price_missing": bool(price_missing),
@@ -167,6 +167,7 @@ def _flags(*, estimated: bool, price_missing: bool, assumed_me: bool = False,
         "assumed_decryptor": bool(assumed_decryptor),
         "coverage": coverage,
         "tax_missing": bool(tax_missing),
+        "fees_missing": bool(fees_missing),
         "detail_missing": bool(detail_missing),
         "no_structure_bonus": no_structure_bonus,
     }
@@ -203,6 +204,9 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "sale_count": 0,
         "price_missing": False,
         "tax_missing_sales": 0,
+        "fees_missing_sales": 0,
+        "fees_missing_revenue": 0.0,
+        "fees_missing_profit": 0.0,
         "fees_without_sale": 0.0,
         "fees_on_other_trading": 0.0,
         "capital_in_bpos": 0.0,
@@ -399,6 +403,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         profit = _num(totals[2])
         tax = _num(totals[10])
         tax_missing_sales = int(totals[11]) if sales_count else 0
+        fees_missing_sales = int(totals[16]) if sales_count else 0
         fee_start = start_at.date()
         # Exclusive end: a fee day is in the period when it is >= start's UTC
         # day and < the UTC day after the last instant included.
@@ -416,7 +421,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         ]
     flags = _flags(
         estimated=estimated, price_missing=price_missing, coverage=cov,
-        tax_missing=tax_missing_sales > 0,
+        tax_missing=tax_missing_sales > 0, fees_missing=fees_missing_sales > 0,
     )
     return {
         "period": period,
@@ -431,6 +436,9 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "sale_count": sales_count,
         "price_missing": price_missing,
         "tax_missing_sales": tax_missing_sales,
+        "fees_missing_sales": fees_missing_sales,
+        "fees_missing_revenue": _num(totals[17]) if fees_missing_sales else 0.0,
+        "fees_missing_profit": _num(totals[18]) if fees_missing_sales else 0.0,
         "fees_without_sale": fees_without,
         "fees_on_other_trading": fees_other,
         "capital_in_bpos": capital,
@@ -488,6 +496,7 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
             estimated=estimated, price_missing=price_missing,
             assumed_me=bool(assumed[0]), assumed_decryptor=bool(assumed[1]),
             coverage=cov, tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
     }
 
@@ -553,6 +562,7 @@ def _sale_dict(row, names: dict) -> dict:
         "flags": _flags(
             estimated=estimated, price_missing=price_missing,
             coverage=cov, tax_missing="tax_missing" in warnings,
+            fees_missing="fees_missing" in warnings,
         ),
         "source": None if len(row) <= 21 or row[21] is None else str(row[21]),
     }
