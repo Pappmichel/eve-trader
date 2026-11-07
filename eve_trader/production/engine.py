@@ -3974,42 +3974,55 @@ class _ReadinessLedger:
         return min(shortfall, max(0.0, self.free_total(type_id) - self.available(type_id, location_id)))
 
 
+# Readiness order by job category (user decision 2026-11-07): reactions,
+# then Advanced Components, then Capital Components, then everything else
+# (end products and uncategorized intermediates).
+_READINESS_TIERS = {"Reactions": 0, "Advanced Components": 1, "Capital Components": 2}
+
+
+def _readiness_tier(type_id: int) -> int:
+    return _READINESS_TIERS.get(job_category(type_id), len(_READINESS_TIERS))
+
+
 def _allocate_ready_runs(
-    runs_by_type: dict[int, int],
-    claims_by_parent: dict[int, list[tuple[int, float]]],
+    requests: list[tuple],
     coverage_by_id: dict[int, Optional[float]],
     ledger: "_ReadinessLedger",
     build_location: Callable[[int], Optional[int]],
-) -> tuple[dict[int, int], dict[int, list[AssetPlanBlocker]]]:
-    """Hands physically on-hand stock to one round's jobs as ready runs.
+    tier: Callable[[int], int] = _readiness_tier,
+) -> tuple[dict, dict]:
+    """Hands physically on-hand stock to jobs as ready runs.
 
-    Jobs go in order of how far behind they are: lowest stock_coverage
-    first (None counts as covered), then fewer runs, then type id. Each job
-    takes, from every one of its direct materials, only what its scarcest
-    material lets it start (floor of runs x the smallest covered fraction);
-    the rest stays for the next job. Decided with the user 2026-11-07: the
-    old smallest-claim-first split per material starved the biggest
-    backlog every time (Scalar Capacitor Unit got no Fullerides at all),
-    and it parked a material on a job another material blocked anyway.
-    A partly covered job still starts its covered runs, so filling whole
-    claims first gained nothing.
+    `requests` are (key, type_id, runs, [(material_id, bare qty)]); the key
+    tells apart one type that is a job at two tree depths. Jobs go by
+    category tier first (_readiness_tier: reactions, Advanced Components,
+    Capital Components, the rest), then by how far behind they are: lowest
+    stock_coverage first (None counts as covered), then fewer runs, then
+    type id. Each job takes, from every one of its direct materials, only
+    what its scarcest material lets it start (floor of runs x the smallest
+    covered fraction); the rest stays for the next job. Decided with the
+    user 2026-11-07: the old smallest-claim-first split per material and
+    per round starved the biggest backlog every time (Scalar Capacitor Unit
+    got no Fullerides at all), let end products take an intermediate before
+    the components that need it, and parked a material on a job another
+    material blocked anyway. A partly covered job still starts its covered
+    runs, so filling whole claims first gained nothing.
 
-    `claims_by_parent` is {job type_id: [(material_id, bare qty)]}; jobs
-    without a claim are fully ready. Claims go through `ledger` at the
+    Jobs without a claim are fully ready. Claims go through `ledger` at the
     job's build location (location mode), so no unit is promised twice.
-    Returns ({type_id: ready runs}, {type_id: blockers}); a blocker's
-    `covered` is what was free for that job at its turn, so a material that
-    was available stays off the list even when the job took less of it."""
-    def _priority(type_id: int) -> tuple[float, int, int]:
+    Returns ({key: ready runs}, {key: blockers}); a blocker's `covered` is
+    what was free for that job at its turn, so a material that was
+    available stays off the list even when the job took less of it."""
+    def _priority(request: tuple) -> tuple:
+        key, type_id, runs, _claims = request
         coverage = coverage_by_id.get(type_id)
-        return (1.0 if coverage is None else coverage, runs_by_type[type_id], type_id)
+        return (tier(type_id), 1.0 if coverage is None else coverage, runs, type_id, str(key))
 
-    ready_by_type: dict[int, int] = {}
-    blockers_by_type: dict[int, list[AssetPlanBlocker]] = {}
-    for type_id in sorted(runs_by_type, key=_priority):
-        runs = runs_by_type[type_id]
+    ready_by_key: dict = {}
+    blockers_by_key: dict = {}
+    for key, type_id, runs, claims in sorted(requests, key=_priority):
         needs: dict[int, float] = {}
-        for material_id, qty in claims_by_parent.get(type_id, []):
+        for material_id, qty in claims:
             if qty > 0:
                 needs[material_id] = needs.get(material_id, 0.0) + qty
         location_id = build_location(type_id)
@@ -4019,7 +4032,7 @@ def _allocate_ready_runs(
             reachable[material_id] = min(qty, ledger.available(material_id, location_id))
             fraction = min(fraction, reachable[material_id] / qty)
         ready = math.floor(runs * fraction + 1e-9) if runs > 0 else 0
-        ready_by_type[type_id] = ready
+        ready_by_key[key] = ready
         for material_id, qty in needs.items():
             take = min(reachable[material_id], math.ceil(qty * ready / runs - 1e-9)) if runs > 0 else 0.0
             ledger.claim(material_id, location_id, take)
@@ -4035,8 +4048,8 @@ def _allocate_ready_runs(
                 needed=qty, covered=covered,
                 elsewhere=ledger.elsewhere(material_id, location_id, qty - covered),
             ))
-        blockers_by_type[type_id] = blockers
-    return ready_by_type, blockers_by_type
+        blockers_by_key[key] = blockers
+    return ready_by_key, blockers_by_key
 
 
 def _unlock_time_by_type(jobs: dict[int, AssetPlanJob]) -> dict[int, float]:
@@ -4419,11 +4432,13 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     drives how much of *its* materials are needed, so materials can't be
     claimed before their parent's own shortfall is resolved.
 
-    When several jobs need the same scarce on-hand material this round,
-    ready runs go to the job furthest behind first (lowest stock_coverage),
-    and each job takes only what its scarcest material lets it start
-    (_allocate_ready_runs; replaced smallest-claim-first on 2026-11-07,
-    which starved the biggest backlog every time). Stock consumption is tracked in a running ledger across rounds
+    When several jobs need the same scarce on-hand material, ready runs are
+    allocated once per pass after its walk, not per round: reactions first,
+    then Advanced Components, then Capital Components, then the rest; within
+    a tier the job furthest behind (lowest stock_coverage) first; each job
+    takes only what its scarcest material lets it start
+    (_allocate_ready_runs; replaced per-round smallest-claim-first on
+    2026-11-07, which starved the biggest backlog every time). Stock consumption is tracked in a running ledger across rounds
     (stock_used) so a component needed at two different tree depths (a
     genuinely common EVE BOM shape - e.g. a capital component used both
     directly and inside a sub-assembly) doesn't get the same physical stock
@@ -4695,10 +4710,10 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     def _run_rounds(
         seed: dict[int, float], pass_base_runs: dict[int, float], excluded: set[int],
         byproduct_stock: dict[int, float], stock_used: dict[int, float],
-        stock_used_on_hand: "_ReadinessLedger", stock_coverage_by_id: dict[int, Optional[float]],
+        stock_coverage_by_id: dict[int, Optional[float]],
         origins: Optional[dict[int, set[str]]] = None,
         buffered_parents: Optional[set[int]] = None,
-    ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]]]:
+    ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]], list[tuple]]:
         """The whole breadth-first Phase A/B/C walk for one pass, from `seed`
         down to MAX_DEPTH. _plan_passes below runs it once for the order pass
         and once for the stock-target pass over the same ledgers (D4).
@@ -4708,11 +4723,12 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         (cfg/home/jita/cost_memo/t2_memo/alchemy_memo/...) that would
         otherwise all have to become explicit parameters, for one caller.
 
-        Shared with the other pass (mutated here): stock_used, the parallel
-        on-hand-only stock_used_on_hand (see _stock_on_hand - tracks readiness
-        consumption separately from stock_used's incoming-inclusive planning
-        consumption, so the same physical unit can't be double-claimed as
-        "ready" by two different jobs across rounds or passes), and
+        Readiness is not decided here: every job's on-hand claims come back
+        as requests, and the caller hands them to _apply_ready (one
+        allocation per pass, so category tier and backlog decide, not tree
+        depth). Jobs come back with runs_ready_now 0 and no blockers.
+
+        Shared with the other pass (mutated here): stock_used and
         stock_coverage_by_id. Per pass: jobs, buffered_parents (unless the
         caller shares one set - the doctrine and stock-target passes split
         one demand, so a parent is buffered once across both), the
@@ -4723,11 +4739,14 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         to every material a parent's demand reaches, and recorded on each
         job's special_order_ids.
 
-        Returns (jobs, top_level): top_level is {seed type_id: (runs,
-        ready runs, units of type_id per run)} for round 0."""
+        Returns (jobs, top_level, requests): top_level is {seed type_id:
+        (runs, ready runs, units of type_id per run)} for round 0 (ready
+        runs filled by _apply_ready); requests are ((depth, type_id),
+        type_id, runs, claims, job_key, units per run)."""
         jobs: dict[int, AssetPlanJob] = {}
         if buffered_parents is None:
             buffered_parents = set()
+        ready_requests: list[tuple] = []
         top_level: dict[int, tuple[int, int, float]] = {}
         units_per_run: dict[int, float] = {}
         jobs_this_level: dict[int, float] = {t: q for t, q in seed.items() if q > 0}
@@ -4800,18 +4819,19 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     buffer = overbuild * base_qty * material_mult * parent_base_runs
                     buffered_demand[material_id] = buffered_demand.get(material_id, 0.0) + bare_needed + buffer
 
-            # Phase B1: readiness. Ready runs are handed out per job against the
-            # *bare* claims and stock that's *physically on hand right now*
-            # (_stock_on_hand - excludes still-in-progress industry jobs, unlike
-            # _current_stock) - purely informational, doesn't drive how much
-            # stock gets marked consumed for sizing (Phase B2 below).
+            # Phase B1: readiness requests. Every job's *bare* claims are
+            # collected here and handed out against physically on-hand stock
+            # only after the whole pass (_apply_ready), so priority does not
+            # depend on tree depth - purely informational, doesn't drive how
+            # much stock gets marked consumed for sizing (Phase B2 below).
             claims_by_parent: dict[int, list[tuple[int, float]]] = {}
             for material_id, claims in next_level_claims.items():
                 for parent_type_id, qty in claims:
                     claims_by_parent.setdefault(parent_type_id, []).append((material_id, qty))
-            ready_runs_this_round, blockers_this_round = _allocate_ready_runs(
-                runs_this_round, claims_by_parent, stock_coverage_by_id,
-                stock_used_on_hand, _build_location)
+            for type_id, runs in runs_this_round.items():
+                ready_requests.append((
+                    (depth, type_id), type_id, runs, claims_by_parent.get(type_id, []),
+                    job_meta[type_id][0], units_per_run[type_id]))
 
             # Phase B2: sizing. Consumption/shortfall uses the *buffered* pooled
             # total against _current_stock's incoming-inclusive availability
@@ -4877,10 +4897,10 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 name = sde_type[2] if sde_type else str(job_key)
                 base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
                 job_time = base_time * time_mult * runs
-                ready_increment = ready_runs_this_round.get(type_id, runs)
+                ready_increment = 0  # set by _apply_ready after the pass
+                round_blockers: list[AssetPlanBlocker] = []
 
                 existing = jobs.get(job_key)
-                round_blockers = _merge_asset_plan_blockers([], blockers_this_round.get(type_id, []))
                 if existing is None:
                     jobs[job_key] = AssetPlanJob(
                         type_id=job_key, type_name=name, blueprint_type_id=blueprint_id,
@@ -4915,36 +4935,62 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
             depth += 1
 
-        return jobs, top_level
+        return jobs, top_level, ready_requests
 
-    def _plan_passes(byproduct_stock: dict[int, float]
+    def _apply_ready(jobs: dict[int, AssetPlanJob], top_level: dict[int, tuple[int, int, float]],
+                     requests: list[tuple], ledger: "_ReadinessLedger",
+                     coverage: dict[int, Optional[float]]) -> None:
+        """One pass's readiness: allocates its requests on `ledger`
+        (_allocate_ready_runs) and adds ready runs and blockers to the jobs
+        (one type at two depths adds up) and to round 0's top_level."""
+        ready, blockers = _allocate_ready_runs(
+            [(key, type_id, runs, claims) for key, type_id, runs, claims, _jk, _u in requests],
+            coverage, ledger, _build_location)
+        for key, type_id, runs, _claims, job_key, units in requests:
+            job = jobs[job_key]
+            job.runs_ready_now += ready[key]
+            job.blockers = _merge_asset_plan_blockers(job.blockers, blockers[key])
+            if key[0] == 0:
+                top_level[type_id] = (runs, ready[key], units)
+
+    def _plan_passes(byproduct_stock: dict[int, float],
+                     ready_first: Optional[Callable[["_ReadinessLedger", dict[int, Optional[float]]], None]] = None,
                      ) -> tuple[dict[int, AssetPlanJob], dict[int, tuple[int, int, float]],
                                 dict[int, Optional[float]], dict[int, float], "_ReadinessLedger"]:
         """Order pass, then doctrine pass, then the remaining stock-target
         pass, over one fresh set of ledgers started from the order claims
-        (D3/D4), merged by job key (see _merge_asset_plan_passes). Returns
+        (D3/D4), merged by job key (see _merge_asset_plan_passes). Readiness
+        is allocated after all three walks, pass by pass in the same order;
+        `ready_first(ledger, coverage)` runs before that (capacity mode:
+        the solver's reaction jobs take their on-hand inputs first). Returns
         (jobs, the order pass's top_level, stock coverage by type id - the
         latter also holds reactions the capacity solver sizes, GH #383 -
         and the sizing ledger `stock_used` plus the readiness ledger
         `stock_used_on_hand` the passes left behind, so the capacity-mode
-        reaction jobs and their inputs continue from them instead of
-        starting over)."""
+        reaction inputs continue from them instead of starting over)."""
         stock_used = dict(reserved)
         for type_id, qty in target_reserved.items():
             stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
         stock_used_on_hand = _ReadinessLedger(manual_stock, cfg, reserved_on_hand)
         stock_coverage_by_id = dict(seed_stock_coverage)
         origins = {type_id: set(ids) for type_id, ids in order_ids_by_type.items()}
-        order_jobs, order_top_level = _run_rounds(
-            order_seed_jobs, {}, set(), byproduct_stock, stock_used, stock_used_on_hand,
+        order_jobs, order_top_level, order_requests = _run_rounds(
+            order_seed_jobs, {}, set(), byproduct_stock, stock_used,
             stock_coverage_by_id, origins)
         target_buffered: set[int] = set()
-        doctrine_jobs, _ = _run_rounds(
+        doctrine_jobs, doctrine_top_level, doctrine_requests = _run_rounds(
             doctrine_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
-            stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
-        target_jobs, _ = _run_rounds(
+            stock_coverage_by_id, buffered_parents=target_buffered)
+        target_jobs, target_top_level, target_requests = _run_rounds(
             other_seed_jobs, base_runs, margin_excluded, byproduct_stock, stock_used,
-            stock_used_on_hand, stock_coverage_by_id, buffered_parents=target_buffered)
+            stock_coverage_by_id, buffered_parents=target_buffered)
+        if ready_first is not None:
+            ready_first(stock_used_on_hand, stock_coverage_by_id)
+        _apply_ready(order_jobs, order_top_level, order_requests, stock_used_on_hand, stock_coverage_by_id)
+        _apply_ready(doctrine_jobs, doctrine_top_level, doctrine_requests, stock_used_on_hand,
+                     stock_coverage_by_id)
+        _apply_ready(target_jobs, target_top_level, target_requests, stock_used_on_hand,
+                     stock_coverage_by_id)
         return (_merge_asset_plan_passes(order_jobs, target_jobs, doctrine_jobs), order_top_level,
                 stock_coverage_by_id, stock_used, stock_used_on_hand)
 
@@ -5025,19 +5071,20 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         }
         byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
 
-    jobs, order_top_level, final_coverage, plan_stock_used, plan_ready_ledger = _plan_passes(byproduct_stock)
-
+    reaction_ready: dict[int, tuple[int, list[AssetPlanBlocker]]] = {}
+    ready_first = None
     if capacity_on:
-        # Inject W1 reaction jobs from the solution; readiness stays as today
-        # (inputs not on hand / not bought are blockers).
         by_key = {r.key: r for r in layer.recipes}
-        input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
-        # On-hand units already counted as ready for an earlier recipe: two
-        # recipes sharing an input (platinum) must not both claim the pile.
-        # Continues the plan's own readiness ledger, so units an order or
-        # stock-target job already counted as Ready are not Ready again here.
-        ready_claimed = plan_ready_ledger
         reaction_location = category_locations.get("Reactions") if ready_at_location else None
+        # The solver's W1 jobs, by index into rplan.recipes: (recipe, runs).
+        reaction_jobs: dict[int, tuple] = {}
+        for index, alloc in enumerate(rplan.recipes):
+            recipe = by_key.get(alloc.recipe_key)
+            if recipe is None or alloc.runs <= 1e-9:
+                continue
+            runs = int(math.ceil(alloc.runs - 1e-7))
+            if runs > 0:
+                reaction_jobs[index] = (recipe, runs)
         # Stock coverage (GH #383): the walk's own available / buffered
         # demand when it reached the product, else on-hand stock against the
         # solver's gross need - external demand plus what the plan's other
@@ -5051,25 +5098,47 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             for mid, per_run in recipe.inputs.items():
                 internal_use[mid] = internal_use.get(mid, 0.0) + float(per_run) * alloc.runs
 
-        def _reaction_coverage(product_id: int) -> Optional[float]:
+        def _reaction_coverage(product_id: int, walk_coverage: dict[int, Optional[float]]) -> Optional[float]:
             # Capped at 1: the walk records available / demand even when stock
             # already covers it (the solver may still queue runs for the
             # buffer or the next window), like a stock target's 1 - missing/target.
-            if final_coverage.get(product_id) is not None:
-                return min(1.0, max(0.0, final_coverage[product_id]))
+            if walk_coverage.get(product_id) is not None:
+                return min(1.0, max(0.0, walk_coverage[product_id]))
             gross = solver_demand.get(product_id, 0.0) + internal_use.get(product_id, 0.0)
             if gross <= 1e-9:
                 return None
             on_hand = max(0.0, _stock_on_hand(product_id, manual_stock, cfg))
             return min(1.0, on_hand / gross)
 
-        for alloc in rplan.recipes:
-            recipe = by_key.get(alloc.recipe_key)
-            if recipe is None or alloc.runs <= 1e-9:
-                continue
-            runs = int(math.ceil(alloc.runs - 1e-7))
-            if runs <= 0:
-                continue
+        def ready_first(ledger: "_ReadinessLedger", walk_coverage: dict[int, Optional[float]]) -> None:
+            # Reactions take their on-hand inputs before any manufacturing job
+            # (readiness tier 0, user decision 2026-11-07), furthest behind
+            # first; two recipes sharing an input (platinum) never both claim
+            # the same pile. Order claims stay reserved in the ledger already.
+            coverage = {recipe.product_type_id: _reaction_coverage(recipe.product_type_id, walk_coverage)
+                        for recipe, _runs in reaction_jobs.values()}
+            requests = [
+                (index, recipe.product_type_id, runs,
+                 [(mid, float(per_run) * runs) for mid, per_run in recipe.inputs.items()])
+                for index, (recipe, runs) in reaction_jobs.items()
+            ]
+            ready, blockers = _allocate_ready_runs(
+                requests, coverage, ledger, lambda _type_id: reaction_location, tier=lambda _type_id: 0)
+            for index in reaction_jobs:
+                reaction_ready[index] = (ready[index], blockers[index])
+
+    jobs, order_top_level, final_coverage, plan_stock_used, plan_ready_ledger = _plan_passes(
+        byproduct_stock, ready_first)
+
+    if capacity_on:
+        # Inject W1 reaction jobs from the solution; their readiness was
+        # allocated first in _plan_passes (inputs not on hand / not bought
+        # are blockers).
+        input_seed = reaction_capacity.input_demand_from_plan(layer, rplan)
+        ready_claimed = plan_ready_ledger
+
+        for index, (recipe, runs) in reaction_jobs.items():
+            alloc = rplan.recipes[index]
             job_key = recipe.queued_product_type_id
             sde_type = storage.get_sde_type(job_key)
             name = sde_type[2] if sde_type else str(job_key)
@@ -5077,29 +5146,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             _, time_mult, _ = _activity_mods(
                 "Reaction", job_key, cfg, cost_indices, recipe.blueprint_type_id)
             job_time = base_time * time_mult * runs
-            # Readiness: fraction of inputs on hand right now.
-            min_frac = 1.0
-            blockers: list[AssetPlanBlocker] = []
-            for mid, per_run in recipe.inputs.items():
-                needed = float(per_run) * runs
-                if needed <= 0:
-                    continue
-                on_hand = ready_claimed.available(mid, reaction_location)
-                covered = min(needed, on_hand)
-                frac = covered / needed if needed > 0 else 1.0
-                if frac < min_frac:
-                    min_frac = frac
-                if covered + 1e-9 < needed:
-                    sde_m = storage.get_sde_type(mid)
-                    blockers.append(AssetPlanBlocker(
-                        type_id=mid,
-                        type_name=sde_m[2] if sde_m else str(mid),
-                        needed=needed, covered=covered,
-                        elsewhere=ready_claimed.elsewhere(mid, reaction_location, needed - covered),
-                    ))
-            ready = int(math.floor(runs * min_frac))
-            for mid, per_run in recipe.inputs.items():
-                ready_claimed.claim(mid, reaction_location, float(per_run) * ready)
+            ready, blockers = reaction_ready[index]
+            blockers = _merge_asset_plan_blockers([], blockers)
             out_qty = float(recipe.outputs.get(recipe.product_type_id, 0.0)) or 1.0
             runs_per_job = max(1, int(round(alloc.runs_per_job))) if alloc.runs_per_job > 0 else 1
             # Recommend only as many jobs as can start now; formulas_needed
@@ -5118,7 +5166,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     unit_build_cost=cost_memo.get(recipe.product_type_id),
                     tech_level=classify_activity(job_key)[0],
                     job_category="Reactions",
-                    stock_coverage=_reaction_coverage(recipe.product_type_id),
+                    stock_coverage=_reaction_coverage(recipe.product_type_id, final_coverage),
                     margin=margin_home(recipe.product_type_id, cost_memo.get(recipe.product_type_id), home, cfg),
                     recipe_source="alchemy" if alloc.recipe_key.startswith("alchemy:") else None,
                     blockers=blockers,
@@ -5139,7 +5187,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 existing.formulas_owned = recipe.owned_formulas
                 existing.formulas_needed = alloc.jobs
                 if existing.stock_coverage is None:
-                    existing.stock_coverage = _reaction_coverage(recipe.product_type_id)
+                    existing.stock_coverage = _reaction_coverage(recipe.product_type_id, final_coverage)
                 existing.recommended_slots = _ready_slots(existing.runs_ready_now)
                 existing.runs_per_slot = runs_per_job if existing.runs_ready_now > 0 else None
                 existing.days_to_complete_at_recommended_slots = (
@@ -5157,9 +5205,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             input_seed = _net_seed_against_stock(
                 input_seed, manual_stock, cfg, stock_used,
                 _byproduct_stock_for_reaction_inputs(byproduct_stock, input_seed))
-            input_jobs, _ = _run_rounds(
+            input_jobs, input_top_level, input_requests = _run_rounds(
                 input_seed, base_runs, margin_excluded, byproduct_stock,
-                stock_used, stock_used_on_hand, stock_coverage_by_id)
+                stock_used, stock_coverage_by_id)
+            _apply_ready(input_jobs, input_top_level, input_requests, stock_used_on_hand,
+                         stock_coverage_by_id)
             for job_key, job in input_jobs.items():
                 if job_key in jobs:
                     existing = jobs[job_key]

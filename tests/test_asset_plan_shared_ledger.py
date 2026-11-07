@@ -68,10 +68,11 @@ def _targets():
 
 
 @pg_helpers.postgres_required()
-def test_reaction_job_is_not_ready_on_units_a_stock_target_job_already_claimed(
+def test_reaction_claims_shared_stock_first_and_never_twice(
         monkeypatch, with_component3, tenant):
-    # Component3 needs 100 Moon and is Ready on the 100 on hand; the reaction
-    # (100 Moon per run) must not be Ready on the same pile.
+    # Component3 and the reaction each need the 100 Moon on hand. Reactions
+    # take on-hand stock first (readiness tier, 2026-11-07), so the reaction
+    # is Ready and Component3 must not be Ready on the same pile.
     with_component3(moon_qty=100)
     _stocks(monkeypatch, {MOON: 100.0, FUEL: 1000.0})
     monkeypatch.setattr(engine, "_PlanContext", _fake_ctx(_targets()))
@@ -79,10 +80,10 @@ def test_reaction_job_is_not_ready_on_units_a_stock_target_job_already_claimed(
     asset = engine.plan_asset_optimized(_cfg())
 
     jobs = {j.type_id: j for j in asset["jobs"]}
-    assert jobs[COMPONENT3].runs_ready_now == 1
     assert jobs[REACTION_R].job_runs >= 1
-    assert jobs[REACTION_R].runs_ready_now == 0
-    moon_blocker = next(b for b in jobs[REACTION_R].blockers if b.type_id == MOON)
+    assert jobs[REACTION_R].runs_ready_now == 1
+    assert jobs[COMPONENT3].runs_ready_now == 0
+    moon_blocker = next(b for b in jobs[COMPONENT3].blockers if b.type_id == MOON)
     assert moon_blocker.covered == pytest.approx(0.0)
 
 
@@ -144,8 +145,8 @@ def test_switch_off_asset_plan_is_unaffected(monkeypatch, with_component3, tenan
 
     assert "reaction_capacity" not in asset
     jobs = {j.type_id: (j.job_runs, j.runs_ready_now) for j in asset["jobs"]}
-    # Hand-derived: Component3 1 run (Ready on the 100 Moon); Component needs
-    # 10 reaction product -> 1 reaction run, which needs 100 Moon (taken) and
-    # 5 Fuel (on hand): not Ready.
-    assert jobs[COMPONENT3] == (1, 1)
-    assert jobs[REACTION_R] == (1, 0)
+    # Hand-derived: Component3 1 run; Component needs 10 reaction product ->
+    # 1 reaction run, which needs 100 Moon and 5 Fuel (on hand). The
+    # reaction goes first (readiness tier), so Component3 finds no Moon.
+    assert jobs[REACTION_R] == (1, 1)
+    assert jobs[COMPONENT3] == (1, 0)
