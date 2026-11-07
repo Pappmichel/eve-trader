@@ -228,6 +228,17 @@ class _TranslatingConnection:
 _batch_local = threading.local()
 
 
+def _batch_matches_current_tenant() -> bool:
+    """True only when this thread holds a batch whose connection was opened
+    for the ambient tenant. A tenant_context / enter_tenant switch inside a
+    batch must not reuse that connection: app.tenant_id was set at checkout
+    and never updated, so RLS would still see the outer tenant."""
+    active = getattr(_batch_local, "conn", None)
+    if active is None:
+        return False
+    return getattr(_batch_local, "tenant_id", None) == _tenant_id_var.get()
+
+
 @contextmanager
 def connect():
     """Every storage function opens its own connection via this context
@@ -236,13 +247,14 @@ def connect():
     AccessGateMiddleware - see set_current_tenant). Raises RuntimeError if no
     tenant is set, rather than risk a query silently running un-scoped.
 
-    If called from inside an active batch_session() (see below), reuses that
-    connection instead of checking out a new one - every storage function's
-    own `with connect() as conn:` code needs zero changes to benefit; this is
-    the one place that decides whether to share or open fresh."""
-    active = getattr(_batch_local, "conn", None)
-    if active is not None:
-        yield active
+    If called from inside an active batch_session() (see below) for the same
+    tenant, reuses that connection instead of checking out a new one - every
+    storage function's own `with connect() as conn:` code needs zero changes
+    to benefit; this is the one place that decides whether to share or open
+    fresh. A different ambient tenant falls through to
+    connect_own_transaction() so RLS matches the switch."""
+    if _batch_matches_current_tenant():
+        yield _batch_local.conn
         return
     with connect_own_transaction() as conn:
         yield conn
@@ -297,24 +309,29 @@ def batch_session():
     storage function called anywhere underneath, directly or indirectly,
     automatically benefits with no changes of its own.
 
-    Reentrant: a nested batch_session() call is a no-op (reuses the outer
-    batch) - lets an already-batched caller call another batch-wrapped
-    function without either one needing to know about the other."""
-    active = getattr(_batch_local, "conn", None)
-    if active is not None:
-        yield  # already inside a batch - reuse it, nothing to set up or tear down
-        return
+    Reentrant for the same tenant: a nested batch_session() call is a no-op
+    (reuses the outer batch). A nested call under a *different* ambient
+    tenant opens its own connection (and holds two pool connections until
+    it exits), then restores the outer batch - do not loop over tenants
+    inside one batch."""
     tenant_id = _tenant_id_var.get()
     if tenant_id is None:
         raise RuntimeError(
             "storage.batch_session() called with no current tenant set - "
             "call set_current_tenant()/tenant_context() first."
         )
+    active = getattr(_batch_local, "conn", None)
+    if active is not None and getattr(_batch_local, "tenant_id", None) == tenant_id:
+        yield  # same-tenant nested batch - reuse outer, nothing to set up
+        return
+    outer_conn = active
+    outer_tenant = getattr(_batch_local, "tenant_id", None)
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
         _batch_local.conn = _TranslatingConnection(conn)
+        _batch_local.tenant_id = tenant_id
         try:
             yield
             conn.commit()
@@ -322,25 +339,30 @@ def batch_session():
             conn.rollback()
             raise
         finally:
-            _batch_local.conn = None
+            if outer_conn is not None:
+                _batch_local.conn = outer_conn
+                _batch_local.tenant_id = outer_tenant
+            else:
+                _batch_local.conn = None
+                _batch_local.tenant_id = None
 
 
 @contextmanager
 def savepoint():
-    """Nested transaction (savepoint) on the active batch connection, or a
-    no-op when no batch is open.
+    """Nested transaction (savepoint) on the active batch connection for the
+    current tenant, or a no-op when no matching batch is open.
 
     Use around work whose failures are caught and must not abort the
     surrounding batch (e.g. best-effort archive steps during an ESI
-    snapshot sync). Outside a batch this yields without opening a
-    connection: wrapping ESI network calls here must not pin a pool
-    connection for the duration of those calls.
+    snapshot sync). Outside a batch (or under a different ambient tenant
+    than the batch) this yields without opening a connection: wrapping ESI
+    network calls here must not pin a pool connection for the duration of
+    those calls.
     """
-    active = getattr(_batch_local, "conn", None)
-    if active is None:
+    if not _batch_matches_current_tenant():
         yield
         return
-    with active.transaction():
+    with _batch_local.conn.transaction():
         yield
 
 
@@ -1539,6 +1561,7 @@ def replace_sde_data(
     get_blueprint_for_product.cache_clear()
     get_blueprint_materials.cache_clear()
     get_blueprint_time.cache_clear()
+    get_product_quantity.cache_clear()
     find_invention_recipe_candidates_by_product_type_id.cache_clear()
     get_station_ids_in_system.cache_clear()
     get_station_ids_in_region.cache_clear()
@@ -2074,6 +2097,25 @@ def manual_stock_at_location(type_id: int, location_id: int) -> float:
             (type_id, location_id),
         ).fetchone()
     return row[0] if row else 0.0
+
+
+def manual_stock_at_location_bulk(type_ids: list[int], location_id: int) -> dict[int, float]:
+    """manual_stock_at_location for many types in one query: {type_id: count}
+    at `location_id`, 0.0 for a type with no row. Empty input is `{}` and
+    opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    out = {tid: 0.0 for tid in unique}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, count FROM manual_stock WHERE type_id = ANY(?) AND location_id = ?",
+            (unique, location_id),
+        ).fetchall()
+    for tid, count in rows:
+        if tid in out and count:
+            out[tid] += count
+    return out
 
 
 def manual_stock_by_location_bulk(type_ids: list[int]) -> dict[int, dict[int, float]]:
@@ -3437,7 +3479,10 @@ def set_character_slot_excluded(character_name: str, excluded: bool) -> None:
         )
 
 
+@lru_cache(maxsize=None)
 def get_product_quantity(blueprint_type_id: int, activity_id: int, product_type_id: int) -> Optional[float]:
+    """Static SDE data, cached like the other SDE lookups and cleared by
+    replace_sde_data()."""
     with connect() as conn:
         row = conn.execute(
             "SELECT quantity FROM sde_blueprint_products "
@@ -7518,17 +7563,22 @@ def get_blueprint_for_product(product_type_id: int) -> Optional[tuple[int, int, 
     instead, silently showing job_cost as "-" for the whole Build List with
     no error at all). Normalized to 1 here, once, at the source - every
     caller across the codebase gets a trustworthy quantity without
-    duplicating this same guard."""
+    duplicating this same guard.
+
+    Backed by the recipe sidecar (see "Recipe index" below): prefilled by
+    prefetch_recipes / load_recipe_index, which pick the very same row as
+    this query (published blueprint, lowest activity_id, then lowest
+    blueprint_type_id)."""
+    loaded = _recipe_index_complete  # read before the dict: see _commit_recipe_rows
+    if product_type_id in _blueprint_for_product_rows:
+        return _blueprint_for_product_rows[product_type_id]
+    if loaded:
+        return None
     with connect() as conn:
-        row = conn.execute(
-            "SELECT p.blueprint_type_id, p.activity_id, p.quantity FROM sde_blueprint_products p "
-            "JOIN sde_types t ON t.type_id = p.blueprint_type_id "
-            "WHERE p.product_type_id = ? AND p.activity_id IN (1, 11) AND t.published = 1 "
-            "ORDER BY p.activity_id, p.blueprint_type_id LIMIT 1",
-            (product_type_id,),
-        ).fetchone()
-    if row is not None and row[2] <= 0:
-        row = (row[0], row[1], 1.0)
+        rows = conn.execute(_BLUEPRINT_FOR_PRODUCT_SQL + " AND p.product_type_id = ? " + _BLUEPRINT_FOR_PRODUCT_ORDER,
+                            (product_type_id,)).fetchall()
+    row = _first_blueprint_row_per_product(rows).get(product_type_id)
+    _blueprint_for_product_rows[product_type_id] = row
     return row
 
 
@@ -7538,12 +7588,20 @@ def get_blueprint_materials(blueprint_type_id: int, activity_id: int) -> list[tu
     Cached - see get_sde_type. The returned list is shared across callers
     (lru_cache returns the same object every time) - callers must treat it as
     read-only (all current callers only iterate it, never mutate)."""
+    key = (blueprint_type_id, activity_id)
+    loaded = _recipe_index_complete
+    if key in _blueprint_materials_rows:
+        return _blueprint_materials_rows[key]
+    if loaded:
+        return []
     with connect() as conn:
-        return conn.execute(
+        rows = conn.execute(
             "SELECT material_type_id, quantity FROM sde_blueprint_materials "
             "WHERE blueprint_type_id = ? AND activity_id = ?",
             (blueprint_type_id, activity_id),
         ).fetchall()
+    _blueprint_materials_rows[key] = rows
+    return rows
 
 
 @lru_cache(maxsize=None)
@@ -7631,12 +7689,20 @@ def get_type_materials_bulk(type_ids: list[int]) -> dict[int, list[tuple[int, fl
 @lru_cache(maxsize=None)
 def get_blueprint_time(blueprint_type_id: int, activity_id: int) -> Optional[float]:
     """Cached - see get_sde_type."""
+    key = (blueprint_type_id, activity_id)
+    loaded = _recipe_index_complete
+    if key in _blueprint_time_rows:
+        return _blueprint_time_rows[key]
+    if loaded:
+        return None
     with connect() as conn:
         row = conn.execute(
             "SELECT time FROM sde_blueprint_time WHERE blueprint_type_id = ? AND activity_id = ?",
             (blueprint_type_id, activity_id),
         ).fetchone()
-    return row[0] if row else None
+    value = row[0] if row else None
+    _blueprint_time_rows[key] = value
+    return value
 
 
 def find_invention_recipe_by_product_name(product_name: str) -> Optional[tuple[int, int]]:
@@ -7686,7 +7752,13 @@ def find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_i
     job is just "what are the options", ordered for a deterministic first
     element (still meaningful for T2's single-candidate case, and as a
     sensible default if a caller only wants "the best odds" without running
-    the full cost comparison). Cached - see get_sde_type."""
+    the full cost comparison). Cached - see get_sde_type; also served from
+    the recipe sidecar (see "Recipe index" below)."""
+    loaded = _recipe_index_complete
+    if product_blueprint_type_id in _invention_candidates_rows:
+        return _invention_candidates_rows[product_blueprint_type_id]
+    if loaded:
+        return ()
     with connect() as conn:
         rows = conn.execute(
             "SELECT p.blueprint_type_id FROM sde_blueprint_products p "
@@ -7697,7 +7769,252 @@ def find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_i
             "ORDER BY prob.probability DESC, p.blueprint_type_id",
             (product_blueprint_type_id,),
         ).fetchall()
-    return tuple(row[0] for row in rows)
+    result = tuple(row[0] for row in rows)
+    _invention_candidates_rows[product_blueprint_type_id] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Recipe index
+#
+# get_blueprint_for_product / get_blueprint_materials / get_blueprint_time /
+# find_invention_recipe_candidates_by_product_type_id follow the same shape as
+# get_sde_type / get_type_materials: an lru_cache on top of a plain-dict
+# sidecar that bulk loaders can fill (lru_cache has no setter), and a
+# cache_clear that wipes both. The sidecars hold SDE rows only (global tables,
+# no tenant_id), so they are shared by every tenant.
+#
+# Two ways to fill them:
+#  * prefetch_recipes(product_ids): the planner entry points name the items
+#    they are about to walk; one query per table fills recipe, materials, time,
+#    invention candidates and the SDE type rows for exactly those items.
+#    Absence is cached too (an unknown product maps to None), but only for the
+#    ids that were asked for, so a row inserted later is still found.
+#  * load_recipe_index(): every recipe in one go (~50k rows). It sets
+#    _recipe_index_complete, after which a key missing from a sidecar is
+#    answered ("no recipe", [], None, ()) without a query. Only warm_sde_caches()
+#    calls it (server start); an SDE apply clears the flag again.
+#
+# Readers read the flag *before* the dict, and the loader sets the flag last, so
+# a reader that sees "complete" also sees every row.
+# ---------------------------------------------------------------------------
+_recipe_lock = threading.RLock()  # serialises load_recipe_index against cache_clear
+_recipe_generation = 0  # bumped by every cache_clear; a prefetch that raced one is discarded
+_recipe_index_complete = False
+_blueprint_for_product_rows: dict[int, Optional[tuple]] = {}
+_blueprint_materials_rows: dict[tuple[int, int], list[tuple[int, float]]] = {}
+_blueprint_time_rows: dict[tuple[int, int], Optional[float]] = {}
+_invention_candidates_rows: dict[int, tuple[int, ...]] = {}
+
+_BLUEPRINT_FOR_PRODUCT_SQL = (
+    "SELECT p.product_type_id, p.blueprint_type_id, p.activity_id, p.quantity FROM sde_blueprint_products p "
+    "JOIN sde_types t ON t.type_id = p.blueprint_type_id "
+    "WHERE p.activity_id IN (1, 11) AND t.published = 1"
+)
+_BLUEPRINT_FOR_PRODUCT_ORDER = "ORDER BY p.product_type_id, p.activity_id, p.blueprint_type_id"
+
+
+def _first_blueprint_row_per_product(rows) -> dict[int, tuple[int, int, float]]:
+    """The first row per product of a query ordered by _BLUEPRINT_FOR_PRODUCT_ORDER:
+    the same published-first / Manufacturing-before-Reaction / lowest-blueprint
+    pick as get_blueprint_for_product's `LIMIT 1`, with its quantity <= 0 -> 1
+    normalisation."""
+    out: dict[int, tuple[int, int, float]] = {}
+    for product_id, blueprint_id, activity_id, quantity in rows:
+        if product_id not in out:
+            out[product_id] = (blueprint_id, activity_id, quantity if quantity > 0 else 1.0)
+    return out
+
+
+def _fetch_blueprints_for_products(conn, product_ids: Optional[list[int]]) -> dict[int, tuple[int, int, float]]:
+    if product_ids is None:
+        rows = conn.execute(_BLUEPRINT_FOR_PRODUCT_SQL + " " + _BLUEPRINT_FOR_PRODUCT_ORDER).fetchall()
+    else:
+        rows = conn.execute(_BLUEPRINT_FOR_PRODUCT_SQL + " AND p.product_type_id = ANY(?) "
+                            + _BLUEPRINT_FOR_PRODUCT_ORDER, (list(product_ids),)).fetchall()
+    return _first_blueprint_row_per_product(rows)
+
+
+def _fetch_blueprint_materials(conn, blueprint_ids: Optional[list[int]]) -> dict[tuple[int, int], list]:
+    sql = "SELECT blueprint_type_id, activity_id, material_type_id, quantity FROM sde_blueprint_materials"
+    if blueprint_ids is None:
+        rows = conn.execute(sql).fetchall()
+    else:
+        rows = conn.execute(sql + " WHERE blueprint_type_id = ANY(?)", (list(blueprint_ids),)).fetchall()
+    grouped: dict[tuple[int, int], list] = {}
+    for blueprint_id, activity_id, material_id, quantity in rows:
+        grouped.setdefault((blueprint_id, activity_id), []).append((material_id, quantity))
+    return grouped
+
+
+def _fetch_blueprint_times(conn, blueprint_ids: Optional[list[int]]) -> dict[tuple[int, int], float]:
+    sql = "SELECT blueprint_type_id, activity_id, time FROM sde_blueprint_time"
+    if blueprint_ids is None:
+        rows = conn.execute(sql).fetchall()
+    else:
+        rows = conn.execute(sql + " WHERE blueprint_type_id = ANY(?)", (list(blueprint_ids),)).fetchall()
+    return {(blueprint_id, activity_id): value for blueprint_id, activity_id, value in rows}
+
+
+def _fetch_invention_candidates(conn, product_ids: Optional[list[int]]) -> dict[int, tuple[int, ...]]:
+    sql = (
+        "SELECT p.product_type_id, p.blueprint_type_id FROM sde_blueprint_products p "
+        "LEFT JOIN sde_invention_probability prob "
+        "  ON prob.t1_blueprint_type_id = p.blueprint_type_id AND prob.product_type_id = p.product_type_id "
+        "WHERE p.activity_id = 8"
+    )
+    order = " ORDER BY p.product_type_id, prob.probability DESC, p.blueprint_type_id"
+    if product_ids is None:
+        rows = conn.execute(sql + order).fetchall()
+    else:
+        rows = conn.execute(sql + " AND p.product_type_id = ANY(?)" + order, (list(product_ids),)).fetchall()
+    grouped: dict[int, list[int]] = {}
+    for product_id, source_id in rows:
+        grouped.setdefault(product_id, []).append(source_id)
+    return {pid: tuple(sources) for pid, sources in grouped.items()}
+
+
+def _reset_recipe_sidecar(rows: dict) -> None:
+    global _recipe_generation, _recipe_index_complete
+    with _recipe_lock:
+        _recipe_generation += 1
+        _recipe_index_complete = False
+        rows.clear()
+
+
+def _install_recipe_cache_clear(fn, rows: dict) -> None:
+    """Makes fn.cache_clear() wipe the lru_cache, its sidecar and the
+    "index is complete" flag (same trick as get_sde_type)."""
+    original = fn.cache_clear
+
+    def _clear() -> None:
+        _reset_recipe_sidecar(rows)
+        original()
+
+    fn.cache_clear = _clear  # type: ignore[method-assign]
+
+
+_install_recipe_cache_clear(get_blueprint_for_product, _blueprint_for_product_rows)
+_install_recipe_cache_clear(get_blueprint_materials, _blueprint_materials_rows)
+_install_recipe_cache_clear(get_blueprint_time, _blueprint_time_rows)
+_install_recipe_cache_clear(find_invention_recipe_candidates_by_product_type_id, _invention_candidates_rows)
+
+
+def _recipe_type_ids() -> list[int]:
+    """Every type id the recipe sidecars mention: products, blueprints and
+    materials."""
+    ids: set[int] = set(_blueprint_for_product_rows)
+    for row in list(_blueprint_for_product_rows.values()):
+        if row is not None:
+            ids.add(row[0])
+    for (blueprint_id, _activity), materials in list(_blueprint_materials_rows.items()):
+        ids.add(blueprint_id)
+        ids.update(material_id for material_id, _qty in materials)
+    return sorted(ids)
+
+
+def prefetch_recipes(product_type_ids: Iterable[int]) -> None:
+    """Fills the recipe sidecars (and the SDE type rows) for these products:
+    their Manufacturing/Reaction blueprint, the blueprint's materials, times and
+    invention sources, and the type rows of products, blueprints and materials -
+    a handful of queries instead of several per item. Callers walk a recipe
+    tree breadth-first and call this once per level (production.engine.
+    _structural_material_closure). Ids already cached cost nothing; an id with
+    no recipe is remembered as such. Safe to call from any thread."""
+    ids = list(dict.fromkeys(int(i) for i in product_type_ids))
+    if not ids:
+        return
+    generation = _recipe_generation
+    complete = _recipe_index_complete
+    todo_products = [] if complete else [i for i in ids if i not in _blueprint_for_product_rows]
+    found: dict[int, tuple[int, int, float]] = {}
+    materials: dict[tuple[int, int], list] = {}
+    times: dict[tuple[int, int], float] = {}
+    candidates: dict[int, tuple[int, ...]] = {}
+    need_materials: list[int] = []
+    need_times: list[int] = []
+    need_candidates: list[int] = []
+    if todo_products or not complete:
+        with connect() as conn:
+            if todo_products:
+                found = _fetch_blueprints_for_products(conn, todo_products)
+            blueprints = {i: found[i] if i in found else _blueprint_for_product_rows.get(i) for i in ids}
+            pairs = {(row[0], row[1]) for row in blueprints.values() if row is not None}
+            need_materials = sorted({bp for bp, act in pairs if (bp, act) not in _blueprint_materials_rows})
+            need_times = sorted({bp for bp, act in pairs if (bp, act) not in _blueprint_time_rows})
+            need_candidates = sorted({bp for bp, _act in pairs if bp not in _invention_candidates_rows})
+            if need_materials:
+                materials = _fetch_blueprint_materials(conn, need_materials)
+            if need_times:
+                times = _fetch_blueprint_times(conn, need_times)
+            if need_candidates:
+                candidates = _fetch_invention_candidates(conn, need_candidates)
+        with _recipe_lock:
+            if generation == _recipe_generation:  # an SDE apply in between: drop what was read
+                for product_id in todo_products:
+                    _blueprint_for_product_rows[product_id] = found.get(product_id)
+                for key, value in materials.items():
+                    _blueprint_materials_rows[key] = value
+                for key, value in times.items():
+                    _blueprint_time_rows[key] = value
+                for bp, act in pairs:
+                    if bp in need_materials:
+                        _blueprint_materials_rows.setdefault((bp, act), [])
+                    if bp in need_times:
+                        _blueprint_time_rows.setdefault((bp, act), None)
+                for bp in need_candidates:
+                    _invention_candidates_rows[bp] = candidates.get(bp, ())
+    type_ids: set[int] = set(ids)
+    for i in ids:
+        row = _blueprint_for_product_rows.get(i)
+        if row is not None:
+            type_ids.add(row[0])
+            type_ids.update(m for m, _q in _blueprint_materials_rows.get((row[0], row[1]), ()))
+    get_sde_types_bulk(sorted(type_ids))
+
+
+def load_recipe_index() -> None:
+    """Loads every Manufacturing/Reaction recipe (blueprint per product,
+    materials, times, invention sources) in four queries and marks the index
+    complete: from then on an unknown id is answered without a query. One
+    loader at a time (a second caller waits, then finds it done); an SDE apply
+    waits for a running load and then resets the flag."""
+    global _recipe_index_complete
+    with _recipe_lock:
+        if _recipe_index_complete:
+            return
+        with connect() as conn:
+            products = _fetch_blueprints_for_products(conn, None)
+            materials = _fetch_blueprint_materials(conn, None)
+            times = _fetch_blueprint_times(conn, None)
+            candidates = _fetch_invention_candidates(conn, None)
+        _blueprint_for_product_rows.clear()
+        _blueprint_for_product_rows.update(products)
+        _blueprint_materials_rows.clear()
+        _blueprint_materials_rows.update(materials)
+        _blueprint_time_rows.clear()
+        _blueprint_time_rows.update(times)
+        _invention_candidates_rows.clear()
+        _invention_candidates_rows.update(candidates)
+        _recipe_index_complete = True  # last: readers check it before the dicts
+
+
+def warm_sde_caches() -> dict[str, int]:
+    """Server-start warm-up (api/app.py, background thread): the whole recipe
+    index plus the SDE type rows of every type a recipe mentions, so the first
+    planner run after a restart does not pay thousands of one-row queries. SDE
+    tables are global, so DEFAULT_TENANT_ID is only the connection's scope.
+    Returns row counts for the log."""
+    with tenant_context(DEFAULT_TENANT_ID):
+        load_recipe_index()
+        type_ids = _recipe_type_ids()
+        for start in range(0, len(type_ids), 5000):
+            get_sde_types_bulk(type_ids[start:start + 5000])
+    return {
+        "recipes": len(_blueprint_for_product_rows),
+        "materials": len(_blueprint_materials_rows),
+        "types": len(type_ids),
+    }
 
 
 @lru_cache(maxsize=None)
@@ -7942,6 +8259,27 @@ def load_fitting_items(fitting_id: str) -> list[tuple]:
             "WHERE fitting_id = ? ORDER BY line_no, item_index",
             (fitting_id,),
         ).fetchall()
+
+
+def load_fitting_items_bulk(fitting_ids: list[str]) -> dict[str, list[tuple]]:
+    """`{fitting_id: load_fitting_items(fitting_id)}` for every given id in one
+    query. Every requested id is a key (a fitting without items maps to
+    `[]`), each list in the same (line_no, item_index) order and row shape as
+    `load_fitting_items`."""
+    ids = list(dict.fromkeys(str(f) for f in fitting_ids))
+    out: dict[str, list[tuple]] = {fid: [] for fid in ids}
+    if not ids:
+        return out
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT fitting_id, line_no, slot_section, type_id, quantity, is_offline "
+            "FROM doctrine_fitting_items WHERE fitting_id = ANY(?::uuid[]) "
+            "ORDER BY fitting_id, line_no, item_index",
+            (ids,),
+        ).fetchall()
+    for fitting_id, *item in rows:
+        out[str(fitting_id)].append(tuple(item))
+    return out
 
 
 def replace_fitting_parse_issues(fitting_id: str, rows: list[tuple]) -> None:

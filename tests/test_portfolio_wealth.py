@@ -1,7 +1,16 @@
 """Total Wealth completeness and breakdown (PORTFOLIO_OVERVIEW_PLAN.md 3.6)."""
+import pytest
+
 from eve_trader import portfolio
 from eve_trader.config import TradingConfig
 from eve_trader.portfolio_wealth import JITA_44, assemble
+
+
+@pytest.fixture(autouse=True)
+def _quotes_up_for_wealth_cache(monkeypatch):
+    # total_wealth() asks _quotes_available() before caching its rows; that
+    # would probe Goonmetrics.
+    monkeypatch.setattr(portfolio, "_quotes_available", lambda: True)
 
 
 def _item(component, type_id, quantity, price, owner_id=1, location_id=10):

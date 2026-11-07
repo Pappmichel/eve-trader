@@ -82,7 +82,11 @@ excluded and are listed. The page
 `/realized-history`, `/capital`, `/attention`) shows the breakdown,
 realized profit for every granted channel, capital at FIFO cost from the
 realized-profit ledger (labeled as such), and an attention list. The
-frontend displays those numbers.
+frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
+`/attention` share one priced computation per tenant for 120 s
+(`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
+price-setting change, manual price, or SDE apply drops it at once, nothing is
+cached while quotes are down, and the snapshot write always computes fresh).
 
 All tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
 one Postgres store (`eve_trader/storage.py`, multi-tenant - see
@@ -925,9 +929,31 @@ slightly different shapes as new needs came up, not one uniform pattern:
   covering the whole cached computation, plus explicit invalidation
   (`invalidate_discover_cache()`) from every action that actually changes its
   result set (Settings save, stock target add/remove, decryptor change, SDE
-  refresh) - TTL alone would let a just-changed Setting serve stale results
-  for the rest of the TTL window, a real correctness problem, not just a
-  performance one.
+  refresh) -   TTL alone would let a just-changed Setting serve stale results
+ for the rest of the TTL window, a real correctness problem, not just a
+ performance one.
+- Per-id SDE lookups (`get_sde_type`, `get_type_materials`, and the recipe
+ getters `get_blueprint_for_product` / `get_blueprint_materials` /
+ `get_blueprint_time` / `find_invention_recipe_candidates_by_product_type_id`)
+ are an `lru_cache` over a plain-dict **sidecar** that bulk loaders fill
+ (`lru_cache` has no setter); `cache_clear` is overridden to wipe both, and
+ `replace_sde_data` calls it. Tables are global (no tenant_id), so the
+ sidecars are shared by every tenant. Two ways to fill the recipe sidecars,
+ both in `storage.py`: `prefetch_recipes(ids)` (planner entry points: the
+ structural material closure calls it once per BFS level; caches absence
+ only for the ids asked for, so a row inserted later is still found) and
+ `load_recipe_index()` (every recipe in four queries; sets
+ `_recipe_index_complete`, after which an unknown key is answered
+ "no recipe" without a query; loaded under one lock, reset by any
+ `cache_clear`; readers read the flag *before* the dict). A new bulk
+ loader that races an SDE apply must compare `_recipe_generation`. Only
+ `warm_sde_caches()` sets the complete flag: it runs at server start in a
+ daemon thread (`api/app.py` `_warm_sde_caches`, same
+ `PYTEST_CURRENT_TEST` guard as the Asset Manager warm-up; failures are
+ logged, startup never waits) under `DEFAULT_TENANT_ID`, and adds the type
+ rows the recipes mention (~+18 MB RSS, ~0.2 s on a 53k-type SDE). Tests
+ never call it, so tests that insert SDE rows by hand after an earlier
+ lookup keep working.
 
 Each shape exists for a reason specific to its own caller (see above) - when
 adding a new cache, match whichever of these three actually fits your

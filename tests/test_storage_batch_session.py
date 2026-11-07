@@ -206,3 +206,95 @@ def test_save_tenant_token_from_another_thread_does_not_block_on_an_open_batch(t
         assert done.wait(timeout=10), "second save blocked on the open batch"
 
     assert storage.load_all_tenant_tokens()["producer:3"] == {"access_token": "b"}
+
+
+def test_tenant_switch_inside_batch_reads_and_writes_under_inner_tenant(tenant, monkeypatch):
+    """A tenant_context switch inside an open batch must not reuse the outer
+    connection: app.tenant_id was fixed at batch open. Reads see only the
+    inner tenant; a write under B survives A's rollback."""
+    tenant_a = storage.create_tenant("batch-switch-a")
+    tenant_b = storage.create_tenant("batch-switch-b")
+
+    calls = _count_real_checkouts(monkeypatch)
+    with storage.tenant_context(tenant_a):
+        with pytest.raises(ValueError, match="roll back A"):
+            with storage.batch_session():
+                with storage.connect() as conn:
+                    conn.execute(
+                        "INSERT INTO shortlist (item_id, item, category, volume_m3, active) "
+                        "VALUES (801, 'a-only', 'y', 1.0, 1)"
+                    )
+                with storage.tenant_context(tenant_b):
+                    # Must open a fresh connection for B (not the A batch).
+                    before = len(calls)
+                    with storage.connect() as conn:
+                        conn.execute(
+                            "INSERT INTO shortlist (item_id, item, category, volume_m3, active) "
+                            "VALUES (802, 'b-only', 'y', 1.0, 1)"
+                        )
+                    assert len(calls) > before
+                    with storage.connect() as conn:
+                        rows = conn.execute(
+                            "SELECT item FROM shortlist WHERE item_id IN (801, 802) "
+                            "ORDER BY item_id"
+                        ).fetchall()
+                    assert rows == [("b-only",)]
+                # Back under A's batch: still sees only A's uncommitted write.
+                with storage.connect() as conn:
+                    rows = conn.execute(
+                        "SELECT item FROM shortlist WHERE item_id IN (801, 802) "
+                        "ORDER BY item_id"
+                    ).fetchall()
+                assert rows == [("a-only",)]
+                raise ValueError("roll back A")
+
+    # A's batch rolled back; B's own-transaction write committed.
+    with storage.tenant_context(tenant_a):
+        with storage.connect() as conn:
+            assert conn.execute(
+                "SELECT item FROM shortlist WHERE item_id = 801"
+            ).fetchone() is None
+    with storage.tenant_context(tenant_b):
+        with storage.connect() as conn:
+            assert conn.execute(
+                "SELECT item FROM shortlist WHERE item_id = 802"
+            ).fetchone() == ("b-only",)
+
+
+def test_nested_batch_under_other_tenant_restores_outer(tenant, monkeypatch):
+    tenant_a = storage.create_tenant("nested-batch-a")
+    tenant_b = storage.create_tenant("nested-batch-b")
+
+    calls = _count_real_checkouts(monkeypatch)
+    with storage.tenant_context(tenant_a):
+        with storage.batch_session():
+            outer_conn = storage._batch_local.conn
+            with storage.connect() as conn:
+                conn.execute(
+                    "INSERT INTO shortlist (item_id, item, category, volume_m3, active) "
+                    "VALUES (811, 'outer', 'y', 1.0, 1)"
+                )
+            with storage.tenant_context(tenant_b):
+                with storage.batch_session():
+                    assert storage._batch_local.conn is not outer_conn
+                    assert storage._batch_local.tenant_id == tenant_b
+                    with storage.connect() as conn:
+                        conn.execute(
+                            "INSERT INTO shortlist (item_id, item, category, volume_m3, active) "
+                            "VALUES (812, 'inner', 'y', 1.0, 1)"
+                        )
+            # Outer batch restored.
+            assert storage._batch_local.conn is outer_conn
+            assert storage._batch_local.tenant_id == tenant_a
+            with storage.connect() as conn:
+                rows = conn.execute(
+                    "SELECT item FROM shortlist WHERE item_id IN (811, 812) ORDER BY item_id"
+                ).fetchall()
+            assert rows == [("outer",)]
+
+    assert len(calls) == 2  # one for A batch, one for nested B batch
+    with storage.tenant_context(tenant_b):
+        with storage.connect() as conn:
+            assert conn.execute(
+                "SELECT item FROM shortlist WHERE item_id = 812"
+            ).fetchone() == ("inner",)

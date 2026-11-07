@@ -105,6 +105,16 @@ def _no_live_invention_fee_rates(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_wealth_cache():
+    """wealth_cache keeps Total Wealth's priced rows per tenant for 120 s;
+    one test's monkeypatched result must not be served to the next."""
+    from eve_trader import wealth_cache
+    wealth_cache.clear()
+    yield
+    wealth_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_shortlist_trends_cache():
     """actions.do_shortlist_trends caches per tenant; tests that monkeypatch
     storage must not get an earlier test's result back."""

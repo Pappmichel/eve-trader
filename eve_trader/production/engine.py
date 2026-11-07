@@ -2165,6 +2165,43 @@ def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> fl
     return total
 
 
+def _stock_lookup(type_ids, exclude_intake_at_location_id: Optional[int] = None):
+    """Returns `lookup(type_id, location_id) -> float`, same figure as
+    _stock_at_location(type_id, location_id, exclude_intake_at_location_id=...)
+    but read in bulk: the first lookup for a location loads every type in
+    `type_ids` for it (one GROUP BY per asset table plus one manual-stock
+    query), later lookups for that location are dict reads. Query count
+    depends on the number of locations touched, never on the number of
+    types. Owners, excluded systems and the excluded hangar are resolved once,
+    on first use (a call with no lookups reads nothing). The loaded maps are
+    never handed out or mutated: callers decrement their own copies.
+    Used by logistics_status and distribution_recommendations only."""
+    unique = list(dict.fromkeys(type_ids))
+    cache: dict[Optional[int], dict[int, float]] = {}
+    filters: dict = {}
+
+    def lookup(type_id: int, location_id: Optional[int]) -> float:
+        per_location = cache.get(location_id)
+        if per_location is None:
+            if not filters:
+                char_ids, corp_ids = shared_production_owner_ids("assets")
+                filters.update(
+                    owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+                    exclude_location_ids=production_excluded_location_ids(),
+                    exclude_hangar=production_excluded_hangar())
+            esi = storage.esi_stock_at_location_bulk(
+                unique, location_id, exclude_intake_at_location_id=exclude_intake_at_location_id, **filters)
+            manual = storage.manual_stock_at_location_bulk(unique, location_id) if location_id is not None else {}
+            per_location = {tid: esi.get(tid, 0.0) + manual.get(tid, 0.0) for tid in unique}
+            cache[location_id] = per_location
+        if type_id not in per_location:
+            return _stock_at_location(
+                type_id, location_id, exclude_intake_at_location_id=exclude_intake_at_location_id)
+        return per_location[type_id]
+
+    return lookup
+
+
 def _sell_order_qty_at_location(type_id: int, location_id: int) -> float:
     char_ids, corp_ids = shared_production_owner_ids("market_orders")
     return storage.sell_order_qty_at_location(
@@ -5600,6 +5637,17 @@ def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRO
     return _item_margin_detail_with_context(type_id, type_name, cfg, ctx, cost_memo, t2_memo)
 
 
+def _prefetch_recipes(type_ids: Iterable[int]) -> None:
+    """One bulk read of recipe, materials, times, invention sources and type
+    rows for a whole level of the walk (storage.prefetch_recipes), so the
+    per-item lookups that follow hit the cache. Only an optimisation: the
+    lookups still work without it, so a failure is logged and ignored."""
+    try:
+        storage.prefetch_recipes(type_ids)
+    except Exception:  # noqa: BLE001
+        log.debug("recipe prefetch failed; falling back to per-item lookups", exc_info=True)
+
+
 def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
     """Every type_id reachable from `seed_type_ids` through blueprint
     materials, ignoring buy-vs-build economics entirely - pricing isn't
@@ -5639,6 +5687,7 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
     while frontier and depth < MAX_DEPTH:
         visited |= frontier
         next_frontier: set[int] = set()
+        _prefetch_recipes(frontier)
         for type_id in frontier:
             activity, bp = classify_activity(type_id)
             if bp is None:
@@ -5830,6 +5879,7 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
     category_locations = storage.load_category_locations()
     category_options = storage.load_category_location_options()
     demand = _category_material_demand(build_list, category_locations, cfg)
+    stock_of = _stock_lookup({material_id for _, material_id in demand}, cfg.home_location_id)
     warehouse_location_id = cfg.distribution_source_location_id or cfg.home_location_id
     active_locations = set(category_locations.values())
     other_locations_by_category = {
@@ -5847,8 +5897,7 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
     rows = []
     for (category, material_id), needed in demand.items():
         location_id = category_locations[category]
-        available = _stock_at_location(
-            material_id, location_id, exclude_intake_at_location_id=cfg.home_location_id)
+        available = stock_of(material_id, location_id)
         missing = max(0.0, needed - available)
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
@@ -5858,9 +5907,7 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
         pull_from_available = None
         if missing > 0:
             if warehouse_location_id is not None and warehouse_location_id != location_id:
-                warehouse_stock = _stock_at_location(
-                    material_id, warehouse_location_id,
-                    exclude_intake_at_location_id=cfg.home_location_id)
+                warehouse_stock = stock_of(material_id, warehouse_location_id)
                 if warehouse_stock > 0:
                     pull_from_location_id, pull_from_available = warehouse_location_id, warehouse_stock
             if pull_from_location_id is None:
@@ -5869,16 +5916,12 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
                         continue
                     other_category = next(c for c, loc in category_locations.items() if loc == other_location_id)
                     other_demand = demand.get((other_category, material_id), 0.0)
-                    stock = _stock_at_location(
-                        material_id, other_location_id,
-                        exclude_intake_at_location_id=cfg.home_location_id)
+                    stock = stock_of(material_id, other_location_id)
                     surplus = max(0.0, stock - other_demand)
                     if surplus > 0 and (pull_from_available is None or surplus > pull_from_available):
                         pull_from_location_id, pull_from_available = other_location_id, surplus
                 for orphaned_location_id in orphaned_locations_by_category[category]:
-                    stock = _stock_at_location(
-                        material_id, orphaned_location_id,
-                        exclude_intake_at_location_id=cfg.home_location_id)
+                    stock = stock_of(material_id, orphaned_location_id)
                     if stock > 0 and (pull_from_available is None or stock > pull_from_available):
                         pull_from_location_id, pull_from_available = orphaned_location_id, stock
 
@@ -5922,22 +5965,21 @@ def distribution_recommendations(build_list: list[BuildJobEntry] | list[AssetPla
 
     category_locations = storage.load_category_locations()
     demand = _category_material_demand(build_list, category_locations, cfg)
+    stock_of = _stock_lookup({material_id for _, material_id in demand}, cfg.home_location_id)
 
     shortfalls_by_material: dict[int, list[tuple[str, float]]] = {}
     for (category, material_id), needed in demand.items():
         location_id = category_locations[category]
         if location_id == source_location_id:
             continue  # already sourced locally, nothing to move
-        available = _stock_at_location(
-            material_id, location_id, exclude_intake_at_location_id=cfg.home_location_id)
+        available = stock_of(material_id, location_id)
         missing = max(0.0, needed - available)
         if missing > 0:
             shortfalls_by_material.setdefault(material_id, []).append((category, missing))
 
     rows = []
     for material_id, shortfalls in shortfalls_by_material.items():
-        remaining_from_warehouse = _stock_at_location(
-            material_id, source_location_id, exclude_intake_at_location_id=cfg.home_location_id)
+        remaining_from_warehouse = stock_of(material_id, source_location_id)
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
         unit_volume = _haul_volume(material_id, cfg) or 0.0
@@ -5970,9 +6012,7 @@ def distribution_recommendations(build_list: list[BuildJobEntry] | list[AssetPla
                     continue
                 if other_location_id not in surplus_remaining:
                     other_demand = demand.get((other_category, material_id), 0.0)
-                    other_stock = _stock_at_location(
-                        material_id, other_location_id,
-                        exclude_intake_at_location_id=cfg.home_location_id)
+                    other_stock = stock_of(material_id, other_location_id)
                     surplus_remaining[other_location_id] = max(0.0, other_stock - other_demand)
                 candidate_ids.append(other_location_id)
             for loc_id in sorted(candidate_ids, key=lambda l: -surplus_remaining[l]):

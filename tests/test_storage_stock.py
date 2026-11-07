@@ -698,3 +698,133 @@ def test_replace_assets_stores_singleton_and_assembled_flags(tenant, _fake_ship_
         rows = conn.execute(
             "SELECT item_id, is_singleton, assembled_or_fitted FROM character_assets ORDER BY item_id").fetchall()
     assert rows == [(30, True, True), (31, False, False)]
+
+
+# ------------------------- engine._stock_lookup (logistics/distribution) matches the single-id path
+OTHER_LOCATION_ID = 1000000000002
+OTHER_TYPE_ID = 35
+
+
+@pytest.fixture
+def _engine_filters(monkeypatch):
+    """Real engine module with the sharing resolver open and no exclusions;
+    a test sets the exclusion hooks it wants."""
+    from eve_trader.production import engine
+    monkeypatch.setattr(engine, "shared_production_owner_ids", lambda data_kind: (None, None))
+    monkeypatch.setattr(engine, "production_excluded_location_ids", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "production_excluded_hangar", lambda: None)
+    return engine
+
+
+def _assert_lookup_matches_single(engine, type_ids, locations, intake=None):
+    lookup = engine._stock_lookup(type_ids, intake)
+    for location in locations:
+        for type_id in type_ids:
+            assert lookup(type_id, location) == engine._stock_at_location(
+                type_id, location, exclude_intake_at_location_id=intake), (type_id, location)
+
+
+def test_stock_lookup_matches_single_id_with_intake_exclusion_and_manual_stock(tenant, _engine_filters):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 500, 0, "pappmichl5"),
+        (2, TYPE_ID, OTHER_LOCATION_ID, "Hangar", 80, 0, "pappmichl5"),
+        (3, TYPE_ID, LOCATION_ID, "Hangar", 40, 0, "someone else"),
+        (4, OTHER_TYPE_ID, LOCATION_ID, "Hangar", 7, 0, "pappmichl5"),
+    ])
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.upsert_manual_stock(TYPE_ID, 25, LOCATION_ID)
+    storage.upsert_manual_stock(OTHER_TYPE_ID, 3, OTHER_LOCATION_ID)
+
+    types, locations = [TYPE_ID, OTHER_TYPE_ID, 99], [LOCATION_ID, OTHER_LOCATION_ID, 424242]
+    _assert_lookup_matches_single(_engine_filters, types, locations, intake=LOCATION_ID)
+    _assert_lookup_matches_single(_engine_filters, types, locations, intake=None)
+    lookup = _engine_filters._stock_lookup(types, LOCATION_ID)
+    assert lookup(TYPE_ID, LOCATION_ID) == 40 + 25      # intake stack dropped, manual added
+    assert lookup(TYPE_ID, OTHER_LOCATION_ID) == 80     # same owner+flag elsewhere is real stock
+    assert lookup(OTHER_TYPE_ID, LOCATION_ID) == 0
+    assert lookup(OTHER_TYPE_ID, OTHER_LOCATION_ID) == 3
+
+
+def test_stock_lookup_matches_single_id_with_excluded_hangar(tenant, _engine_filters, monkeypatch):
+    corp, flag = 98000001, "CorpSAG5"
+    with storage.connect() as conn:
+        for item_id, location, hangar_flag, qty in (
+                (1, LOCATION_ID, flag, 100), (2, LOCATION_ID, "CorpSAG1", 20), (3, OTHER_LOCATION_ID, flag, 3)):
+            conn.execute(
+                "INSERT INTO corp_assets (item_id, type_id, location_id, location_flag, quantity, "
+                "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
+                "owner_corporation_id, assembled_or_fitted) VALUES (?, ?, ?, ?, ?, 0, 'Corp', ?, ?, ?, FALSE)",
+                (item_id, TYPE_ID, location, hangar_flag, qty, location, hangar_flag, corp))
+        # synced before the column existed: NULL flag must stay counted
+        conn.execute(
+            "INSERT INTO corp_assets (item_id, type_id, location_id, location_flag, quantity, "
+            "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
+            "owner_corporation_id, assembled_or_fitted) VALUES (4, ?, ?, 'Unlocked', 5, 0, 'Corp', ?, NULL, ?, FALSE)",
+            (TYPE_ID, LOCATION_ID, LOCATION_ID, corp))
+    hangar = storage.ExcludedHangar("corporation", corp, LOCATION_ID, flag)
+    monkeypatch.setattr(_engine_filters, "production_excluded_hangar", lambda: hangar)
+
+    _assert_lookup_matches_single(_engine_filters, [TYPE_ID], [LOCATION_ID, OTHER_LOCATION_ID])
+    lookup = _engine_filters._stock_lookup([TYPE_ID])
+    assert lookup(TYPE_ID, LOCATION_ID) == 20 + 5       # reserve division gone, NULL flag stays
+    assert lookup(TYPE_ID, OTHER_LOCATION_ID) == 3      # same flag at another structure stays
+
+
+def test_stock_lookup_matches_single_id_with_excluded_systems(tenant, _engine_filters, monkeypatch):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "pilot"),
+        (2, TYPE_ID, OTHER_LOCATION_ID, "Hangar", 30, 0, "pilot"),
+    ])
+    storage.upsert_manual_stock(TYPE_ID, 4, OTHER_LOCATION_ID)
+    monkeypatch.setattr(_engine_filters, "production_excluded_location_ids", lambda *a, **k: [LOCATION_ID])
+
+    _assert_lookup_matches_single(_engine_filters, [TYPE_ID], [LOCATION_ID, OTHER_LOCATION_ID])
+    lookup = _engine_filters._stock_lookup([TYPE_ID])
+    assert lookup(TYPE_ID, LOCATION_ID) == 0
+    assert lookup(TYPE_ID, OTHER_LOCATION_ID) == 34
+
+
+def test_stock_lookup_matches_single_id_for_assembled_and_fitted_ships(tenant, _engine_filters, _fake_ship_sde):
+    storage.replace_assets("character_assets", [
+        (10, HULL, LOCATION_ID, "Hangar", 1, 0, "pilot", True),     # assembled ship
+        (11, HULL, LOCATION_ID, "Hangar", 3, 0, "pilot", False),    # packaged hulls
+        (12, MODULE, 10, "HiSlot0", 1, 0, "pilot", True),           # fitted
+        (13, MODULE, 10, "DroneBay", 5, 0, "pilot", False),         # fitting too
+        (15, MODULE, 10, "Cargo", 2, 0, "pilot", False),            # cargo counts
+        (16, MODULE, LOCATION_ID, "Hangar", 4, 0, "pilot", True),
+    ])
+
+    _assert_lookup_matches_single(_engine_filters, [HULL, MODULE], [LOCATION_ID, OTHER_LOCATION_ID])
+    lookup = _engine_filters._stock_lookup([HULL, MODULE])
+    assert lookup(HULL, LOCATION_ID) == 3
+    assert lookup(MODULE, LOCATION_ID) == 6
+
+
+def test_stock_lookup_query_count_is_independent_of_type_count(tenant, _engine_filters, monkeypatch):
+    from contextlib import contextmanager
+    storage.replace_assets("character_assets", [
+        (i * 2 + n, 5000 + i, loc, "Hangar", 10, 0, "pilot")
+        for i in range(50) for n, loc in enumerate((LOCATION_ID, OTHER_LOCATION_ID))
+    ])
+    real = storage.connect
+    calls = {"n": 0}
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+
+    def connects_for(type_count):
+        calls["n"] = 0
+        types = [5000 + i for i in range(type_count)]
+        lookup = _engine_filters._stock_lookup(types, LOCATION_ID)
+        for location in (LOCATION_ID, OTHER_LOCATION_ID):
+            for type_id in types:
+                assert lookup(type_id, location) == 10
+        return calls["n"]
+
+    few, many = connects_for(5), connects_for(50)
+    assert few == many == 4   # (assets + manual stock) per location, two locations

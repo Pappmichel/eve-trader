@@ -1,6 +1,35 @@
+from contextlib import contextmanager
+
 import pandas as pd
+import pytest
 
 from eve_trader import actions, esi_client, storage
+
+
+class _BatchProbe:
+    """Stands in for storage.batch_session: records which phases ran inside
+    a batch, without needing a database."""
+
+    def __init__(self):
+        self.active = False
+        self.opened = 0
+
+    @contextmanager
+    def session(self):
+        assert not self.active, "batch_session must not nest in this action"
+        self.active = True
+        self.opened += 1
+        try:
+            yield
+        finally:
+            self.active = False
+
+
+@pytest.fixture
+def batch_probe(monkeypatch):
+    probe = _BatchProbe()
+    monkeypatch.setattr(storage, "batch_session", probe.session)
+    return probe
 
 
 def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
@@ -33,7 +62,7 @@ def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
     assert captured["items"][0].category == "Skill"
 
 
-def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
+def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch, batch_probe):
     from eve_trader.models import ShortlistItem
 
     existing = [
@@ -62,7 +91,7 @@ def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
     assert captured["snapshot_categories"] == {44: "Drugs"}
 
 
-def test_do_recategorize_shortlist_falls_back_to_esi_for_a_missing_sde_row(monkeypatch):
+def test_do_recategorize_shortlist_falls_back_to_esi_for_a_missing_sde_row(monkeypatch, batch_probe):
     # GitHub issue #5 (still broken after the first "shipped" fix): a booster
     # stays mislabeled "Implant" whenever the local SDE cache hasn't been
     # refreshed since this specific type_id was introduced/last touched -
@@ -78,21 +107,39 @@ def test_do_recategorize_shortlist_falls_back_to_esi_for_a_missing_sde_row(monke
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {20: "Implant"})
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 20)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)  # not in the local cache yet
-    monkeypatch.setattr(esi_client.ESIClient, "get_type_info", lambda self, type_id: {"group_id": 303})
+    in_batch = {}
+
+    def _get_type_info(self, type_id):
+        in_batch["esi"] = batch_probe.active
+        return {"group_id": 303}
+
+    monkeypatch.setattr(esi_client.ESIClient, "get_type_info", _get_type_info)
 
     captured = {}
-    monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
-    monkeypatch.setattr(storage, "update_snapshot_categories",
-                         lambda categories: captured.setdefault("snapshot_categories", categories))
+
+    def _upsert(items):
+        in_batch["upsert"] = batch_probe.active
+        captured.setdefault("items", items)
+
+    def _patch_snapshot(categories):
+        in_batch["snapshot"] = batch_probe.active
+        captured.setdefault("snapshot_categories", categories)
+
+    monkeypatch.setattr(storage, "upsert_shortlist", _upsert)
+    monkeypatch.setattr(storage, "update_snapshot_categories", _patch_snapshot)
 
     result = actions.do_recategorize_shortlist()
 
     assert result == {"checked": 1, "recategorized": 1}
     assert captured["items"][0].category == "Drugs"
     assert captured["snapshot_categories"] == {28672: "Drugs"}
+    # The live ESI fallback never runs while a pooled connection is pinned;
+    # both writes share one batch (one read batch + one write batch in total).
+    assert in_batch == {"esi": False, "upsert": True, "snapshot": True}
+    assert batch_probe.opened == 2
 
 
-def test_do_recategorize_shortlist_stays_implant_when_esi_lookup_also_fails(monkeypatch):
+def test_do_recategorize_shortlist_stays_implant_when_esi_lookup_also_fails(monkeypatch, batch_probe):
     from eve_trader.models import ShortlistItem
 
     existing = [ShortlistItem(item="Ocular Filter", item_id=99, category="Implant",

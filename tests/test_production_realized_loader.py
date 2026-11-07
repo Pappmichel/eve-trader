@@ -374,6 +374,79 @@ def test_jobs_know_whether_they_ran_on_a_bpc(tenant, monkeypatch):
     assert {j.job_id: j.uses_bpc for j in snap.industry_jobs} == {1: False, 2: True, 3: True, 4: None}
 
 
+def test_snapshot_reads_are_batched_but_contract_load_is_not(tenant, monkeypatch):
+    """The archive reads share a connection per phase; `_load_contracts`
+    (writes freight back, enricher may call ESI) runs with no batch open."""
+    _seed_buy_and_sell(tenant)
+    seen = {}
+
+    def _batch_open() -> bool:
+        return getattr(storage._batch_local, "conn", None) is not None
+
+    real_t0 = ledger_access.cutover_t0_for_production
+    real_types = loader._production_type_ids
+
+    def _t0():
+        seen["t0"] = _batch_open()
+        return real_t0()
+
+    def _types(job_rows):
+        seen["types"] = _batch_open()
+        return real_types(job_rows)
+
+    def _contracts():
+        seen["contracts"] = _batch_open()
+        return ()
+
+    monkeypatch.setattr(ledger_access, "cutover_t0_for_production", _t0)
+    monkeypatch.setattr(loader, "_production_type_ids", _types)
+    monkeypatch.setattr(loader, "_load_contracts", _contracts)
+    monkeypatch.setattr(loader, "_opening_stock", lambda type_ids: {})
+    # Registry/token lookups use their own (unscoped / own-transaction) connections.
+    monkeypatch.setattr(loader, "_tenant_corporation_ids", lambda: frozenset())
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+
+    pool = storage._get_pool()
+    real_getconn = pool.getconn
+    checkouts = []
+
+    def _counting(*args, **kwargs):
+        checkouts.append(1)
+        return real_getconn(*args, **kwargs)
+
+    monkeypatch.setattr(pool, "getconn", _counting)
+
+    snap = loader.load_ledger_snapshot()
+
+    assert snap is not None
+    assert seen == {"t0": True, "contracts": False, "types": True}
+    # One connection per phase (set_config once each), not one per storage call.
+    assert len(checkouts) == 2
+
+
+def test_rebuild_scope_fingerprint_shares_one_connection(tenant, monkeypatch):
+    """owner_scope_hash and the opening-version check run in one batch; the
+    run row is still written by replace_derived_costing after the reads."""
+    seen = {}
+    real_hash = ledger_access.owner_scope_hash
+    real_replace = loader.db.replace_derived_costing
+
+    def _hash():
+        seen["hash"] = getattr(storage._batch_local, "conn", None) is not None
+        return real_hash()
+
+    def _replace(**kwargs):
+        seen["replace"] = getattr(storage._batch_local, "conn", None) is not None
+        return real_replace(**kwargs)
+
+    monkeypatch.setattr(ledger_access, "owner_scope_hash", _hash)
+    monkeypatch.setattr(loader.db, "replace_derived_costing", _replace)
+
+    loader.rebuild_realized()
+
+    assert seen == {"hash": True, "replace": False}
+
+
 def test_bulk_wallet_read_is_one_owner_set(tenant):
     _share(ALICE, "wallet")
     ledger_db.upsert_ledger_wallet_transactions([

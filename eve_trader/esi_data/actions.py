@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from .. import storage
+from .. import storage, wealth_cache
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
@@ -378,6 +378,8 @@ def do_set_sharing(
         storage.upsert_esi_sharing(owner_type, owner_id, data_kind, tool_key)
     else:
         storage.delete_esi_sharing(owner_type, owner_id, data_kind, tool_key)
+    # Total Wealth caches its priced rows per tenant; the owner set just changed.
+    wealth_cache.invalidate_current_tenant()
     if tool_key == "production":
         # production/engine.py caches shared_production_owner_ids (Known
         # gap 3, docs/ESI_ACCESS_PLAN.md) rather than re-querying esi_sharing
