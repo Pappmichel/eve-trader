@@ -230,6 +230,22 @@ that path. The products report exposes `planned_cost_per_unit` and
 `planned_coverage`. Hidden archive rows of a kind can be counted and deleted
 per owner while that kind is not shared with Production.
 
+**Observed sell fees (click to apply, never automatic).** `GET /api/production/
+realized/observed-fees` and `GET /api/trading/realized/observed-fees`
+(`realized/sell_fees.py`, per-channel `observed_sell_fees()` in each report)
+show what the wallet actually charged: (sales tax + broker fee) / gross over the
+channel's market sales of the last 30 days, in the report's own owner scope.
+Production's figure is for `market_fees`; Trading's is `1 - quote` for
+`structure_sell_haircut`. Two fields, two channels, never merged. No value (with a
+`reason`) when there is no ledger run, the shared wallets changed since it
+(`needs_rebuild`, same fingerprint check as the report), or under 20 market sales
+with a known sales tax. The Settings pages show "Actual last 30 days: x % (n
+sales)" and a "Use this value" button that goes through the normal settings save;
+nothing changes a setting on its own, because a corporation wallet mixes other
+members' sales into the figure. The broker fee per sale is costing's pro-rata
+attribution (a day's real order fees spread over that day's order-based fills),
+and relist fees count only as far as a sale got them, so the figure is an estimate.
+
 ## Architecture: actions.py is the one entry point
 
 `eve_trader/actions.py` and `eve_trader/production/actions.py` hold every
@@ -1551,6 +1567,31 @@ where it says so; the CEZ/KFEZ/GEZ prefixes are owner tags, not structure
 types. Structure rigs are not in ESI assets unless the corp owns the
 structure, so names are the only automatic source. Data is cached per tenant
 (60 s TTL plus `invalidate_facility_cache()` on every write path).
+
+**Facility tax is observed, never bound to a station or category (confirmed
+with the user 2026-11-07).** A structure owner changes the rate at any time, so
+no fixed rate is stored for a station or category. `engine.facility_resolution`
+resolves it (`tax_rate`, `tax_source`) in this order: the category's manual
+override (`job_category_facilities.facility_tax_rate`, Logistics page / CLI
+`facilities set --tax-percent`), then the rate observed on the tenant's own last
+jobs at the category's structure for that job activity (1 manufacturing, 11
+reaction), then `ProductionConfig.facility_tax_rate`, which is now only the
+fallback (its Settings label says so). `engine._job_cost_rate` and
+`invention.fee_rates` (invention location, activities 8 and 5) read it there;
+nothing else may add `cfg.facility_tax_rate` to a job cost. Observation lives
+in `production/facility_tax.py`: per `(facility_id, activity)` the median of
+the 3 newest usable jobs started within 30 days, with the date of the newest
+job so the Logistics page shows the age (it also shows the observed rate while
+an override wins). One job's rate is its `industry_job_tax` journal entry
+(`context_id` = job id) divided by the job's EIV. The archive has no EIV, so it
+is an approximation: base ME 0 materials at today's ESI adjusted prices (copy
+and invention x 0.02). A job without a tax entry, a recipe, or an adjusted
+price for every material is skipped, never guessed; a missing observation falls
+back to Settings. Only owners shared with a realized-profit tool count, jobs via
+`access.shared_owners("industry_jobs")` and tax entries via `"wallet"` (D11);
+the read is one query for every job (`db.industry_job_tax_rows`), cached per
+tenant with the facility cache and dropped by `invalidate_facility_cache()`.
+Do not read the observation per item, and do not bind a rate to a station.
 
 ## Manual tracking for Production
 

@@ -44,6 +44,7 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 from .. import storage
+from . import facility_tax as facility_tax_module
 from . import pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -125,7 +126,9 @@ def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
     falling back to cfg.manufacturing_system_id, then the flat Tech II rate
     like engine._job_cost_rate. The structure cost bonus still comes from
     the manufacturing profile (there is no separate invention structure
-    profile). None if ESI's adjusted prices can't be read - the fees are
+    profile). The facility tax is the rate last observed on our own invention
+    and copy jobs at the invention location (activities 8 and 5), else
+    cfg.facility_tax_rate. None if ESI's adjusted prices can't be read - the fees are
     then left out (0) rather than guessed. Both ESI reads are cached
     class-wide by ESIClient; system resolution is cached per tenant+location.
     """
@@ -148,11 +151,19 @@ def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
             indices = {}
     cost_mult, _, _ = structure_rig_multiplier(cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier)
     flat = ACTIVITY_MODS["Tech II"].job_cost_rate
-    surcharge = cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+
+    def facility_tax(activity_id: int) -> float:
+        # Rate last observed on our own jobs at the invention location, else
+        # the Settings rate (production/facility_tax.py).
+        observed = facility_tax_module.observed_for_location(cfg.invention_location_id, activity_id)
+        return cfg.facility_tax_rate if observed is None else observed.rate
+
     return FeeRates(
         adjusted_prices=adjusted,
-        invention_rate=indices.get("invention", flat) * cost_mult + surcharge,
-        copying_rate=indices.get("copying", flat) * cost_mult + surcharge,
+        invention_rate=(indices.get("invention", flat) * cost_mult
+                        + facility_tax(facility_tax_module.ACTIVITY_INVENTION) + SCC_SURCHARGE_RATE),
+        copying_rate=(indices.get("copying", flat) * cost_mult
+                      + facility_tax(facility_tax_module.ACTIVITY_COPYING) + SCC_SURCHARGE_RATE),
     )
 
 

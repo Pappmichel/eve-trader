@@ -2571,6 +2571,19 @@ def test_trading_realized_routes_call_the_trading_actions(monkeypatch):
     assert client.get("/api/trading/realized/rebuild/status").json()["status"] == "idle"
 
 
+def test_observed_sell_fee_routes_call_the_read_only_actions(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_get_realized_observed_fees",
+                        lambda: {"setting": "market_fees", "quote": 0.0537, "suggested": 0.0537, "sales": 25})
+    monkeypatch.setattr(trade_realized_actions, "do_get_trading_realized_observed_fees",
+                        lambda: {"setting": "structure_sell_haircut", "quote": 0.0537,
+                                 "suggested": 0.9463, "sales": 25})
+
+    prod = client.get("/api/production/realized/observed-fees").json()
+    assert prod["setting"] == "market_fees" and prod["suggested"] == 0.0537
+    trade = client.get("/api/trading/realized/observed-fees").json()
+    assert trade["setting"] == "structure_sell_haircut" and trade["suggested"] == 0.9463
+
+
 def test_trading_realized_bad_period_is_400():
     resp = client.get("/api/trading/realized/summary", params={"days": 0})
     assert resp.status_code == 400
@@ -2711,9 +2724,10 @@ def test_max_buildable_action_error_maps_to_400(monkeypatch):
 def test_category_facility_set_passes_fields_to_action(monkeypatch):
     captured = {}
 
-    def _set(category, structure_type, rig_tier_basic, rig_tier_advanced):
+    def _set(category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate):
         captured.update(category=category, structure_type=structure_type,
-                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced)
+                        rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced,
+                        facility_tax_rate=facility_tax_rate)
         return captured
     monkeypatch.setattr(production_actions, "do_set_category_facility", _set)
 
@@ -2722,7 +2736,12 @@ def test_category_facility_set_passes_fields_to_action(monkeypatch):
 
     assert resp.status_code == 200
     assert captured == {"category": "Large Ships", "structure_type": None,
-                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig"}
+                        "rig_tier_basic": "T1-Rig", "rig_tier_advanced": "T2-Rig",
+                        "facility_tax_rate": None}
+
+    client.post("/api/production/logistics/facilities",
+                json={"category": "Large Ships", "facility_tax_rate": 0.005})
+    assert captured["facility_tax_rate"] == 0.005
 
 
 def test_category_facility_errors_map_to_400(monkeypatch):

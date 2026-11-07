@@ -680,16 +680,31 @@ def facilities_group():
 @_tenant_id_option
 def facilities_list(tenant_id: str | None):
     """Shows the structure type and rigs each job category is computed with,
-    and where each value comes from (set / name / global)."""
+    and where each value comes from (set / name / global), plus the facility
+    tax in use (override / observed on the last own jobs / Settings) and how
+    old the observation is."""
     result = _targets_call(tenant_id, production_actions.do_list_category_facilities)
-    click.echo(f"{'category':<20} {'structure':<34} {'Tech I rig':<16} {'Tech II rig':<16} {'sec x':>5}  name")
+    click.echo(f"{'category':<20} {'structure':<34} {'Tech I rig':<16} {'Tech II rig':<16} {'sec x':>5}  "
+               f"{'facility tax':<30} name")
     for row in result["categories"]:
         eff = row["effective"]
         basic = f"{eff['rig_tier_basic']} ({eff['rig_source_basic']})"
         advanced = f"{eff['rig_tier_advanced']} ({eff['rig_source_advanced']})" if row["split_by_tech"] else "-"
         structure = f"{eff['structure_type']} ({eff['structure_source']})"
         click.echo(f"{row['category']:<20} {structure[:34]:<34} {basic:<16} {advanced:<16} "
-                   f"{eff['security_multiplier']:>5.2f}  {row['structure_name'] or '-'}")
+                   f"{eff['security_multiplier']:>5.2f}  {_tax_text(row.get('tax')):<30} "
+                   f"{row['structure_name'] or '-'}")
+
+
+def _tax_text(tax: dict | None) -> str:
+    """'0.50% (observed, 3 jobs, 2d ago)' for one `facilities list` row."""
+    if not tax:
+        return "-"
+    text = f"{tax['effective'] * 100:.2f}% ({tax['source']}"
+    observed = tax.get("observed")
+    if tax["source"] == "observed" and observed:
+        text += f", {observed['jobs']} jobs, {observed['age_days']:.0f}d ago"
+    return text + ")"
 
 
 @facilities_group.command("set")
@@ -697,13 +712,18 @@ def facilities_list(tenant_id: str | None):
 @click.option("--structure", "structure_type", default=None, help="Structure type, e.g. 'Azbel (L Engineering Complex)'.")
 @click.option("--rig", "rig_tier_basic", default=None, help="Rig tier for Tech I items (or every item outside ship categories).")
 @click.option("--rig-advanced", "rig_tier_advanced", default=None, help="Rig tier for Tech II/III hulls (ship categories only).")
+@click.option("--tax-percent", "tax_percent", type=float, default=None,
+              help="Facility tax override in percent, e.g. 0.5. Without it the rate last observed on your own jobs "
+                   "at the category's structure applies, then the Settings rate.")
 @_tenant_id_option
 def facilities_set(category: str, structure_type: str | None, rig_tier_basic: str | None,
-                   rig_tier_advanced: str | None, tenant_id: str | None):
-    """Saves CATEGORY's structure type and rig tiers (values not given are
-    cleared and fall back to the structure name, then the global setting)."""
+                   rig_tier_advanced: str | None, tax_percent: float | None, tenant_id: str | None):
+    """Saves CATEGORY's structure type, rig tiers and facility tax override
+    (values not given are cleared and fall back to the structure name, then
+    the global setting; the tax to the observed rate, then Settings)."""
     _targets_call(tenant_id, lambda: production_actions.do_set_category_facility(
-        category, structure_type=structure_type, rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced))
+        category, structure_type=structure_type, rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced,
+        facility_tax_rate=None if tax_percent is None else tax_percent / 100))
     click.echo(f"Saved {category}.")
 
 

@@ -143,6 +143,7 @@ export const tradingApi = {
     get<{ needs_rebuild: boolean; rows: T.TradingRealizedInventoryRow[] }>('/api/trading/realized/inventory'),
   realizedWarnings: () =>
     get<{ needs_rebuild: boolean; rows: T.TradingRealizedWarning[] }>('/api/trading/realized/warnings'),
+  realizedObservedFees: () => get<T.ObservedSellFees>('/api/trading/realized/observed-fees'),
   startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
   realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
@@ -489,6 +490,7 @@ export const productionApi = {
   realizedInventory: () => get<T.RealizedInventoryList>('/api/production/realized/inventory'),
   realizedReprocessing: () => get<T.RealizedReprocessList>('/api/production/realized/reprocessing'),
   realizedWarnings: () => get<T.RealizedWarningList>('/api/production/realized/warnings'),
+  realizedObservedFees: () => get<T.ObservedSellFees>('/api/production/realized/observed-fees'),
   realizedOpening: () => get<T.RealizedOpeningList>('/api/production/realized/opening'),
   realizedEntries: () => get<T.RealizedLedgerEntryList>('/api/production/realized/entries'),
   addRealizedEntry: (body: {

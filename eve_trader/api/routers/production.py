@@ -931,12 +931,14 @@ class CategoryFacilityRequest(BaseModel):
     structure_type: Optional[str] = None
     rig_tier_basic: Optional[str] = None
     rig_tier_advanced: Optional[str] = None
+    facility_tax_rate: Optional[float] = None  # fraction; None = observed rate, then Settings
 
 
 @router.post("/logistics/facilities")
 def set_category_facility(req: CategoryFacilityRequest):
     return _wrap(actions.do_set_category_facility, category=req.category, structure_type=req.structure_type,
-                 rig_tier_basic=req.rig_tier_basic, rig_tier_advanced=req.rig_tier_advanced)
+                 rig_tier_basic=req.rig_tier_basic, rig_tier_advanced=req.rig_tier_advanced,
+                 facility_tax_rate=req.facility_tax_rate)
 
 
 @router.delete("/logistics/facilities/{category}")

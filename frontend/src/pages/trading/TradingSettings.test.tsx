@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MantineProvider } from '@mantine/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
@@ -9,6 +10,7 @@ vi.mock('../../api/client', () => ({
   tradingApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),
+    realizedObservedFees: vi.fn(),
   },
   productionApi: {
     structureNames: vi.fn(),
@@ -51,5 +53,50 @@ describe('TradingSettings buy hub labels', () => {
     expect(await screen.findByLabelText(/Buyer name \(Amarr\)/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Freight cost Amarr→structure/)).toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Buy hub' })).not.toBeInTheDocument()
+  })
+})
+
+describe('TradingSettings observed sell fees', () => {
+  const FEES = {
+    setting: 'structure_sell_haircut', window_days: 30, min_sales: 20, sales: 25, quote: 0.0537,
+    suggested: 0.9463, sales_tax_rate: 0.036, broker_fee_rate: 0.0177, reason: null, message: null,
+    relist_note: 'Relist and order-modification fees are included only as far as they are attributed to a sale.',
+  }
+
+  it('shows the actual rate beside the haircut and saves nothing by itself', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue(FEES as any)
+    renderPage()
+
+    expect(await screen.findByText(/Actual last 30 days: 94\.63 % \(25 sales\)/)).toBeInTheDocument()
+    expect(tradingApi.updateSettings).not.toHaveBeenCalled()
+  })
+
+  it('"Use this value" saves the whole form with the new haircut through the settings save', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue(FEES as any)
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Use this value' }))
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toMatchObject({
+      structure_sell_haircut: 0.9463, import_cost_per_m3: 1500, min_profit_threshold: 100,
+    })
+  })
+
+  it('shows the reason and no button when the figure has no value', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({
+      ...FEES, sales: 0, quote: null, suggested: null, reason: 'needs_rebuild',
+      message: 'The shared wallets changed since the last rebuild. Rebuild the realized-profit ledger first.',
+    } as any)
+    renderPage()
+
+    expect(await screen.findByText(/Rebuild the realized-profit ledger first/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
   })
 })
