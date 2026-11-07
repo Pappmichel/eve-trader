@@ -881,153 +881,158 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                          reset_opening: bool = False) -> Optional[LedgerSnapshot]:
     """Assemble a LedgerSnapshot from the archive (with cached reference
     prices only), or None when T0 is unknown."""
-    t0 = access.cutover_t0_for_production()
-    if t0 is None:
-        return None
-    t0 = _as_utc(t0)
-    if scope_hash is None:
-        scope_hash = access.owner_scope_hash()
+    # Pure archive reads share one pooled connection. `_load_contracts` stays
+    # outside both batches: it writes freight/regions back and its enricher
+    # can resolve a ship/module volume over ESI.
+    with storage.batch_session():
+        t0 = access.cutover_t0_for_production()
+        if t0 is None:
+            return None
+        t0 = _as_utc(t0)
+        if scope_hash is None:
+            scope_hash = access.owner_scope_hash()
 
-    tx_rows = access.list_all_wallet_transactions_for_production()
-    journal_rows = access.list_all_wallet_journal_for_production()
-    order_rows = access.list_all_market_orders_for_production()
-    job_rows = access.list_all_industry_jobs_for_production()
-    input_rows = access.list_all_job_inputs_for_production()
+        tx_rows = access.list_all_wallet_transactions_for_production()
+        journal_rows = access.list_all_wallet_journal_for_production()
+        order_rows = access.list_all_market_orders_for_production()
+        job_rows = access.list_all_industry_jobs_for_production()
+        input_rows = access.list_all_job_inputs_for_production()
 
-    inputs_by_job: dict[tuple, list[JobInput]] = defaultdict(list)
-    for ot, oid, job_id, type_id, qty, source in input_rows:
-        inputs_by_job[(ot, int(oid), int(job_id))].append(
-            JobInput(type_id=int(type_id), quantity=float(qty), source=str(source)),
-        )
+        inputs_by_job: dict[tuple, list[JobInput]] = defaultdict(list)
+        for ot, oid, job_id, type_id, qty, source in input_rows:
+            inputs_by_job[(ot, int(oid), int(job_id))].append(
+                JobInput(type_id=int(type_id), quantity=float(qty), source=str(source)),
+            )
 
-    txs = [
-        WalletTransaction(
-            owner_type=r[0], owner_id=int(r[1]), division=int(r[2]),
-            transaction_id=int(r[3]), date=_as_utc(r[4]), type_id=int(r[5]),
-            location_id=int(r[6]), unit_price=float(r[7]), quantity=float(r[8]),
-            is_buy=bool(r[9]), journal_ref_id=int(r[10]) if r[10] is not None else None,
-            region_id=int(r[11]) if r[11] is not None else None,
-            freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
-            freight_m3=float(r[13]) if r[13] is not None else None,
-        )
-        for r in tx_rows
-    ]
-    journals = [
-        JournalEntry(
-            owner_type=r[0], owner_id=int(r[1]), division=int(r[2]),
-            journal_id=int(r[3]), date=_as_utc(r[4]), ref_type=str(r[5]),
-            amount=float(r[6]),
-            context_id=int(r[7]) if r[7] is not None else None,
-            context_id_type=str(r[8]) if r[8] is not None else None,
-        )
-        for r in journal_rows
-    ]
-    orders = [
-        MarketOrder(
-            owner_type=r[0], owner_id=int(r[1]), order_id=int(r[2]),
-            type_id=int(r[3]), location_id=int(r[4]), is_buy_order=bool(r[5]),
-            price=float(r[6]),
-            volume_total=float(r[7]) if r[7] is not None else 0.0,
-            issued=_as_utc(r[8]) if r[8] is not None else None,
-            state=str(r[9]) if r[9] is not None else None,
-        )
-        for r in order_rows
-    ]
+        txs = [
+            WalletTransaction(
+                owner_type=r[0], owner_id=int(r[1]), division=int(r[2]),
+                transaction_id=int(r[3]), date=_as_utc(r[4]), type_id=int(r[5]),
+                location_id=int(r[6]), unit_price=float(r[7]), quantity=float(r[8]),
+                is_buy=bool(r[9]), journal_ref_id=int(r[10]) if r[10] is not None else None,
+                region_id=int(r[11]) if r[11] is not None else None,
+                freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
+                freight_m3=float(r[13]) if r[13] is not None else None,
+            )
+            for r in tx_rows
+        ]
+        journals = [
+            JournalEntry(
+                owner_type=r[0], owner_id=int(r[1]), division=int(r[2]),
+                journal_id=int(r[3]), date=_as_utc(r[4]), ref_type=str(r[5]),
+                amount=float(r[6]),
+                context_id=int(r[7]) if r[7] is not None else None,
+                context_id_type=str(r[8]) if r[8] is not None else None,
+            )
+            for r in journal_rows
+        ]
+        orders = [
+            MarketOrder(
+                owner_type=r[0], owner_id=int(r[1]), order_id=int(r[2]),
+                type_id=int(r[3]), location_id=int(r[4]), is_buy_order=bool(r[5]),
+                price=float(r[6]),
+                volume_total=float(r[7]) if r[7] is not None else 0.0,
+                issued=_as_utc(r[8]) if r[8] is not None else None,
+                state=str(r[9]) if r[9] is not None else None,
+            )
+            for r in order_rows
+        ]
 
-    bp_runs = db.blueprint_runs_by_item(
-        access.shared_owners("blueprints"),
-        [int(r[4]) for r in job_rows if r[4] is not None],
-    )
-    invented = db.invented_blueprint_type_ids()
-    jobs: list[IndustryJob] = []
-    for r in job_rows:
-        key = (r[0], int(r[1]), int(r[2]))
-        job_inputs = list(inputs_by_job.get(key, ()))
-        jobs.append(IndustryJob(
-            owner_type=r[0], owner_id=int(r[1]), job_id=int(r[2]),
-            activity_id=int(r[3]), blueprint_type_id=int(r[5]),
-            product_type_id=int(r[6]) if r[6] is not None else None,
-            runs=int(r[7] or 0),
-            licensed_runs=int(r[8]) if r[8] is not None else None,
-            successful_runs=int(r[9]) if r[9] is not None else None,
-            cost=float(r[10]) if r[10] is not None else None,
-            facility_id=int(r[11]) if r[11] is not None else None,
-            installer_id=int(r[12]) if r[12] is not None else None,
-            start_date=_as_utc(r[13]) if r[13] is not None else None,
-            end_date=_as_utc(r[14]) if r[14] is not None else None,
-            completed_date=_as_utc(r[15]) if r[15] is not None else None,
-            status=str(r[16]) if r[16] is not None else None,
-            probability=float(r[17]) if r[17] is not None else None,
-            inputs=tuple(job_inputs),
-            output_quantity=_output_quantity(r),
-            output_runs_per_success=_output_runs_per_success(r, job_inputs),
-            uses_bpc=_uses_bpc(r, bp_runs, invented),
-        ))
+        bp_runs = db.blueprint_runs_by_item(
+            access.shared_owners("blueprints"),
+            [int(r[4]) for r in job_rows if r[4] is not None],
+        )
+        invented = db.invented_blueprint_type_ids()
+        jobs: list[IndustryJob] = []
+        for r in job_rows:
+            key = (r[0], int(r[1]), int(r[2]))
+            job_inputs = list(inputs_by_job.get(key, ()))
+            jobs.append(IndustryJob(
+                owner_type=r[0], owner_id=int(r[1]), job_id=int(r[2]),
+                activity_id=int(r[3]), blueprint_type_id=int(r[5]),
+                product_type_id=int(r[6]) if r[6] is not None else None,
+                runs=int(r[7] or 0),
+                licensed_runs=int(r[8]) if r[8] is not None else None,
+                successful_runs=int(r[9]) if r[9] is not None else None,
+                cost=float(r[10]) if r[10] is not None else None,
+                facility_id=int(r[11]) if r[11] is not None else None,
+                installer_id=int(r[12]) if r[12] is not None else None,
+                start_date=_as_utc(r[13]) if r[13] is not None else None,
+                end_date=_as_utc(r[14]) if r[14] is not None else None,
+                completed_date=_as_utc(r[15]) if r[15] is not None else None,
+                status=str(r[16]) if r[16] is not None else None,
+                probability=float(r[17]) if r[17] is not None else None,
+                inputs=tuple(job_inputs),
+                output_quantity=_output_quantity(r),
+                output_runs_per_success=_output_runs_per_success(r, job_inputs),
+                uses_bpc=_uses_bpc(r, bp_runs, invented),
+            ))
 
     contracts = _load_contracts()
-    production_types = _production_type_ids(job_rows)
-    type_ids: set[int] = set(production_types)
-    for contract in contracts:
-        for item in contract.items:
-            if not item.is_blueprint:
-                type_ids.add(int(item.type_id))
-    for tx in txs:
-        type_ids.add(int(tx.type_id))
-    for job in jobs:
-        type_ids.add(int(job.blueprint_type_id))
-        if job.product_type_id is not None:
-            type_ids.add(int(job.product_type_id))
-        for inp in job.inputs:
-            type_ids.add(int(inp.type_id))
+    with storage.batch_session():
+        production_types = _production_type_ids(job_rows)
+        type_ids: set[int] = set(production_types)
+        for contract in contracts:
+            for item in contract.items:
+                if not item.is_blueprint:
+                    type_ids.add(int(item.type_id))
+        for tx in txs:
+            type_ids.add(int(tx.type_id))
+        for job in jobs:
+            type_ids.add(int(job.blueprint_type_id))
+            if job.product_type_id is not None:
+                type_ids.add(int(job.product_type_id))
+            for inp in job.inputs:
+                type_ids.add(int(inp.type_id))
 
-    reprocess = _reprocess_inputs(t0)
-    if reprocess and _baseline_changed(min(o.observed_at for o in reprocess["stock_observations"])):
-        reset_opening = True
-    for obs in reprocess.get("stock_observations", ()):
-        type_ids.update(int(t) for t in obs.quantities)
-    for recipe in reprocess.get("reprocess_recipes", {}).values():
-        type_ids.update(int(m) for m, _q in recipe.materials)
-    stock = _opening_stock(type_ids)
-    type_ids.update(stock.keys())
-    prices, _misses = _cached_prices(type_ids)
-    # D3: the market only trades blueprint originals, so a blueprint bought
-    # there is a BPO (capital), never an inventory layer.
-    bpo_types = frozenset(_blueprint_type_ids({int(tx.type_id) for tx in txs if tx.is_buy}))
+        reprocess = _reprocess_inputs(t0)
+        if reprocess and _baseline_changed(min(o.observed_at for o in reprocess["stock_observations"])):
+            reset_opening = True
+        for obs in reprocess.get("stock_observations", ()):
+            type_ids.update(int(t) for t in obs.quantities)
+        for recipe in reprocess.get("reprocess_recipes", {}).values():
+            type_ids.update(int(m) for m, _q in recipe.materials)
+        stock = _opening_stock(type_ids)
+        type_ids.update(stock.keys())
+        prices, _misses = _cached_prices(type_ids)
+        # D3: the market only trades blueprint originals, so a blueprint bought
+        # there is a BPO (capital), never an inventory layer.
+        bpo_types = frozenset(_blueprint_type_ids({int(tx.type_id) for tx in txs if tx.is_buy}))
 
-    station_owners = frozenset(access.shared_owners_for("wallet", "station_trading"))
-    return LedgerSnapshot(
-        t0=t0,
-        reference_prices=prices,
-        esi_stock_by_type={int(k): float(v) for k, v in stock.items()},
-        production_type_ids=production_types,
-        tenant_character_ids=_tenant_character_ids(),
-        wallet_transactions=tuple(txs),
-        journal_entries=tuple(journals),
-        market_orders=tuple(orders),
-        industry_jobs=tuple(jobs),
-        opening_cost_overrides=db.list_opening_cost_overrides(),
-        home_structure_id=PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id,
-        bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
-        relic_type_ids=_relic_type_ids(),
-        bpo_type_ids=bpo_types,
-        frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
-        contracts=contracts,
-        couriers=_load_couriers(),
-        tenant_corporation_ids=_tenant_corporation_ids(),
-        # No station pool until someone shares a wallet with Station Trading,
-        # so a tenant without it keeps one global pool (ST1).
-        station_trading_station_id=STATION_TRADING_CONFIG.station_id if station_owners else None,
-        station_trading_wallet_owners=station_owners,
-        doctrine_structure_ids=frozenset(DOCTRINE_CONFIG.effective_structure_ids),
-        doctrine_contract_owners=frozenset(
-            access.shared_owners_for("contracts", "doctrine"),
-        ),
-        fee_coverage_starts={
-            key: None if start is None else _as_utc(start)
-            for key, start in access.fee_coverage_starts_for_production().items()
-        },
-        **reprocess,
-    )
+        station_owners = frozenset(access.shared_owners_for("wallet", "station_trading"))
+        return LedgerSnapshot(
+            t0=t0,
+            reference_prices=prices,
+            esi_stock_by_type={int(k): float(v) for k, v in stock.items()},
+            production_type_ids=production_types,
+            tenant_character_ids=_tenant_character_ids(),
+            wallet_transactions=tuple(txs),
+            journal_entries=tuple(journals),
+            market_orders=tuple(orders),
+            industry_jobs=tuple(jobs),
+            opening_cost_overrides=db.list_opening_cost_overrides(),
+            home_structure_id=PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id,
+            bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
+            relic_type_ids=_relic_type_ids(),
+            bpo_type_ids=bpo_types,
+            frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
+            contracts=contracts,
+            couriers=_load_couriers(),
+            tenant_corporation_ids=_tenant_corporation_ids(),
+            # No station pool until someone shares a wallet with Station Trading,
+            # so a tenant without it keeps one global pool (ST1).
+            station_trading_station_id=STATION_TRADING_CONFIG.station_id if station_owners else None,
+            station_trading_wallet_owners=station_owners,
+            doctrine_structure_ids=frozenset(DOCTRINE_CONFIG.effective_structure_ids),
+            doctrine_contract_owners=frozenset(
+                access.shared_owners_for("contracts", "doctrine"),
+            ),
+            fee_coverage_starts={
+                key: None if start is None else _as_utc(start)
+                for key, start in access.fee_coverage_starts_for_production().items()
+            },
+            **reprocess,
+        )
 
 
 def _run_costing(snapshot: LedgerSnapshot, today: Optional[date] = None):
@@ -1295,8 +1300,9 @@ def rebuild_realized(reset_opening: bool = False) -> dict:
     ActionError - callers in Phase 3 wrap that. An empty archive (no T0)
     clears derived tables and records a run with a warning.
     """
-    scope_hash = access.owner_scope_hash()
-    reset_opening = _opening_reset_for_version(reset_opening)
+    with storage.batch_session():  # the scope fingerprint alone is dozens of share lookups
+        scope_hash = access.owner_scope_hash()
+        reset_opening = _opening_reset_for_version(reset_opening)
     snapshot = load_ledger_snapshot(scope_hash=scope_hash, reset_opening=reset_opening)
     if snapshot is None:
         warnings = ["no wallet archive yet; cutover T0 unknown"]
