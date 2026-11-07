@@ -551,3 +551,34 @@ def test_manufacturing_stays_on_tax_observation_not_the_total_rate(tenant):
     assert (FAC_A, 1) in facility_tax.observed_rates()
 
 
+
+# ------------------------------------------------ parent-resolve cache (Fix 2)
+
+
+@pytest.mark.live_fee_rates
+def test_fee_rates_resolve_an_office_parent_at_most_once(tenant, monkeypatch):
+    # Observation lives on the structure; fee_rates is called with an Office
+    # inside it. Without a parent cache that would re-describe every call.
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.locations.reader import LocationInfo
+    monkeypatch.setattr(esi_client_module, "ESIClient", _NoNetworkClient)
+    office = 1_040_000_000_002
+    calls = {"n": 0}
+
+    def describe(ids):
+        calls["n"] += 1
+        return {office: LocationInfo(
+            location_id=office, kind="office", parent_id=FAC_A, solar_system_id=30000142)}
+
+    monkeypatch.setattr("eve_trader.locations.reader.describe", describe)
+    _share_all()
+    _job(1, FAC_A, 0.0, activity=8, product=BP_INVENTED, cost=6.152, with_tax=False, eiv=40.0)
+    cfg = _cfg(invention_location_id=office, manufacturing_system_id=None)
+
+    for _ in range(20):
+        rates = invention.fee_rates(cfg)
+        assert rates.invention_rate == pytest.approx(6.152 / 40.0)
+
+    # Parent cache + invention-system cache share the same describe stub;
+    # both cache a hit, so many fee_rates calls stay at most 2 describes.
+    assert 1 <= calls["n"] <= 2
