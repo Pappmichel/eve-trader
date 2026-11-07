@@ -2457,6 +2457,102 @@ def _expand_all_bom(monkeypatch):
     monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
 
 
+# ------------------------------------------------------------------ _base_runs
+# BOM for the pooled-ceil regression: two parents each need 5 of a component
+# whose product_qty is 10. Depth-first (old) ceiled each edge to 1 run → 2;
+# level-pooled (new) ceils 10 once → 1.
+_BASE_RUNS_POOL_BP = {
+    1: (201, 1, 1),   # ParentA
+    2: (202, 1, 1),   # ParentB
+    3: (203, 1, 10),  # Shared component: 10 units per run
+}
+_BASE_RUNS_POOL_MATERIALS = {
+    201: [(3, 5)],
+    202: [(3, 5)],
+    203: [(4, 1)],  # leaf input (no BP)
+}
+
+
+@pytest.fixture
+def _base_runs_pool_bom(monkeypatch):
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", _BASE_RUNS_POOL_BP[type_id]) if type_id in _BASE_RUNS_POOL_BP else ("Input", None)
+    ))
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                         lambda blueprint_id, activity_id: _BASE_RUNS_POOL_MATERIALS.get(blueprint_id, []))
+    monkeypatch.setattr(engine, "_activity_mods",
+                         lambda activity, type_id, cfg, cost_indices, blueprint_id=None: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: (
+                             "Buy" if bp is None or manual_overrides.get(type_id) == "Buy" else "Build"))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+
+
+def test_base_runs_pools_shared_component_ceil_once_per_level(_base_runs_pool_bom):
+    cfg = ProductionConfig(component_overbuild=0.0)
+    stock_targets = [(1, "ParentA", 1, 0, 0), (2, "ParentB", 1, 0, 0)]
+    base_runs = engine._base_runs(cfg, {}, {}, {}, {}, {}, {}, {}, {}, stock_targets)
+    # ParentA + ParentB each 1 run; Shared: ceil((5+5)/10) = 1 (not 1+1=2).
+    assert base_runs == {1: 1.0, 2: 1.0, 3: 1.0}
+
+
+def test_base_runs_keeps_same_type_separate_across_depths(_expand_all_bom):
+    # Common is reached at depth 1 (ItemA) and depth 2 (ItemB→Middle). Each
+    # level still contributes its own ceil; pooling is within a level only.
+    cfg = ProductionConfig(component_overbuild=0.0)
+    stock_targets = [(1, "ItemA", 1, 0, 0), (2, "ItemB", 1, 0, 0)]
+    base_runs = engine._base_runs(cfg, {}, {}, {}, {}, {}, {}, {}, {}, stock_targets)
+    assert base_runs == {1: 1.0, 2: 1.0, 3: 110.0, 4: 10.0}
+
+
+def test_base_runs_buy_override_stops_only_that_branch(_base_runs_pool_bom):
+    cfg = ProductionConfig(component_overbuild=0.0)
+    stock_targets = [(1, "ParentA", 1, 0, 0), (2, "ParentB", 1, 0, 0)]
+    # Force ParentB to Buy: only ParentA's 5 units of Shared reach the next level.
+    overrides = {2: "Buy"}
+    base_runs = engine._base_runs(cfg, {}, {}, overrides, {}, {}, {}, {}, {}, stock_targets)
+    assert 2 not in base_runs
+    assert base_runs == {1: 1.0, 3: 1.0}  # ceil(5/10) = 1 from ParentA alone
+
+
+def test_base_runs_fills_same_cost_memo_keys(_base_runs_pool_bom, monkeypatch):
+    seen = []
+    real = engine._unit_cost
+
+    def track(type_id, *a, **k):
+        seen.append(type_id)
+        return real(type_id, *a, **k)
+
+    monkeypatch.setattr(engine, "_unit_cost", track)
+    cfg = ProductionConfig(component_overbuild=0.0)
+    cost_memo: dict = {}
+    stock_targets = [(1, "ParentA", 1, 0, 0), (2, "ParentB", 1, 0, 0)]
+    engine._base_runs(cfg, {}, {}, {}, cost_memo, {}, {}, {}, {}, stock_targets)
+    # Every visited type (parents + shared + leaf) gets a _unit_cost call;
+    # leaf 4 is priced even though Buy ends expansion.
+    assert set(seen) == {1, 2, 3, 4}
+
+
+def test_base_runs_unit_cost_calls_do_not_grow_with_duplicate_targets(_base_runs_pool_bom, monkeypatch):
+    calls = {"n": 0}
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return 0.0
+
+    monkeypatch.setattr(engine, "_unit_cost", counting)
+    cfg = ProductionConfig(component_overbuild=0.0)
+    one = [(1, "ParentA", 1, 0, 0), (2, "ParentB", 1, 0, 0)]
+    many = one + [(1, "ParentA", 1, 0, 0)] * 20  # more demand on ParentA, same types
+    engine._base_runs(cfg, {}, {}, {}, {}, {}, {}, {}, {}, one)
+    n_one = calls["n"]
+    calls["n"] = 0
+    engine._base_runs(cfg, {}, {}, {}, {}, {}, {}, {}, {}, many)
+    n_many = calls["n"]
+    # Same type set, same depth levels → same visit count (pooled per level).
+    assert n_many == n_one
+
+
 def test_expand_all_does_not_double_count_overbuild_buffer_for_a_component_shared_at_different_depths(_expand_all_bom):
     # Real bug found via a user report ("Buy List total looks far too high") -
     # Common is reachable at depth 1 (from ItemA) and depth 2 (from ItemB via

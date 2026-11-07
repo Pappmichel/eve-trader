@@ -1713,6 +1713,14 @@ def _base_runs(cfg: ProductionConfig, home: dict, jita: dict, manual_overrides: 
     level over level (see _expand_all's docstring for why a naive
     multiplicative buffer would).
 
+    Walks breadth-first, level by level (same shape as _expand_all's real
+    demand walk): demand for a type_id is pooled across every parent that
+    reaches it *this round*, then rounded once with ceil(qty / product_qty).
+    A type that appears again at a deeper level is handled in that later
+    round separately - never merged across depths. The previous depth-first
+    walk rounded once per parent edge, so a shared component claimed by N
+    parents paid N separate ceils; this matches how the plan itself rounds.
+
     `alchemy_memo` is threaded straight into _unit_cost below and otherwise
     unused here (the buffer baseline stays sized off the normal recipe):
     this pass is the *first* thing that prices the whole tree, so its
@@ -1720,39 +1728,42 @@ def _base_runs(cfg: ProductionConfig, home: dict, jita: dict, manual_overrides: 
     returns - without this the memo would end up empty and _expand_all would
     never see an alchemy decision at all."""
     base_runs: dict[int, float] = {}
-
-    def expand(type_id: int, quantity: float, depth: int = 0) -> None:
-        """Recurses down the BOM, accumulating each type_id's total run
-        count into the enclosing `base_runs` (pooled across every branch
-        that needs it, same "pool demand, don't double count" shape
-        _expand_all uses for the real plan) - stops at a bought leaf, a
-        manual Buy override, or MAX_DEPTH."""
-        if quantity <= 0 or depth >= MAX_DEPTH:
-            return
-        activity, bp = classify_activity(type_id)
-        _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
-                    adjusted_prices, 0, alchemy_memo)
-        decision = _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth)
-        if decision == "Buy" or bp is None:
-            return
-        blueprint_id, activity_id, product_qty = bp
-        runs = math.ceil(quantity / product_qty)
-        base_runs[type_id] = base_runs.get(type_id, 0.0) + runs
-        if activity == "Tech II":
-            material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                    selected_decryptors, t2_memo)
-        else:
-            # cost_indices (a real param of the enclosing _base_runs, not {}) so a manual
-            # ME/TE override affects this sizing baseline too - see _expand_all's own
-            # docstring for the same fix/reasoning; _base_runs feeds only the overbuild
-            # buffer, not real demand, but should still reflect the same material_mult.
-            material_mult, _, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
-        for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
-            expand(material_id, _material_qty(base_qty, material_mult, runs), depth + 1)
-
-    for type_id, type_name, backup_stock, home_market_stock, jita_market_stock in stock_targets:
+    jobs_this_level: dict[int, float] = {}
+    for type_id, _type_name, backup_stock, home_market_stock, jita_market_stock in stock_targets:
         demand = backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0)
-        expand(type_id, demand)
+        if demand > 0:
+            jobs_this_level[type_id] = jobs_this_level.get(type_id, 0.0) + demand
+
+    depth = 0
+    while jobs_this_level and depth < MAX_DEPTH:
+        next_level: dict[int, float] = {}
+        for type_id, quantity in jobs_this_level.items():
+            if quantity <= 0:
+                continue
+            activity, bp = classify_activity(type_id)
+            _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
+                        adjusted_prices, 0, alchemy_memo)
+            decision = _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth)
+            if decision == "Buy" or bp is None:
+                continue
+            blueprint_id, activity_id, product_qty = bp
+            runs = math.ceil(quantity / product_qty)
+            base_runs[type_id] = base_runs.get(type_id, 0.0) + runs
+            if activity == "Tech II":
+                material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                        selected_decryptors, t2_memo)
+            else:
+                # cost_indices (a real param of the enclosing _base_runs, not {}) so a manual
+                # ME/TE override affects this sizing baseline too - see _expand_all's own
+                # docstring for the same fix/reasoning; _base_runs feeds only the overbuild
+                # buffer, not real demand, but should still reflect the same material_mult.
+                material_mult, _, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
+            for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
+                needed = _material_qty(base_qty, material_mult, runs)
+                if needed > 0:
+                    next_level[material_id] = next_level.get(material_id, 0.0) + needed
+        jobs_this_level = next_level
+        depth += 1
     return base_runs
 
 
