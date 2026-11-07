@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 import math
 from pathlib import Path
@@ -97,6 +97,29 @@ def _default_manual_stock_at_location(monkeypatch):
     # resolver. A test that specifically wants manual stock at a location
     # overrides this fixture's monkeypatch itself.
     monkeypatch.setattr(storage, "manual_stock_at_location", lambda type_id, location_id: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _logistics_bulk_stock_from_single_stubs(request, monkeypatch):
+    # logistics_status/distribution_recommendations read stock through
+    # engine._stock_lookup (bulk storage readers). Their tests below stub the
+    # single-id storage.esi_stock_at_location/manual_stock_at_location with a
+    # per-location fake; this adapter serves the bulk readers from those same
+    # stubs (looked up at call time), so the fakes and expected values stay as
+    # they were. Only these tests: others call the real single-id reader,
+    # which itself goes through the bulk one.
+    name = request.node.name
+    if "logistics_status" not in name and "distribution_recommendations" not in name:
+        return
+
+    def bulk(type_ids, location_id, **kwargs):
+        return {t: storage.esi_stock_at_location(t, location_id, **kwargs) for t in dict.fromkeys(type_ids)}
+
+    def manual_bulk(type_ids, location_id):
+        return {t: storage.manual_stock_at_location(t, location_id) for t in dict.fromkeys(type_ids)}
+
+    monkeypatch.setattr(storage, "esi_stock_at_location_bulk", bulk)
+    monkeypatch.setattr(storage, "manual_stock_at_location_bulk", manual_bulk)
 
 
 @pytest.fixture(autouse=True)
@@ -4728,6 +4751,125 @@ def test_distribution_recommendations_volume_m3_is_quantity_times_unit_volume(mo
 
     assert rows[0].quantity == 7.0
     assert rows[0].volume_m3 == 3.5  # 7 units * 0.5 m3/unit
+
+
+# ------------------------------------- logistics/distribution: stock queries do not grow per material
+def _stub_many_materials(monkeypatch, count):
+    material_ids = list(range(1000, 1000 + count))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (type_id + 100, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                        lambda blueprint_id, activity_id: [(m, 10.0) for m in material_ids])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    return material_ids
+
+
+def _count_stock_queries(monkeypatch):
+    """Replaces every stock reader with a counting fake: 2 units per type at every
+    location, 1 manual unit. Returns the call counters."""
+    calls = {"esi_bulk": [], "manual_bulk": 0, "esi_single": 0, "manual_single": 0}
+
+    def esi_bulk(type_ids, location_id, **kwargs):
+        calls["esi_bulk"].append((location_id, len(list(type_ids)), kwargs))
+        return {t: 2.0 for t in type_ids}
+
+    def manual_bulk(type_ids, location_id):
+        calls["manual_bulk"] += 1
+        return {t: 1.0 for t in type_ids}
+
+    def esi_single(*a, **k):
+        calls["esi_single"] += 1
+        return 0.0
+
+    def manual_single(*a, **k):
+        calls["manual_single"] += 1
+        return 0.0
+
+    monkeypatch.setattr(storage, "esi_stock_at_location_bulk", esi_bulk)
+    monkeypatch.setattr(storage, "manual_stock_at_location_bulk", manual_bulk)
+    monkeypatch.setattr(storage, "esi_stock_at_location", esi_single)
+    monkeypatch.setattr(storage, "manual_stock_at_location", manual_single)
+    return calls
+
+
+def _run_logistics_with_materials(monkeypatch, count):
+    cfg = ProductionConfig(distribution_source_location_id=9000, home_location_id=8000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Reactions": 1003})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1003, 1004]})
+    _stub_many_materials(monkeypatch, count)
+    calls = _count_stock_queries(monkeypatch)
+    rows = engine.logistics_status([
+        _build_job(category="Advanced Components"), _build_job(category="Capital Components"),
+        _build_job(category="Reactions")], cfg)
+    return rows, calls
+
+
+def _run_distribution_with_materials(monkeypatch, count):
+    cfg = ProductionConfig(distribution_source_location_id=9000, home_location_id=8000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Reactions": 1003})
+    _stub_many_materials(monkeypatch, count)
+    calls = _count_stock_queries(monkeypatch)
+    rows = engine.distribution_recommendations([
+        _build_job(category="Advanced Components"), _build_job(category="Capital Components"),
+        _build_job(category="Reactions")], cfg)
+    return rows, calls
+
+
+def test_logistics_status_stock_queries_do_not_grow_with_material_count(monkeypatch):
+    rows_small, small = _run_logistics_with_materials(monkeypatch, 5)
+    rows_large, large = _run_logistics_with_materials(monkeypatch, 50)
+
+    assert len(rows_small) == 15 and len(rows_large) == 150
+    assert small["esi_single"] == large["esi_single"] == 0
+    assert small["manual_single"] == large["manual_single"] == 0
+    assert len(small["esi_bulk"]) == len(large["esi_bulk"]) > 0
+    assert small["manual_bulk"] == large["manual_bulk"] == len(large["esi_bulk"])
+    # one bulk read per distinct location, each covering every material
+    locations = [loc for loc, _, _ in large["esi_bulk"]]
+    assert len(locations) == len(set(locations))
+    assert all(n == 50 for _, n, _ in large["esi_bulk"])
+    # 2 ESI + 1 manual per location = 3 > needed 10? no: 3 < 10, so still missing; hint resolved from stock
+    assert all(r.available == 3.0 for r in rows_large)
+
+
+def test_distribution_recommendations_stock_queries_do_not_grow_with_material_count(monkeypatch):
+    rows_small, small = _run_distribution_with_materials(monkeypatch, 5)
+    rows_large, large = _run_distribution_with_materials(monkeypatch, 50)
+
+    assert rows_small and rows_large
+    assert small["esi_single"] == large["esi_single"] == 0
+    assert small["manual_single"] == large["manual_single"] == 0
+    assert len(small["esi_bulk"]) == len(large["esi_bulk"]) > 0
+    assert small["manual_bulk"] == large["manual_bulk"] == len(large["esi_bulk"])
+    locations = [loc for loc, _, _ in large["esi_bulk"]]
+    assert len(locations) == len(set(locations))
+    assert all(n == 50 for _, n, _ in large["esi_bulk"])
+
+
+def test_logistics_and_distribution_bulk_reads_pass_every_filter(monkeypatch):
+    sentinel_hangar = object()
+    monkeypatch.setattr(engine, "shared_production_owner_ids", lambda data_kind: ([1], [2]))
+    monkeypatch.setattr(engine, "production_excluded_location_ids", lambda *a, **k: [77])
+    monkeypatch.setattr(engine, "production_excluded_hangar", lambda: sentinel_hangar)
+    _, logistics_calls = _run_logistics_with_materials(monkeypatch, 3)
+    _, distribution_calls = _run_distribution_with_materials(monkeypatch, 3)
+
+    for calls in (logistics_calls, distribution_calls):
+        assert calls["esi_bulk"]
+        for _, _, kwargs in calls["esi_bulk"]:
+            assert kwargs == {
+                "exclude_intake_at_location_id": 8000, "owner_character_ids": [1], "owner_corporation_ids": [2],
+                "exclude_location_ids": [77], "exclude_hangar": sentinel_hangar}
+
+
+def test_logistics_status_with_nothing_to_show_reads_no_stock(monkeypatch):
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {})
+    calls = _count_stock_queries(monkeypatch)
+
+    assert engine.logistics_status([_build_job()], ProductionConfig()) == []
+    assert calls["esi_bulk"] == [] and calls["manual_bulk"] == 0
 
 
 # ------------------------------------------------------------- _invention_need_row BPC buffer

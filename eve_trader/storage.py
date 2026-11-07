@@ -2098,6 +2098,25 @@ def manual_stock_at_location(type_id: int, location_id: int) -> float:
     return row[0] if row else 0.0
 
 
+def manual_stock_at_location_bulk(type_ids: list[int], location_id: int) -> dict[int, float]:
+    """manual_stock_at_location for many types in one query: {type_id: count}
+    at `location_id`, 0.0 for a type with no row. Empty input is `{}` and
+    opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    out = {tid: 0.0 for tid in unique}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, count FROM manual_stock WHERE type_id = ANY(?) AND location_id = ?",
+            (unique, location_id),
+        ).fetchall()
+    for tid, count in rows:
+        if tid in out and count:
+            out[tid] += count
+    return out
+
+
 def manual_stock_by_location_bulk(type_ids: list[int]) -> dict[int, dict[int, float]]:
     """{type_id: {location_id: count}} for `type_ids` - location_id 0 is the
     "no location" convention (docs/MANUAL_TRACKING_PLAN.md). Types with no
