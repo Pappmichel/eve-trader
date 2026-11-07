@@ -163,9 +163,10 @@ def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
 _LEDGER_ONLY_READERS = ("portfolio", "asset_manager")
 
 
-def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int) -> bool:
+def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int,
+                           tools: tuple[str, ...] = _LEDGER_ONLY_READERS) -> bool:
     """True when this owner shares `data_kind` with Portfolio or the Asset
-    Manager.
+    Manager (or only with the given `tools`).
 
     Portfolio's Total Wealth (P4) and the Asset Manager
     (docs/ASSET_MANAGER_PLAN.md R-4) read listed orders and outstanding
@@ -176,7 +177,7 @@ def _shared_with_portfolio(data_kind: str, owner_type: str, owner_id: int) -> bo
     try:
         with storage.savepoint():
             from .access import is_shared
-            return any(is_shared(data_kind, tool, owner_type, int(owner_id)) for tool in _LEDGER_ONLY_READERS)
+            return any(is_shared(data_kind, tool, owner_type, int(owner_id)) for tool in tools)
     except Exception:  # noqa: BLE001 - never fail the snapshot sync
         log.exception("ledger reader share check failed for %s %s %s", data_kind, owner_type, owner_id)
         return False
@@ -223,8 +224,12 @@ def _archive_wallet(owner_type: str, owner_id: int, txn_rows: list[tuple],
 
 def _archive_industry_jobs(client: ESIClient, owner_type: str, owner_id: int,
                            auth_role: str) -> None:
-    """Second ESI pass with include_completed=true for the ledger only."""
-    if not _archive_for_production("industry_jobs", owner_type, owner_id):
+    """Second ESI pass with include_completed=true for the ledger only.
+    Also for a Portfolio-only share: Total Wealth's "In production" line
+    reads the archived job inputs (not for an Asset-Manager-only share,
+    which reads the live job snapshot)."""
+    if not (_archive_for_production("industry_jobs", owner_type, owner_id)
+            or _shared_with_portfolio("industry_jobs", owner_type, owner_id, ("portfolio",))):
         return
     from ..realized import ingest as ledger_ingest
     try:

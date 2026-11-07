@@ -26,6 +26,7 @@ _VALUES = {
     "wealth_listed_value": None,
     "wealth_contract_value": None,
     "wealth_escrow": None,
+    "wealth_in_production_value": None,
 }
 
 

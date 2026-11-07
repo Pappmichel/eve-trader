@@ -9087,6 +9087,7 @@ PORTFOLIO_SNAPSHOT_COLUMNS = (
     "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
     "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
     "wealth_listed_value", "wealth_contract_value", "wealth_escrow",
+    "wealth_in_production_value",
 )
 
 

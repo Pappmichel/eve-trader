@@ -127,7 +127,7 @@ def test_portfolio_sync_times_show_data_age_not_fetch_time(monkeypatch):
         # attempted, never succeeded: no data age
         ("character", 3, "assets", None, "2026-10-19T15:50:00+00:00", "HTTP 403", None),
     ])
-    shares = {kind: ([], []) for kind in ("assets", "blueprints", "market_orders", "contracts", "wallet_balance")}
+    shares = {kind: ([], []) for kind in ("assets", "blueprints", "market_orders", "contracts", "wallet_balance", "industry_jobs")}
     shares["assets"] = ([1, 2, 3], [])
 
     times = portfolio._sync_times(shares, escrow_known=False)

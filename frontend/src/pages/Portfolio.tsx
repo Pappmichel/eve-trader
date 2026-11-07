@@ -150,6 +150,7 @@ const WEALTH_PARTS = [
   { key: 'blueprints', name: 'Blueprints', color: '#A78BFA' },
   { key: 'listed', name: 'Listed', color: COLORS.info },
   { key: 'contracts', name: 'Contracts', color: COLORS.warn },
+  { key: 'in_production', name: 'In production', color: '#F472B6' },
   { key: 'wallet', name: 'Wallet', color: '#B8C4D0' },
   { key: 'escrow', name: 'Escrow', color: COLORS.danger },
 ] as const
@@ -165,6 +166,7 @@ function wealthHistoryPoints(rows: PortfolioSnapshotRow[]): WealthHistoryPoint[]
       assets: row.wealth_assets_value ?? 0,
       listed: row.wealth_listed_value ?? 0,
       contracts: row.wealth_contract_value ?? 0,
+      in_production: row.wealth_in_production_value ?? 0,
       wallet: row.wealth_wallet_balance ?? 0,
       escrow: row.wealth_escrow ?? 0,
     }
@@ -222,7 +224,7 @@ function WealthHistoryCharts({ rows }: { rows: PortfolioSnapshotRow[] }) {
             data={[{ label: 'ISK', value: 'isk' }, { label: 'Share', value: 'share' }]} aria-label="Wealth by source mode" />
         </Group>
         <Text size="xs" c="dimmed" mb="sm">
-          Shared with Portfolio. Blueprints are the rest of the total; older snapshots without listed, contract or escrow values count those inside it.
+          Shared with Portfolio. Blueprints are the rest of the total; older snapshots without listed, contract or escrow values count those inside it, and running jobs count only from the day In production was added.
         </Text>
         <ResponsiveContainer width="100%" height={260}>
           <AreaChart data={shown}>
@@ -459,6 +461,8 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
       hint: 'Open sell orders. ESI leaves these out of the asset list.' },
     { label: 'Contracts', value: data.wealth_contract_value, synced: data.sync?.contracts,
       hint: 'Included items of outstanding contracts this owner issued.' },
+    { label: 'In production', value: data.wealth_in_production_value ?? null, synced: data.sync?.in_production,
+      hint: 'Materials of running industry jobs, priced like assets: ESI no longer lists them, and the output is not there yet. Needs Industry Jobs shared with Portfolio.' },
     { label: 'Wallet', value: data.wealth_wallet_balance, synced: data.sync?.wallet },
     { label: 'Escrow', value: data.wealth_escrow, synced: data.sync?.escrow,
       hint: 'Buy-order escrow. Shown as – until an order sync stores it.' },

@@ -910,6 +910,53 @@ def outstanding_contract_lines(owners: list[tuple[str, int]], *,
     return [(r[0], int(r[1]), int(r[2]), float(r[3])) for r in rows]
 
 
+def in_production_input_lines(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(owner_type, owner_id, station_id, type_id, quantity, is_blueprint):
+    frozen inputs
+    (`ledger_job_inputs`) of jobs whose materials have left the owner's asset
+    snapshot while their output is not in it yet (Total Wealth "In
+    production").
+
+    A job counts when it started at or before the owner's asset snapshot
+    (`esi_freshness.data_as_of` for `assets`; a later start still has its
+    materials in that snapshot) and is either still running (active, paused,
+    ready) or was delivered after that snapshot. Cancelled and reverted jobs
+    lost their materials and count nowhere. An owner without an asset sync
+    has every running job counted. A job archived for both a character and
+    its corporation counts once, under the corporation. `is_blueprint` (SDE
+    category 9) marks a consumed copy, e.g. the T1 copy an invention uses up:
+    the caller must not price it like its original."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    where = where.replace("owner_type", "j.owner_type").replace("owner_id", "j.owner_id")
+    as_of = "COALESCE(f.data_as_of, f.last_success_at)"
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT x.owner_type, x.owner_id, x.station_id, i.type_id, SUM(i.quantity), "
+            "COALESCE(bool_or(g.category_id = 9), FALSE) FROM ("
+            "  SELECT DISTINCT ON (j.job_id) j.owner_type, j.owner_id, j.job_id, j.station_id "
+            "  FROM ledger_industry_jobs j "
+            "  LEFT JOIN esi_freshness f ON f.owner_type = j.owner_type AND f.owner_id = j.owner_id "
+            "   AND f.data_kind = 'assets' "
+            f"  WHERE {where} "
+            f"   AND (f.owner_id IS NULL OR {as_of} IS NULL OR j.start_date <= {as_of}) "
+            "   AND (j.status IN ('active', 'paused', 'ready') "
+            f"     OR (j.status = 'delivered' AND f.owner_id IS NOT NULL AND j.completed_date > {as_of})) "
+            "  ORDER BY j.job_id, j.owner_type DESC"
+            ") x JOIN ledger_job_inputs i ON i.owner_type = x.owner_type AND i.owner_id = x.owner_id "
+            "  AND i.job_id = x.job_id "
+            "LEFT JOIN sde_types t ON t.type_id = i.type_id "
+            "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "GROUP BY x.owner_type, x.owner_id, x.station_id, i.type_id",
+            tuple(params),
+        ).fetchall()
+    return [
+        (r[0], int(r[1]), int(r[2]) if r[2] is not None else None, int(r[3]), float(r[4] or 0), bool(r[5]))
+        for r in rows if float(r[4] or 0) > 0
+    ]
+
+
 _OPEN_ORDER = "(state = 'open' OR (state IS NULL AND COALESCE(volume_remain, 0) > 0))"
 
 

@@ -67,7 +67,13 @@ Combined Value; the column stays so older history rows remain readable
 Portfolio: assets, blueprints, wallet balances, open sell orders
 (`market_orders`) and outstanding contract items (`contracts`), plus
 buy-order escrow from `ledger_market_orders.escrow` once an order sync
-has stored it. ESI's asset list omits listed and contracted items, and
+has stored it, plus **In production**: the frozen inputs
+(`ledger_job_inputs`) of jobs shared via `industry_jobs` that started at or
+before the owner's asset snapshot and are still running or were delivered
+after it (`realized.db.in_production_input_lines`), priced like assets so a
+job start leaves the total flat; a consumed blueprint copy is priced like a
+copy, never at its original's quote. A Portfolio-only `industry_jobs` share
+is archived for this. ESI's asset list omits listed and contracted items, and
 the wallet balance is already net of escrow, so those lines are added
 and never subtracted from assets. An unknown escrow is omitted, not
 estimated. Portfolio has no OAuth role prefix (see `auth.py`); it reuses

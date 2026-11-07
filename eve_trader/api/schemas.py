@@ -898,6 +898,7 @@ class PortfolioSnapshotRow(_Base):
     wealth_listed_value: Optional[float] = None
     wealth_contract_value: Optional[float] = None
     wealth_escrow: Optional[float] = None
+    wealth_in_production_value: Optional[float] = None
 
 
 class CharacterMissingWalletScope(_Base):
@@ -912,6 +913,7 @@ class WealthSync(_Base):
     contracts: Optional[str] = None
     wallet: Optional[str] = None
     escrow: Optional[str] = None
+    in_production: Optional[str] = None
 
 
 class TotalWealth(_Base):
@@ -926,6 +928,7 @@ class TotalWealth(_Base):
     wealth_listed_value: Optional[float] = None
     wealth_contract_value: Optional[float] = None
     wealth_escrow: Optional[float] = None
+    wealth_in_production_value: Optional[float] = None
     wealth_priced_items: int
     wealth_unpriced_items: int
     characters_missing_wallet_scope: list[CharacterMissingWalletScope] = []
