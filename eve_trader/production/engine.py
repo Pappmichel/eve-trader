@@ -2742,6 +2742,100 @@ def _w2_market_velocity(cfg: ProductionConfig, type_ids: list[int]) -> Optional[
         return dict(found)
 
 
+# A unit value above this is a data error, not a real end product; keeps the
+# objective far below the solver's short penalty (reaction_capacity, 1e12).
+_REACTION_VALUE_CAP = 1e10
+
+
+def _end_product_value(type_id: int, home: dict, jita: dict,
+                       cost_memo: dict[int, Optional[float]]) -> Optional[float]:
+    """What one unit of a planned product is worth: the home (C-J) sell
+    quote, else the Jita sell quote, else its build cost."""
+    home_quote = home.get(type_id)
+    if home_quote and home_quote.sell > 0:
+        return float(home_quote.sell)
+    jita_quote = pricing.reference_quote(jita.get(type_id))
+    if jita_quote and jita_quote.sell > 0:
+        return float(jita_quote.sell)
+    cost = cost_memo.get(type_id)
+    return float(cost) if cost is not None and cost > 0 else None
+
+
+def _reaction_unit_values(
+    seed: dict[int, float], cfg: ProductionConfig, home: dict, jita: dict,
+    manual_overrides: dict[int, str], cost_memo: dict[int, Optional[float]],
+    t2_memo: dict[int, tuple], cost_indices: dict,
+) -> dict[int, float]:
+    """End-product value per unit of each reaction product the seed reaches
+    (user decision 2026-11-07: reactions exist to enable components and so
+    end products, even at a lower margin - reaction_capacity's
+    ReactionWindow.buy_premium).
+
+    `seed` is {planned product: missing qty} (stock targets after the
+    margin gate, plus integrated orders). Each product is walked down its
+    Build path to the first reaction product on every branch, giving units
+    of reaction product per unit of end product (material multipliers, no
+    stock, no batch rounding). Missing reaction product p holds up every
+    end product e that needs it, so p's value per unit is
+    sum(value(e) x missing(e)) / sum(missing(e) x units of p per e) over
+    those e: what one unit of p lets you build. A top-level product that is
+    bought, unpriced or needs no reaction product adds nothing."""
+    ratio_memo: dict[int, dict[int, float]] = {}
+
+    def _ratios(type_id: int, depth: int, path: frozenset[int]) -> dict[int, float]:
+        if type_id in ratio_memo:
+            return ratio_memo[type_id]
+        activity, bp = classify_activity(type_id)
+        out: dict[int, float] = {}
+        if bp is None or depth >= MAX_DEPTH or type_id in path:
+            return out
+        if activity == "Reaction":
+            out[type_id] = 1.0
+            ratio_memo[type_id] = out
+            return out
+        blueprint_id, activity_id, product_qty = bp
+        if activity == "Tech II" and type_id in t2_memo:
+            material_mult = t2_memo[type_id][0]
+        else:
+            material_mult = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)[0]
+        for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
+            m_activity, m_bp = classify_activity(material_id)
+            if m_bp is None or manual_overrides.get(material_id) == "Buy":
+                continue
+            if m_activity != "Reaction" and _buy_or_build_decision(
+                    material_id, cfg, home, jita, manual_overrides, cost_memo, m_bp, depth + 1) != "Build":
+                continue
+            per_unit = base_qty * material_mult / (product_qty or 1)
+            for product_id, ratio in _ratios(material_id, depth + 1, path | {type_id}).items():
+                out[product_id] = out.get(product_id, 0.0) + per_unit * ratio
+        ratio_memo[type_id] = out
+        return out
+
+    value_sum: dict[int, float] = {}
+    units_sum: dict[int, float] = {}
+    for type_id, qty in seed.items():
+        if qty <= 0:
+            continue
+        activity, bp = classify_activity(type_id)
+        if bp is None or manual_overrides.get(type_id) == "Buy":
+            continue
+        if activity != "Reaction" and _buy_or_build_decision(
+                type_id, cfg, home, jita, manual_overrides, cost_memo, bp) != "Build":
+            continue
+        value = _end_product_value(type_id, home, jita, cost_memo)
+        if value is None:
+            continue
+        for product_id, ratio in _ratios(type_id, 0, frozenset()).items():
+            if ratio <= 0:
+                continue
+            value_sum[product_id] = value_sum.get(product_id, 0.0) + value * qty
+            units_sum[product_id] = units_sum.get(product_id, 0.0) + ratio * qty
+    return {
+        product_id: min(_REACTION_VALUE_CAP, value_sum[product_id] / units)
+        for product_id, units in units_sum.items() if units > 0
+    }
+
+
 def _reaction_cycle_demand(
     cfg: ProductionConfig, stock_targets: list[tuple], fallback_seed: dict[int, float],
     home: dict, jita: dict, manual_overrides: dict[int, str], cost_memo: dict[int, Optional[float]],
@@ -3585,9 +3679,14 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         cycle_demand, cycle_info = _reaction_cycle_demand(
             cfg, stock_targets, target_seed, home, jita, manual_overrides, cost_memo,
             selected_decryptors, t2_memo, manual_stock, cost_indices, adjusted_prices, alchemy_memo)
+        value_seed = dict(target_seed)
+        for type_id, qty in order_seed.items():
+            value_seed[type_id] = value_seed.get(type_id, 0.0) + qty
         layer, _window, state, rplan = reaction_capacity.solve_cached(
             ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
-            cycle_demand=cycle_demand, buffer=reaction_buffer)
+            cycle_demand=cycle_demand, buffer=reaction_buffer,
+            value_per_unit=_reaction_unit_values(
+                value_seed, cfg, home, jita, manual_overrides, cost_memo, t2_memo, cost_indices))
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)
 
@@ -5052,9 +5151,14 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         cycle_demand, cycle_info = _reaction_cycle_demand(
             cfg, ctx.stock_targets, target_seed_collect, home, jita, manual_overrides, cost_memo,
             selected_decryptors, t2_memo, manual_stock, cost_indices, adjusted_prices, alchemy_memo)
+        value_seed = dict(target_seed_collect)
+        for type_id, qty in order_seed.items():
+            value_seed[type_id] = value_seed.get(type_id, 0.0) + qty
         layer, _window, state, rplan = reaction_capacity.solve_cached(
             ctx, cfg, reaction_demand, cost_memo, chain_choice=chain_choice,
-            cycle_demand=cycle_demand, buffer=collect_buffer)
+            cycle_demand=cycle_demand, buffer=collect_buffer,
+            value_per_unit=_reaction_unit_values(
+                value_seed, cfg, home, jita, manual_overrides, cost_memo, t2_memo, cost_indices))
         solver_demand = dict(reaction_demand)
         byproduct_stock = _alchemy_byproduct_stock(
             reaction_capacity.alchemy_build_runs_from_plan(layer, rplan), cost_indices)

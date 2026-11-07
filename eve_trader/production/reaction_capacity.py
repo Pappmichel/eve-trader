@@ -125,6 +125,17 @@ class ReactionWindow:
     # internally). Raw inputs for buffer jobs may be bought.
     buffer: Mapping[int, float] = field(default_factory=dict)
     buffer_buy_cap: Optional[Mapping[int, float]] = None
+    # Alchemy only on idle slots (user decision 2026-11-07): minimum W1 / W2
+    # runs per normal recipe key, from the solve without alchemy, so alchemy
+    # can fill free slots but never displace a normal run. Set by ``solve``.
+    recipe_floor: Optional[Mapping[str, tuple[float, float]]] = None
+    # End-product value per unit of a reaction product (user decision
+    # 2026-11-07): reactions exist to enable components and so end products,
+    # even at a lower margin. Added to that product's buy price in the
+    # objective only (buy1, buy2, an open buffer unit), so slots go where
+    # buying instead would hold up the most end-product value per slot.
+    # Reported costs stay real ISK (window.prices).
+    buy_premium: Mapping[int, float] = field(default_factory=dict)
     # SDE names for warnings, filled by ``build_window``; the solver stays pure.
     type_names: Mapping[int, str] = field(default_factory=dict)
 
@@ -420,8 +431,46 @@ def fit_runs(seconds_per_run: float, cycle_days: float) -> int:
 
 
 # ------------------------------------------------------------------ solver
+def _is_alchemy(recipe: ReactionRecipe) -> bool:
+    return recipe.key.startswith("alchemy:")
+
+
 def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
     """Minimise two-window reaction-layer cost. See plan section 3.
+
+    Alchemy recipes only fill slots the plan would otherwise leave idle
+    (user decision 2026-11-07: alchemy raises margins but takes far more
+    job time per unit, and pushed more important products out). The layer
+    is solved without them first; only if W1 then has a free slot is it
+    solved again with them, every normal recipe's W1 and W2 runs held at
+    least at the first solve's (``recipe_floor``), so alchemy can only add."""
+    if window.recipe_floor is not None or not any(_is_alchemy(r) for r in layer.recipes):
+        return _solve_stages(layer, window)
+    normal_layer = replace(layer, recipes=[r for r in layer.recipes if not _is_alchemy(r)])
+    base = _solve_stages(normal_layer, window)
+    idle = int(window.slots) - int(base.jobs_used)
+    if idle < 1 or not base.solve_ok:
+        return base
+    floor: dict[str, tuple[float, float]] = {}
+    for alloc in base.recipes:
+        floor[alloc.recipe_key] = (float(alloc.runs), 0.0)
+    if base.next_window is not None:
+        for alloc in base.next_window.recipes:
+            runs1 = floor.get(alloc.recipe_key, (0.0, 0.0))[0]
+            floor[alloc.recipe_key] = (runs1, float(alloc.runs))
+    # A hair below the first solve's runs, so float noise never makes the
+    # floor infeasible.
+    floor = {k: (max(0.0, r1 * (1 - 1e-9) - _TOL), max(0.0, r2 * (1 - 1e-9) - _TOL))
+             for k, (r1, r2) in floor.items()}
+    full = _solve_stages(layer, replace(window, recipe_floor=floor))
+    if not full.solve_ok or full.jobs_used > int(window.slots):
+        return replace(base, warnings=tuple(dict.fromkeys(
+            [*base.warnings, "Alchemy solve for idle slots failed; plan without alchemy kept"])))
+    return full
+
+
+def _solve_stages(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
+    """``solve`` for one recipe set (alchemy handling is in ``solve``).
 
     With an overbuild buffer (D9 revised 2026-11-02) this solves twice:
     first the demand without buffer, which fixes what has to be bought; then
@@ -590,7 +639,8 @@ def _short1_cost(window: ReactionWindow, product_id: int) -> float:
     product's buy price (the value it would have had), anything else the
     penalty."""
     if product_id in window.buffer:
-        return float(window.prices.get(product_id, 0.0))
+        return (float(window.prices.get(product_id, 0.0))
+                + float(window.buy_premium.get(product_id, 0.0)))
     return _SHORT_PENALTY
 
 
@@ -757,8 +807,9 @@ def _solve_mip(
     for m in materials:
         price = window.prices.get(m)
         if price is not None:
-            c[i_buy1 + mat_index[m]] = float(price)
-            c[i_buy2 + mat_index[m]] = float(price)
+            premium = float(window.buy_premium.get(m, 0.0))
+            c[i_buy1 + mat_index[m]] = float(price) + premium
+            c[i_buy2 + mat_index[m]] = float(price) + premium
     for p in products:
         c[i_short1 + prod_index[p]] = _SHORT_PENALTY
         c[i_short2 + prod_index[p]] = _SHORT_PENALTY
@@ -822,6 +873,14 @@ def _solve_mip(
             j2 = float(jobs2_fix.get(recipe.key, 0))
             bounds[i_jobs1 + i] = (j1, j1)
             bounds[i_jobs2 + i] = (j2, j2)
+    if window.recipe_floor:
+        for i, recipe in enumerate(recipes):
+            floor1, floor2 = window.recipe_floor.get(recipe.key, (0.0, 0.0))
+            for idx, floor in ((i_runs1 + i, floor1), (i_runs2 + i, floor2)):
+                low, high = bounds[idx]
+                if floor <= _TOL or (high is not None and high <= 0.0):
+                    continue
+                bounds[idx] = (max(float(low or 0.0), float(floor)), high)
     # Overbuild buffer (D9 revised): a W1 short up to the buffer costs the
     # product's buy price instead of the penalty; more than that cannot be
     # short. Reaction-product purchases are capped (``solve`` stage 2).
@@ -1917,10 +1976,13 @@ def build_window(
     industry_jobs: Optional[list[tuple]] = None,
     cycle_demand: Optional[Mapping[int, float]] = None,
     buffer: Optional[Mapping[int, float]] = None,
+    value_per_unit: Optional[Mapping[int, float]] = None,
 ) -> tuple[ReactionWindow, WindowState]:
     """Capacities, stocks, prices and demand for ``solve`` (plan section 3/4).
 
     ``buffer`` is the overbuild-buffer share of ``demand`` (D9 revised).
+    ``value_per_unit`` is the end-product value per unit of a reaction
+    product (``ReactionWindow.buy_premium``).
 
     ``on_hand`` = ``_stock_on_hand`` + jobs ending before the window;
     ``incoming1``/``incoming2`` from ``window_state``. Incoming that
@@ -2018,6 +2080,10 @@ def build_window(
             int(k): min(float(v), float(demand.get(k, 0.0)))
             for k, v in (buffer or {}).items()
             if v > _EPS and float(demand.get(k, 0.0)) > _EPS
+        },
+        buy_premium={
+            int(k): float(v) for k, v in (value_per_unit or {}).items()
+            if v > _EPS and int(k) in layer.product_ids
         },
     )
     return window, state
@@ -2317,6 +2383,7 @@ def solve_cached(
     chain_choice: Optional[Mapping[int, str]] = None,
     cycle_demand: Optional[Mapping[int, float]] = None,
     buffer: Optional[Mapping[int, float]] = None,
+    value_per_unit: Optional[Mapping[int, float]] = None,
 ) -> tuple[ReactionLayer, ReactionWindow, WindowState, ReactionPlan]:
     """Solve once per plan context; reuse when demand fingerprint matches.
 
@@ -2325,6 +2392,8 @@ def solve_cached(
     ``manual_overrides``, and optional ``_reaction_solve_cache``.
     ``cycle_demand`` is W2's base demand (D16); None = ``demand``.
     ``buffer`` is the overbuild-buffer share of ``demand`` (D9 revised).
+    ``value_per_unit`` is the end-product value per unit of a reaction
+    product (``ReactionWindow.buy_premium``).
     """
     def _key(values: Optional[Mapping[int, float]]):
         if values is None:
@@ -2336,6 +2405,7 @@ def solve_cached(
         tuple(sorted((int(k), str(v)) for k, v in (chain_choice or {}).items())),
         _key(cycle_demand),
         _key(buffer),
+        _key(value_per_unit),
     )
     cache = getattr(ctx, "_reaction_solve_cache", None)
     if cache is not None and cache[0] == demand_key:
@@ -2367,6 +2437,7 @@ def solve_cached(
         chain_choice=chain_choice,
         cycle_demand=cycle_demand,
         buffer=buffer,
+        value_per_unit=value_per_unit,
     )
     plan = solve(layer, window) if layer.recipes else ReactionPlan(
         recipes=(), buy={}, total_cost=0.0, slot_shadow_price=0.0,
