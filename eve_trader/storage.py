@@ -228,6 +228,17 @@ class _TranslatingConnection:
 _batch_local = threading.local()
 
 
+def _batch_matches_current_tenant() -> bool:
+    """True only when this thread holds a batch whose connection was opened
+    for the ambient tenant. A tenant_context / enter_tenant switch inside a
+    batch must not reuse that connection: app.tenant_id was set at checkout
+    and never updated, so RLS would still see the outer tenant."""
+    active = getattr(_batch_local, "conn", None)
+    if active is None:
+        return False
+    return getattr(_batch_local, "tenant_id", None) == _tenant_id_var.get()
+
+
 @contextmanager
 def connect():
     """Every storage function opens its own connection via this context
@@ -236,13 +247,14 @@ def connect():
     AccessGateMiddleware - see set_current_tenant). Raises RuntimeError if no
     tenant is set, rather than risk a query silently running un-scoped.
 
-    If called from inside an active batch_session() (see below), reuses that
-    connection instead of checking out a new one - every storage function's
-    own `with connect() as conn:` code needs zero changes to benefit; this is
-    the one place that decides whether to share or open fresh."""
-    active = getattr(_batch_local, "conn", None)
-    if active is not None:
-        yield active
+    If called from inside an active batch_session() (see below) for the same
+    tenant, reuses that connection instead of checking out a new one - every
+    storage function's own `with connect() as conn:` code needs zero changes
+    to benefit; this is the one place that decides whether to share or open
+    fresh. A different ambient tenant falls through to
+    connect_own_transaction() so RLS matches the switch."""
+    if _batch_matches_current_tenant():
+        yield _batch_local.conn
         return
     with connect_own_transaction() as conn:
         yield conn
@@ -297,24 +309,29 @@ def batch_session():
     storage function called anywhere underneath, directly or indirectly,
     automatically benefits with no changes of its own.
 
-    Reentrant: a nested batch_session() call is a no-op (reuses the outer
-    batch) - lets an already-batched caller call another batch-wrapped
-    function without either one needing to know about the other."""
-    active = getattr(_batch_local, "conn", None)
-    if active is not None:
-        yield  # already inside a batch - reuse it, nothing to set up or tear down
-        return
+    Reentrant for the same tenant: a nested batch_session() call is a no-op
+    (reuses the outer batch). A nested call under a *different* ambient
+    tenant opens its own connection (and holds two pool connections until
+    it exits), then restores the outer batch - do not loop over tenants
+    inside one batch."""
     tenant_id = _tenant_id_var.get()
     if tenant_id is None:
         raise RuntimeError(
             "storage.batch_session() called with no current tenant set - "
             "call set_current_tenant()/tenant_context() first."
         )
+    active = getattr(_batch_local, "conn", None)
+    if active is not None and getattr(_batch_local, "tenant_id", None) == tenant_id:
+        yield  # same-tenant nested batch - reuse outer, nothing to set up
+        return
+    outer_conn = active
+    outer_tenant = getattr(_batch_local, "tenant_id", None)
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
         _batch_local.conn = _TranslatingConnection(conn)
+        _batch_local.tenant_id = tenant_id
         try:
             yield
             conn.commit()
@@ -322,25 +339,30 @@ def batch_session():
             conn.rollback()
             raise
         finally:
-            _batch_local.conn = None
+            if outer_conn is not None:
+                _batch_local.conn = outer_conn
+                _batch_local.tenant_id = outer_tenant
+            else:
+                _batch_local.conn = None
+                _batch_local.tenant_id = None
 
 
 @contextmanager
 def savepoint():
-    """Nested transaction (savepoint) on the active batch connection, or a
-    no-op when no batch is open.
+    """Nested transaction (savepoint) on the active batch connection for the
+    current tenant, or a no-op when no matching batch is open.
 
     Use around work whose failures are caught and must not abort the
     surrounding batch (e.g. best-effort archive steps during an ESI
-    snapshot sync). Outside a batch this yields without opening a
-    connection: wrapping ESI network calls here must not pin a pool
-    connection for the duration of those calls.
+    snapshot sync). Outside a batch (or under a different ambient tenant
+    than the batch) this yields without opening a connection: wrapping ESI
+    network calls here must not pin a pool connection for the duration of
+    those calls.
     """
-    active = getattr(_batch_local, "conn", None)
-    if active is None:
+    if not _batch_matches_current_tenant():
         yield
         return
-    with active.transaction():
+    with _batch_local.conn.transaction():
         yield
 
 
