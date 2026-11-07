@@ -246,11 +246,12 @@ class T1BpcInventionNeedRow:
 @dataclass
 class AssetPlanBlocker:
     """A direct material of an AssetPlanJob whose physically-on-hand stock
-    (this job's own share after engine._allocate_scarce_stock) does not fully
-    cover this job's current-round claim - i.e. why some of job_runs are not
-    in runs_ready_now. needed/covered are this job's allocated claim, not the
-    market-wide pool: a unit given to a smaller competing job shows up as
-    uncovered here even if it physically exists."""
+    did not fully cover this job's current-round claim when its turn came
+    in engine._allocate_ready_runs - i.e. why some of job_runs are not in
+    runs_ready_now. needed is this job's claim; covered is what was still
+    free for it then, not the market-wide pool: a unit given to a job
+    further behind shows up as uncovered here even if it physically
+    exists."""
     type_id: int
     type_name: str
     needed: float

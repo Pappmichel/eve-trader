@@ -546,6 +546,27 @@ def test_chaining_comparison_reports_positive_saving_for_wait():
     assert comp.wait_cost <= comp.buy_now_cost + 1e-6
 
 
+def test_stored_wait_gets_a_chaining_row_without_short_inputs():
+    # Every input is on hand, so no comparison would be offered - but the
+    # stored "wait" still defers the demand and must stay visible.
+    intermediate = _recipe("i", 10, seconds=86400, fee=50.0, formulas=5,
+                           outputs={10: 100.0}, inputs={9000: 1.0})
+    final = _recipe("f", 20, seconds=86400, fee=50.0, formulas=5,
+                    outputs={20: 100.0}, inputs={10: 100.0})
+    layer = ReactionLayer(recipes=[intermediate, final])
+    common = dict(slots=10, on_hand={9000: 10_000.0, 10: 100_000.0},
+                  prices={10: 200_000.0, 20: 1_000_000.0, 9000: 1.0})
+
+    assert not [c for c in solve(layer, _window({20: 100.0}, **common)).chaining
+                if c.product_type_id == 20]
+
+    plan = solve(layer, _window({20: 100.0}, chain_choice={20: "wait"}, **common))
+    assert plan.deferred.get(20, 0) >= 100.0 - 1e-6
+    comp = next(c for c in plan.chaining if c.product_type_id == 20)
+    assert comp.preferred == "wait"
+    assert comp.short_input_ids == ()
+
+
 def test_shadow_prices_match_brute_force_plus_one():
     # Small layer where slots and formulas bind; duals must match a
     # re-solve with +1 slot / +1 owned formula (within rounding).
