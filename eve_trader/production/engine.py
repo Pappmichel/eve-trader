@@ -123,11 +123,14 @@ instead of summed into one number.
 """
 from __future__ import annotations
 
+import contextvars
+import functools
 import heapq
 import logging
 import math
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Callable, Iterable, Optional
 
@@ -226,7 +229,7 @@ def _invention_cost_per_unit(type_id: int, product_qty: float,
     input is unpriced - nothing is guessed then."""
     if chosen is None or chosen.expected_cost_per_run is None:
         return None
-    if storage.get_manual_blueprint_copy_cost_per_run(type_id) is not None:
+    if _manual_bpc_cost_per_run(type_id) is not None:
         return None
     if not product_qty:
         return None
@@ -1543,7 +1546,7 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
     # that must be bought outright (never owned as a BPO, not inventable) -
     # its purchase cost, amortized over however many runs it came with, is a
     # real per-run cost of building this item, on top of materials/job fee.
-    bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
+    bpc_cost_per_run = _manual_bpc_cost_per_run(type_id)
     bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
     build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit + invention_per_unit
     use_alchemy = False
@@ -1606,7 +1609,7 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
     job_cost = eiv * job_cost_rate
     # GitHub issue #40 - see _unit_cost's own comment on this same line.
-    bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
+    bpc_cost_per_run = _manual_bpc_cost_per_run(type_id)
     bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
     build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit + invention_per_unit
     use_alchemy = False
@@ -2140,6 +2143,164 @@ def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> N
             _owner_ids_cache.pop(key, None)
 
 
+# ---------------------------------------------------------------- planner_reads
+# Per-run memo of the DB raw values the planners hit once per type (owned
+# BPO ME/TE, all-locations ESI stock, incoming jobs, packaged volume, manual
+# BPC cost). Not a TTL cache: results live only inside the contextmanager and
+# disappear when the run ends, so a sync / manual edit / settings change is
+# visible on the next call. Nested planner_reads() reuses the outer scope.
+# Never memoize a value the planer has already consumed (stock_used /
+# _ReadinessLedger) - only the raw DB figure.
+_planner_reads_var: contextvars.ContextVar[Optional["_PlannerReads"]] = contextvars.ContextVar(
+    "planner_reads", default=None)
+
+
+class _PlannerReads:
+    """Mutable per-run bags. Keys include every filter that changes the
+    result (flags, exclude_intake, owners are resolved once into the value)."""
+
+    def __init__(self) -> None:
+        self.tenant_id = storage.get_current_tenant()
+        self.bpo_me_te: dict[int, Optional[tuple[int, int]]] = {}
+        self.esi_incoming: dict[int, dict[str, float]] = {}
+        self.manual_incoming: dict[int, float] = {}
+        self.haul_volume: dict[int, Optional[float]] = {}
+        self.bpc_cost: dict[int, Optional[float]] = {}
+        # (allowed_flags_tuple_or_None, exclude_intake_or_None) -> {type_id: qty}
+        self.esi_stock_all: dict[tuple, dict[int, float]] = {}
+
+    def _same_tenant(self) -> bool:
+        return storage.get_current_tenant() == self.tenant_id
+
+    def prefetch(self, type_ids: Iterable[int], cfg: ProductionConfig,
+                 blueprint_type_ids: Optional[Iterable[int]] = None) -> None:
+        """One bulk load for every known type. Safe to call more than once;
+        already-filled keys are left alone. Types discovered later in the
+        run still fall through to the single-id readers (which then memoize).
+        No ambient tenant (unit tests that monkeypatch the readers): skip
+        the bulk DB load; memoization on miss still works for whatever the
+        monkeypatched single-id path returns."""
+        if not self._same_tenant() or self.tenant_id is None:
+            return
+        ids = list(dict.fromkeys(int(t) for t in type_ids))
+        if not ids:
+            return
+        bp_ids = list(dict.fromkeys(int(t) for t in (blueprint_type_ids or ())))
+        if not bp_ids:
+            # Every product's blueprint (if any) - cheap via the recipe cache.
+            for tid in ids:
+                bp = storage.get_blueprint_for_product(tid)
+                if bp is not None:
+                    bp_ids.append(int(bp[0]))
+            bp_ids = list(dict.fromkeys(bp_ids))
+
+        char_bp, corp_bp = shared_production_owner_ids("blueprints")
+        excluded = production_excluded_location_ids()
+        hangar = production_excluded_hangar()
+        need_bp = [t for t in bp_ids if t not in self.bpo_me_te]
+        if need_bp:
+            esi_map = storage.get_owned_bpo_best_me_te_bulk(
+                need_bp, owner_character_ids=char_bp, owner_corporation_ids=corp_bp,
+                exclude_location_ids=excluded, exclude_hangar=hangar)
+            manual_map = storage.manual_bpo_best_me_te_bulk(need_bp)
+            for tid in need_bp:
+                esi = esi_map.get(tid)
+                manual = manual_map.get(tid)
+                if esi is None and manual is None:
+                    self.bpo_me_te[tid] = None
+                else:
+                    esi_me, esi_te = esi or (0, 0)
+                    man_me, man_te = manual or (0, 0)
+                    self.bpo_me_te[tid] = (max(esi_me, man_me), max(esi_te, man_te))
+
+        char_jobs, corp_jobs = shared_production_owner_ids("industry_jobs")
+        for tid, val in storage.esi_incoming_industry_qty_bulk(
+                ids, owner_character_ids=char_jobs, owner_corporation_ids=corp_jobs,
+                exclude_location_ids=excluded).items():
+            self.esi_incoming.setdefault(tid, val)
+        for tid, val in storage.manual_incoming_qty_bulk(ids).items():
+            self.manual_incoming.setdefault(tid, val)
+
+        char_assets, corp_assets = shared_production_owner_ids("assets")
+        flags = tuple(cfg.stock_hangar_flags) if cfg.stock_hangar_flags else None
+        stock_key = (flags, cfg.home_location_id)
+        if stock_key not in self.esi_stock_all:
+            self.esi_stock_all[stock_key] = {}
+        bag = self.esi_stock_all[stock_key]
+        need_stock = [t for t in ids if t not in bag]
+        if need_stock:
+            bag.update(storage.esi_stock_at_location_bulk(
+                need_stock, None,
+                allowed_flags=cfg.stock_hangar_flags or None,
+                exclude_intake_at_location_id=cfg.home_location_id,
+                owner_character_ids=char_assets, owner_corporation_ids=corp_assets,
+                exclude_location_ids=excluded, exclude_hangar=hangar))
+            for tid in need_stock:
+                bag.setdefault(tid, 0.0)
+
+        for tid, val in storage.get_manual_blueprint_copy_cost_per_run_bulk(ids).items():
+            self.bpc_cost.setdefault(tid, val)
+
+        # Haul volumes from SDE + already-cached packaged volumes only.
+        # Types that still need a live ESI packaged lookup stay unset so the
+        # first _haul_volume call takes the real path (and memos the result).
+        packaged = storage.get_cached_packaged_volumes_bulk(ids)
+        cats = storage.prefetch_type_categories(ids)
+        from ..esi_client import _SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID
+        for tid in ids:
+            if tid in self.haul_volume:
+                continue
+            sde = storage.get_sde_type(tid)
+            if sde is None:
+                self.haul_volume[tid] = None
+                continue
+            vol = sde[3]
+            cat = cats.get(tid)
+            if cat not in (_SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID):
+                self.haul_volume[tid] = vol
+            elif tid in packaged:
+                self.haul_volume[tid] = packaged[tid]
+            # else: leave unset for a later ESI/fallback resolve
+
+
+@contextmanager
+def planner_reads():
+    """Open a per-run read memo. Nested calls reuse the outer scope."""
+    existing = _planner_reads_var.get()
+    if existing is not None:
+        yield existing
+        return
+    scope = _PlannerReads()
+    token = _planner_reads_var.set(scope)
+    try:
+        yield scope
+    finally:
+        _planner_reads_var.reset(token)
+
+
+def with_planner_reads(fn):
+    """Decorator form of planner_reads - wrap a planner entry point."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with planner_reads():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def _active_planner_reads() -> Optional[_PlannerReads]:
+    scope = _planner_reads_var.get()
+    if scope is None or not scope._same_tenant():
+        return None
+    return scope
+
+
+def _prefetch_planner_reads(type_ids: Iterable[int], cfg: ProductionConfig,
+                            blueprint_type_ids: Optional[Iterable[int]] = None) -> None:
+    scope = _active_planner_reads()
+    if scope is not None:
+        scope.prefetch(type_ids, cfg, blueprint_type_ids)
+
+
 # Thin wrappers around the storage.py readers Known gap 3 names - each
 # resolves shared_production_owner_ids for the right data_kind (cached, see
 # above) and forwards every other argument unchanged. Every direct call to
@@ -2155,6 +2316,25 @@ def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> fl
     This is what actually lets Logistics/Invention (both of which call this
     with a real location_id) see manual stock at their own specific
     location - they never go through _current_stock/_stock_on_hand at all."""
+    # All-locations ESI stock (location_id=None) is the hot path for the
+    # planners; memoize the raw ESI figure inside planner_reads. Manual stock
+    # is never added on this branch (see docstring), so the memo is ESI-only.
+    if location_id is None:
+        scope = _active_planner_reads()
+        if scope is not None:
+            flags = kwargs.get("allowed_flags")
+            flags_key = tuple(flags) if flags else None
+            stock_key = (flags_key, kwargs.get("exclude_intake_at_location_id"))
+            bag = scope.esi_stock_all.get(stock_key)
+            if bag is not None and type_id in bag:
+                return bag[type_id]
+            char_ids, corp_ids = shared_production_owner_ids("assets")
+            total = storage.esi_stock_at_location(
+                type_id, None, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+                exclude_location_ids=production_excluded_location_ids(),
+                exclude_hangar=production_excluded_hangar(), **kwargs)
+            scope.esi_stock_all.setdefault(stock_key, {})[type_id] = total
+            return total
     char_ids, corp_ids = shared_production_owner_ids("assets")
     total = storage.esi_stock_at_location(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
@@ -2226,16 +2406,23 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
     take the max of the ESI-synced value and the manually-registered one
     (decision 1) - not a max of the *pair*, so a manual ME10 entry still
     lifts ME even if the ESI-owned BPO's own TE happens to be higher."""
+    scope = _active_planner_reads()
+    if scope is not None and blueprint_type_id in scope.bpo_me_te:
+        return scope.bpo_me_te[blueprint_type_id]
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     esi = storage.get_owned_bpo_best_me_te(
         blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
         exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
     manual = storage.manual_bpo_best_me_te(blueprint_type_id)
     if esi is None and manual is None:
-        return None
-    esi_me, esi_te = esi or (0, 0)
-    manual_me, manual_te = manual or (0, 0)
-    return (max(esi_me, manual_me), max(esi_te, manual_te))
+        result = None
+    else:
+        esi_me, esi_te = esi or (0, 0)
+        manual_me, manual_te = manual or (0, 0)
+        result = (max(esi_me, manual_me), max(esi_te, manual_te))
+    if scope is not None:
+        scope.bpo_me_te[blueprint_type_id] = result
+    return result
 
 
 def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
@@ -2349,10 +2536,36 @@ def _asset_lag_delta(type_id: int, location_id: Optional[int] = None) -> float:
 
 
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
+    scope = _active_planner_reads()
+    if scope is not None and type_id in scope.esi_incoming:
+        return scope.esi_incoming[type_id]
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
-    return storage.esi_incoming_industry_qty(
+    result = storage.esi_incoming_industry_qty(
         type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
         exclude_location_ids=production_excluded_location_ids())
+    if scope is not None:
+        scope.esi_incoming[type_id] = result
+    return result
+
+
+def _manual_incoming_qty(type_id: int) -> float:
+    scope = _active_planner_reads()
+    if scope is not None and type_id in scope.manual_incoming:
+        return scope.manual_incoming[type_id]
+    result = storage.manual_incoming_qty(type_id)
+    if scope is not None:
+        scope.manual_incoming[type_id] = result
+    return result
+
+
+def _manual_bpc_cost_per_run(type_id: int) -> Optional[float]:
+    scope = _active_planner_reads()
+    if scope is not None and type_id in scope.bpc_cost:
+        return scope.bpc_cost[type_id]
+    result = storage.get_manual_blueprint_copy_cost_per_run(type_id)
+    if scope is not None:
+        scope.bpc_cost[type_id] = result
+    return result
 
 
 def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: ProductionConfig,
@@ -2402,7 +2615,7 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     # store `quantity` in finished-product units (not runs), so this is a
     # flat add, unlike the ESI incoming branch above which multiplies runs
     # by product_qty.
-    total += storage.manual_incoming_qty(type_id)
+    total += _manual_incoming_qty(type_id)
     return total
 
 
@@ -2718,11 +2931,18 @@ def _haul_volume(type_id: int, cfg: ProductionConfig) -> Optional[float]:
     candidate_discovery could share the identical implementation instead of
     keeping its own copy that could drift out of sync; see that function's
     own docstring for the full ESI-lookup/cache/fallback behavior."""
+    scope = _active_planner_reads()
+    if scope is not None and type_id in scope.haul_volume:
+        return scope.haul_volume[type_id]
     sde_type = storage.get_sde_type(type_id)
     if sde_type is None:
-        return None
-    from ..esi_client import resolve_effective_volume  # local import: keeps this a rare, lazy call
-    return resolve_effective_volume(type_id, sde_type[3])
+        result = None
+    else:
+        from ..esi_client import resolve_effective_volume  # local import: keeps this a rare, lazy call
+        result = resolve_effective_volume(type_id, sde_type[3])
+    if scope is not None:
+        scope.haul_volume[type_id] = result
+    return result
 
 
 class _PlanContext:
@@ -2849,6 +3069,10 @@ class _PlanContext:
         self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
         # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
         self._reaction_solve_cache = None
+        # Per-run bulk load of the Je-Typ DB reads (owned BPO, stock, jobs,
+        # volumes, BPC costs) when an entry point opened planner_reads().
+        self.priced_type_ids = priced_type_ids
+        _prefetch_planner_reads(priced_type_ids, cfg)
 
     @property
     def job_costs_reliable(self) -> bool:
@@ -3098,6 +3322,7 @@ def _annotate_special_order_quantities(buy_list: list[BuyListEntry], build_list:
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Runs the full Stock Targets -> Inventory -> Buy/Build pipeline. Returns
     dict with 'inventory' (InventoryRow list), 'buy_list' (BuyListEntry list,
@@ -3483,6 +3708,7 @@ def _load_reaction_chain_choices() -> dict[int, str]:
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfig,
                         net_against_stock: bool) -> dict:
     """One-off order variant of plan_production - seeded from `items`
@@ -4119,6 +4345,7 @@ def _asset_plan_order_progress(claim_rows: list[dict],
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Asset-aware Bauliste: same buy-vs-build calls as plan_production (see
     _buy_or_build_decision - the two Baulisten never disagree on *whether* to
@@ -5261,6 +5488,7 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsClient"],
                             progress_callback: Optional[Callable[[dict], None]] = None,
                             ) -> tuple[list[dict], bool]:
@@ -5518,6 +5746,7 @@ def _descendant_market_group_ids(root_id: int) -> set[int]:
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def _scan_ship_margins(cfg: ProductionConfig) -> tuple[list[dict], bool]:
     """The actual scan behind discover_ship_margins - split out for the same
     reason _scan_build_candidates is (holds the cache lock across the whole
@@ -5608,6 +5837,7 @@ def _item_margin_detail_with_context(
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Production Margin page's search: the same row shape discover_ship_
     margins produces, for one arbitrary already-resolved item (any category,
@@ -6406,6 +6636,7 @@ class PlannerValuationError(RuntimeError):
 
 
 @storage.with_batch_session()
+@with_planner_reads
 def planner_unit_values(type_ids: Iterable[int],
                         cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, tuple[float, str]]:
     """What the planner would pay for one unit right now: the cheaper of the

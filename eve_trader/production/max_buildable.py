@@ -330,6 +330,15 @@ def max_buildable(type_id: int, cfg: ProductionConfig, mode: str = "full",
     max quantity, or for `target_quantity` when given)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    with engine.planner_reads():
+        # Material closure of this one item - same universe the walk touches.
+        engine._prefetch_planner_reads(
+            engine._structural_material_closure([type_id]), cfg)
+        return _max_buildable(type_id, cfg, mode, target_quantity)
+
+
+def _max_buildable(type_id: int, cfg: ProductionConfig, mode: str,
+                   target_quantity: Optional[int]) -> dict:
     ctx = _Context(cfg, mode)
     recipe = ctx.recipe(type_id)
     if recipe is None:
