@@ -161,6 +161,18 @@ describe('Portfolio overview', () => {
     expect(portfolioApi.realizedCards).toHaveBeenCalledWith('30')
   })
 
+  it('flags a card whose sales lack tax and fee, with count and revenue', async () => {
+    vi.mocked(portfolioApi.realizedCards).mockResolvedValue(cards([
+      {
+        tool: 'production', profit: 50, revenue: 200, margin: 0.25, coverage: 1,
+        estimated: false, empty: false, sales_count: 4, link: '/production/realized',
+        fees_missing_sales: 3, fees_missing_revenue: 150,
+      },
+    ], 50))
+    renderPortfolio()
+    expect(await screen.findByText(/fees missing \(3 sales, 150 ISK\)/)).toBeInTheDocument()
+  })
+
   it('shows a dash and no zero when a tool still needs a recompute', async () => {
     vi.mocked(portfolioApi.realizedCards).mockResolvedValue(cards([
       {

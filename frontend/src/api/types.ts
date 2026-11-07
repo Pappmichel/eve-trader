@@ -3227,6 +3227,8 @@ export interface RealizedFlags {
   assumed_decryptor: boolean
   coverage: number | null
   tax_missing: boolean
+  /** Sale before its wallet's journal: no tax or broker fee on record, none estimated. */
+  fees_missing?: boolean
   detail_missing: boolean
   /** null on a job means the bonus is unknown, not absent. */
   no_structure_bonus: boolean | null
@@ -3279,6 +3281,9 @@ export interface TradingRealizedSummary {
   sale_count: number
   price_missing: boolean
   tax_missing_sales: number
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
+  fees_missing_profit?: number
   cost_structure: CostStructureLine[]
   by_day: RealizedDay[]
   flags: RealizedFlags
@@ -3409,6 +3414,9 @@ export interface StationRealizedSummary {
   turnover_days: number | null
   price_missing: boolean
   tax_missing_sales: number
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
+  fees_missing_profit?: number
   freight_from_couriers?: number
   freight_configured?: number
   fees_by_day: StationRealizedFeeDay[]
@@ -3584,6 +3592,8 @@ export interface RealizedToolCard {
   estimated: boolean
   empty: boolean
   sales_count: number | null
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
   link: string
 }
 
@@ -3595,6 +3605,8 @@ export interface RealizedFreight {
 export interface RealizedToolCards {
   rows: RealizedToolCard[]
   total: number | null
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
   period: string
   freight: RealizedFreight | null
 }
@@ -3639,6 +3651,9 @@ export interface RealizedSummary {
   units_sold: number
   price_missing: boolean
   tax_missing_sales: number
+  fees_missing_sales?: number
+  fees_missing_revenue?: number
+  fees_missing_profit?: number
   fees_without_sale: number
   fees_on_other_trading: number
   capital_in_bpos: number
