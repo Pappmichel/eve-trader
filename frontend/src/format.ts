@@ -10,6 +10,13 @@ export function isk(value: number | null | undefined): string {
   return `${nf.format(Math.round(value))} ISK`
 }
 
+// Chart axis labels: 64.3B instead of 64,310,000,000 ISK.
+const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
+export function iskCompact(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '–'
+  return compact.format(value)
+}
+
 // Per-unit prices of cheap items (minerals cost a few ISK), where whole ISK
 // would hide most of the difference.
 export function iskUnit(value: number | null | undefined): string {

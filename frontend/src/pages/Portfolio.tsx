@@ -7,7 +7,7 @@ import {
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
 import { Link } from 'react-router-dom'
-import { Bar, ComposedChart, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
+import { Area, AreaChart, Bar, ComposedChart, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { portfolioApi } from '../api/client'
@@ -16,7 +16,7 @@ import { HintCard } from '../components/HintCard'
 import { SearchableSelect } from '../components/SearchableSelect'
 import { useAction } from '../hooks/useAction'
 import { useItemNameOptions } from '../hooks/useStaticOptions'
-import { isk, qty, pct, dateTime } from '../format'
+import { isk, iskCompact, qty, pct, dateTime } from '../format'
 import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
 import type { AttentionItem, ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
@@ -143,45 +143,103 @@ function tooltipStyle() {
   return { background: COLORS.surface2, border: `1px solid ${COLORS.border}` }
 }
 
-function HistoryChart({ title, hint, rows, lines }: {
-  title: string
-  hint?: string
-  rows: PortfolioSnapshotRow[]
-  lines: { dataKey: keyof PortfolioSnapshotRow; name: string; color: string; formatter: (v: number) => string }[]
-}) {
-  // Fewer than 2 days of history has no meaningful trend to chart -
-  // mirrors trading_daily_profit_volatility's own "None below 2 days of
-  // data" precedent rather than rendering an empty/broken chart.
-  if (rows.length < 2) {
+// Stack order bottom -> top; blueprints are not stored per snapshot and are
+// derived as total minus every stored component.
+const WEALTH_PARTS = [
+  { key: 'assets', name: 'Assets', color: COLORS.accent },
+  { key: 'blueprints', name: 'Blueprints', color: '#A78BFA' },
+  { key: 'listed', name: 'Listed', color: COLORS.info },
+  { key: 'contracts', name: 'Contracts', color: COLORS.warn },
+  { key: 'wallet', name: 'Wallet', color: '#B8C4D0' },
+  { key: 'escrow', name: 'Escrow', color: COLORS.danger },
+] as const
+
+type WealthPartKey = typeof WEALTH_PARTS[number]['key']
+type WealthHistoryPoint = { date: string; total: number } & Record<WealthPartKey, number>
+
+function wealthHistoryPoints(rows: PortfolioSnapshotRow[]): WealthHistoryPoint[] {
+  const points: WealthHistoryPoint[] = []
+  for (const row of rows) {
+    if (row.total_wealth == null) continue
+    const stored = {
+      assets: row.wealth_assets_value ?? 0,
+      listed: row.wealth_listed_value ?? 0,
+      contracts: row.wealth_contract_value ?? 0,
+      wallet: row.wealth_wallet_balance ?? 0,
+      escrow: row.wealth_escrow ?? 0,
+    }
+    const known = Object.values(stored).reduce((a, b) => a + b, 0)
+    points.push({ date: row.snapshot_date, total: row.total_wealth, ...stored, blueprints: Math.max(0, row.total_wealth - known) })
+  }
+  return points
+}
+
+function WealthHistoryCharts({ rows }: { rows: PortfolioSnapshotRow[] }) {
+  const [mode, setMode] = useState<'isk' | 'share'>('isk')
+  const points = useMemo(() => wealthHistoryPoints(rows), [rows])
+  const shown = useMemo(() => {
+    if (mode === 'isk') return points
+    return points.map((p) => {
+      const sum = WEALTH_PARTS.reduce((acc, part) => acc + p[part.key], 0) || 1
+      const out = { ...p }
+      for (const part of WEALTH_PARTS) out[part.key] = (p[part.key] / sum) * 100
+      return out
+    })
+  }, [points, mode])
+  // Hide a source that is zero on every day so the legend stays short.
+  const parts = WEALTH_PARTS.filter((part) => points.some((p) => p[part.key] > 0))
+
+  if (points.length < 2) {
     return (
       <Card withBorder padding="lg" radius="md" className="et-panel">
-        <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
+        <Title order={6} c="dimmed" tt="uppercase" mb="xs">Total Wealth</Title>
         <Text size="sm" c="dimmed">History builds up from here - check back tomorrow.</Text>
       </Card>
     )
   }
+  const fmt = (v: number) => (mode === 'isk' ? isk(v) : `${v.toFixed(1)} %`)
+  const axisFmt = (v: number) => (mode === 'isk' ? iskCompact(v) : `${v} %`)
   return (
-    <Card withBorder padding="lg" radius="md" className="et-panel">
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
-      {hint && <Text size="xs" c="dimmed" mb="sm">{hint}</Text>}
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={rows}>
-          <CartesianGrid stroke={COLORS.border} />
-          <XAxis dataKey="snapshot_date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
-          <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={90}
-            tickFormatter={(v: number) => lines[0].formatter(v)} />
-          <Tooltip contentStyle={tooltipStyle()} formatter={(v, name) => {
-            const line = lines.find((l) => l.name === name)
-            return [line && typeof v === 'number' ? line.formatter(v) : v, name]
-          }} />
-          {lines.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
-          {lines.map((line) => (
-            <Line key={String(line.dataKey)} type="monotone" dataKey={line.dataKey} name={line.name}
-              stroke={line.color} dot={false} connectNulls />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
-    </Card>
+    <>
+      <Card withBorder padding="lg" radius="md" className="et-panel">
+        <Title order={6} c="dimmed" tt="uppercase" mb="xs">Total Wealth</Title>
+        <Text size="xs" c="dimmed" mb="sm">The axis is fitted to the range, so day-to-day changes stay visible.</Text>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={points}>
+            <CartesianGrid stroke={COLORS.border} />
+            <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+            <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={60} tickFormatter={iskCompact}
+              domain={['auto', 'auto']} />
+            <Tooltip contentStyle={tooltipStyle()} formatter={(v) => [typeof v === 'number' ? isk(v) : v, 'Total Wealth']} />
+            <Line type="monotone" dataKey="total" name="Total Wealth" stroke={COLORS.text} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+      <Card withBorder padding="lg" radius="md" className="et-panel">
+        <Group justify="space-between" align="center" mb="xs">
+          <Title order={6} c="dimmed" tt="uppercase">Wealth by source</Title>
+          <SegmentedControl size="xs" value={mode} onChange={(v) => setMode(v as 'isk' | 'share')}
+            data={[{ label: 'ISK', value: 'isk' }, { label: 'Share', value: 'share' }]} aria-label="Wealth by source mode" />
+        </Group>
+        <Text size="xs" c="dimmed" mb="sm">
+          Shared with Portfolio. Blueprints are the rest of the total; older snapshots without listed, contract or escrow values count those inside it.
+        </Text>
+        <ResponsiveContainer width="100%" height={260}>
+          <AreaChart data={shown}>
+            <CartesianGrid stroke={COLORS.border} />
+            <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+            <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} width={60} tickFormatter={axisFmt}
+              {...(mode === 'share' ? { domain: [0, 100], ticks: [0, 25, 50, 75, 100] } : { domain: [0, 'auto'] })} />
+            <Tooltip contentStyle={tooltipStyle()} formatter={(v, name) => [typeof v === 'number' ? fmt(v) : v, name]} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {parts.map((part) => (
+              <Area key={part.key} type="monotone" dataKey={part.key} name={part.name} stackId="wealth"
+                stroke={part.color} fill={part.color} fillOpacity={0.55} />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </Card>
+    </>
   )
 }
 
@@ -566,14 +624,7 @@ export default function Portfolio() {
           <SegmentedControl size="xs" value={range} onChange={setRange} data={RANGE_OPTIONS} aria-label="Wealth history range" />
         </Group>
 
-        <HistoryChart title="Total Wealth" rows={history ?? []}
-          hint="Assets, blueprints, listed orders, contracts, wallet and escrow shared with Portfolio. Older rows leave the new lines blank."
-          lines={[
-            { dataKey: 'total_wealth', name: 'Total Wealth', color: COLORS.accent, formatter: isk },
-            { dataKey: 'wealth_listed_value', name: 'Listed', color: COLORS.info, formatter: isk },
-            { dataKey: 'wealth_contract_value', name: 'Contracts', color: COLORS.warn, formatter: isk },
-            { dataKey: 'wealth_escrow', name: 'Escrow', color: COLORS.danger, formatter: isk },
-          ]} />
+        <WealthHistoryCharts rows={history ?? []} />
 
         <Divider />
         <ManualPricesSection />
