@@ -2208,15 +2208,28 @@ def manual_bpo_best_me_te(bp_type_id: int) -> Optional[tuple[int, int]]:
     """Best (highest) ME/TE across every manually-registered BPO of
     `bp_type_id` - same "originals only" restriction as storage.
     get_owned_bpo_best_me_te's own ESI-side counterpart."""
+    return manual_bpo_best_me_te_bulk([bp_type_id]).get(bp_type_id)
+
+
+def manual_bpo_best_me_te_bulk(bp_type_ids: list[int]) -> dict[int, Optional[tuple[int, int]]]:
+    """Best ME/TE per manually-registered BPO type_id. Missing ids map to
+    None. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(bp_type_ids))
+    if not unique:
+        return {}
+    out: dict[int, Optional[tuple[int, int]]] = {tid: None for tid in unique}
     with connect() as conn:
-        row = conn.execute(
-            "SELECT MAX(material_efficiency), MAX(time_efficiency) FROM manual_owned_blueprints "
-            "WHERE blueprint_type_id = ? AND is_original = ?",
-            (bp_type_id, True),
-        ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return (row[0], row[1])
+        rows = conn.execute(
+            "SELECT blueprint_type_id, MAX(material_efficiency), MAX(time_efficiency) "
+            "FROM manual_owned_blueprints "
+            "WHERE blueprint_type_id = ANY(?) AND is_original = ? "
+            "GROUP BY blueprint_type_id",
+            (list(unique), True),
+        ).fetchall()
+    for tid, me, te in rows:
+        if tid in out and me is not None and te is not None:
+            out[tid] = (me, te)
+    return out
 
 
 def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None) -> float:
@@ -2304,11 +2317,26 @@ def manual_incoming_qty(product_type_id: int) -> float:
     product quantity (decision 2), since `quantity` here is already stored
     in finished-product units (see insert_manual_industry_job's own
     docstring/the table's own column comment)."""
+    return manual_incoming_qty_bulk([product_type_id]).get(product_type_id, 0.0)
+
+
+def manual_incoming_qty_bulk(product_type_ids: list[int]) -> dict[int, float]:
+    """One GROUP BY for every requested product_type_id. Missing ids map to
+    0.0. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(product_type_ids))
+    if not unique:
+        return {}
+    totals = {tid: 0.0 for tid in unique}
     with connect() as conn:
-        row = conn.execute(
-            "SELECT SUM(quantity) FROM manual_industry_jobs WHERE product_type_id = ?", (product_type_id,)
-        ).fetchone()
-    return row[0] if row and row[0] is not None else 0.0
+        rows = conn.execute(
+            "SELECT product_type_id, COALESCE(SUM(quantity), 0) FROM manual_industry_jobs "
+            "WHERE product_type_id = ANY(?) GROUP BY product_type_id",
+            (list(unique),),
+        ).fetchall()
+    for tid, qty in rows:
+        if tid in totals:
+            totals[tid] = float(qty)
+    return totals
 
 
 def complete_manual_job(job_id: int, location_id: int) -> None:
@@ -2605,13 +2633,27 @@ def get_manual_blueprint_copy_cost_per_run(type_id: int) -> Optional[float]:
     `type_id` if a manual BPC cost is registered, else None. Used by
     production/engine.py's _unit_cost to fold a bought-copy's cost into the
     modeled build cost for anyone building from it."""
+    return get_manual_blueprint_copy_cost_per_run_bulk([type_id]).get(type_id)
+
+
+def get_manual_blueprint_copy_cost_per_run_bulk(type_ids: list[int]) -> dict[int, Optional[float]]:
+    """Amortized cost per run for every requested type_id. Missing ids and
+    rows with runs=0 map to None. Empty input is `{}` and opens no
+    connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    out: dict[int, Optional[float]] = {tid: None for tid in unique}
     with connect() as conn:
-        row = conn.execute(
-            "SELECT purchase_cost, runs FROM manual_blueprint_copy_costs WHERE type_id = ?", (type_id,)
-        ).fetchone()
-    if row is None or not row[1]:
-        return None
-    return row[0] / row[1]
+        rows = conn.execute(
+            "SELECT type_id, purchase_cost, runs FROM manual_blueprint_copy_costs "
+            "WHERE type_id = ANY(?)",
+            (list(unique),),
+        ).fetchall()
+    for tid, cost, runs in rows:
+        if tid in out and runs:
+            out[tid] = cost / runs
+    return out
 
 
 def upsert_manual_blueprint_me_te_override(type_id: int, type_name: str, material_efficiency: int, time_efficiency: int) -> None:
@@ -5856,21 +5898,41 @@ def esi_incoming_industry_qty(product_type_id: int,
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
     both None (the default) is unfiltered. A caller that has resolved
     sharing passes both, even when one list is empty."""
+    return esi_incoming_industry_qty_bulk(
+        [product_type_id],
+        owner_character_ids=owner_character_ids,
+        owner_corporation_ids=owner_corporation_ids,
+        exclude_location_ids=exclude_location_ids,
+    )[product_type_id]
+
+
+def esi_incoming_industry_qty_bulk(product_type_ids: list[int],
+                                   owner_character_ids: Optional[list[int]] = None,
+                                   owner_corporation_ids: Optional[list[int]] = None,
+                                   exclude_location_ids: Optional[list[int]] = None,
+                                   ) -> dict[int, dict[str, float]]:
+    """Same filters as esi_incoming_industry_qty, one GROUP BY product_type_id
+    query per industry-jobs table. Missing ids map to runs=0/jobs=0. Empty
+    input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(product_type_ids))
+    if not unique:
+        return {}
+    out = {tid: {"runs": 0.0, "jobs": 0.0} for tid in unique}
     loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "output_location_id")
     with connect() as conn:
-        runs = 0
-        jobs = 0
         for table in ("character_industry_jobs", "corp_industry_jobs"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
-            row = conn.execute(
-                f"SELECT COALESCE(SUM(runs), 0), COUNT(*) FROM {table} "
-                "WHERE product_type_id = ? AND status IN ('active', 'paused', 'ready')"
-                f"{id_clause}{loc_clause}",
-                (product_type_id, *id_params, *loc_params),
-            ).fetchone()
-            runs += row[0]
-            jobs += row[1]
-    return {"runs": runs, "jobs": jobs}
+            rows = conn.execute(
+                f"SELECT product_type_id, COALESCE(SUM(runs), 0), COUNT(*) FROM {table} "
+                "WHERE product_type_id = ANY(?) AND status IN ('active', 'paused', 'ready')"
+                f"{id_clause}{loc_clause} GROUP BY product_type_id",
+                (list(unique), *id_params, *loc_params),
+            ).fetchall()
+            for tid, runs, jobs in rows:
+                if tid in out:
+                    out[tid]["runs"] += runs
+                    out[tid]["jobs"] += jobs
+    return out
 
 
 def _ledger_owner_clause(owner_character_ids: Optional[list[int]],
@@ -6504,25 +6566,51 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int,
 
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
     both None (the default) is unfiltered."""
-    best_me: Optional[int] = None
-    best_te: Optional[int] = None
+    return get_owned_bpo_best_me_te_bulk(
+        [blueprint_type_id],
+        owner_character_ids=owner_character_ids,
+        owner_corporation_ids=owner_corporation_ids,
+        exclude_location_ids=exclude_location_ids,
+        exclude_hangar=exclude_hangar,
+    ).get(blueprint_type_id)
+
+
+def get_owned_bpo_best_me_te_bulk(blueprint_type_ids: list[int],
+                                   owner_character_ids: Optional[list[int]] = None,
+                                   owner_corporation_ids: Optional[list[int]] = None,
+                                   exclude_location_ids: Optional[list[int]] = None,
+                                   exclude_hangar: Optional[ExcludedHangar] = None,
+                                   ) -> dict[int, Optional[tuple[int, int]]]:
+    """Same filters as get_owned_bpo_best_me_te, one GROUP BY type_id query
+    per blueprint table. Missing ids map to None. Empty input is `{}` and
+    opens no connection."""
+    unique = list(dict.fromkeys(blueprint_type_ids))
+    if not unique:
+        return {}
+    best_me: dict[int, int] = {}
+    best_te: dict[int, int] = {}
     loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         for table in ("character_blueprints", "corp_blueprints"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             hangar_clause, hangar_params = _exclude_hangar_blueprint_clause(table, exclude_hangar)
-            row = conn.execute(
-                f"SELECT MAX(material_efficiency), MAX(time_efficiency) FROM {table} "
-                f"WHERE type_id = ? AND runs = -1{id_clause}{loc_clause}{hangar_clause}",
-                (blueprint_type_id, *id_params, *loc_params, *hangar_params),
-            ).fetchone()
-            if row and row[0] is not None:
-                best_me = row[0] if best_me is None else max(best_me, row[0])
-            if row and row[1] is not None:
-                best_te = row[1] if best_te is None else max(best_te, row[1])
-    if best_me is None or best_te is None:
-        return None
-    return (best_me, best_te)
+            rows = conn.execute(
+                f"SELECT type_id, MAX(material_efficiency), MAX(time_efficiency) FROM {table} "
+                f"WHERE type_id = ANY(?) AND runs = -1{id_clause}{loc_clause}{hangar_clause} "
+                f"GROUP BY type_id",
+                (list(unique), *id_params, *loc_params, *hangar_params),
+            ).fetchall()
+            for tid, me, te in rows:
+                if me is not None:
+                    best_me[tid] = me if tid not in best_me else max(best_me[tid], me)
+                if te is not None:
+                    best_te[tid] = te if tid not in best_te else max(best_te[tid], te)
+    out: dict[int, Optional[tuple[int, int]]] = {}
+    for tid in unique:
+        me = best_me.get(tid)
+        te = best_te.get(tid)
+        out[tid] = None if me is None or te is None else (me, te)
+    return out
 
 
 def load_reaction_chain_choices() -> dict[int, str]:
@@ -7389,16 +7477,60 @@ def get_portion_size(type_id: int) -> Optional[int]:
     return row[8] if row else None
 
 
+# Sidecar for get_type_category - lru_cache has no setter, so bulk warmers
+# (prefetch_type_categories / planner_reads) fill this dict and the cached
+# function reads it first. Cleared with the lru on replace_sde_data.
+_type_category_rows: dict[int, Optional[int]] = {}
+
+
 @lru_cache(maxsize=None)
 def get_type_category(type_id: int) -> Optional[int]:
     """Returns the type's SDE category_id (e.g. 6 = Ship) via its group, or
     None if the type/group isn't in the SDE cache. Cached - see get_sde_type."""
+    if type_id in _type_category_rows:
+        return _type_category_rows[type_id]
     with connect() as conn:
         row = conn.execute(
             "SELECT g.category_id FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
             "WHERE t.type_id = ?", (type_id,),
         ).fetchone()
-    return row[0] if row else None
+    value = row[0] if row else None
+    _type_category_rows[type_id] = value
+    return value
+
+
+_orig_get_type_category_cache_clear = get_type_category.cache_clear
+
+
+def _clear_type_category_cache() -> None:
+    _type_category_rows.clear()
+    _orig_get_type_category_cache_clear()
+
+
+get_type_category.cache_clear = _clear_type_category_cache  # type: ignore[method-assign]
+
+
+def prefetch_type_categories(type_ids: Iterable[int]) -> dict[int, Optional[int]]:
+    """One JOIN for every uncached type_id; warms get_type_category via its
+    sidecar (lru_cache has no setter). Missing ids map to None. Empty input
+    is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(int(t) for t in type_ids))
+    if not unique:
+        return {}
+    missing = [tid for tid in unique if tid not in _type_category_rows]
+    if missing:
+        found: dict[int, Optional[int]] = {tid: None for tid in missing}
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT t.type_id, g.category_id FROM sde_types t "
+                "JOIN sde_groups g ON g.group_id = t.group_id "
+                "WHERE t.type_id = ANY(?)",
+                (list(missing),),
+            ).fetchall()
+        for tid, cat in rows:
+            found[int(tid)] = int(cat) if cat is not None else None
+        _type_category_rows.update(found)
+    return {tid: _type_category_rows.get(tid) for tid in unique}
 
 
 def get_types_names_and_groups_bulk(type_ids: list[int]) -> dict[int, tuple[str, str, int]]:
@@ -7517,11 +7649,22 @@ def get_group_names(group_ids: Iterable[int]) -> dict[int, str]:
 def get_cached_packaged_volume(type_id: int) -> Optional[float]:
     """None means "never looked up yet" - distinct from a cached value that
     happens to equal the flight volume, so callers know whether to fetch."""
+    return get_cached_packaged_volumes_bulk([type_id]).get(type_id)
+
+
+def get_cached_packaged_volumes_bulk(type_ids: list[int]) -> dict[int, float]:
+    """Packaged volumes already stored for the given type_ids. Missing ids
+    are absent (never looked up), same meaning as get_cached_packaged_volume
+    returning None. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
     with connect() as conn:
-        row = conn.execute(
-            "SELECT packaged_volume FROM type_packaged_volume WHERE type_id = ?", (type_id,),
-        ).fetchone()
-    return row[0] if row else None
+        rows = conn.execute(
+            "SELECT type_id, packaged_volume FROM type_packaged_volume WHERE type_id = ANY(?)",
+            (list(unique),),
+        ).fetchall()
+    return {int(tid): float(vol) for tid, vol in rows}
 
 
 def set_cached_packaged_volume(type_id: int, packaged_volume: float) -> None:
