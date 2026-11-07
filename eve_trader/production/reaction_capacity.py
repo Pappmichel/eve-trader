@@ -125,6 +125,10 @@ class ReactionWindow:
     # internally). Raw inputs for buffer jobs may be bought.
     buffer: Mapping[int, float] = field(default_factory=dict)
     buffer_buy_cap: Optional[Mapping[int, float]] = None
+    # Alchemy only on idle slots (user decision 2026-11-07): minimum W1 / W2
+    # runs per normal recipe key, from the solve without alchemy, so alchemy
+    # can fill free slots but never displace a normal run. Set by ``solve``.
+    recipe_floor: Optional[Mapping[str, tuple[float, float]]] = None
     # SDE names for warnings, filled by ``build_window``; the solver stays pure.
     type_names: Mapping[int, str] = field(default_factory=dict)
 
@@ -420,8 +424,46 @@ def fit_runs(seconds_per_run: float, cycle_days: float) -> int:
 
 
 # ------------------------------------------------------------------ solver
+def _is_alchemy(recipe: ReactionRecipe) -> bool:
+    return recipe.key.startswith("alchemy:")
+
+
 def solve(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
     """Minimise two-window reaction-layer cost. See plan section 3.
+
+    Alchemy recipes only fill slots the plan would otherwise leave idle
+    (user decision 2026-11-07: alchemy raises margins but takes far more
+    job time per unit, and pushed more important products out). The layer
+    is solved without them first; only if W1 then has a free slot is it
+    solved again with them, every normal recipe's W1 and W2 runs held at
+    least at the first solve's (``recipe_floor``), so alchemy can only add."""
+    if window.recipe_floor is not None or not any(_is_alchemy(r) for r in layer.recipes):
+        return _solve_stages(layer, window)
+    normal_layer = replace(layer, recipes=[r for r in layer.recipes if not _is_alchemy(r)])
+    base = _solve_stages(normal_layer, window)
+    idle = int(window.slots) - int(base.jobs_used)
+    if idle < 1 or not base.solve_ok:
+        return base
+    floor: dict[str, tuple[float, float]] = {}
+    for alloc in base.recipes:
+        floor[alloc.recipe_key] = (float(alloc.runs), 0.0)
+    if base.next_window is not None:
+        for alloc in base.next_window.recipes:
+            runs1 = floor.get(alloc.recipe_key, (0.0, 0.0))[0]
+            floor[alloc.recipe_key] = (runs1, float(alloc.runs))
+    # A hair below the first solve's runs, so float noise never makes the
+    # floor infeasible.
+    floor = {k: (max(0.0, r1 * (1 - 1e-9) - _TOL), max(0.0, r2 * (1 - 1e-9) - _TOL))
+             for k, (r1, r2) in floor.items()}
+    full = _solve_stages(layer, replace(window, recipe_floor=floor))
+    if not full.solve_ok or full.jobs_used > int(window.slots):
+        return replace(base, warnings=tuple(dict.fromkeys(
+            [*base.warnings, "Alchemy solve for idle slots failed; plan without alchemy kept"])))
+    return full
+
+
+def _solve_stages(layer: ReactionLayer, window: ReactionWindow) -> ReactionPlan:
+    """``solve`` for one recipe set (alchemy handling is in ``solve``).
 
     With an overbuild buffer (D9 revised 2026-11-02) this solves twice:
     first the demand without buffer, which fixes what has to be bought; then
@@ -822,6 +864,14 @@ def _solve_mip(
             j2 = float(jobs2_fix.get(recipe.key, 0))
             bounds[i_jobs1 + i] = (j1, j1)
             bounds[i_jobs2 + i] = (j2, j2)
+    if window.recipe_floor:
+        for i, recipe in enumerate(recipes):
+            floor1, floor2 = window.recipe_floor.get(recipe.key, (0.0, 0.0))
+            for idx, floor in ((i_runs1 + i, floor1), (i_runs2 + i, floor2)):
+                low, high = bounds[idx]
+                if floor <= _TOL or (high is not None and high <= 0.0):
+                    continue
+                bounds[idx] = (max(float(low or 0.0), float(floor)), high)
     # Overbuild buffer (D9 revised): a W1 short up to the buffer costs the
     # product's buy price instead of the penalty; more than that cannot be
     # short. Reaction-product purchases are capped (``solve`` stage 2).

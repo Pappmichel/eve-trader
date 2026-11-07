@@ -97,6 +97,48 @@ def _window(
     )
 
 
+def test_alchemy_never_takes_a_slot_a_normal_recipe_uses():
+    # One slot. Alchemy makes the same 200 units per job far cheaper, but the
+    # normal recipe already fills the slot, so alchemy stays out.
+    normal = _recipe("normal:1", 1, fee=60_000.0, fit=2, outputs={1: 100.0})
+    alchemy = _recipe("alchemy:1", 1, fee=1.0, fit=1, outputs={1: 200.0},
+                      inputs={9001: 1.0}, blueprint=2001)
+    layer = ReactionLayer(recipes=[normal, alchemy])
+    window = _window({1: 200.0}, slots=1, slots2=0,
+                     on_hand={9000: 10_000.0, 9001: 10_000.0},
+                     prices={1: 100_000.0, 9000: 1.0, 9001: 1.0})
+
+    plan = solve(layer, window)
+
+    by_key = {r.recipe_key: r for r in plan.recipes}
+    assert by_key["normal:1"].runs == pytest.approx(2.0)
+    assert "alchemy:1" not in by_key
+
+
+def test_alchemy_fills_idle_slots_without_cutting_normal_runs():
+    # The normal recipe has one formula and no formula to buy: one job, 200
+    # units. Two slots stay idle, so alchemy covers the rest of the demand.
+    normal = _recipe("normal:1", 1, fee=100.0, fit=2, formulas=1, formula_price=None,
+                     outputs={1: 100.0})
+    alchemy = _recipe("alchemy:1", 1, fee=5_000.0, fit=2, formulas=5, outputs={1: 100.0},
+                      inputs={9001: 1.0}, blueprint=2001)
+    layer = ReactionLayer(recipes=[normal, alchemy])
+    window = _window({1: 400.0}, slots=3, slots2=0,
+                     on_hand={9000: 10_000.0, 9001: 10_000.0},
+                     prices={1: 100_000.0, 9000: 1.0, 9001: 1.0})
+
+    plan = solve(layer, window)
+
+    by_key = {r.recipe_key: r for r in plan.recipes}
+    assert by_key["normal:1"].runs == pytest.approx(2.0)
+    # At least this window's missing 200 (W2 has no slots, so W1 may also
+    # feed it), only on the two idle slots.
+    assert by_key["alchemy:1"].runs >= 2.0 - 1e-6
+    assert by_key["alchemy:1"].jobs <= 2
+    assert plan.jobs_used <= 3
+    assert plan.buy.get(1, 0.0) < 1e-6
+
+
 def test_fit_runs_floor_of_cycle():
     assert fit_runs(3 * 3600, 13.0) == 104
     assert fit_runs(14 * 86400, 13.0) == 0
