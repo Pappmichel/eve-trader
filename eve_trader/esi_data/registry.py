@@ -98,7 +98,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-industry.read_character_jobs.v1",
         corporation_scope="esi-industry.read_corporation_jobs.v1",
         corp_roles=("Director",),
-        consuming_tools=("production", "asset_manager"),
+        # "portfolio": Total Wealth's "In production" line (inputs of running
+        # jobs, which ESI's asset list no longer holds).
+        consuming_tools=("production", "asset_manager", "portfolio"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(

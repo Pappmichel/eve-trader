@@ -203,3 +203,58 @@ def test_open_buys_without_escrow_leave_the_component_empty(monkeypatch):
 
     assert result["wealth_escrow"] is None
     assert result["total_wealth"] == 20.0
+
+
+def test_running_job_inputs_are_their_own_line(monkeypatch):
+    from tests.test_portfolio import _FakeTokenManager, _stub_sharing
+    import eve_trader.auth as auth_module
+    import eve_trader.storage as storage
+
+    _stub_sharing(monkeypatch, assets_character=[1], industry_jobs_character=[1])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
+    seen = {}
+
+    def _inputs(owners):
+        seen["owners"] = owners
+        return [("character", 1, 10, 34, 5, False), ("character", 1, 10, 35, 1, False),
+                ("character", 1, 10, 36, 100, True)]  # a consumed T1 copy, 100 runs
+
+    monkeypatch.setattr("eve_trader.realized.db.in_production_input_lines", _inputs)
+    # 36's original has a market quote; the consumed copy must not use it.
+    monkeypatch.setattr(portfolio, "_priced", lambda ids: {34: 2.0, 36: 25_000_000.0})
+    monkeypatch.setattr(portfolio, "_manual_only_priced", lambda ids: {})
+    monkeypatch.setattr(portfolio, "_bpc_run_values", lambda ids: {})
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([]))
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert seen["owners"] == [("character", 1)]
+    assert result["wealth_in_production_value"] == 10.0
+    assert result["wealth_assets_value"] == 20.0
+    assert result["total_wealth"] == 30.0
+    assert result["wealth_unpriced_items"] == 2  # type 35 has no price; the T1 copy has none either
+
+
+def test_running_jobs_not_shared_with_portfolio_add_nothing(monkeypatch):
+    from tests.test_portfolio import _FakeTokenManager, _stub_sharing
+    import eve_trader.auth as auth_module
+    import eve_trader.storage as storage
+
+    _stub_sharing(monkeypatch, assets_character=[1])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
+
+    def _forbidden(*_a, **_kw):
+        raise AssertionError("industry jobs are not shared with portfolio")
+
+    monkeypatch.setattr("eve_trader.realized.db.in_production_input_lines", _forbidden)
+    monkeypatch.setattr(portfolio, "_priced", lambda ids: {34: 2.0})
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([]))
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["wealth_in_production_value"] == 0.0
+    assert result["total_wealth"] == 20.0

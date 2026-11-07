@@ -718,10 +718,10 @@ def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
     ]
 
 
-_WEALTH_KINDS = ("assets", "blueprints", "wallet_balance", "market_orders", "contracts")
+_WEALTH_KINDS = ("assets", "blueprints", "wallet_balance", "market_orders", "contracts", "industry_jobs")
 _EMPTY_SYNC = {
     "assets": None, "blueprints": None, "listed": None,
-    "contracts": None, "wallet": None, "escrow": None,
+    "contracts": None, "wallet": None, "escrow": None, "in_production": None,
 }
 _EMPTY_WEALTH = {
     "total_wealth": None,
@@ -731,6 +731,7 @@ _EMPTY_WEALTH = {
     "wealth_listed_value": None,
     "wealth_contract_value": None,
     "wealth_escrow": None,
+    "wealth_in_production_value": None,
     "wealth_priced_items": 0,
     "wealth_unpriced_items": 0,
     "characters_missing_wallet_scope": [],
@@ -772,6 +773,7 @@ def _sync_times(shares: dict, escrow_known: bool) -> dict:
     kind_for = {
         "assets": "assets", "blueprints": "blueprints", "listed": "market_orders",
         "contracts": "contracts", "wallet": "wallet_balance", "escrow": "market_orders",
+        "in_production": "industry_jobs",
     }
     out = {}
     for label, kind in kind_for.items():
@@ -800,6 +802,7 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
     wallet_chars, wallet_corps = shares["wallet_balance"]
     order_chars, order_corps = shares["market_orders"]
     contract_chars, contract_corps = shares["contracts"]
+    job_chars, job_corps = shares["industry_jobs"]
 
     assets = storage.load_assets_grouped(asset_chars, asset_corps) if (asset_chars or asset_corps) else []
     blueprints = storage.load_blueprints_grouped(bp_chars, bp_corps) if (bp_chars or bp_corps) else []
@@ -808,6 +811,10 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
     if contract_chars or contract_corps:
         from .realized.db import outstanding_contract_lines
         contract_rows = outstanding_contract_lines(_owner_pairs(contract_chars, contract_corps))
+    job_rows = []
+    if job_chars or job_corps:
+        from .realized.db import in_production_input_lines
+        job_rows = in_production_input_lines(_owner_pairs(job_chars, job_corps))
     wallet_rows = (
         storage.wallet_balances_by_owner(wallet_chars, wallet_corps)
         if (wallet_chars or wallet_corps) else []
@@ -846,6 +853,21 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
             "location_id": None, "type_id": type_id, "quantity": quantity,
             "manual_only": False,
         })
+    # Materials of running jobs: gone from the asset list, output not there
+    # yet. Valued like assets, so a job start leaves the total flat and the
+    # delivery adds only the margin. A consumed blueprint copy (one per
+    # invention/copy run) is valued like a copy in the Blueprints line:
+    # manual price, else invention cost per run x runs, never its original's
+    # market quote.
+    for owner_type, owner_id, location_id, type_id, quantity, is_blueprint in job_rows:
+        item = {
+            "component": "in_production", "owner_type": owner_type, "owner_id": owner_id,
+            "location_id": location_id, "type_id": type_id, "quantity": quantity,
+            "manual_only": is_blueprint,
+        }
+        if is_blueprint:
+            item["quantity"], item["runs"] = 1, int(quantity)
+        items.append(item)
 
     price_items(items)
 
@@ -936,6 +958,7 @@ def _wealth_from(collected: dict) -> dict:
         "wealth_listed_value": parts["listed"],
         "wealth_contract_value": parts["contracts"],
         "wealth_escrow": parts["escrow"],
+        "wealth_in_production_value": parts["in_production"],
         "wealth_priced_items": built["priced_items"],
         "wealth_unpriced_items": built["unpriced_items"],
         "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),

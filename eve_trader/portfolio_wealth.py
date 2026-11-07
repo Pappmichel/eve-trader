@@ -77,7 +77,7 @@ def assemble(
     priced_value = 0.0
     priced_items = 0
     unpriced_items = 0
-    components = {"assets": 0.0, "blueprints": 0.0, "listed": 0.0, "contracts": 0.0}
+    components = {"assets": 0.0, "blueprints": 0.0, "listed": 0.0, "contracts": 0.0, "in_production": 0.0}
     by_owner: dict[str, float] = {}
     by_category: dict[str, float] = {}
     raw_locations: dict[str, float] = {}
@@ -184,6 +184,7 @@ def assemble(
             "blueprints": components["blueprints"],
             "listed": components["listed"],
             "contracts": components["contracts"],
+            "in_production": components["in_production"],
             "wallet": wallet_value,
             "escrow": escrow_value,
         },

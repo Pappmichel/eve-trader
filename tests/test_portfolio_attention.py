@@ -82,14 +82,14 @@ def test_attention_stale_esi_names_only_overdue_portfolio_kinds(monkeypatch):
         ("character", 1, "market_orders", "portfolio"),
         ("character", 1, "blueprints", "portfolio"),
         ("character", 1, "contracts", "portfolio"),
-        ("character", 1, "industry_jobs", "portfolio"),
+        ("character", 1, "skills", "portfolio"),
     ]
     freshness = [
         ("character", 1, "assets", (now - timedelta(hours=7)).isoformat(), None, None),
         ("character", 2, "assets", (now - timedelta(hours=1)).isoformat(), None, None),
         ("character", 1, "market_orders", (now - timedelta(minutes=30)).isoformat(), None, None),
         ("character", 1, "blueprints", (now - timedelta(hours=20)).isoformat(), None, None),
-        ("character", 1, "industry_jobs", (now - timedelta(days=9)).isoformat(), None, None),
+        ("character", 1, "skills", (now - timedelta(days=9)).isoformat(), None, None),
     ]
     _quiet(monkeypatch, targets=[(1,)], shares=shares, freshness=freshness)
     items = portfolio.attention([], cfg=TradingConfig(), now=now)["items"]

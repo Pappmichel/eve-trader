@@ -152,3 +152,53 @@ def test_no_shared_owner_means_no_correction(monkeypatch):
     monkeypatch.setattr(engine, "shared_production_owner_ids",
                         lambda kind: ([], [CORP]) if kind == "industry_jobs" else ([], []))
     assert engine._asset_lag_adjustments() == ({}, {})
+
+
+def test_in_production_inputs_follow_the_asset_snapshot():
+    """Total Wealth "In production": inputs of jobs whose materials left the
+    asset snapshot while their output is not in it yet."""
+    _assets_synced()
+    before = ASSETS_AS_OF - timedelta(hours=2)
+    _job(1, status="active", start=before)                      # running: counts
+    _job(2, status="active", start=ASSETS_AS_OF + timedelta(minutes=5))  # mats still in assets
+    _job(3, status="delivered", start=before, completed=ASSETS_AS_OF + timedelta(minutes=10))  # output not in assets
+    _job(4, status="delivered", start=before - timedelta(hours=1),
+         completed=ASSETS_AS_OF - timedelta(minutes=10))        # output already in assets
+    _job(5, status="cancelled", start=before)                   # materials lost
+    _job(6, status="ready", start=before, station=OTHER_STATION)
+    for job_id in range(1, 7):
+        _input(job_id, MATERIAL, 100 * job_id)
+
+    rows = ledger_db.in_production_input_lines([("corporation", CORP)])
+
+    assert sorted(rows) == [
+        ("corporation", CORP, STATION, MATERIAL, 100.0 + 300.0, False),
+        ("corporation", CORP, OTHER_STATION, MATERIAL, 600.0, False),
+    ]
+    assert ledger_db.in_production_input_lines([("corporation", CORP + 1)]) == []
+    assert ledger_db.in_production_input_lines([]) == []
+
+
+def test_in_production_job_archived_for_character_and_corp_counts_once():
+    _assets_synced()
+    _assets_synced(owner=("character", CHAR))
+    start = ASSETS_AS_OF - timedelta(hours=1)
+    _job(1, status="active", start=start)
+    _job(1, status="active", start=start, owner=("character", CHAR))
+    _input(1, MATERIAL, 50)
+    _input(1, MATERIAL, 50, owner=("character", CHAR))
+
+    rows = ledger_db.in_production_input_lines([("corporation", CORP), ("character", CHAR)])
+
+    assert rows == [("corporation", CORP, STATION, MATERIAL, 50.0, False)]
+
+
+def test_in_production_owner_without_asset_sync_counts_running_jobs():
+    _job(1, status="active", start=ASSETS_AS_OF)
+    _job(2, status="delivered", start=ASSETS_AS_OF, completed=ASSETS_AS_OF + timedelta(hours=1))
+    _input(1, MATERIAL, 7)
+    _input(2, MATERIAL, 9)
+
+    assert ledger_db.in_production_input_lines([("corporation", CORP)]) == [
+        ("corporation", CORP, STATION, MATERIAL, 7.0, False),
+    ]

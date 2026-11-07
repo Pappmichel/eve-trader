@@ -55,7 +55,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'industry_jobs', section: 'industry', label: 'Industry Jobs', group: 1,
-    consumingTools: ['production', 'asset_manager'],
+    consumingTools: ['production', 'asset_manager', 'portfolio'],
     corpRoles: ['Director'],
   },
   {

@@ -937,6 +937,7 @@ export interface PortfolioSnapshotRow {
   wealth_listed_value: number | null
   wealth_contract_value: number | null
   wealth_escrow: number | null
+  wealth_in_production_value?: number | null
 }
 
 export interface CharacterMissingWalletScope {
@@ -951,6 +952,7 @@ export interface WealthSync {
   contracts: string | null
   wallet: string | null
   escrow: string | null
+  in_production?: string | null
 }
 
 export interface TotalWealth {
@@ -961,6 +963,7 @@ export interface TotalWealth {
   wealth_listed_value: number | null
   wealth_contract_value: number | null
   wealth_escrow: number | null
+  wealth_in_production_value?: number | null
   wealth_priced_items: number
   wealth_unpriced_items: number
   characters_missing_wallet_scope: CharacterMissingWalletScope[]
