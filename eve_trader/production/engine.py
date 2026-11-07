@@ -5600,6 +5600,17 @@ def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRO
     return _item_margin_detail_with_context(type_id, type_name, cfg, ctx, cost_memo, t2_memo)
 
 
+def _prefetch_recipes(type_ids: Iterable[int]) -> None:
+    """One bulk read of recipe, materials, times, invention sources and type
+    rows for a whole level of the walk (storage.prefetch_recipes), so the
+    per-item lookups that follow hit the cache. Only an optimisation: the
+    lookups still work without it, so a failure is logged and ignored."""
+    try:
+        storage.prefetch_recipes(type_ids)
+    except Exception:  # noqa: BLE001
+        log.debug("recipe prefetch failed; falling back to per-item lookups", exc_info=True)
+
+
 def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
     """Every type_id reachable from `seed_type_ids` through blueprint
     materials, ignoring buy-vs-build economics entirely - pricing isn't
@@ -5639,6 +5650,7 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
     while frontier and depth < MAX_DEPTH:
         visited |= frontier
         next_frontier: set[int] = set()
+        _prefetch_recipes(frontier)
         for type_id in frontier:
             activity, bp = classify_activity(type_id)
             if bp is None:
