@@ -59,7 +59,16 @@ def _build_shortlist_rows(rows: list[tuple[int, float, float, str, bool]],
     category/profit/margin from that live price, not the persisted
     discovery-time spread (see _profit's own docstring)."""
     type_ids = [type_id for type_id, *_rest in rows]
+    # Network first, outside any batch: confirm_live pages ESI (and reads
+    # tokens from worker threads, which would not share a batch connection).
     live = confirm_live(type_ids, cfg.station_id, hub_region_id=cfg.hub_region_id)
+    # Only the per-row SDE lookups (name, category) share one connection.
+    with storage.batch_session():
+        return _shortlist_rows_from_live(rows, live, cfg)
+
+
+def _shortlist_rows_from_live(rows: list[tuple[int, float, float, str, bool]], live: dict,
+                               cfg: StationTradingConfig) -> list[dict]:
     category_names = storage.load_sde_category_names()
     result = []
     for type_id, spread_pct, avg_daily_volume, discovered_at, active in rows:
