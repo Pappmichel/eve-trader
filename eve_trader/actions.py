@@ -451,24 +451,37 @@ def do_recategorize_shortlist() -> dict:
     shortlist items had drifted this way" reasoning do_add_to_shortlist's
     own re-derive-fresh comment documents) - existing rows stay stale until
     either re-added or run through here."""
-    items = storage.load_shortlist()
-    category_names = storage.load_sde_category_names()
+    # Three phases, so no pooled connection is held across a network call:
+    # (1) every SDE read on one shared connection, (2) the live-ESI group
+    # fallback for types the SDE cache lacks (outside any batch), (3) both
+    # writes in one transaction so the shortlist and its snapshot patch land
+    # together or not at all.
+    with storage.batch_session():
+        items = storage.load_shortlist()
+        category_names = storage.load_sde_category_names()
+        type_categories = {item.item_id: storage.get_type_category(item.item_id) for item in items}
+        sde_rows = {item.item_id: storage.get_sde_type(item.item_id) for item in items}
+    group_ids: dict = {
+        type_id: (row[1] if row is not None else _group_id(type_id))
+        for type_id, row in sde_rows.items()
+    }
     changed = 0
     changed_categories: dict[int, str] = {}
     for item in items:
         new_category = candidate_discovery.guess_category(
-            "", item.item, item.volume_m3, storage.get_type_category(item.item_id), category_names,
-            _group_id(item.item_id))
+            "", item.item, item.volume_m3, type_categories[item.item_id], category_names,
+            group_ids[item.item_id])
         if new_category != item.category:
             item.category = new_category
             changed += 1
             if item.item_id is not None:
                 changed_categories[item.item_id] = new_category
-    storage.upsert_shortlist(items)
-    # Also patch the already-persisted snapshot the Shortlist page actually
-    # renders (storage.latest_snapshot) - otherwise this fix is invisible
-    # until the next full do_refresh_shortlist run (GitHub issue #5).
-    storage.update_snapshot_categories(changed_categories)
+    with storage.batch_session():
+        storage.upsert_shortlist(items)
+        # Also patch the already-persisted snapshot the Shortlist page actually
+        # renders (storage.latest_snapshot) - otherwise this fix is invisible
+        # until the next full do_refresh_shortlist run (GitHub issue #5).
+        storage.update_snapshot_categories(changed_categories)
     return {"checked": len(items), "recategorized": changed}
 
 

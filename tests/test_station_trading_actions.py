@@ -1,8 +1,38 @@
+from contextlib import contextmanager
+
+import pytest
+
 from eve_trader import storage
 from eve_trader.actions import ActionError
 from eve_trader.esi_client import OrderStats
 from eve_trader.station_trading import actions
 from eve_trader.station_trading.config import StationTradingConfig
+
+
+class _BatchProbe:
+    """Stands in for storage.batch_session so a test can see which calls ran
+    inside a batch, without a database."""
+
+    def __init__(self):
+        self.active = False
+        self.opened = 0
+
+    @contextmanager
+    def session(self):
+        assert not self.active, "batch_session must not nest here"
+        self.active = True
+        self.opened += 1
+        try:
+            yield
+        finally:
+            self.active = False
+
+
+@pytest.fixture
+def batch_probe(monkeypatch):
+    probe = _BatchProbe()
+    monkeypatch.setattr(storage, "batch_session", probe.session)
+    return probe
 
 
 def _cfg(**overrides):
@@ -29,14 +59,22 @@ def test_profit_is_none_without_a_live_price():
     assert actions._profit(0.0, 120.0, cfg) == (None, None)
 
 
-def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch):
+def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch, batch_probe):
     cfg = _cfg(broker_fee_rate=0.0, sales_tax_rate=0.0)
+    in_batch = {}
+
+    def _get_type_category(type_id):
+        in_batch["category"] = batch_probe.active
+        return 4
+
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 0, "Tritanium", 0.01, 0, 0, 0, 0))
-    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
+    monkeypatch.setattr(storage, "get_type_category", _get_type_category)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Mineral"})
     seen = []
 
     def _confirm(type_ids, station_id, **k):
+        # The ESI order-book reads must not hold a pooled connection.
+        in_batch["confirm_live"] = batch_probe.active
         seen.append((type_ids, station_id, k))
         return {34: OrderStats(sell_percentile=6.0, sell_volume=1.0, buy_percentile=5.0, buy_volume=1.0)}
     monkeypatch.setattr(actions, "confirm_live", _confirm)
@@ -44,6 +82,8 @@ def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch):
     rows = actions._build_shortlist_rows([(34, 0.1, 5000.0, "2026-08-27T00:00:00", True)], cfg)
 
     assert seen == [([34], cfg.station_id, {"hub_region_id": cfg.hub_region_id})]
+    assert in_batch == {"confirm_live": False, "category": True}
+    assert batch_probe.opened == 1
 
     assert rows == [{
         "type_id": 34, "name": "Tritanium", "category": "Mineral", "spread_pct": 0.1,
@@ -52,7 +92,7 @@ def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch):
     }]
 
 
-def test_build_shortlist_rows_unknown_category_when_type_not_in_sde(monkeypatch):
+def test_build_shortlist_rows_unknown_category_when_type_not_in_sde(monkeypatch, batch_probe):
     cfg = _cfg()
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: None)
