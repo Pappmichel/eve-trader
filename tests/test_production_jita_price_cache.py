@@ -277,3 +277,187 @@ def test_refresh_always_prices_jita_regardless_of_trading_hub(monkeypatch):
     jita_price_cache.refresh_jita_price_cache()
 
     assert seen["region_id"] == jita_price_cache.JITA_REGION_ID == 10000002
+
+
+# ------------------------------------------------ Doctrine types (Paket G Fix 3)
+from eve_trader.doctrine import config as doctrine_config_mod
+from eve_trader.doctrine.config import DoctrineConfig
+
+
+def _doctrine_enter(hub_region_id: int = 10000002, *, accept_equivalents: bool = True):
+    @contextmanager
+    def _enter(tenant_id):
+        trading_token = config._trading_config_var.set(TradingConfig())
+        doctrine_token = doctrine_config_mod._doctrine_config_var.set(
+            DoctrineConfig(hub_region_id=hub_region_id,
+                           accept_equivalent_variants=accept_equivalents))
+        try:
+            yield
+        finally:
+            doctrine_config_mod._doctrine_config_var.reset(doctrine_token)
+            config._trading_config_var.reset(trading_token)
+    return _enter
+
+
+def _fitting_row(fitting_id: str, hull: int):
+    # Columns match storage._FITTING_COLUMNS; only fitting_id and hull_type_id matter.
+    return (fitting_id, "doc", "Fit", None, hull, "", 1, 1, None, True, None, None, None, None, None)
+
+
+def test_refresh_includes_doctrine_hulls_and_items_when_hub_is_jita(monkeypatch):
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 1, 0, 0)])
+    monkeypatch.setattr(storage, "list_active_fittings",
+                        lambda: [_fitting_row("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 24692)])
+    monkeypatch.setattr(storage, "load_fitting_items_bulk",
+                        lambda ids: {ids[0]: [(1, "low", 2048, 1, False), (2, "med", 2049, 1, False)]})
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _doctrine_enter(10000002))
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed: set(seed))
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant",
+                        lambda t: ["production", "doctrine"])
+    # No equivalents for this test.
+    monkeypatch.setattr(
+        "eve_trader.doctrine.equivalents.lookup",
+        lambda: (lambda type_id: (int(type_id),)))
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {t: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)
+                for t in type_ids}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    jita_price_cache.refresh_jita_price_cache()
+    assert seen["type_ids"] == [587, 2048, 2049, 24692]
+    assert jita_price_cache.last_doctrine_extra_count() == 3
+    assert not jita_price_cache.last_doctrine_extra_skipped()
+
+
+def test_refresh_skips_doctrine_when_hub_is_not_jita(monkeypatch):
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 1, 0, 0)])
+    monkeypatch.setattr(storage, "list_active_fittings",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not read fittings")))
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _doctrine_enter(10000043))
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed: set(seed))
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant",
+                        lambda t: ["production", "doctrine"])
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {587: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    jita_price_cache.refresh_jita_price_cache()
+    assert seen["type_ids"] == [587]
+    assert jita_price_cache.last_doctrine_extra_count() == 0
+
+
+def test_refresh_skips_doctrine_without_grant(monkeypatch):
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 1, 0, 0)])
+    monkeypatch.setattr(storage, "list_active_fittings",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not read fittings")))
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _doctrine_enter(10000002))
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed: set(seed))
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["production"])
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {587: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    jita_price_cache.refresh_jita_price_cache()
+    assert seen["type_ids"] == [587]
+
+
+def test_refresh_includes_equivalents_only_when_switch_on(monkeypatch):
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "list_active_fittings",
+                        lambda: [_fitting_row("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 24692)])
+    monkeypatch.setattr(storage, "load_fitting_items_bulk",
+                        lambda ids: {ids[0]: [(1, "low", 2048, 1, False)]})
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed: set(seed))
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["doctrine"])
+    monkeypatch.setattr(
+        "eve_trader.doctrine.equivalents.lookup",
+        lambda: (lambda type_id: (2048, 9999) if int(type_id) == 2048 else (int(type_id),)))
+
+    # Switch on.
+    monkeypatch.setattr(tenant_scope, "enter_tenant",
+                        _doctrine_enter(10000002, accept_equivalents=True))
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {t: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)
+                for t in type_ids}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    jita_price_cache.refresh_jita_price_cache()
+    assert 9999 in seen["type_ids"]
+
+    # Switch off: twin must not appear.
+    monkeypatch.setattr(tenant_scope, "enter_tenant",
+                        _doctrine_enter(10000002, accept_equivalents=False))
+    jita_price_cache.refresh_jita_price_cache()
+    assert 9999 not in seen["type_ids"]
+    assert 2048 in seen["type_ids"]
+
+
+def test_refresh_keeps_production_types_when_doctrine_collection_fails(monkeypatch):
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 1, 0, 0)])
+    monkeypatch.setattr(storage, "list_active_fittings",
+                        lambda: (_ for _ in ()).throw(RuntimeError("doctrine boom")))
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _doctrine_enter(10000002))
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed: set(seed))
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant",
+                        lambda t: ["production", "doctrine"])
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {587: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    assert jita_price_cache.refresh_jita_price_cache() == 1
+    assert seen["type_ids"] == [587]
+
+
+def test_refresh_skips_doctrine_extra_above_cap(monkeypatch):
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 1, 0, 0)])
+    monkeypatch.setattr(storage, "list_active_fittings",
+                        lambda: [_fitting_row("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1)])
+    # One hull + many items, all outside Production's {587}.
+    many = list(range(10_000, 10_000 + jita_price_cache._MAX_DOCTRINE_EXTRA_TYPES + 50))
+    monkeypatch.setattr(storage, "load_fitting_items_bulk",
+                        lambda ids: {ids[0]: [(i, "low", tid, 1, False)
+                                              for i, tid in enumerate(many, start=1)]})
+    monkeypatch.setattr(tenant_scope, "enter_tenant",
+                        _doctrine_enter(10000002, accept_equivalents=False))
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed: set(seed))
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant",
+                        lambda t: ["production", "doctrine"])
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {t: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)
+                for t in type_ids}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    jita_price_cache.refresh_jita_price_cache()
+    assert seen["type_ids"] == [587]
+    assert jita_price_cache.last_doctrine_extra_skipped()
+    assert jita_price_cache.last_doctrine_extra_count() > jita_price_cache._MAX_DOCTRINE_EXTRA_TYPES
