@@ -1007,7 +1007,7 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
 def do_get_portfolio_breakdown(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Owner, location, category and top-20 shares of Total Wealth.
 
-    The     same rows as total_wealth(), so the three full breakdowns sum to
+    The same rows as total_wealth(), so the three full breakdowns sum to
     that total. Top 20 is a slice. Unpriced rows are listed and excluded
     from the sums. Names are resolved here; the pure totals do not need them.
     """
