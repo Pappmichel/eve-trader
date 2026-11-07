@@ -162,16 +162,100 @@ def _journal(journal_id, when, ref_type="brokers_fee"):
             None, None, None, None, None, None, None)
 
 
-def test_t0_moves_to_the_journal_start_when_the_journal_was_truncated(tenant):
-    """Transactions reach back further than the journal: sales before the
-    journal start would have no sales tax, so T0 is the journal start."""
+def test_t0_is_not_moved_by_a_truncated_journal_but_the_wallet_is_marked(tenant):
+    """Transactions reach back further than the journal. T0 stays at the
+    oldest transaction (the sales before the journal start stay in the
+    report); the wallet's fee coverage starts at its journal."""
     _share(ALICE, "wallet")
     ledger_db.upsert_ledger_wallet_transactions([
         ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 1.0, 1, True, 1, None, None, None),
         ("character", ALICE, 0, 2, T1, TYPE_A, LOC, 1.0, 1, False, 2, None, None, None),
     ])
     ledger_db.upsert_ledger_wallet_journal([_journal(10, T1)])
-    assert ledger_access.cutover_t0_for_production() == T1
+    assert ledger_access.cutover_t0_for_production() == T0
+    assert ledger_access.fee_coverage_starts_for_production() == {("character", ALICE, 0): T1}
+
+
+BOB = 910002
+
+
+def _seed_complete_wallet(tenant):
+    """ALICE: a journal that reaches back to her first transaction (complete).
+    The tests then add BOB, whose journal starts later than his transactions
+    (truncated)."""
+    _share(ALICE, "wallet")
+    _share(ALICE, "market_orders")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 100.0, 100, True, 101, None, None, None),
+        ("character", ALICE, 0, 2, T1, TYPE_A, LOC, 200.0, 2, False, 102, None, None, None),
+    ])
+    ledger_db.upsert_ledger_wallet_journal([_journal(10, T0)])
+    return T0
+
+
+def test_a_busy_wallet_shared_later_does_not_move_t0(tenant):
+    _seed_complete_wallet(tenant)
+    before = ledger_access.cutover_t0_for_production()
+    assert before == T0
+    # BOB: 30 days of transactions, journal only the last 7 days.
+    _share(BOB, "wallet")
+    t_bob_start = T0 + (T1 - T0) / 2
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", BOB, 0, 1, t_bob_start, TYPE_A, LOC, 1.0, 1, False, 1, None, None, None),
+        ("character", BOB, 0, 2, T1, TYPE_A, LOC, 1.0, 1, False, 2, None, None, None),
+    ])
+    ledger_db.upsert_ledger_wallet_journal([
+        ("character", BOB, 0, 20, T1, "brokers_fee", -1.0, None, None, None, None, None, None, None),
+    ])
+    assert ledger_access.cutover_t0_for_production() == before
+    assert ledger_access.fee_coverage_starts_for_production() == {("character", BOB, 0): T1}
+
+
+def test_rebuild_keeps_sales_before_a_truncated_journal_and_flags_only_those(tenant):
+    _seed_complete_wallet(tenant)
+    _share(BOB, "wallet")
+    _share(BOB, "market_orders")
+    early = T0 + (T1 - T0) / 2
+    late = T1 + (T1 - T0) / 2
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", BOB, 0, 1, early, TYPE_A, LOC, 150.0, 1, False, 1, None, None, None),
+        ("character", BOB, 0, 2, late, TYPE_A, LOC, 250.0, 1, False, 2, None, None, None),
+    ])
+    ledger_db.upsert_ledger_wallet_journal([
+        ("character", BOB, 0, 20, T1, "brokers_fee", -1.0, None, None, None, None, None, None, None),
+    ])
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO stock_targets (type_id, type_name, backup_stock) "
+            "VALUES (?, 'Test', 1) ON CONFLICT DO NOTHING",
+            (TYPE_A,),
+        )
+    with patch.object(loader, "_opening_stock", return_value={}), \
+            patch.object(loader, "_fetch_reference_prices",
+                         side_effect=lambda requests, today: {key: 90.0 for key in requests}), \
+            patch.object(loader, "_tenant_character_ids", return_value=frozenset({ALICE, BOB})), \
+            patch.object(loader, "_production_type_ids", return_value=frozenset({TYPE_A})), \
+            patch.object(loader, "_relic_type_ids", return_value=frozenset()):
+        summary = loader.rebuild_realized()
+
+    # T0 is the oldest transaction of any wallet, not BOB's journal start.
+    assert summary["cutover_t0"] == T0.isoformat()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_id, sale_date, fees_missing, warnings FROM prod_realized_results "
+            "ORDER BY sale_date"
+        ).fetchall()
+    flagged = {(int(r[0]), r[1]): bool(r[2]) for r in rows}
+    # ALICE's own sale (journal complete) and BOB's later sale carry no flag;
+    # BOB's sale before his journal start stays and is flagged.
+    assert flagged == {(ALICE, T1): False, (BOB, early): True, (BOB, late): False}
+    bob_early = next(r for r in rows if int(r[0]) == BOB and r[1] == early)
+    assert "fees_missing" in bob_early[3]
+    run = ledger_db.latest_ledger_run()
+    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 6
+    totals = ledger_db.realized_totals(T0, T1 + (T1 - T0))
+    assert int(totals[16]) == 1                      # one flagged sale
+    assert float(totals[17]) == pytest.approx(150.0)  # its stored (gross) revenue
 
 
 def test_t0_is_not_moved_by_a_quiet_wallet(tenant):

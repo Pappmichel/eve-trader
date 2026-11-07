@@ -170,6 +170,8 @@ def test_doctrine_report_splits_origin_and_keeps_other_channels_out(tenant, _doc
     assert summary["cost_of_goods_sold"] == pytest.approx(35.0)
     assert summary["realized_profit"] == pytest.approx(65.0)
     assert summary["production_saving"] == pytest.approx(65.0)
+    # A contract sale has no wallet transaction, so no journal gap applies.
+    assert summary["flags"]["fees_missing"] is False
     origin_cost = sum(row["cost"] for row in summary["cost_by_origin"])
     assert origin_cost == pytest.approx(summary["cost_of_goods_sold"])
     produced = next(row for row in summary["cost_by_origin"] if row["kind"] == "produced")

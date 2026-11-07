@@ -101,6 +101,8 @@ def _flags(*, estimated: bool, price_missing: bool, coverage: Optional[float] = 
         "assumed_decryptor": False,
         "coverage": coverage,
         "tax_missing": False,
+        # Contract sales have no wallet transaction, so no journal gap applies.
+        "fees_missing": False,
         "detail_missing": False,
         "no_structure_bonus": None,
     }

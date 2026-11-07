@@ -34,6 +34,7 @@ class RealizedFlags(BaseModel):
     assumed_decryptor: bool = False
     coverage: Optional[float] = None
     tax_missing: bool = False
+    fees_missing: bool = False
     detail_missing: bool = False
     no_structure_bonus: Optional[bool] = None
 
@@ -100,6 +101,9 @@ class RealizedSummary(BaseModel):
     units_sold: float
     price_missing: bool
     tax_missing_sales: int
+    fees_missing_sales: int = 0
+    fees_missing_revenue: float = 0.0
+    fees_missing_profit: float = 0.0
     fees_without_sale: float
     fees_on_other_trading: float
     capital_in_bpos: float
