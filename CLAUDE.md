@@ -1098,8 +1098,10 @@ them):
   process, never raises). Consequence: inactive tenants get no daily portfolio
   snapshots (gaps in that history). `trading_pipeline` also needs the `trading`
   grant, `do_sync_due(granted_tools=...)` only refreshes kinds of tools the
-  tenant still holds, and `jita_price_cache` only prices stock targets of
-  active tenants holding `production` (also for the manual admin refresh). Gate
+  tenant still holds, and `jita_price_cache` prices stock targets of
+  active tenants holding `production` plus hulls/items (and equivalents)
+  of active doctrines whose hub is Jita for active tenants holding
+  `doctrine` (also for the manual admin refresh). Gate
   off => `granted_tools()` is `None` (= everything; `DEFAULT_TENANT_ID` has no
   grant rows), gate on => exactly `tool_grants`, for the Default tenant too.
 - **`schedule_mode = "on_demand"`** (registry): `clones`, `implants`,

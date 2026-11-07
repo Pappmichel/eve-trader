@@ -14,6 +14,13 @@ def test_ship_margin_dataclass_matches_api_schema():
     assert dataclass_fields == set(schemas.ShipMarginRow.model_fields)
 
 
+def test_build_candidate_dataclass_matches_api_schema():
+    # Discover Build Candidates builds models.BuildCandidate(**row) from the
+    # same kind of engine dict, so the same drift breaks the whole job.
+    dataclass_fields = {f.name for f in dataclasses.fields(models.BuildCandidate)}
+    assert dataclass_fields == set(schemas.BuildCandidate.model_fields)
+
+
 def test_ship_margins_accepts_invention_cost(monkeypatch):
     row = {
         "type_id": 1, "type_name": "Hull", "activity": "Tech II",

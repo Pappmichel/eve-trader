@@ -695,6 +695,13 @@ def shopping_list(doctrine_id: Optional[str] = None,
     their hangars and then their open buy orders in the hub region cover the
     shortfall first (buyer_sources.py); `to_buy` is what is left and prices
     `total_cost`. A fully covered row stays in the list with to_buy 0."""
+    from ..production.engine import planner_reads
+    with planner_reads():
+        return _shopping_list(doctrine_id, cfg)
+
+
+def _shopping_list(doctrine_id: Optional[str],
+                   cfg: DoctrineConfig) -> tuple[list[ShoppingListRow], list[str]]:
     rows, _ = stockpile_rows_for_doctrine(doctrine_id, cfg)
     aggregated = [r for r in aggregate_stockpile_rows(rows) if r.shortfall > 0]
     if not aggregated:
