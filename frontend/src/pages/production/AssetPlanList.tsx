@@ -13,6 +13,7 @@ import ReactionCapacityPanel from './ReactionCapacityPanel'
 import { useAction } from '../../hooks/useAction'
 import { duration, isk, pct, qty } from '../../format'
 import { blockedRunsTitle } from './assetPlanBlockers'
+import { SellSideDetail } from './SellSideDetail'
 
 const CATEGORY_UNKNOWN = 'no category'
 const TECH_LEVEL_UNKNOWN = 'unknown'
@@ -23,6 +24,8 @@ type OrderFilter = 'all' | 'orders' | 'stock'
 // for the selected order filter. The job's own totals stay untouched because
 // "Split Into" is per full job (one blueprint, one in-game job).
 type PlanRow = AssetPlanJob & { shown_runs: number; shown_ready: number; shown_coverage: number | null }
+
+const ROW_DETAIL = { extra: (row: PlanRow) => <SellSideDetail row={row} /> }
 
 function orderRuns(j: AssetPlanJob): number {
   return j.special_order_runs ?? 0
@@ -330,7 +333,7 @@ export default function AssetPlanList() {
       {filtered.length === 0 ? (
         <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable data={filtered} columns={columns} rowDetail={ROW_DETAIL} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Unlike the regular build list, this one checks the actual asset stock at <b>every</b> level of the build

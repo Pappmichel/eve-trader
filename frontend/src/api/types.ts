@@ -398,6 +398,11 @@ export interface BuyListEntry {
   /** Covered by open buy orders in the hub region; to_buy is what is left. */
   on_order?: number
   to_buy?: number | null
+  /** "If built" figures (row detail drawer); absent on plans computed before they existed. */
+  buildable?: boolean | null
+  unit_build_cost?: number | null
+  build_margin_home?: number | null
+  buy_reason?: 'no_blueprint' | 'capacity' | 'manual' | 'no_build_cost' | 'cheaper_to_buy' | 'other' | null
 }
 
 export interface BuildJobEntry {
@@ -421,6 +426,9 @@ export interface BuildJobEntry {
   reaction_runs_per_job?: number | null
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** C-J sell quote and profit per unit after market fees. */
+  home_sell_price?: number | null
+  profit_per_unit?: number | null
 }
 
 export interface ReactionChainingRow {
@@ -624,6 +632,9 @@ export interface AssetPlanJob {
   doctrine_ready_runs?: number
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** C-J sell quote and profit per unit after market fees. */
+  home_sell_price?: number | null
+  profit_per_unit?: number | null
 }
 
 export interface AssetPlan {

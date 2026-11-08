@@ -7,6 +7,7 @@ import { productionApi } from '../../api/client'
 import type { BuildJobEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { SellSideDetail } from './SellSideDetail'
 import { StalePlanAlert } from './StalePlanAlert'
 import { PriceDataAlert } from './PriceDataAlert'
 import ReactionCapacityPanel from './ReactionCapacityPanel'
@@ -15,6 +16,8 @@ import { isk, pct, qty } from '../../format'
 
 const CATEGORY_UNKNOWN = 'no category'
 const TECH_LEVEL_UNKNOWN = 'unknown'
+
+const ROW_DETAIL = { extra: (row: BuildJobEntry) => <SellSideDetail row={row} showJobCost /> }
 
 export default function BuildList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
@@ -142,7 +145,7 @@ export default function BuildList() {
       {filtered.length === 0 ? (
         <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
-        <DataTable tableId="production-build-list" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable tableId="production-build-list" rowDetail={ROW_DETAIL} data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Decryptor 'None' means: no decryptor is the best choice (not 'no computation'). '–' = Tech I/Reaction

@@ -441,6 +441,21 @@ describe('DataTable row detail drawer', () => {
     expect(await screen.findByText('Details: Mid Ore')).toBeInTheDocument()
     expect(onRowClick).toHaveBeenCalledWith(rows[2])
   })
+
+  it('shows extra content for the clicked row below the columns', async () => {
+    const user = userEvent.setup()
+    renderTable({ rowDetail: { extra: (r: Row) => (r.amount > 10 ? <span>Extra for {r.item}</span> : null) } })
+    await user.click(screen.getByText('Mid Ore'))
+    expect(await screen.findByText('Extra for Mid Ore')).toBeInTheDocument()
+  })
+
+  it('adds nothing when extra returns null', async () => {
+    const user = userEvent.setup()
+    renderTable({ rowDetail: { extra: (r: Row) => (r.amount > 10 ? <span>Extra for {r.item}</span> : null) } })
+    await user.click(screen.getByText('Zebra Ore'))
+    await screen.findByRole('dialog')
+    expect(screen.queryByText(/Extra for/)).not.toBeInTheDocument()
+  })
 })
 
 describe('DataTable column filter chips', () => {

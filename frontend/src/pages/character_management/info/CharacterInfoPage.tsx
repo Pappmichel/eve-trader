@@ -394,6 +394,8 @@ export default function CharacterInfoPage() {
         <DataTable
           data={characters} columns={overviewColumns} rowHeight={56} maxHeight={600}
           getRowId={(c) => String(c.character_id)} exportFilename="character-overview"
+          rowDetail={false} onRowClick={(c) => setSelected(c.character_id)}
+          activeRowId={selected !== null ? String(selected) : undefined}
         />
       )}
 

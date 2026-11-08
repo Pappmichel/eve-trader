@@ -1646,6 +1646,18 @@ def margin_home(type_id: int, build_cost: Optional[float], home: dict, cfg: Prod
     return _sell_margin(home_quote.sell * (1 - cfg.market_fees), build_cost)
 
 
+def home_sell_and_profit(type_id: int, unit_cost: Optional[float], home: dict,
+                         cfg: ProductionConfig) -> tuple[Optional[float], Optional[float]]:
+    """(C-J sell quote, profit per unit after cfg.market_fees) for the Build
+    List row drawers - the same fee rule as margin_home. Either is None when
+    there is no C-J sell quote; the profit also when unit_cost is None."""
+    home_quote = home.get(type_id)
+    home_sell = home_quote.sell if home_quote and home_quote.sell > 0 else None
+    if home_sell is None or unit_cost is None:
+        return home_sell, None
+    return home_sell, home_sell * (1 - cfg.market_fees) - unit_cost
+
+
 def margin_jita(type_id: int, build_cost: Optional[float], jita: dict, cfg: ProductionConfig) -> Optional[float]:
     """Margin if you built and shipped one unit of `type_id` to Jita and sold
     it there right now, net of cfg.market_fees and export haul cost (the same
@@ -3309,6 +3321,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         eiv = sum(base_qty * adjusted_prices.get(material_id, 0.0) for material_id, base_qty in materials)
         job_cost = (eiv * job_cost_rate) / product_qty if product_qty else None
         meta = (reaction_meta or {}).get((blueprint_id, activity_id, product_type_id)) or {}
+        home_sell, profit_per_unit = home_sell_and_profit(product_type_id, unit_cost, home, cfg)
         build_list.append(BuildJobEntry(
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
@@ -3327,6 +3340,8 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             # informational Jita comparison the standalone Margin page also
             # shows.
             margin=margin_home(product_type_id, unit_cost, home, cfg),
+            home_sell_price=home_sell,
+            profit_per_unit=profit_per_unit,
         ))
     build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
     return build_list
@@ -3379,6 +3394,46 @@ def _claim_integrated_order_demand(
             "ordered": ordered, "covered": covered, "remaining": remaining,
         })
     return order_seed, type_names, reserved, claim_rows
+
+
+def _annotate_build_option(buy_list: list[BuyListEntry], cfg: ProductionConfig, home: dict, jita: dict,
+                           manual_overrides: dict[int, str], cost_memo: dict[int, Optional[float]],
+                           selected_decryptors: dict[int, str],
+                           t2_memo: dict[int, tuple[float, float, Optional[str]]],
+                           cost_indices: CostIndices, adjusted_prices: dict[int, float],
+                           alchemy_memo: Optional[dict[int, bool]] = None) -> None:
+    """Sets the "if built" fields on Buy List rows (row detail drawer): whether
+    the item has a recipe, its raw build cost (unit_cost_detail - cost_memo
+    only holds the cheaper of buy and build, which for a bought item is the
+    buy price), the C-J margin on that cost, and why the plan buys it.
+
+    Works on copies of cost_memo and alchemy_memo so the annotation can never
+    change a figure the plan already used."""
+    memo = dict(cost_memo)
+    alchemy = dict(alchemy_memo) if alchemy_memo is not None else None
+    for entry in buy_list:
+        type_id = entry.type_id
+        _activity, bp = classify_activity(type_id)
+        build_cost = None
+        if bp is not None:
+            _best, build_cost, _buy = unit_cost_detail(
+                type_id, cfg, home, jita, memo, selected_decryptors, t2_memo,
+                cost_indices, adjusted_prices, alchemy_memo=alchemy)
+        entry.buildable = bp is not None
+        entry.unit_build_cost = build_cost
+        entry.build_margin_home = margin_home(type_id, build_cost, home, cfg) if build_cost is not None else None
+        if entry.capacity_reason:
+            entry.buy_reason = "capacity"
+        elif bp is None:
+            entry.buy_reason = "no_blueprint"
+        elif manual_overrides.get(type_id) == "Buy":
+            entry.buy_reason = "manual"
+        elif build_cost is None:
+            entry.buy_reason = "no_build_cost"
+        elif entry.unit_price is not None and build_cost >= entry.unit_price:
+            entry.buy_reason = "cheaper_to_buy"
+        else:
+            entry.buy_reason = "other"
 
 
 def _annotate_open_buy_orders(buy_list: list[BuyListEntry], cfg: ProductionConfig) -> None:
@@ -3769,6 +3824,8 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         buy_totals, gross_demand, cfg, home, jita,
         capacity_reason=capacity_reason or None,
         isk_given_up=isk_given_up or None)
+    _annotate_build_option(buy_list, cfg, home, jita, manual_overrides, cost_memo, selected_decryptors,
+                           t2_memo, cost_indices, adjusted_prices, alchemy_memo=alchemy_memo)
     _annotate_open_buy_orders(buy_list, cfg)
     build_list = _build_build_list(
         build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices,
@@ -3952,6 +4009,8 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
                 buy_totals[type_id] = 0.0
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
+    _annotate_build_option(buy_list, cfg, home, jita, manual_overrides, cost_memo, selected_decryptors,
+                           t2_memo, cost_indices, adjusted_prices)
     build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
@@ -5017,6 +5076,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         recipe_source="alchemy" if job_key != type_id else None,
                         blockers=round_blockers,
                     )
+                    (jobs[job_key].home_sell_price,
+                     jobs[job_key].profit_per_unit) = home_sell_and_profit(
+                        type_id, cost_memo.get(type_id), home, cfg)
                 else:
                     # Same item is a job in more than one round (needed at two
                     # different tree depths) - merge rather than overwrite, so an
@@ -5282,6 +5344,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         (runs_per_job * (base_time * time_mult) / 86400)
                         if _ready_slots(ready) > 0 else None),
                 )
+                (jobs[job_key].home_sell_price,
+                 jobs[job_key].profit_per_unit) = home_sell_and_profit(
+                    recipe.product_type_id, cost_memo.get(recipe.product_type_id), home, cfg)
             else:
                 existing.job_runs += runs
                 existing.quantity += runs * out_qty
