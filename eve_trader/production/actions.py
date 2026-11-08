@@ -1979,6 +1979,17 @@ def do_add_manual_blueprint_copy_cost(item_name: str, purchase_cost: float, runs
             raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
         raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
     type_id, resolved_name = exact[0]
+    # The cost is looked up by the product being built (engine.
+    # _manual_bpc_cost_per_run). A blueprint's own name used to be stored
+    # under the blueprint's type id and was then never applied (found
+    # 2026-11-08), so map a blueprint to its product here.
+    if storage.get_blueprint_for_product(type_id) is None:
+        product_id = storage.get_manufactured_product_of_blueprint(type_id)
+        if product_id is None:
+            raise ActionError(
+                f"'{resolved_name}' is not built from a blueprint. Enter the item the copy builds.")
+        product = storage.get_sde_type(product_id)
+        type_id, resolved_name = product_id, (product[2] if product else str(product_id))
 
     storage.upsert_manual_blueprint_copy_cost(type_id, resolved_name, purchase_cost, runs)
     invalidate_discover_cache()  # build cost feeds directly into build-vs-buy decisions

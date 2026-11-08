@@ -282,6 +282,24 @@ DROP POLICY IF EXISTS tenant_isolation ON manual_blueprint_copy_costs;
 CREATE POLICY tenant_isolation ON manual_blueprint_copy_costs
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+-- Rows are keyed by the product built from the copy. The add form used to
+-- store a blueprint's own name under the blueprint's type id, which the
+-- planner never looks up (found 2026-11-08). Move such rows to the one
+-- product the blueprint makes, unless that product already has a row.
+-- Idempotent: a moved row is a product and no longer matches.
+UPDATE manual_blueprint_copy_costs m
+SET type_id = p.product_type_id,
+    type_name = COALESCE(t.type_name, m.type_name)
+FROM sde_blueprint_products p
+LEFT JOIN sde_types t ON t.type_id = p.product_type_id
+WHERE p.blueprint_type_id = m.type_id
+  AND p.activity_id IN (1, 11)
+  AND NOT EXISTS (SELECT 1 FROM sde_blueprint_products q
+                  WHERE q.product_type_id = m.type_id AND q.activity_id IN (1, 11))
+  AND (SELECT count(DISTINCT r.product_type_id) FROM sde_blueprint_products r
+       WHERE r.blueprint_type_id = m.type_id AND r.activity_id IN (1, 11)) = 1
+  AND NOT EXISTS (SELECT 1 FROM manual_blueprint_copy_costs o
+                  WHERE o.tenant_id = m.tenant_id AND o.type_id = p.product_type_id);
 
 -- Manual per-blueprint ME/TE override (confirmed with the user 2026-09-16) -
 -- lets a user enter a fixed ME/TE for a blueprint's product, regardless of
