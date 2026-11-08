@@ -438,6 +438,13 @@ ACCESS_CAPABILITIES: tuple[AccessCapability, ...] = (
     ),
 )
 
+# Ticked automatically when a character is added on the Characters page
+# (operator decision 2026-11-08): Production needs a character that can read
+# the home structure's order book for live home prices. The tick only marks
+# the scope as wanted; the character still has to re-authorize, and the user
+# can untick it again.
+DEFAULT_CAPABILITIES_FOR_NEW_CHARACTERS: tuple[str, ...] = ("structure_market_book",)
+
 
 def fetcher_scope_map() -> dict[tuple[str, str], tuple[str, ...]]:
     """`(kind_or_capability_key, owner_type)` → scopes that fetch needs.
