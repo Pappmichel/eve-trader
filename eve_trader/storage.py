@@ -3521,6 +3521,20 @@ def set_character_slot_excluded(character_name: str, excluded: bool) -> None:
         )
 
 
+def get_manufactured_product_of_blueprint(blueprint_type_id: int) -> Optional[int]:
+    """The one product a blueprint/formula makes (manufacturing or reaction),
+    or None when `blueprint_type_id` is not a blueprint or makes more than one
+    product. Used where a user typed a blueprint's name but the row is keyed
+    by the product (manual blueprint copy costs)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT product_type_id FROM sde_blueprint_products "
+            "WHERE blueprint_type_id = ? AND activity_id IN (1, 11)",
+            (blueprint_type_id,),
+        ).fetchall()
+    return int(rows[0][0]) if len(rows) == 1 else None
+
+
 @lru_cache(maxsize=None)
 def get_product_quantity(blueprint_type_id: int, activity_id: int, product_type_id: int) -> Optional[float]:
     """Static SDE data, cached like the other SDE lookups and cleared by
