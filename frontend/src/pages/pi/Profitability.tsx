@@ -130,6 +130,7 @@ export default function Profitability() {
             exportFilename="pi-profitability"
             emptyLabel="No products match the filters"
             getRowId={(r) => `${r.chain}:${r.product_type_id}:${r.planet_type_id}`}
+            rowDetail={false}
             onRowClick={(r) => navigate('/pi/planner', {
               state: { prefill: { chain: r.chain, product_type_id: r.product_type_id, planet_type_id: r.planet_type_id } },
             })}

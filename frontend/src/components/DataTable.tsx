@@ -17,7 +17,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge, Tooltip } from '@mantine/core'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge, Tooltip, Divider } from '@mantine/core'
 import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter, IconPin, IconPinFilled } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 import { notify } from '../notify'
@@ -164,7 +164,9 @@ interface DataTableProps<T> {
   // code; pass `title` to override the default (the first column's value).
   // Works alongside `onRowClick` (both run).
   // On by default; pass `rowDetail={false}` where a page opens its own detail view.
-  rowDetail?: boolean | { title?: (row: T) => ReactNode }
+  // `extra` adds page-specific content below the column list (figures the
+  // table itself has no column for); return null to add nothing.
+  rowDetail?: boolean | { title?: (row: T) => ReactNode; extra?: (row: T) => ReactNode }
 }
 
 // Exact-match column filter (the table's default would be a substring match).
@@ -590,6 +592,9 @@ export function DataTable<T>({
     const first = row.getAllCells().find((c) => c.column.columnDef.meta?.detail !== false)
     return first ? (cellText(first.getValue()) ?? '') : ''
   }
+  const detailExtra: ReactNode = typeof rowDetail === 'object' && rowDetail.extra && detailRow
+    ? rowDetail.extra(detailRow.original)
+    : null
 
   const toggleColumnFilter = (columnId: string, value: unknown) => {
     setColumnFilters((prev) => {
@@ -1227,6 +1232,12 @@ export function DataTable<T>({
                   <div style={{ textAlign: 'right', minWidth: 0 }}>{flexRender(c.column.columnDef.cell, c.getContext())}</div>
                 </Group>
               ))}
+            {detailExtra != null && detailExtra !== false && (
+              <>
+                <Divider my="xs" />
+                {detailExtra}
+              </>
+            )}
           </Stack>
         </Drawer>
       )}

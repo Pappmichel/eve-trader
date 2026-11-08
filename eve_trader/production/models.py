@@ -86,6 +86,17 @@ class BuyListEntry:
     # what total_price prices. None = quantity (not annotated).
     on_order: float = 0.0
     to_buy: Optional[float] = None
+    # "If built" figures for the row detail drawer (engine._annotate_build_option).
+    # buildable: the item has a recipe. unit_build_cost is the raw build cost
+    # (engine.unit_cost_detail), not the cheaper of buy and build.
+    # build_margin_home: margin if built and sold at C-J (engine.margin_home).
+    # buy_reason: why the plan buys it - "no_blueprint", "capacity", "manual",
+    # "no_build_cost", "cheaper_to_buy" or "other" (depth limit). All None
+    # when the planner did not annotate the row.
+    buildable: Optional[bool] = None
+    unit_build_cost: Optional[float] = None
+    build_margin_home: Optional[float] = None
+    buy_reason: Optional[str] = None
 
     def __post_init__(self):
         if self.to_buy is None:
@@ -139,6 +150,10 @@ class BuildJobEntry:
     reaction_runs_per_job: Optional[float] = None
     formulas_owned: Optional[int] = None
     formulas_needed: Optional[int] = None
+    # C-J sell quote and profit per unit after cfg.market_fees (the same fee
+    # rule as margin). None without a C-J sell quote or a unit cost.
+    home_sell_price: Optional[float] = None
+    profit_per_unit: Optional[float] = None
 
 
 @dataclass

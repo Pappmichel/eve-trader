@@ -201,6 +201,11 @@ class BuyListEntry(_Base):
     # Open buy orders in the hub region (engine._annotate_open_buy_orders).
     on_order: float = 0.0
     to_buy: Optional[float] = None
+    # "If built" figures for the row detail drawer (engine._annotate_build_option).
+    buildable: Optional[bool] = None
+    unit_build_cost: Optional[float] = None
+    build_margin_home: Optional[float] = None
+    buy_reason: Optional[str] = None
 
 
 class BuildJobEntry(_Base):
@@ -227,6 +232,9 @@ class BuildJobEntry(_Base):
     reaction_runs_per_job: Optional[float] = None
     formulas_owned: Optional[int] = None
     formulas_needed: Optional[int] = None
+    # C-J sell quote and profit per unit after market fees.
+    home_sell_price: Optional[float] = None
+    profit_per_unit: Optional[float] = None
 
 
 class LogisticsRow(_Base):

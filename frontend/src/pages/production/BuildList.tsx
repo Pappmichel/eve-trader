@@ -6,6 +6,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { productionApi } from '../../api/client'
 import type { BuildJobEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { DetailRow } from '../../components/RowDetailDrawer'
 import { HintCard } from '../../components/HintCard'
 import { StalePlanAlert } from './StalePlanAlert'
 import { PriceDataAlert } from './PriceDataAlert'
@@ -15,6 +16,36 @@ import { isk, pct, qty } from '../../format'
 
 const CATEGORY_UNKNOWN = 'no category'
 const TECH_LEVEL_UNKNOWN = 'unknown'
+
+function signedIsk(value: number): string {
+  return value > 0 ? `+${isk(value)}` : isk(value)
+}
+
+// Sell side and fee breakdown for the row detail drawer. Production sells only
+// at home, so there is no Jita figure here.
+function SellSideDetail({ row }: { row: BuildJobEntry }) {
+  const profit = row.profit_per_unit
+  const profitColor = profit == null ? undefined : profit > 0 ? 'accent' : 'danger'
+  return (
+    <Stack gap={6}>
+      <Text size="sm" fw={600}>If sold at home</Text>
+      <DetailRow label="Home sell price" value={isk(row.home_sell_price)} muted={row.home_sell_price == null} />
+      <DetailRow
+        label="Profit / unit (after fees)"
+        value={profit == null ? '–' : <Text span size="sm" ff="monospace" c={profitColor}>{signedIsk(profit)}</Text>}
+        muted={profit == null}
+      />
+      <DetailRow
+        label={`Profit (${qty(row.quantity)} units)`}
+        value={profit == null ? '–' : <Text span size="sm" ff="monospace" c={profitColor}>{signedIsk(profit * row.quantity)}</Text>}
+        muted={profit == null}
+      />
+      <DetailRow label="Job fee / unit" value={isk(row.job_cost)} muted={row.job_cost == null} />
+    </Stack>
+  )
+}
+
+const ROW_DETAIL = { extra: (row: BuildJobEntry) => <SellSideDetail row={row} /> }
 
 export default function BuildList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
@@ -142,7 +173,7 @@ export default function BuildList() {
       {filtered.length === 0 ? (
         <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
-        <DataTable tableId="production-build-list" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable tableId="production-build-list" rowDetail={ROW_DETAIL} data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Decryptor 'None' means: no decryptor is the best choice (not 'no computation'). '–' = Tech I/Reaction
