@@ -50,8 +50,9 @@ export default function ReprocessingQuote() {
   return (
     <Stack>
       <HintCard>
-        Paste from an EVE Inventory window's list view (Ctrl+A, Ctrl+C) - for ratting loot (T1/meta modules,
-        ammo, drones). Uses the scrapmetal reprocessing path (fixed 50% + Scrapmetal Processing skill only).
+        Paste from an EVE Inventory window's list view (Ctrl+A, Ctrl+C) - ratting loot (modules, ammo, drones)
+        or ore/ice. Loot uses the scrapmetal yield (fixed 50% + Scrapmetal Processing skill only); ore and ice,
+        raw or compressed, use the ore yield from Ore &amp; Minerals Settings.
       </HintCard>
 
       <Textarea
@@ -127,7 +128,7 @@ export default function ReprocessingQuote() {
             <>
               <Title order={5}>Minerals You'll Get</Title>
               <Text size="xs" c="dimmed">
-                Summed across every item above marked "Reprocess" - what you'd actually walk away with.
+                Summed across every reprocessable item above, whatever its recommendation.
               </Text>
               <DataTable tableId="refining-reprocessing-quote-2" rowDetail data={result.mineral_totals} columns={mineralColumns} maxHeight={320}
                 getRowId={(m) => String(m.type_id)} />

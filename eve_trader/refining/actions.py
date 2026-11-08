@@ -327,21 +327,22 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
         "total_sell_as_is_value": total_sell_as_is_value,
         "total_batch_value_optimal": total_refined_value + non_reprocess_sell_as_is_value,
     }
-    mineral_totals = _mineral_totals(reprocess_rows, stats_by_id, trading_cfg)
+    # Every reprocessable row, whatever its recommendation (confirmed with the
+    # user 2026-11-08): compressed ore pasted to see its minerals is usually
+    # "Sell instead" or "No market data" at C-J, and the table came back empty.
+    mineral_totals = _mineral_totals([r for r in rows if r.minerals], stats_by_id, trading_cfg)
     return {"rows": [_reprocessing_row_to_dict(r) for r in rows], "totals": totals,
             "mineral_totals": mineral_totals, "priced_via_fallback": priced_via_fallback}
 
 
-def _mineral_totals(reprocess_rows: list[ReprocessingQuoteRow], stats_by_id: dict,
+def _mineral_totals(rows: list[ReprocessingQuoteRow], stats_by_id: dict,
                      trading_cfg: TradingConfig) -> list[dict]:
-    """Sums each row's own `minerals` yield across every row marked
-    `REPROCESS_DECISION` (same scope as `totals.total_mineral_value` above,
-    so the two stay consistent - the per-mineral breakdown of that one
-    total) into "what do I actually get back" - the table #92's own
-    Reprocessing tab never showed: it only ever priced the mineral basket as
-    one ISK figure, never named the minerals themselves."""
+    """Sums each given row's own `minerals` yield into "what do I actually
+    get back" per mineral. The caller passes every reprocessable row, not
+    only the `REPROCESS_DECISION` ones, so this table is wider than
+    `totals.total_mineral_value`."""
     quantities: dict[int, int] = {}
-    for row in reprocess_rows:
+    for row in rows:
         for mineral_type_id, qty in (row.minerals or {}).items():
             quantities[mineral_type_id] = quantities.get(mineral_type_id, 0) + qty
     if not quantities:
