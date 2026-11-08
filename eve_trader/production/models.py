@@ -401,6 +401,10 @@ class AssetPlanJob:
     # the capacity solver sized this reaction job (None when switch off).
     formulas_owned: Optional[int] = None
     formulas_needed: Optional[int] = None
+    # See BuildJobEntry: C-J sell quote and profit per unit after market fees
+    # for the same item `margin` is computed on (engine.home_sell_and_profit).
+    home_sell_price: Optional[float] = None
+    profit_per_unit: Optional[float] = None
 
 
 @dataclass

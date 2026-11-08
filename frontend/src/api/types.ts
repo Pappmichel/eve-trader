@@ -632,6 +632,9 @@ export interface AssetPlanJob {
   doctrine_ready_runs?: number
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** C-J sell quote and profit per unit after market fees. */
+  home_sell_price?: number | null
+  profit_per_unit?: number | null
 }
 
 export interface AssetPlan {

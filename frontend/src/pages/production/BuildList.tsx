@@ -6,8 +6,8 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { productionApi } from '../../api/client'
 import type { BuildJobEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
-import { DetailRow } from '../../components/RowDetailDrawer'
 import { HintCard } from '../../components/HintCard'
+import { SellSideDetail } from './SellSideDetail'
 import { StalePlanAlert } from './StalePlanAlert'
 import { PriceDataAlert } from './PriceDataAlert'
 import ReactionCapacityPanel from './ReactionCapacityPanel'
@@ -17,35 +17,7 @@ import { isk, pct, qty } from '../../format'
 const CATEGORY_UNKNOWN = 'no category'
 const TECH_LEVEL_UNKNOWN = 'unknown'
 
-function signedIsk(value: number): string {
-  return value > 0 ? `+${isk(value)}` : isk(value)
-}
-
-// Sell side and fee breakdown for the row detail drawer. Production sells only
-// at home, so there is no Jita figure here.
-function SellSideDetail({ row }: { row: BuildJobEntry }) {
-  const profit = row.profit_per_unit
-  const profitColor = profit == null ? undefined : profit > 0 ? 'accent' : 'danger'
-  return (
-    <Stack gap={6}>
-      <Text size="sm" fw={600}>If sold at home</Text>
-      <DetailRow label="Home sell price" value={isk(row.home_sell_price)} muted={row.home_sell_price == null} />
-      <DetailRow
-        label="Profit / unit (after fees)"
-        value={profit == null ? '–' : <Text span size="sm" ff="monospace" c={profitColor}>{signedIsk(profit)}</Text>}
-        muted={profit == null}
-      />
-      <DetailRow
-        label={`Profit (${qty(row.quantity)} units)`}
-        value={profit == null ? '–' : <Text span size="sm" ff="monospace" c={profitColor}>{signedIsk(profit * row.quantity)}</Text>}
-        muted={profit == null}
-      />
-      <DetailRow label="Job fee / unit" value={isk(row.job_cost)} muted={row.job_cost == null} />
-    </Stack>
-  )
-}
-
-const ROW_DETAIL = { extra: (row: BuildJobEntry) => <SellSideDetail row={row} /> }
+const ROW_DETAIL = { extra: (row: BuildJobEntry) => <SellSideDetail row={row} showJobCost /> }
 
 export default function BuildList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })

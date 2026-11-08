@@ -1646,6 +1646,18 @@ def margin_home(type_id: int, build_cost: Optional[float], home: dict, cfg: Prod
     return _sell_margin(home_quote.sell * (1 - cfg.market_fees), build_cost)
 
 
+def home_sell_and_profit(type_id: int, unit_cost: Optional[float], home: dict,
+                         cfg: ProductionConfig) -> tuple[Optional[float], Optional[float]]:
+    """(C-J sell quote, profit per unit after cfg.market_fees) for the Build
+    List row drawers - the same fee rule as margin_home. Either is None when
+    there is no C-J sell quote; the profit also when unit_cost is None."""
+    home_quote = home.get(type_id)
+    home_sell = home_quote.sell if home_quote and home_quote.sell > 0 else None
+    if home_sell is None or unit_cost is None:
+        return home_sell, None
+    return home_sell, home_sell * (1 - cfg.market_fees) - unit_cost
+
+
 def margin_jita(type_id: int, build_cost: Optional[float], jita: dict, cfg: ProductionConfig) -> Optional[float]:
     """Margin if you built and shipped one unit of `type_id` to Jita and sold
     it there right now, net of cfg.market_fees and export haul cost (the same
@@ -3309,10 +3321,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         eiv = sum(base_qty * adjusted_prices.get(material_id, 0.0) for material_id, base_qty in materials)
         job_cost = (eiv * job_cost_rate) / product_qty if product_qty else None
         meta = (reaction_meta or {}).get((blueprint_id, activity_id, product_type_id)) or {}
-        home_quote = home.get(product_type_id)
-        home_sell = home_quote.sell if home_quote and home_quote.sell > 0 else None
-        profit_per_unit = (home_sell * (1 - cfg.market_fees) - unit_cost
-                           if home_sell is not None and unit_cost is not None else None)
+        home_sell, profit_per_unit = home_sell_and_profit(product_type_id, unit_cost, home, cfg)
         build_list.append(BuildJobEntry(
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
@@ -5067,6 +5076,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         recipe_source="alchemy" if job_key != type_id else None,
                         blockers=round_blockers,
                     )
+                    (jobs[job_key].home_sell_price,
+                     jobs[job_key].profit_per_unit) = home_sell_and_profit(
+                        type_id, cost_memo.get(type_id), home, cfg)
                 else:
                     # Same item is a job in more than one round (needed at two
                     # different tree depths) - merge rather than overwrite, so an
@@ -5332,6 +5344,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         (runs_per_job * (base_time * time_mult) / 86400)
                         if _ready_slots(ready) > 0 else None),
                 )
+                (jobs[job_key].home_sell_price,
+                 jobs[job_key].profit_per_unit) = home_sell_and_profit(
+                    recipe.product_type_id, cost_memo.get(recipe.product_type_id), home, cfg)
             else:
                 existing.job_runs += runs
                 existing.quantity += runs * out_qty

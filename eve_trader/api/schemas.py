@@ -349,6 +349,9 @@ class AssetPlanJob(_Base):
     # Reaction capacity solver: owned / needed formula originals.
     formulas_owned: Optional[int] = None
     formulas_needed: Optional[int] = None
+    # C-J sell quote and profit per unit after market fees.
+    home_sell_price: Optional[float] = None
+    profit_per_unit: Optional[float] = None
 
 
 class InventionNeedRow(_Base):

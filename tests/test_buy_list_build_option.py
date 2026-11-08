@@ -120,6 +120,16 @@ def test_build_list_row_has_home_sell_and_profit_after_fees():
     assert row.profit_per_unit == pytest.approx(1_000.0 * (1 - cfg.market_fees) - row.unit_build_cost)
 
 
+def test_home_sell_and_profit_helper():
+    cfg = ProductionConfig()
+    home = {PRODUCT: _quote(PRODUCT, 1_000.0)}
+    assert engine.home_sell_and_profit(PRODUCT, 400.0, home, cfg) == pytest.approx(
+        (1_000.0, 1_000.0 * (1 - cfg.market_fees) - 400.0))
+    assert engine.home_sell_and_profit(PRODUCT, None, home, cfg) == (1_000.0, None)
+    assert engine.home_sell_and_profit(MATERIAL, 400.0, home, cfg) == (None, None)
+    assert engine.home_sell_and_profit(PRODUCT, 400.0, {PRODUCT: _quote(PRODUCT, 0.0)}, cfg) == (None, None)
+
+
 def test_build_list_row_without_home_quote_has_no_profit():
     cfg = ProductionConfig()
     home = {MATERIAL: _quote(MATERIAL, 100.0)}
