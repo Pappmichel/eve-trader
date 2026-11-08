@@ -31,6 +31,7 @@ from ...access_gate import set_session_cookie
 from ...esi_client import ESIClient, ESIError
 from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
+from ...esi_data.registry import DEFAULT_CAPABILITIES_FOR_NEW_CHARACTERS
 from ...esi_data.selector import delete_strict_subset_tokens, reauth_write_role
 
 router = APIRouter()
@@ -365,6 +366,9 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
             tm._tokens[final_role] = record
             tm._save_record(final_role)
             delete_strict_subset_tokens(character_id, tokens=tm)
+            if is_add:
+                for capability_key in DEFAULT_CAPABILITIES_FOR_NEW_CHARACTERS:
+                    storage.upsert_esi_character_capability(int(character_id), capability_key)
         resp = RedirectResponse(_return_url(
             role_prefix,
             f"auth=success&role={urllib.parse.quote(final_role)}"

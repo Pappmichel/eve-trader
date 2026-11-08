@@ -218,7 +218,7 @@ def test_add_start_requires_characters_grant(monkeypatch, _apply_admin_schema):
 
 
 def test_add_start_registers_a_character_that_holds_no_token_yet(
-    monkeypatch, _apply_admin_schema,
+    monkeypatch, _apply_admin_schema, _apply_esi_access_schema,
 ):
     """The add round is identity-only (decision 1 requests only ticked
     scopes, and a character with no sharing rows has none), so it lands an
@@ -245,10 +245,13 @@ def test_add_start_registers_a_character_that_holds_no_token_yet(
         assert record is not None
         assert record.character_id == ALICE
         assert record.scopes.strip() == ""
+        # Operator default: a newly added character gets the structure market
+        # tick, so the Characters page asks it to re-authorize for that scope.
+        assert (ALICE, "structure_market_book") in storage.list_esi_character_capabilities()
 
 
 def test_add_round_does_not_strip_the_scopes_of_an_already_registered_character(
-    monkeypatch, _apply_admin_schema,
+    monkeypatch, _apply_admin_schema, _apply_esi_access_schema,
 ):
     """`reauth_write_role` reuses this character's existing key, so writing
     the scope-less add round over it would wipe every scope they hold.
@@ -279,6 +282,8 @@ def test_add_round_does_not_strip_the_scopes_of_an_already_registered_character(
         assert record is not None
         assert record.scopes == "esi-assets.read_assets.v1"
         assert record.access_token == "a"
+        # A no-op add changes nothing, the default tick included.
+        assert storage.list_esi_character_capabilities() == []
 
 
 def test_delete_owner_requires_characters_grant(monkeypatch, _apply_admin_schema, _apply_esi_access_schema):
