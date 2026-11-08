@@ -658,6 +658,62 @@ def test_bpc_run_values_are_cached_per_tenant(monkeypatch):
     assert computed == [[1, 2], [1]]
 
 
+def test_tech_one_copy_is_worth_its_copy_job_and_faction_copy_stays_unpriced(monkeypatch):
+    from eve_trader.production import invention
+
+    T1, FACTION, T2 = 681, 17_637, 11_1000
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id",
+                        lambda tid: (999,) if tid == T2 else ())
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda candidate, tid: {"datacores": []})
+    # T1 original is NPC-sold (market group), the faction one is not.
+    monkeypatch.setattr(storage, "get_sde_type",
+                        lambda tid: (tid, 1, "x", 1.0, True, 5 if tid == T1 else None, 0, None, 1))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda tid, activity: 100.0)
+    rates = invention.FeeRates(adjusted_prices={}, invention_rate=0.1, copying_rate=0.05)
+    monkeypatch.setattr(invention, "fee_rates", lambda cfg=None: rates)
+    seen = []
+
+    def _copy(tid, r):
+        seen.append(tid)
+        assert r is rates
+        return 40.0
+
+    monkeypatch.setattr(invention, "copy_cost_per_run", _copy)
+    monkeypatch.setattr(invention, "best_recipe_and_decryptor",
+                        lambda *a, **k: type("R", (), {"expected_cost_per_run": 9_000.0})())
+    monkeypatch.setattr("eve_trader.production.pricing._goonmetrics_prices", lambda market, ids: {1: object()})
+
+    out, cacheable = portfolio._compute_bpc_run_values([T1, FACTION, T2])
+
+    assert out == {T1: 40.0, FACTION: None, T2: 9_000.0}
+    assert seen == [T1]
+    assert cacheable
+
+
+def test_copy_cost_without_fee_rates_is_not_cached(monkeypatch):
+    from eve_trader.production import invention
+
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda tid: ())
+    monkeypatch.setattr(storage, "get_sde_type", lambda tid: (tid, 1, "x", 1.0, True, 5, 0, None, 1))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda tid, activity: 100.0)
+    monkeypatch.setattr(invention, "fee_rates", lambda cfg=None: None)
+
+    assert portfolio._compute_bpc_run_values([681]) == ({681: None}, False)
+
+
+def test_copy_cost_per_run_is_two_percent_of_eiv_times_copying_rate(monkeypatch):
+    from eve_trader.production import invention
+
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp, activity: [(34, 1000), (35, 10)])
+    rates = invention.FeeRates(adjusted_prices={34: 5.0, 35: 100.0}, invention_rate=0.1, copying_rate=0.05)
+
+    # EIV 1000*5 + 10*100 = 6000; 2% = 120; x 5% = 6.
+    assert invention.copy_cost_per_run(681, rates) == pytest.approx(6.0)
+    assert invention.copy_cost_per_run(681, None) is None
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp, activity: [(36, 1)])
+    assert invention.copy_cost_per_run(681, rates) is None  # material without an adjusted price
+
+
 def test_total_wealth_bpc_with_manual_price_is_priced_against_it(monkeypatch):
     _stub_sharing(monkeypatch, blueprints_character=[1])
     monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [])

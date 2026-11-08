@@ -595,14 +595,20 @@ _bpc_lock = threading.Lock()
 
 
 def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
-    """Invention cost per blueprint-copy run for invented blueprints
-    (Tech II, Tech III): the cheapest relic grade and decryptor, expected
-    attempt cost (datacores, decryptor, relic, job fee) over success
-    chance and output runs - production/invention's own estimate, with
-    no build-side ME credit. Datacores and decryptors are priced from the
-    same Goonmetrics quotes as Total Wealth through the buy-list rule.
-    A type without an invention recipe or with an unpriced input is left
-    out (the copy stays unpriced).
+    """Value per blueprint-copy run when no manual price is set.
+
+    Invented blueprints (Tech II, Tech III): invention cost per run - the
+    cheapest relic grade and decryptor, expected attempt cost (datacores,
+    decryptor, relic, job fee) over success chance and output runs -
+    production/invention's own estimate, with no build-side ME credit.
+    Datacores and decryptors are priced from the same Goonmetrics quotes as
+    Total Wealth through the buy-list rule.
+
+    Everything else whose original is on the market (Tech I): the copy job
+    fee per run (`invention.copy_cost_per_run`, confirmed with the user
+    2026-11-08: a copy is worth what copying it costs, never its
+    original's quote). A faction/officer copy, a type with an unpriced
+    input, or no fee rates leave the copy unpriced.
 
     Cached per tenant for six hours behind one lock (a cold run took 15 s
     on the test server for ~450 types): a few hundred types
@@ -642,8 +648,16 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
         }
 
 
+def _original_on_market(type_id: int) -> bool:
+    """A blueprint whose original has an SDE market group (NPC-sold Tech I
+    originals; faction, officer and Tech II originals have none)."""
+    row = storage.get_sde_type(int(type_id))
+    return bool(row and row[5] is not None)
+
+
 def _compute_bpc_run_values(type_ids: list[int]) -> tuple[dict[int, Optional[float]], bool]:
     from .production import invention
+    from .production.constants import ACTIVITY_COPYING
     from .production.config import PRODUCTION_CONFIG
     from .production.pricing import JITA_MARKET, _goonmetrics_prices
 
@@ -652,8 +666,22 @@ def _compute_bpc_run_values(type_ids: list[int]) -> tuple[dict[int, Optional[flo
         tid for tid in type_ids
         if storage.find_invention_recipe_candidates_by_product_type_id(tid)
     ]
-    if not inventable:
+    # Not inventable: a copy is worth its copy job, but only where the
+    # original is on the market (Tech I, NPC-sold). A faction or officer
+    # original cannot be had, so its copy keeps needing a manual price.
+    copyable = [
+        tid for tid in type_ids
+        if tid not in inventable and _original_on_market(tid)
+        and storage.get_blueprint_time(tid, ACTIVITY_COPYING) is not None
+    ]
+    if not inventable and not copyable:
         return out, True
+    cfg = PRODUCTION_CONFIG
+    rates = invention.fee_rates(cfg)
+    for tid in copyable:
+        out[tid] = invention.copy_cost_per_run(tid, rates)
+    if not inventable:
+        return out, rates is not None
     inputs: set[int] = set()
     for tid in inventable:
         for candidate in storage.find_invention_recipe_candidates_by_product_type_id(tid):
@@ -663,10 +691,8 @@ def _compute_bpc_run_values(type_ids: list[int]) -> tuple[dict[int, Optional[flo
             inputs.add(int(candidate))
     inputs.update(d.type_id for d in invention.DECRYPTORS.values() if d.type_id)
     ids = sorted(inputs)
-    cfg = PRODUCTION_CONFIG
     home = _goonmetrics_prices(cfg.home_market, ids) if cfg.home_market else {}
     jita = _goonmetrics_prices(JITA_MARKET, ids)
-    rates = invention.fee_rates(cfg)
     cacheable = rates is not None and bool(home or jita)
     for tid in inventable:
         best = invention.best_recipe_and_decryptor(tid, home, jita, cfg, 0.0, rates=rates)
@@ -856,9 +882,9 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
     # Materials of running jobs: gone from the asset list, output not there
     # yet. Valued like assets, so a job start leaves the total flat and the
     # delivery adds only the margin. A consumed blueprint copy (one per
-    # invention/copy run) is valued like a copy in the Blueprints line:
-    # manual price, else invention cost per run x runs, never its original's
-    # market quote.
+    # invention/copy run) is valued like a copy in the Blueprints line
+    # (manual price, else invention or copy-job cost per run x runs), never
+    # at its original's market quote.
     for owner_type, owner_id, location_id, type_id, quantity, is_blueprint in job_rows:
         item = {
             "component": "in_production", "owner_type": owner_type, "owner_id": owner_id,
