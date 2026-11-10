@@ -4433,3 +4433,59 @@ export interface CategoryFacilities {
   structure_types: string[]
   rig_tiers: string[]
 }
+
+// ------------------------------------------- Import tab (import_planner.py)
+export interface ImportPlanLine {
+  type_id: number
+  item: string
+  category: string
+  hub_region_id: number | null
+  hub_name: string
+  units: number
+  portions: number
+  cost: number
+  avg_unit_cost: number
+  max_unit_cost: number
+  max_hub_price: number
+  units_within_cap: number
+  listed_units: number | null
+  volume_m3: number
+  net_value: number
+  profit: number
+  margin: number | null
+  profit_per_m3: number | null
+  breakeven_buy_price: number | null
+  price_cap: number | null
+}
+
+export interface ImportPlanMineral {
+  type_id: number
+  name: string
+  quantity: number
+  unit_value: number | null
+  value: number | null
+  home_listed: number | null
+  exceeds_listed: boolean
+}
+
+export interface ImportPlan {
+  lines: ImportPlanLine[]
+  minerals: ImportPlanMineral[]
+  budget_isk: number | null
+  volume_limit_m3: number | null
+  total_cost: number
+  total_volume_m3: number
+  total_mineral_value: number | null
+  total_net_value: number
+  total_profit: number
+  margin: number | null
+  limited_by: 'budget' | 'volume' | 'supply'
+  candidates: number
+  profitable_candidates: number
+  home_listed_known: boolean
+}
+
+export interface ImportPlanRequest {
+  budget_isk: number | null
+  volume_m3: number | null
+}

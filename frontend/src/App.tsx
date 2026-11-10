@@ -71,6 +71,7 @@ const OreShortlist = lazy(() => import('./pages/refining/OreShortlist'))
 const ReprocessingQuote = lazy(() => import('./pages/refining/ReprocessingQuote'))
 const MineralShoppingList = lazy(() => import('./pages/refining/MineralShoppingList'))
 const OreSettings = lazy(() => import('./pages/refining/OreSettings'))
+const OreImport = lazy(() => import('./pages/refining/OreImport'))
 
 const StationTradingLayout = lazy(() => import('./pages/station_trading/StationTradingLayout'))
 const StationTradingOverview = lazy(() => import('./pages/station_trading/Overview'))
@@ -94,6 +95,7 @@ const ModuleReprocessingOverview = lazy(() => import('./pages/module_reprocessin
 const ModuleReprocessingShortlist = lazy(() => import('./pages/module_reprocessing/Shortlist'))
 const ModuleReprocessingMineralShoppingList = lazy(() => import('./pages/module_reprocessing/MineralShoppingList'))
 const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingSettings'))
+const ModuleReprocessingImport = lazy(() => import('./pages/module_reprocessing/ModuleImport'))
 
 const PiLayout = lazy(() => import('./pages/pi/PiLayout'))
 const PiProfitability = lazy(() => import('./pages/pi/Profitability'))
@@ -314,6 +316,7 @@ function App() {
               <Route path="shortlist" element={<OreShortlist />} />
               <Route path="reprocessing" element={<ReprocessingQuote />} />
               <Route path="shopping-list" element={<MineralShoppingList />} />
+              <Route path="import" element={<OreImport />} />
               <Route path="settings" element={<OreSettings />} />
             </Route>
 
@@ -342,6 +345,7 @@ function App() {
               <Route index element={<ModuleReprocessingOverview />} />
               <Route path="shortlist" element={<ModuleReprocessingShortlist />} />
               <Route path="shopping-list" element={<ModuleReprocessingMineralShoppingList />} />
+              <Route path="import" element={<ModuleReprocessingImport />} />
               <Route path="settings" element={<ModuleReprocessingSettings />} />
             </Route>
 

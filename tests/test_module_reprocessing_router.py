@@ -110,3 +110,17 @@ def test_update_settings_calls_action(monkeypatch):
 
     assert resp.status_code == 200
     assert captured["updates"] == payload
+
+
+def test_import_plan_passes_limits_to_action(monkeypatch):
+    seen = {}
+
+    def fake(budget_isk=None, volume_m3=None):
+        seen.update(budget_isk=budget_isk, volume_m3=volume_m3)
+        return {"lines": [], "minerals": [], "total_cost": 0.0, "total_volume_m3": 0.0, "total_net_value": 0.0,
+                "total_profit": 0.0, "limited_by": "supply", "candidates": 0, "profitable_candidates": 0}
+
+    monkeypatch.setattr(mr_actions, "do_plan_module_import", fake)
+    resp = client.post("/api/module-reprocessing/import/plan", json={"volume_m3": 60000})
+    assert resp.status_code == 200
+    assert seen == {"budget_isk": None, "volume_m3": 60000}

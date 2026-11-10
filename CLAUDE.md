@@ -1589,6 +1589,21 @@ default off): a source's portion cost becomes `max(cost - credit, 1 ISK)`
 the list needs, and `savings_vs_all_direct` is then on `net_cost`. Surplus of a
 *requested* mineral is still never credited.
 
+**Import tab (confirmed with the user 2026-11-10).** Ore & Minerals and Module
+Reprocessing each have an Import tab (`POST /api/refining/import/plan`,
+`POST /api/module-reprocessing/import/plan`). It returns the most profitable buy
+list for an ISK budget (landed cost) and/or a haul volume, solved by the shared,
+pure `eve_trader/import_planner.py`. Ore & Minerals buys from the active Ore
+Shortlist. Module Reprocessing buys from its active module shortlist plus the
+compressed ore universe, each kind priced like its own Shortlist. A hub sell
+order is bought only while its landed price still meets the tool's min margin and
+min profit (`cap_hub_price`, passed as `market_depth`'s `max_price`), not up to
+`shopping_price_tolerance`. The solve is a continuous LP rounded down to whole
+portions and topped up greedily. It never uses integer columns, because of the
+HiGHS hang below. Mineral value is the Shortlist's C-J figure. The minerals table
+shows output against the quantity listed at C-J as a hint only; that does not
+change the selection. Nothing is stored.
+
 **HiGHS can ignore its time limit (found 2026-11-05).** Production is aarch64
 with one CPU. With integer column bounds in the billions (3.0B of listed
 Tritanium), HiGHS sat in `HighsRedcostFixing::addRootRedcost` for minutes on an

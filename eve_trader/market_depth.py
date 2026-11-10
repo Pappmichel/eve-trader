@@ -48,13 +48,17 @@ def _band_edges(low: float, cap: float) -> list[float]:
 
 
 def sell_price_tiers(orders: list[dict], reference_price: Optional[float],
-                     tolerance: float) -> list[tuple[float, int]]:
+                     tolerance: float, max_price: Optional[float] = None) -> list[tuple[float, int]]:
     """[(volume-weighted price, units)] of the sell orders priced at or below
     reference_price x (1 + tolerance), cheapest first, merged into price bands
-    (see FIRST_BAND_WIDTH). Empty when nothing qualifies."""
+    (see FIRST_BAND_WIDTH). `max_price`, when given, replaces that cap (the
+    Import tab buys every order that still meets the minimum margin). Empty
+    when nothing qualifies."""
     if reference_price is None or reference_price <= 0:
         return []
-    cap = reference_price * (1 + max(0.0, tolerance))
+    cap = reference_price * (1 + max(0.0, tolerance)) if max_price is None else max_price
+    if cap <= 0:
+        return []
     sells = sorted((float(o["price"]), int(o["volume_remain"])) for o in orders
                    if not o.get("is_buy_order") and o.get("volume_remain", 0) > 0 and float(o["price"]) <= cap)
     if not sells:
@@ -72,12 +76,13 @@ def sell_price_tiers(orders: list[dict], reference_price: Optional[float],
 
 def supply_tiers(orders: list[dict], reference_price: Optional[float], tolerance: float,
                  landed: Callable[[float], Optional[float]], source: Optional[str] = None,
-                 hub_region_id: Optional[int] = None) -> list[SupplyTier]:
+                 hub_region_id: Optional[int] = None,
+                 max_price: Optional[float] = None) -> list[SupplyTier]:
     """sell_price_tiers turned into landed SupplyTiers. `landed` maps a hub
     sell price to the landed ISK per unit (broker fee, freight) exactly as the
     caller prices its reference."""
     tiers = []
-    for price, units in sell_price_tiers(orders, reference_price, tolerance):
+    for price, units in sell_price_tiers(orders, reference_price, tolerance, max_price):
         cost = landed(price)
         if cost is not None:
             tiers.append(SupplyTier(unit_cost=cost, max_units=units, source=source, hub_region_id=hub_region_id))

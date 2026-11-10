@@ -131,3 +131,8 @@ class ReprocessingPasteBody(BaseModel):
 @router.post("/reprocessing/quote", response_model=schemas.ReprocessingQuoteResult)
 def quote_reprocessing(body: ReprocessingPasteBody):
     return _wrap(actions.do_quote_reprocessing, paste_text=body.paste)
+
+
+@router.post("/import/plan", response_model=schemas.ImportPlan)
+def plan_import(body: schemas.ImportPlanRequest):
+    return _wrap(actions.do_plan_ore_import, budget_isk=body.budget_isk, volume_m3=body.volume_m3)

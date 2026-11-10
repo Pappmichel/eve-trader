@@ -40,3 +40,10 @@ def test_supply_tiers_apply_the_landed_cost():
     tiers = supply_tiers([_sell(10.0, 4)], 10.0, 0.05, lambda price: price * 2 + 1, source="Jita", hub_region_id=1)
     assert tiers == [SupplyTier(unit_cost=21.0, max_units=4, source="Jita", hub_region_id=1)]
     assert tiers[0].depth_checked
+
+
+def test_max_price_replaces_the_tolerance_cap():
+    orders = [_sell(100.0, 10), _sell(120.0, 5), _sell(200.0, 7)]
+    assert sum(units for _, units in sell_price_tiers(orders, 100.0, 0.05, max_price=150.0)) == 15
+    assert sum(units for _, units in sell_price_tiers(orders, 100.0, 0.05)) == 10
+    assert sell_price_tiers(orders, 100.0, 0.05, max_price=0.0) == []

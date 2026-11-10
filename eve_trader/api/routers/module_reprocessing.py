@@ -106,3 +106,8 @@ class OptimizeShoppingListBody(BaseModel):
 def optimize_shopping_list(body: Optional[OptimizeShoppingListBody] = None):
     requirements = [r.model_dump() for r in body.requirements] if body and body.requirements is not None else None
     return _wrap(actions.do_optimize_module_shopping_list, requirements=requirements)
+
+
+@router.post("/import/plan", response_model=schemas.ImportPlan)
+def plan_import(body: schemas.ImportPlanRequest):
+    return _wrap(actions.do_plan_module_import, budget_isk=body.budget_isk, volume_m3=body.volume_m3)

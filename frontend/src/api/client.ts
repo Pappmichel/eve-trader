@@ -696,6 +696,7 @@ export const refiningApi = {
     post<{ saved: number }>('/api/refining/shopping-list/requirements', { requirements }),
   optimizeShoppingList: (requirements?: T.MineralRequirement[]) =>
     post<T.ShoppingListPlan>('/api/refining/shopping-list/optimize', { requirements: requirements ?? null }),
+  planImport: (req: T.ImportPlanRequest) => post<T.ImportPlan>('/api/refining/import/plan', req),
 }
 
 // -------------------------------------------------------------- station trading
@@ -1057,6 +1058,7 @@ export const moduleReprocessingApi = {
     post<T.ModuleShoppingListPlan>('/api/module-reprocessing/shopping-list/optimize', {
       requirements: requirements ?? null,
     }),
+  planImport: (req: T.ImportPlanRequest) => post<T.ImportPlan>('/api/module-reprocessing/import/plan', req),
 }
 
 // ------------------------------------------------- Planetary Industry (pi)
