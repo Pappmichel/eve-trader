@@ -618,6 +618,17 @@ class MineralCoverage(_Base):
     landed_price_per_unit: Optional[float] = None
 
 
+class ShoppingByproduct(_Base):
+    """A material a shopping list's reprocessing yields that is not on the list
+    (both Ore & Minerals and Module Reprocessing)."""
+    type_id: int
+    name: str
+    quantity: int
+    unit_value: Optional[float] = None
+    total_value: Optional[float] = None
+    sources: list[str] = []
+
+
 class ShoppingListPlan(_Base):
     ore_purchases: list[OrePurchase]
     direct_purchases: list[DirectMineralPurchase]
@@ -631,6 +642,10 @@ class ShoppingListPlan(_Base):
     total_volume_m3: float
     shortfall: bool = False
     approximate: bool = False
+    byproducts: list[ShoppingByproduct] = []
+    byproduct_value: float = 0.0
+    net_cost: float = 0.0
+    byproducts_credited: bool = False
 
 
 class RefinableMineral(_Base):
@@ -650,6 +665,7 @@ class RefiningSettings(_Base):
     scrapmetal_processing_skill_level: int
     refining_tax_rate: float
     shopping_price_tolerance: float = 0.05
+    credit_byproducts: bool = False
 
 
 # ------------------------------------------------------------ station trading
@@ -1296,6 +1312,10 @@ class ModuleShoppingListPlan(_Base):
     total_volume_m3: float
     shortfall: bool = False
     approximate: bool = False
+    byproducts: list[ShoppingByproduct] = []
+    byproduct_value: float = 0.0
+    net_cost: float = 0.0
+    byproducts_credited: bool = False
 
 
 class ModuleReprocessingSettings(_Base):
@@ -1311,3 +1331,4 @@ class ModuleReprocessingSettings(_Base):
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int
     shopping_price_tolerance: float = 0.05
+    credit_byproducts: bool = False

@@ -90,6 +90,11 @@ class RefiningConfig:
     # above the reference (5th-percentile) price - see market_depth.py.
     shopping_price_tolerance: float = 0.05
 
+    # Mineral Shopping List: credit the sale value of by-products (outputs not
+    # on the list, e.g. Atmospheric Gases from Zeolites) in the optimizer. Off:
+    # they are only listed. Own value per tool, like shopping_price_tolerance.
+    credit_byproducts: bool = False
+
 
 def validate_refining_overrides(overrides: dict) -> None:
     """Beyond the generic type checks (validate_config_overrides), structure_

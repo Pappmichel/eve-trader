@@ -41,6 +41,10 @@ export default function ModuleReprocessingSettings() {
           value={form.shopping_price_tolerance * 100} min={0} max={100} step={1}
           onChange={(v) => set('shopping_price_tolerance', Number(v) / 100)} />
       </SimpleGrid>
+      <Checkbox label="Shopping list: credit by-product value (e.g. Atmospheric Gases from Zeolites) in the optimizer"
+        description="Off: by-products are only listed. On: their home-market value (after the sell haircut) lowers their source's cost."
+        checked={form.credit_byproducts}
+        onChange={(e) => set('credit_byproducts', e.currentTarget.checked)} mt={6} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>

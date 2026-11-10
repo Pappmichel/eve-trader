@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Group, Center, Loader, ActionIcon } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Group, Center, Loader, ActionIcon, Checkbox } from '@mantine/core'
 import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -130,6 +130,10 @@ export default function OreSettings() {
           value={form.shopping_price_tolerance * 100} min={0} max={100} step={1}
           onChange={(v) => set('shopping_price_tolerance', Number(v) / 100)} />
       </SimpleGrid>
+      <Checkbox label="Shopping list: credit by-product value (e.g. Atmospheric Gases from Zeolites) in the optimizer"
+        description="Off: by-products are only listed. On: their home-market value (after the sell haircut) lowers their source's cost."
+        checked={form.credit_byproducts}
+        onChange={(e) => set('credit_byproducts', e.currentTarget.checked)} mt={6} />
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings

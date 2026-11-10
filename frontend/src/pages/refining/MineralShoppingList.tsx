@@ -10,7 +10,9 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { productionApi, refiningApi } from '../../api/client'
 import type { DirectMineralPurchase, MineralCoverage, MineralRequirement, OrePurchase, ShoppingListPlan } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
-import { ApproximateAlert, DEPTH_HINT, ShortCell, ShortfallAlert, SourceBadge } from './shoppingDepth'
+import {
+  ApproximateAlert, ByproductsSection, DEPTH_HINT, NetCostLine, ShortCell, ShortfallAlert, SourceBadge,
+} from './shoppingDepth'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, iskUnit, qty } from '../../format'
@@ -198,6 +200,7 @@ export default function MineralShoppingList() {
               <Text size="xs" c="dimmed" tt="uppercase">Total Cost</Text>
               <Title order={4}>{isk(plan.total_cost)}</Title>
               <Text size="xs" c="dimmed">{isk(plan.ore_cost)} ore + {isk(plan.direct_cost)} minerals</Text>
+              <NetCostLine byproductValue={plan.byproduct_value} netCost={plan.net_cost} />
             </Card>
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Buying Minerals Only</Text>
@@ -212,7 +215,9 @@ export default function MineralShoppingList() {
                   <Badge color="accent" variant="light">cheaper</Badge>
                 )}
               </Title>
-              <Text size="xs" c="dimmed">vs. buying every mineral outright</Text>
+              <Text size="xs" c="dimmed">
+                vs. buying every mineral outright{plan.byproducts_credited ? ', after selling by-products' : ''}
+              </Text>
             </Card>
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Haul Volume</Text>
@@ -244,6 +249,8 @@ export default function MineralShoppingList() {
           </Text>
           <DataTable data={plan.coverage} columns={coverageColumns} maxHeight={300}
             getRowId={(r) => String(r.type_id)} />
+
+          <ByproductsSection byproducts={plan.byproducts} credited={plan.byproducts_credited} />
         </>
       )}
     </Stack>

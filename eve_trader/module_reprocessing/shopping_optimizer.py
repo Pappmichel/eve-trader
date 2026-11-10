@@ -64,13 +64,19 @@ refining/optimizer.py's (see its own docstring for the full history):
    RefiningConfig.refining_tax_rate, module columns net of
    ModuleReprocessingConfig.refining_tax_rate).
 
-3. **Surplus minerals get no credit.** A source bought for its Mexallon also
-   yields Tritanium the build list may not need; that leftover is reported
-   (`MineralCoverage.surplus`) but is not valued in the objective. Crediting
-   it would mean assuming it gets sold, which turns a shopping list into a
-   trading decision - the Shortlist pages are the tools for that question.
+3. **Surplus of a requested mineral gets no credit; by-products only on
+   request.** A source bought for its Mexallon also yields Tritanium the build
+   list may not need; that leftover is reported (`MineralCoverage.surplus`)
+   but is not valued in the objective. Materials that are not on the list at
+   all (Zeolites -> Atmospheric Gases) are always listed as `byproducts`,
+   valued at the home sell quote x the structure sell haircut. Their value
+   enters the objective only when the tool's `credit_byproducts` setting is
+   on (`byproduct_values` + `credit`, see mineral_supply_lp); even then a
+   source is never bought beyond what the list needs.
 """
 from __future__ import annotations
+
+from typing import Optional
 
 from .. import mineral_supply_lp as supply
 from .models import (
@@ -96,13 +102,20 @@ class OptimizationError(Exception):
 
 
 def optimize_shopping_list(requirements: list[MineralRequirement], options: list[ReprocessOption],
-                            mineral_options: dict[int, MineralOption]) -> ModuleShoppingListPlan:
+                            mineral_options: dict[int, MineralOption],
+                            byproduct_values: Optional[dict[int, Optional[float]]] = None,
+                            byproduct_names: Optional[dict[int, str]] = None,
+                            credit: bool = False) -> ModuleShoppingListPlan:
     """Pure - every price, yield, portion size and listed depth is pre-fetched
     by the caller, nothing here touches storage/ESI. `options` is ONE combined
     list of ore/ice and module/drone columns; the solver treats them
     identically. An option or mineral without `tiers` is one uncapped tier at
     its landed price. What no source covers at an acceptable price comes back
-    as `MineralCoverage.short` (see mineral_supply_lp)."""
+    as `MineralCoverage.short` (see mineral_supply_lp).
+    `byproduct_values` (material -> ISK per unit, None = unpriced) values what
+    the sources yield beyond the list; with `credit` it lowers their cost in
+    the objective (decision 3)."""
+    values = byproduct_values or {}
     wanted = [r for r in requirements if r.required_qty > 0]
     if not wanted:
         raise OptimizationError("No mineral requirements to solve for - add at least one mineral and quantity.")
@@ -115,9 +128,11 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
     # the LP - one whose entire yield is minerals nobody wants is pure cost.
     options_used = [o for o in options
                     if o.portion_size > 0 and any(o.yield_per_portion.get(m, 0) > 0 for m in mineral_ids)]
-    sources = [supply.SupplySource(portion_size=o.portion_size, yield_per_portion=o.yield_per_portion,
-                                   tiers=supply.option_tiers(o.landed_cost_per_unit, o.tiers, o.hub_region_id))
-               for o in options_used]
+    sources = [supply.SupplySource(
+        portion_size=o.portion_size, yield_per_portion=o.yield_per_portion,
+        tiers=supply.option_tiers(o.landed_cost_per_unit, o.tiers, o.hub_region_id),
+        credit_per_portion=supply.byproduct_credit(o.yield_per_portion, mineral_ids, values) if credit else 0.0)
+        for o in options_used]
     direct_tiers = {}
     for m in mineral_ids:
         option = mineral_options.get(m)
@@ -156,7 +171,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
             ))
     direct_purchases.sort(key=lambda p: -p.total_cost)
 
-    landed_prices = supply.landed_price_by_mineral(solution, sources, mineral_ids, direct_tiers)
+    landed_prices = supply.landed_price_by_mineral(solution, sources, mineral_ids, direct_tiers, credit=credit)
     coverage = []
     for mineral_id in mineral_ids:
         reprocessed_qty = delivered.get(mineral_id, 0)
@@ -174,12 +189,19 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
     direct_cost = sum(p.total_cost for p in direct_purchases)
     all_direct_cost = supply.all_direct_cost(mineral_ids, required, direct_tiers)
     total_cost = reprocess_cost + direct_cost
+    byproducts = supply.byproduct_lines(solution, sources, [o.item for o in options_used], mineral_ids, values,
+                                        byproduct_names or {})
+    byproduct_value = sum(b.total_value or 0.0 for b in byproducts)
+    net_cost = total_cost - byproduct_value
+    compared_cost = net_cost if credit else total_cost
 
     return ModuleShoppingListPlan(
         reprocess_purchases=reprocess_purchases, direct_purchases=direct_purchases, coverage=coverage,
         reprocess_cost=reprocess_cost, direct_cost=direct_cost, total_cost=total_cost, lp_cost=solution.lp_cost,
         all_direct_cost=all_direct_cost,
-        savings_vs_all_direct=(all_direct_cost - total_cost) if all_direct_cost is not None else None,
+        savings_vs_all_direct=(all_direct_cost - compared_cost) if all_direct_cost is not None else None,
         total_volume_m3=sum(p.volume_m3 for p in reprocess_purchases),
         shortfall=bool(solution.short), approximate=solution.approximate,
+        byproducts=byproducts, byproduct_value=byproduct_value, net_cost=net_cost,
+        byproducts_credited=credit,
     )

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..market_depth import SupplyTier
+from ..mineral_supply_lp import Byproduct
 
 
 @dataclass
@@ -180,3 +181,9 @@ class ShoppingListPlan:
     total_volume_m3: float
     shortfall: bool = False              # some requirement could not be fully covered
     approximate: bool = False            # rounded LP plan, the whole-unit solve gave no answer
+    # Materials the reprocessing yields that are not on the list (always listed;
+    # credited in the objective only with `credit_byproducts`, see the optimizer).
+    byproducts: list[Byproduct] = field(default_factory=list)
+    byproduct_value: float = 0.0         # sum of priced by-products
+    net_cost: float = 0.0                # total_cost - byproduct_value
+    byproducts_credited: bool = False

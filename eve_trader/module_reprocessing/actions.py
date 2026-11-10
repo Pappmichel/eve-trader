@@ -439,7 +439,11 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
                                                      cfg.purchase_region_id, module_orders.get(c.type_id, []))
                             for c in module_candidates) if o is not None]
 
-    home_quotes = _home_mineral_prices(set(mineral_ids), trading_cfg)
+    # By-product values come from the same home quote, in the same call.
+    byproduct_ids = {m for o in options for m in o.yield_per_portion} - set(mineral_ids)
+    home_quotes = _home_mineral_prices(set(mineral_ids) | byproduct_ids, trading_cfg)
+    byproduct_values, byproduct_names = refining_pricing.byproduct_values_from_quotes(
+        byproduct_ids, home_quotes, trading_cfg)
 
     mineral_options = {}
     for req in wanted:
@@ -476,7 +480,8 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
         )
 
     try:
-        plan = optimize_shopping_list(wanted, options, mineral_options)
+        plan = optimize_shopping_list(wanted, options, mineral_options, byproduct_values, byproduct_names,
+                                      credit=cfg.credit_byproducts)
     except OptimizationError as e:
         raise ActionError(str(e)) from e
     return _shopping_plan_to_dict(plan)
@@ -492,4 +497,6 @@ def _shopping_plan_to_dict(plan: ModuleShoppingListPlan) -> dict:
         "lp_cost": plan.lp_cost, "all_direct_cost": plan.all_direct_cost,
         "savings_vs_all_direct": plan.savings_vs_all_direct, "total_volume_m3": plan.total_volume_m3,
         "shortfall": plan.shortfall, "approximate": plan.approximate,
+        "byproducts": [vars(b) for b in plan.byproducts], "byproduct_value": plan.byproduct_value,
+        "net_cost": plan.net_cost, "byproducts_credited": plan.byproducts_credited,
     }

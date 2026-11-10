@@ -29,6 +29,23 @@ from .config import REFINING_CONFIG, RefiningConfig
 from .engine import apply_reprocessing_yield, ore_ice_yield
 from .models import OreCandidate, OreShortlistRow
 
+def byproduct_values_from_quotes(material_ids: set[int], home_quotes: dict,
+                                 trading_cfg: TradingConfig) -> tuple[dict[int, Optional[float]], dict[int, str]]:
+    """Value and name of each shopping-list by-product: the home-market sell
+    quote x structure_sell_haircut, the formula both shortlists use for
+    reprocessed output (refining tax is already in the reduced yields). None
+    when the home market has no quote."""
+    values: dict[int, Optional[float]] = {}
+    names: dict[int, str] = {}
+    for material in material_ids:
+        quote = home_quotes.get(material)
+        values[material] = (quote.sell * trading_cfg.structure_sell_haircut
+                            if quote and quote.sell and quote.sell > 0 else None)
+        row = storage.get_sde_type(material)
+        names[material] = row[2] if row else str(material)
+    return values, names
+
+
 NO_MARKET_DATA_DECISION = "No market data"
 SKIP_DECISION = "Skip"
 IMPORT_DECISION = "Import"

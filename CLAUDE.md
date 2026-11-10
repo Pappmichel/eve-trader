@@ -1578,6 +1578,17 @@ carry `depth_checked: false` ("qty unchecked" in the UI). Order books come
 from the same cached `region_orders_raw` the prices came from, so depth costs
 no extra ESI calls.
 
+**By-products (confirmed with the user 2026-11-10).** Materials a bought source
+yields that are not on the list (Zeolites -> Atmospheric Gases) are always
+returned as `byproducts` with `byproduct_value` and `net_cost`, valued at the
+home-market Goonmetrics sell quote x `structure_sell_haircut` (no quote = unpriced,
+never guessed; depth not checked). Their value enters the objective only with the
+per-tool switch `credit_byproducts` (RefiningConfig / ModuleReprocessingConfig,
+default off): a source's portion cost becomes `max(cost - credit, 1 ISK)`
+(`mineral_supply_lp.net_portion_cost`), so a source is never bought beyond what
+the list needs, and `savings_vs_all_direct` is then on `net_cost`. Surplus of a
+*requested* mineral is still never credited.
+
 **HiGHS can ignore its time limit (found 2026-11-05).** Production is aarch64
 with one CPU. With integer column bounds in the billions (3.0B of listed
 Tritanium), HiGHS sat in `HighsRedcostFixing::addRootRedcost` for minutes on an
