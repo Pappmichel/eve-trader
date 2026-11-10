@@ -12,6 +12,7 @@ const PLAN = {
   ore_purchases: [PURCHASE], reprocess_purchases: [PURCHASE], direct_purchases: [], coverage: [],
   ore_cost: 200, reprocess_cost: 200, direct_cost: 0, total_cost: 200, lp_cost: 200, all_direct_cost: 300,
   savings_vs_all_direct: 100, total_volume_m3: 15, shortfall: false, approximate: false,
+  byproducts: [], byproduct_value: 0, net_cost: 0, byproducts_credited: false,
 }
 
 vi.mock('../../api/client', () => {

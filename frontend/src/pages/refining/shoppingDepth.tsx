@@ -63,8 +63,9 @@ const BYPRODUCT_COLUMNS: ColumnDef<ShoppingByproduct, any>[] = [
 
 // Outputs of the plan's reprocessing that are not on the list (e.g. Atmospheric
 // Gases from Zeolites). Shared by both mineral shopping lists.
-export function ByproductsSection({ byproducts, credited }: { byproducts: ShoppingByproduct[]; credited: boolean }) {
-  if (byproducts.length === 0) return null
+export function ByproductsSection({ byproducts, credited }: { byproducts?: ShoppingByproduct[]; credited?: boolean }) {
+  // Optional: a plan cached from before by-products existed has neither field.
+  if (!byproducts || byproducts.length === 0) return null
   return (
     <>
       <Title order={6} c="dimmed" tt="uppercase" mt="md">By-products (not on the list)</Title>
@@ -80,7 +81,7 @@ export function ByproductsSection({ byproducts, credited }: { byproducts: Shoppi
 }
 
 // One line under the Total Cost card: what the plan costs once the by-products are sold.
-export function NetCostLine({ byproductValue, netCost }: { byproductValue: number; netCost: number }) {
-  if (byproductValue <= 0) return null
+export function NetCostLine({ byproductValue, netCost }: { byproductValue?: number; netCost?: number }) {
+  if (!byproductValue || byproductValue <= 0 || netCost == null) return null
   return <Text size="xs" c="dimmed">net {isk(netCost)} after selling by-products ({isk(byproductValue)})</Text>
 }
