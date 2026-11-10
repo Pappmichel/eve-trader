@@ -63,7 +63,7 @@ export function ImportPlanner({ storageKey, showCategory, hint, planImport }: Pr
   const lineColumns = useMemo<ColumnDef<ImportPlanLine, any>[]>(() => [
     { header: 'Buy', accessorKey: 'item', size: 240, meta: { copyable: true } },
     ...(showCategory ? [{
-      header: 'Type', accessorKey: 'category', size: 90,
+      header: 'Type', accessorKey: 'category', size: 115,
       cell: (i: any) => (
         <Badge variant="light" color={i.getValue() === 'module' ? 'accent' : 'gray'}>
           {i.getValue() === 'module' ? 'Module' : 'Ore'}
@@ -73,7 +73,7 @@ export function ImportPlanner({ storageKey, showCategory, hint, planImport }: Pr
     { header: 'Hub', accessorKey: 'hub_name', size: 90 },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     {
-      header: 'Bought / Within Cap', accessorKey: 'units_within_cap', size: 160,
+      header: 'Bought / Within Cap', accessorKey: 'units_within_cap', size: 210,
       cell: (i) => {
         const r = i.row.original
         return (
