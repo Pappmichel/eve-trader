@@ -1332,3 +1332,60 @@ class ModuleReprocessingSettings(_Base):
     max_active_shortlist_items: int
     shopping_price_tolerance: float = 0.05
     credit_byproducts: bool = False
+
+
+# ------------------------------------------- Import tab (import_planner.py)
+class ImportPlanRequest(_Base):
+    """At least one limit; both together are allowed."""
+    budget_isk: Optional[float] = None
+    volume_m3: Optional[float] = None
+
+
+class ImportPlanLine(_Base):
+    type_id: int
+    item: str
+    category: str
+    hub_region_id: Optional[int] = None
+    hub_name: str
+    units: int
+    portions: int
+    cost: float
+    avg_unit_cost: float
+    max_unit_cost: float
+    max_hub_price: float
+    units_within_cap: int
+    listed_units: Optional[float] = None
+    volume_m3: float
+    net_value: float
+    profit: float
+    margin: Optional[float] = None
+    profit_per_m3: Optional[float] = None
+    breakeven_buy_price: Optional[float] = None
+    price_cap: Optional[float] = None
+
+
+class ImportPlanMineral(_Base):
+    type_id: int
+    name: str
+    quantity: int
+    unit_value: Optional[float] = None
+    value: Optional[float] = None
+    home_listed: Optional[float] = None
+    exceeds_listed: bool = False
+
+
+class ImportPlan(_Base):
+    lines: list[ImportPlanLine]
+    minerals: list[ImportPlanMineral]
+    budget_isk: Optional[float] = None
+    volume_limit_m3: Optional[float] = None
+    total_cost: float
+    total_volume_m3: float
+    total_mineral_value: Optional[float] = None
+    total_net_value: float
+    total_profit: float
+    margin: Optional[float] = None
+    limited_by: str
+    candidates: int
+    profitable_candidates: int
+    home_listed_known: bool = True

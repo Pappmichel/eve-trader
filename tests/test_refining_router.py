@@ -172,3 +172,32 @@ def test_get_shortlist_snapshot_adds_the_hub_name(monkeypatch):
 
     assert (body[0]["hub_region_id"], body[0]["hub_name"]) == (10000043, "Amarr")
     assert body[1]["hub_region_id"] is None and body[1]["hub_name"] is None
+
+
+_EMPTY_IMPORT_PLAN = {"lines": [], "minerals": [], "budget_isk": 1e9, "volume_limit_m3": None, "total_cost": 0.0,
+                      "total_volume_m3": 0.0, "total_mineral_value": 0.0, "total_net_value": 0.0,
+                      "total_profit": 0.0, "margin": None, "limited_by": "supply", "candidates": 0,
+                      "profitable_candidates": 0, "home_listed_known": True}
+
+
+def test_import_plan_passes_limits_to_action(monkeypatch):
+    seen = {}
+
+    def fake(budget_isk=None, volume_m3=None):
+        seen.update(budget_isk=budget_isk, volume_m3=volume_m3)
+        return _EMPTY_IMPORT_PLAN
+
+    monkeypatch.setattr(refining_actions, "do_plan_ore_import", fake)
+    resp = client.post("/api/refining/import/plan", json={"budget_isk": 1e9})
+    assert resp.status_code == 200
+    assert seen == {"budget_isk": 1e9, "volume_m3": None}
+    assert resp.json()["limited_by"] == "supply"
+
+
+def test_import_plan_action_error_is_400(monkeypatch):
+    def fake(**kw):
+        raise ActionError("Enter an ISK budget, a volume, or both.")
+
+    monkeypatch.setattr(refining_actions, "do_plan_ore_import", fake)
+    resp = client.post("/api/refining/import/plan", json={})
+    assert resp.status_code == 400

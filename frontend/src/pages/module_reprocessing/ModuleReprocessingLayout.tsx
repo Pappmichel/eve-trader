@@ -12,6 +12,7 @@ import { ToolHeader } from '../../components/ToolHeader'
 const TABS = [
   { path: '/modules', label: 'Overview' },
   { path: '/modules/shortlist', label: 'Shortlist' },
+  { path: '/modules/import', label: 'Import' },
   { path: '/modules/shopping-list', label: 'Shopping List' },
   { path: '/modules/settings', label: 'Settings' },
 ]

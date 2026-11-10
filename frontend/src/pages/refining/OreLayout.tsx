@@ -12,6 +12,7 @@ import { ToolHeader } from '../../components/ToolHeader'
 const TABS = [
   { path: '/ore', label: 'Overview' },
   { path: '/ore/shortlist', label: 'Ore Shortlist' },
+  { path: '/ore/import', label: 'Import' },
   { path: '/ore/reprocessing', label: 'Reprocessing' },
   { path: '/ore/shopping-list', label: 'Mineral Shopping List' },
   { path: '/ore/settings', label: 'Settings' },

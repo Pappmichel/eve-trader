@@ -30,12 +30,13 @@ from typing import Optional
 
 import requests
 
-from .. import hubs, market_depth, storage
+from .. import hubs, import_planner, market_depth, storage
 from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_roles
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import GoonmetricsClient
+from ..refining import actions as refining_actions
 from ..refining import pricing as refining_pricing
 from ..refining.candidate_discovery import build_ore_candidate_universe
 from ..refining.config import REFINING_CONFIG, RefiningConfig
@@ -136,6 +137,100 @@ def do_refresh_shortlist(cfg: ModuleReprocessingConfig = MODULE_REPROCESSING_CON
     import_count = sum(1 for r in rows if r.decision == "Import")
     return {"discovered": len(discovered), "evaluated": len(rows), "import_candidates": import_count,
             "priced_via_fallback": priced_via_fallback}
+
+
+def do_plan_module_import(budget_isk: Optional[float] = None, volume_m3: Optional[float] = None,
+                          cfg: ModuleReprocessingConfig = MODULE_REPROCESSING_CONFIG,
+                          trading_cfg: TradingConfig = TRADING_CONFIG,
+                          refining_cfg: RefiningConfig = REFINING_CONFIG,
+                          oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    """Import tab: the most profitable buy list of active shortlist modules
+    AND compressed ore/ice for an ISK budget and/or a haul volume (see
+    eve_trader/import_planner.py). Nothing is stored.
+
+    Each kind keeps its own economics, the same split as the Mineral Shopping
+    List: modules are priced like this tool's Shortlist (purchase_region_id,
+    freight_cost_per_m3, scrapmetal yield, this tool's refining tax), ore
+    like Ore & Minerals' Shortlist (input_hub_region_id, Trading's
+    import_cost_per_m3, RefiningConfig yield/tax). Both buy hub sell orders
+    only while they still meet THIS tool's min margin/profit. No
+    discovery runs here - Refresh Shortlist decides which modules are
+    tracked."""
+    try:
+        import_planner.validate_limits(budget_isk, volume_m3)
+    except import_planner.ImportPlanError as e:
+        raise ActionError(str(e)) from e
+    module_candidates = _module_shopping_candidates()
+    ore_candidates = build_ore_candidate_universe()
+    if not module_candidates and not ore_candidates:
+        raise ActionError("No active modules on the shortlist and no compressed ore/ice in the SDE cache - "
+                           "run Refresh Shortlist (and Refresh SDE) first.")
+
+    tm = TokenManager(oauth_cfg)
+    client = ESIClient(trading_cfg, tm)
+    module_ids = [c.type_id for c in module_candidates]
+    try:
+        module_stats = client.region_order_stats_bulk(cfg.purchase_region_id, module_ids) if module_ids else {}
+        ore_pricing = hubs.hub_pricing(
+            client, cfg.input_hub_region_id, [c.type_id for c in ore_candidates],
+            {c.type_id: c.volume_m3 for c in ore_candidates},
+            trading_cfg.jita_buy_broker_fee, trading_cfg.import_cost_per_m3, trading_cfg)
+    except (ESIError, requests.RequestException) as e:
+        raise ActionError(f"Could not fetch the order book ({e}).") from e
+
+    mineral_ids = sorted(set(mineral_type_ids_for(module_candidates))
+                         | set(refining_pricing.mineral_type_ids_for(ore_candidates)))
+    try:
+        mineral_stats, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
+            trading_cfg.structure_id, mineral_ids, auth_roles=_seller_roles(tm),
+            goonmetrics_market_slug=trading_cfg.structure_market_slug)
+    except ESIError as e:
+        raise ActionError(f"Could not fetch the structure's order book ({e}). "
+                           f"Does the seller character still have docking access?") from e
+
+    module_rows = evaluate_module_shortlist(module_candidates, {}, module_stats, mineral_stats, trading_cfg, cfg)
+    ore_rows = refining_pricing.evaluate_ore_shortlist(
+        ore_candidates, {}, ore_pricing.stats, mineral_stats, trading_cfg, refining_cfg,
+        ore_pricing.hub_by_type, ore_pricing.freight_by_type)
+    module_orders = market_depth.sell_orders_by_type(client, {t: cfg.purchase_region_id for t in module_ids})
+    ore_orders = market_depth.sell_orders_by_type(client, dict(ore_pricing.hub_by_type))
+
+    sources = []
+    for row in module_rows:
+        source = _module_import_source(row, module_stats.get(row.item_id), module_orders.get(row.item_id, []),
+                                       cfg, trading_cfg)
+        if source is not None:
+            sources.append(source)
+    for row in ore_rows:
+        source = refining_actions.ore_import_source(row, ore_pricing, ore_orders.get(row.item_id, []), trading_cfg,
+                                                    cfg.min_margin_threshold, cfg.min_profit_threshold)
+        if source is not None:
+            sources.append(source)
+    return refining_actions.plan_import_dict(sources, len(module_rows) + len(ore_rows), budget_isk, volume_m3,
+                                             mineral_stats, priced_via_fallback, trading_cfg)
+
+
+def _module_import_source(row: ModuleShortlistRow, stats, orders: list[dict], cfg: ModuleReprocessingConfig,
+                          trading_cfg: TradingConfig) -> Optional[import_planner.ImportSource]:
+    """One Import-tab column for a priced module row, landed like
+    pricing.evaluate_module_item. None when the row has no complete price."""
+    portion_size = storage.get_portion_size(row.item_id)
+    if row.net_sell is None or not portion_size or stats is None or row.yield_pct is None:
+        return None
+    net_unit = row.net_sell / portion_size
+    cap = import_planner.cap_hub_price(net_unit, row.volume_m3, cfg.freight_cost_per_m3,
+                                       trading_cfg.jita_buy_broker_fee, cfg.min_margin_threshold,
+                                       cfg.min_profit_threshold)
+    tiers = import_planner.build_tiers(
+        orders, stats.sell_percentile, cap,
+        lambda price: module_pricing.landed_cost_per_unit(price, row.volume_m3, trading_cfg, cfg))
+    return import_planner.ImportSource(
+        type_id=row.item_id, item=row.item, category=import_planner.MODULE_CATEGORY,
+        hub_region_id=cfg.purchase_region_id, portion_size=portion_size, volume_m3=row.volume_m3,
+        net_sell_per_unit=net_unit,
+        yield_per_portion=apply_reprocessing_yield(row.item_id, portion_size, row.yield_pct),
+        tiers=tiers, breakeven_buy_price=row.breakeven_buy_price, listed_units=row.sell_listed_qty,
+        max_hub_price=cap)
 
 
 def _row_to_tuple(r: ModuleShortlistRow) -> tuple:

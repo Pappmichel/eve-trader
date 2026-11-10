@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 import requests
@@ -15,7 +16,7 @@ from ..actions import ActionError, list_shared_trading_characters, structure_boo
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
-from .. import hubs, market_depth
+from .. import hubs, import_planner, market_depth
 from ..goonmetrics_client import GoonmetricsClient
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
@@ -80,14 +81,20 @@ def do_add_ore_to_shortlist() -> dict:
     return {"added": len(new_rows), "already_tracked": len(candidates) - len(new_rows)}
 
 
-def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
-                              refining_cfg: RefiningConfig = REFINING_CONFIG,
-                              oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    """Re-fetches live market data for every shortlist item and recomputes
-    each one's profit/decision, then saves a new snapshot. Reuses Trading's
-    own seller character (same C-J structure both tools sell at - confirmed
-    with the user during planning rather than a separate Ore-specific login)
-    for the structure order book; Jita's regional order book needs no auth."""
+@dataclass
+class _PricedOreShortlist:
+    """One live pricing pass over the tracked ore shortlist, shared by
+    Refresh Shortlist and the Import tab so both price an ore identically."""
+    client: ESIClient
+    candidates: list
+    rows: list[OreShortlistRow]
+    ore_pricing: hubs.HubPricing
+    mineral_stats_by_id: dict
+    priced_via_fallback: bool
+
+
+def _price_ore_shortlist(trading_cfg: TradingConfig, refining_cfg: RefiningConfig,
+                          oauth_cfg: OAuthConfig) -> _PricedOreShortlist:
     candidates = build_ore_candidate_universe()
     shortlist = storage.load_ore_shortlist()
     if not shortlist:
@@ -132,12 +139,114 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
     rows = evaluate_ore_shortlist(tracked_candidates, active_by_id, jita_stats_by_id, mineral_stats_by_id,
                                    trading_cfg, refining_cfg,
                                    ore_pricing.hub_by_type, ore_pricing.freight_by_type)
+    return _PricedOreShortlist(client=client, candidates=tracked_candidates, rows=rows, ore_pricing=ore_pricing,
+                               mineral_stats_by_id=mineral_stats_by_id, priced_via_fallback=priced_via_fallback)
+
+
+def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
+                              refining_cfg: RefiningConfig = REFINING_CONFIG,
+                              oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    """Re-fetches live market data for every shortlist item and recomputes
+    each one's profit/decision, then saves a new snapshot. Reuses Trading's
+    own seller character (same C-J structure both tools sell at - confirmed
+    with the user during planning rather than a separate Ore-specific login)
+    for the structure order book; Jita's regional order book needs no auth."""
+    priced = _price_ore_shortlist(trading_cfg, refining_cfg, oauth_cfg)
+    rows = priced.rows
     run_ts = now_ts()
     storage.save_ore_shortlist_snapshot([_row_to_tuple(r) for r in rows], run_ts)
     storage.set_esi_sync_time("refining", run_ts)
 
     import_count = sum(1 for r in rows if r.decision == "Import")
-    return {"evaluated": len(rows), "import_candidates": import_count, "priced_via_fallback": priced_via_fallback}
+    return {"evaluated": len(rows), "import_candidates": import_count,
+            "priced_via_fallback": priced.priced_via_fallback}
+
+
+def do_plan_ore_import(budget_isk: Optional[float] = None, volume_m3: Optional[float] = None,
+                        trading_cfg: TradingConfig = TRADING_CONFIG,
+                        refining_cfg: RefiningConfig = REFINING_CONFIG,
+                        oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    """Import tab: the most profitable ore buy list for an ISK budget and/or
+    a haul volume (see eve_trader/import_planner.py). Prices every active
+    shortlist ore live, exactly like Refresh Shortlist, and buys hub sell
+    orders only while they still meet Trading's min margin/profit - the same
+    thresholds this tool's Import decision uses. Nothing is stored."""
+    _check_limits(budget_isk, volume_m3)
+    priced = _price_ore_shortlist(trading_cfg, refining_cfg, oauth_cfg)
+    active = [r for r in priced.rows if r.active]
+    if not active:
+        raise ActionError("No active ores on the shortlist - activate some on the Shortlist tab first.")
+    pricing = priced.ore_pricing
+    orders_by_id = market_depth.sell_orders_by_type(
+        priced.client, {r.item_id: pricing.hub_by_type[r.item_id] for r in active if r.item_id in pricing.hub_by_type})
+
+    sources = []
+    for row in active:
+        source = ore_import_source(row, pricing, orders_by_id.get(row.item_id, []), trading_cfg,
+                                   trading_cfg.min_margin_threshold, trading_cfg.min_profit_threshold)
+        if source is not None:
+            sources.append(source)
+    return plan_import_dict(sources, len(active), budget_isk, volume_m3, priced.mineral_stats_by_id,
+                            priced.priced_via_fallback, trading_cfg)
+
+
+def ore_import_source(row: OreShortlistRow, pricing: hubs.HubPricing, orders: list[dict],
+                      trading_cfg: TradingConfig, min_margin: float,
+                      min_profit: float) -> Optional[import_planner.ImportSource]:
+    """One Import-tab supply column for a priced ore row (Ore & Minerals and
+    Module Reprocessing both use it): hub sell orders up to the price that
+    still meets `min_margin`/`min_profit`, landed like the Shortlist. None
+    when the row has no complete price."""
+    portion_size = storage.get_portion_size(row.item_id)
+    stats = pricing.stats.get(row.item_id)
+    if row.net_sell is None or not portion_size or stats is None or row.yield_pct is None:
+        return None
+    freight = pricing.freight_by_type.get(row.item_id)
+    freight = trading_cfg.import_cost_per_m3 if freight is None else freight
+    net_unit = row.net_sell / portion_size
+    cap = import_planner.cap_hub_price(net_unit, row.volume_m3, freight, trading_cfg.jita_buy_broker_fee,
+                                       min_margin, min_profit)
+    tiers = import_planner.build_tiers(
+        orders, stats.sell_percentile, cap,
+        lambda price: landed_cost_per_unit(price, row.volume_m3, trading_cfg, freight))
+    return import_planner.ImportSource(
+        type_id=row.item_id, item=row.item, category=import_planner.ORE_CATEGORY,
+        hub_region_id=row.hub_region_id, portion_size=portion_size, volume_m3=row.volume_m3,
+        net_sell_per_unit=net_unit,
+        yield_per_portion=apply_reprocessing_yield(row.item_id, portion_size, row.yield_pct),
+        tiers=tiers, breakeven_buy_price=row.breakeven_buy_price, listed_units=row.sell_listed_qty,
+        max_hub_price=cap)
+
+
+def _check_limits(budget_isk: Optional[float], volume_m3: Optional[float]) -> None:
+    try:
+        import_planner.validate_limits(budget_isk, volume_m3)
+    except import_planner.ImportPlanError as e:
+        raise ActionError(str(e)) from e
+
+
+def plan_import_dict(sources: list, candidates: int, budget_isk: Optional[float], volume_m3: Optional[float],
+                     mineral_stats_by_id: dict, priced_via_fallback: bool, trading_cfg: TradingConfig) -> dict:
+    """Runs import_planner.plan_import with C-J mineral values (sell price x
+    haircut, the Shortlist's figure) and C-J listed quantities - unknown when
+    the prices came from the Goonmetrics fallback, which has no volume."""
+    mineral_ids = {m for s in sources for m in s.yield_per_portion}
+    values, names, listed = {}, {}, {}
+    for mineral in mineral_ids:
+        stats = mineral_stats_by_id.get(mineral)
+        values[mineral] = (stats.sell_percentile * trading_cfg.structure_sell_haircut
+                           if stats and stats.sell_percentile is not None else None)
+        listed[mineral] = None if priced_via_fallback or stats is None else stats.sell_volume
+        row = storage.get_sde_type(mineral)
+        names[mineral] = row[2] if row else str(mineral)
+    try:
+        plan = import_planner.plan_import(sources, budget_isk, volume_m3, values, names, listed)
+    except import_planner.ImportPlanError as e:
+        raise ActionError(str(e)) from e
+    plan.candidates = candidates
+    result = asdict(plan)
+    result["home_listed_known"] = not priced_via_fallback
+    return result
 
 
 def _row_to_tuple(r: OreShortlistRow) -> tuple:
