@@ -19,6 +19,14 @@ no source can cover at an acceptable price; its penalty is far above any real
 way to buy one unit, so it is used only when nothing else is left, and the
 callers report it as a shortfall instead of failing.
 
+By-products: a source can yield materials nobody asked for (Zeolites ->
+Atmospheric Gases). The callers always list them (`byproducts`). Only when a
+tool's `credit_byproducts` setting is on does a source carry
+`credit_per_portion`, the sale value of those outputs. Its portion cost is then
+`max(cost - credit, MIN_NET_PORTION_COST)`: the floor keeps it a shopping list,
+so a source whose by-products pay for it is still bought only as far as the
+requirements need, never for profit.
+
 Pure: callers pass every price, yield and cap.
 """
 from __future__ import annotations
@@ -54,6 +62,10 @@ MIP_PROCESS_DEADLINE_SECONDS = 20.0
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
 
+# Lowest objective cost of one portion after a by-product credit (ISK). Positive
+# so the solver never buys portions it does not need.
+MIN_NET_PORTION_COST = 1.0
+
 
 class SolveError(Exception):
     """The solver returned no plan at all (never for a shortfall)."""
@@ -67,6 +79,17 @@ class SupplySource:
     portion_size: int
     yield_per_portion: dict[int, int]
     tiers: list[SupplyTier]
+    # Sale value of one portion's outputs that are not requested (ISK); only
+    # set when the caller credits by-products.
+    credit_per_portion: float = 0.0
+
+
+def net_portion_cost(source: SupplySource, tier: SupplyTier) -> float:
+    """Objective cost of one portion from `tier`, after the by-product credit."""
+    gross = tier.unit_cost * source.portion_size
+    if source.credit_per_portion <= 0:
+        return gross
+    return max(gross - source.credit_per_portion, MIN_NET_PORTION_COST)
 
 
 @dataclass
@@ -139,7 +162,7 @@ def solve(mineral_ids: list[int], required: dict[int, float], sources: list[Supp
             if cap == 0:
                 continue
             columns.append(("source", i, t))
-            costs.append(tier.unit_cost * source.portion_size)
+            costs.append(net_portion_cost(source, tier))
             upper.append(useful if cap is None else min(cap, useful))
     for mineral_id in mineral_ids:
         useful = math.ceil(required[mineral_id])
@@ -307,8 +330,65 @@ def delivered_from_sources(solution: SupplySolution, sources: list[SupplySource]
     return delivered
 
 
+def byproducts(solution: SupplySolution, sources: list[SupplySource],
+               mineral_ids: list[int]) -> dict[int, dict[int, int]]:
+    """Source index -> {material: quantity} the bought portions yield beyond
+    the requested minerals. Sources yielding nothing extra are left out."""
+    wanted = set(mineral_ids)
+    out: dict[int, dict[int, int]] = {}
+    for (i, _t), bought in solution.portions.items():
+        for material, qty in sources[i].yield_per_portion.items():
+            if material in wanted or qty <= 0:
+                continue
+            line = out.setdefault(i, {})
+            line[material] = line.get(material, 0) + bought * qty
+    return out
+
+
+def byproduct_credit(yield_per_portion: dict[int, int], mineral_ids: list[int],
+                     values: dict[int, Optional[float]]) -> float:
+    """Sale value of one portion's outputs that are not requested. An output
+    without a value earns nothing."""
+    wanted = set(mineral_ids)
+    return sum(qty * (values.get(material) or 0.0) for material, qty in yield_per_portion.items()
+               if material not in wanted and qty > 0)
+
+
+@dataclass
+class Byproduct:
+    """One material the plan's reprocessing yields that is not on the list.
+    `unit_value` is the home sell quote x the structure sell haircut, None when
+    there is no quote; `sources` names the purchases it comes from."""
+    type_id: int
+    name: str
+    quantity: int
+    unit_value: Optional[float]
+    total_value: Optional[float]
+    sources: list[str] = field(default_factory=list)
+
+
+def byproduct_lines(solution: SupplySolution, sources: list[SupplySource], source_names: list[str],
+                    mineral_ids: list[int], values: dict[int, Optional[float]],
+                    names: dict[int, str]) -> list[Byproduct]:
+    """By-products of the plan, most valuable first (unpriced last)."""
+    lines: dict[int, Byproduct] = {}
+    for i, outputs in byproducts(solution, sources, mineral_ids).items():
+        for material, qty in outputs.items():
+            line = lines.setdefault(material, Byproduct(
+                type_id=material, name=names.get(material, str(material)), quantity=0,
+                unit_value=values.get(material), total_value=None))
+            line.quantity += qty
+            if source_names[i] not in line.sources:
+                line.sources.append(source_names[i])
+    for line in lines.values():
+        if line.unit_value is not None:
+            line.total_value = line.quantity * line.unit_value
+    return sorted(lines.values(), key=lambda b: (b.total_value is None, -(b.total_value or 0.0), b.name))
+
+
 def landed_price_by_mineral(solution: SupplySolution, sources: list[SupplySource], mineral_ids: list[int],
-                            direct_tiers: dict[int, list[SupplyTier]]) -> dict[int, Optional[float]]:
+                            direct_tiers: dict[int, list[SupplyTier]],
+                            credit: bool = False) -> dict[int, Optional[float]]:
     """Effective landed cost per delivered unit of each requested mineral, so
     price x delivered over all minerals adds up to the plan's total cost.
 
@@ -316,9 +396,10 @@ def landed_price_by_mineral(solution: SupplySolution, sources: list[SupplySource
     several minerals at one price, so its cost is split over the requested ones
     by value: quantity x the mineral's cheapest direct tier. A source yielding a
     requested mineral without any direct tier splits by quantity instead.
-    Minerals nobody asked for take no share (surplus gets no credit, see the
-    optimizers' docstrings); a requested mineral's surplus is spread over its
-    delivered units. Refining tax is already in the reduced yields. None for a
+    Minerals nobody asked for take no share; with `credit` their sale value
+    (`credit_per_portion`) is taken off the source's cost first, so the prices
+    add up to the net plan cost. A requested mineral's surplus is spread over
+    its delivered units. Refining tax is already in the reduced yields. None for a
     mineral nothing delivers."""
     reference = {m: min((t.unit_cost for t in direct_tiers.get(m, [])), default=None) for m in mineral_ids}
     cost = {m: 0.0 for m in mineral_ids}
@@ -327,6 +408,8 @@ def landed_price_by_mineral(solution: SupplySolution, sources: list[SupplySource
     for (i, t), bought in solution.portions.items():
         source = sources[i]
         line_cost = bought * source.portion_size * source.tiers[t].unit_cost
+        if credit:
+            line_cost -= bought * source.credit_per_portion
         yields = {m: bought * qty for m, qty in source.yield_per_portion.items() if m in cost and qty > 0}
         if not yields:
             continue

@@ -1898,6 +1898,17 @@ export interface MineralCoverage {
   landed_price_per_unit: number | null
 }
 
+// A material a mineral shopping list's reprocessing yields that is not on the
+// list. unit_value: home sell quote x structure sell haircut, null = no quote.
+export interface ShoppingByproduct {
+  type_id: number
+  name: string
+  quantity: number
+  unit_value: number | null
+  total_value: number | null
+  sources: string[]
+}
+
 export interface ShoppingListPlan {
   ore_purchases: OrePurchase[]
   direct_purchases: DirectMineralPurchase[]
@@ -1911,6 +1922,11 @@ export interface ShoppingListPlan {
   total_volume_m3: number
   shortfall: boolean
   approximate: boolean
+  // Outputs not on the list (always listed; credited only with credit_byproducts).
+  byproducts: ShoppingByproduct[]
+  byproduct_value: number
+  net_cost: number
+  byproducts_credited: boolean
 }
 
 export interface RefiningSettings {
@@ -1925,6 +1941,7 @@ export interface RefiningSettings {
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
   shopping_price_tolerance: number
+  credit_byproducts: boolean
 }
 
 export interface ReprocessingQuoteRow {
@@ -2125,12 +2142,18 @@ export interface ModuleShoppingListPlan {
   total_volume_m3: number
   shortfall: boolean
   approximate: boolean
+  // Outputs not on the list (always listed; credited only with credit_byproducts).
+  byproducts: ShoppingByproduct[]
+  byproduct_value: number
+  net_cost: number
+  byproducts_credited: boolean
 }
 
 export interface ModuleReprocessingSettings {
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
   shopping_price_tolerance: number
+  credit_byproducts: boolean
   freight_cost_per_m3: number
   min_profit_threshold: number
   min_margin_threshold: number

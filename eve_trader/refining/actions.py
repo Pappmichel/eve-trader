@@ -27,6 +27,7 @@ from .models import MineralOption, MineralRequirement, OreOption, OreShortlistRo
 from .optimizer import OptimizationError, optimize_shopping_list
 from ..paste_parser import ParsedPasteLine, merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
+from .pricing import byproduct_values_from_quotes as pricing_byproducts
 from .reprocessing import (
     REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,
     resolve_type_id,
@@ -573,8 +574,11 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
                                  refining_cfg.shopping_price_tolerance, trading_cfg),
         )
 
+    byproduct_ids = {m for o in ore_options for m in o.yield_per_portion} - set(mineral_ids)
+    byproduct_values, byproduct_names = pricing_byproducts(byproduct_ids, home_quotes, trading_cfg)
     try:
-        plan = optimize_shopping_list(wanted, ore_options, mineral_options)
+        plan = optimize_shopping_list(wanted, ore_options, mineral_options, byproduct_values, byproduct_names,
+                                      credit=refining_cfg.credit_byproducts)
     except OptimizationError as e:
         raise ActionError(str(e)) from e
     return _plan_to_dict(plan)
@@ -608,6 +612,8 @@ def _plan_to_dict(plan: ShoppingListPlan) -> dict:
         "lp_cost": plan.lp_cost, "all_direct_cost": plan.all_direct_cost,
         "savings_vs_all_direct": plan.savings_vs_all_direct, "total_volume_m3": plan.total_volume_m3,
         "shortfall": plan.shortfall, "approximate": plan.approximate,
+        "byproducts": [vars(b) for b in plan.byproducts], "byproduct_value": plan.byproduct_value,
+        "net_cost": plan.net_cost, "byproducts_credited": plan.byproducts_credited,
     }
 
 

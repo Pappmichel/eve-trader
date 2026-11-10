@@ -400,3 +400,58 @@ def test_realistic_scale_solves_quickly():
     # A bit above shopping_optimizer.py's own 5s MIP time limit - see
     # test_refining_optimizer.py's identical assertion.
     assert elapsed < 8.0, f"realistic-scale solve took {elapsed:.2f}s"
+
+
+# ------------------------------------------------------------- by-products
+GAS = 16634  # Atmospheric Gases, what Zeolites yield beside Pyerite
+
+
+def _zeolites():
+    return _ore(type_id=2, item="Compressed Zeolites", family="Zeolites", landed_cost_per_unit=10.0,
+                yields={PYE: 300, GAS: 100})
+
+
+def _plain_pyerite_ore():
+    return _ore(type_id=3, item="Compressed Plain", family="Plain", landed_cost_per_unit=8.0, yields={PYE: 300})
+
+
+def test_byproducts_are_listed_with_their_value_but_not_credited_by_default():
+    plan = optimize_shopping_list([_req(PYE, "Pyerite", 300)], [_zeolites()], {PYE: _mineral(PYE, "Pyerite", 100.0)},
+                                  {GAS: 5.0}, {GAS: "Atmospheric Gases"})
+    assert [(b.name, b.quantity, b.total_value, b.sources) for b in plan.byproducts] == \
+        [("Atmospheric Gases", 100, 500.0, ["Compressed Zeolites"])]
+    assert plan.total_cost == pytest.approx(1000.0)
+    assert plan.byproduct_value == pytest.approx(500.0)
+    assert plan.net_cost == pytest.approx(500.0)
+    assert plan.byproducts_credited is False
+    assert plan.savings_vs_all_direct == pytest.approx(30_000.0 - 1000.0)
+    assert [c.type_id for c in plan.coverage] == [PYE]
+
+
+def test_credit_off_picks_the_plain_source():
+    plan = optimize_shopping_list([_req(PYE, "Pyerite", 300)], [_zeolites(), _plain_pyerite_ore()],
+                                  {PYE: _mineral(PYE, "Pyerite", 100.0)}, {GAS: 5.0}, {GAS: "Atmospheric Gases"})
+    assert [p.type_id for p in _purchases(plan)] == [3]
+    assert plan.byproducts == []
+
+
+def test_credit_on_picks_the_source_whose_byproducts_pay_part_of_it():
+    plan = optimize_shopping_list([_req(PYE, "Pyerite", 300)], [_zeolites(), _plain_pyerite_ore()],
+                                  {PYE: _mineral(PYE, "Pyerite", 100.0)}, {GAS: 5.0}, {GAS: "Atmospheric Gases"},
+                                  credit=True)
+    assert [p.type_id for p in _purchases(plan)] == [2]
+    assert plan.total_cost == pytest.approx(1000.0)
+    assert plan.net_cost == pytest.approx(500.0)
+    assert plan.savings_vs_all_direct == pytest.approx(30_000.0 - 500.0)
+    assert plan.coverage[0].landed_price_per_unit * 300 == pytest.approx(500.0)
+
+
+def test_an_unpriced_byproduct_earns_no_credit():
+    plan = optimize_shopping_list([_req(PYE, "Pyerite", 300)], [_zeolites(), _plain_pyerite_ore()],
+                                  {PYE: _mineral(PYE, "Pyerite", 100.0)}, {GAS: None}, {GAS: "Atmospheric Gases"},
+                                  credit=True)
+    assert [p.type_id for p in _purchases(plan)] == [3]
+
+
+def _purchases(plan):
+    return plan.reprocess_purchases

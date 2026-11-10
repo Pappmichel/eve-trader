@@ -326,7 +326,9 @@ def test_optimize_prefers_station_id_home_prices_when_structure_id_is_set(monkey
 
     plan = _optimize(cfgs, [{"type_id": PYE, "name": "Pyerite", "required_qty": 100}])
 
-    assert seen["station"] == (1_000_000_000_001, {PYE})
+    # The same call also prices the by-products (Tritanium/Mexallon the sources
+    # yield beyond the Pyerite asked for).
+    assert seen["station"] == (1_000_000_000_001, {TRIT, PYE, MEX})
     assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(3.0)
     assert plan["direct_purchases"][0]["source"] == "Home"
 

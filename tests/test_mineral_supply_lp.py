@@ -123,3 +123,79 @@ def test_unreadable_worker_output_is_treated_as_no_answer(real_worker, monkeypat
         stderr = b""
     monkeypatch.setattr(supply.subprocess, "run", lambda *a, **k: Done())
     assert _solve()[0].approximate
+
+
+# ------------------------------------------------------------- by-products
+GAS = 16634  # Atmospheric Gases: what Zeolites yield beside Pyerite
+
+
+def _gas_sources(credit_value: float = 0.0):
+    with_gas = {PYE: 300, GAS: 100}
+    return [
+        supply.SupplySource(portion_size=100, yield_per_portion=with_gas,
+                            tiers=[SupplyTier(unit_cost=10.0, max_units=None)],
+                            credit_per_portion=supply.byproduct_credit(with_gas, [PYE], {GAS: credit_value})),
+        supply.SupplySource(portion_size=100, yield_per_portion={PYE: 300},
+                            tiers=[SupplyTier(unit_cost=8.0, max_units=None)]),
+    ]
+
+
+def _bought(solution):
+    out = {}
+    for (i, _t), portions in solution.portions.items():
+        out[i] = out.get(i, 0) + portions
+    return out
+
+
+def test_byproduct_credit_values_only_outputs_not_on_the_list():
+    assert supply.byproduct_credit({PYE: 300, GAS: 100, TRIT: 7}, [PYE, TRIT], {GAS: 5.0, PYE: 99.0}) == 500.0
+    assert supply.byproduct_credit({PYE: 300, GAS: 100}, [PYE], {GAS: None}) == 0.0
+
+
+def test_without_credit_the_byproduct_source_loses():
+    direct = {PYE: [SupplyTier(unit_cost=100.0, max_units=None)]}
+    solution = supply.solve([PYE], {PYE: 300.0}, _gas_sources(0.0), direct)
+    assert _bought(solution) == {1: 1}
+
+
+def test_credit_flips_the_choice_to_the_source_with_valuable_byproducts():
+    # 1,000 ISK per portion minus 100 gas x 5 ISK = 500 net, cheaper than 800.
+    direct = {PYE: [SupplyTier(unit_cost=100.0, max_units=None)]}
+    solution = supply.solve([PYE], {PYE: 300.0}, _gas_sources(5.0), direct)
+    assert _bought(solution) == {0: 1}
+
+
+def test_floor_never_buys_portions_beyond_the_need_when_byproducts_pay_for_them():
+    # Each portion's gas is worth far more than the portion; Tritanium is also
+    # on the list, so 1,000 portions would still be "useful". The floor keeps
+    # the plan at the one portion Pyerite needs and buys Tritanium directly.
+    yields = {PYE: 300, TRIT: 1, GAS: 100}
+    source = supply.SupplySource(portion_size=100, yield_per_portion=yields,
+                                 tiers=[SupplyTier(unit_cost=10.0, max_units=None)],
+                                 credit_per_portion=supply.byproduct_credit(yields, [PYE, TRIT], {GAS: 50.0}))
+    direct = {PYE: [SupplyTier(unit_cost=100.0, max_units=None)], TRIT: [SupplyTier(unit_cost=0.5, max_units=None)]}
+    solution = supply.solve([PYE, TRIT], {PYE: 300.0, TRIT: 1000.0}, [source], direct)
+    assert _bought(solution) == {0: 1}
+    assert solution.direct == {(TRIT, 0): 999}
+
+
+def test_byproduct_lines_sum_quantities_and_name_their_sources():
+    sources = _gas_sources(5.0)
+    solution = supply.SupplySolution(portions={(0, 0): 3})
+    lines = supply.byproduct_lines(solution, sources, ["Zeolites", "Other"], [PYE], {GAS: 5.0}, {GAS: "Gas"})
+    assert len(lines) == 1
+    assert (lines[0].quantity, lines[0].unit_value, lines[0].total_value, lines[0].sources) == \
+        (300, 5.0, 1500.0, ["Zeolites"])
+    unpriced = supply.byproduct_lines(solution, sources, ["Zeolites", "Other"], [PYE], {}, {})
+    assert unpriced[0].unit_value is None and unpriced[0].total_value is None
+
+
+@pytest.mark.parametrize("credit", [False, True])
+def test_landed_prices_add_up_to_the_plan_cost(credit):
+    sources = _gas_sources(5.0)
+    direct = {PYE: [SupplyTier(unit_cost=100.0, max_units=None)]}
+    solution = supply.SupplySolution(portions={(0, 0): 2})
+    prices = supply.landed_price_by_mineral(solution, sources, [PYE], direct, credit=credit)
+    gross = 2 * 100 * 10.0
+    expected = gross - 2 * 500.0 if credit else gross
+    assert prices[PYE] * 600 == pytest.approx(expected)
