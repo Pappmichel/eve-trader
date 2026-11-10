@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ActionIcon, Badge, Group, MultiSelect, Stack, Text, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Badge, Group, MultiSelect, Select, Stack, Text, TextInput, Tooltip } from '@mantine/core'
 import { IconBan, IconRotateClockwise } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -41,6 +41,7 @@ export default function OreShortlist() {
 
   const [selFamilies, setSelFamilies] = useState<string[]>([])
   const [selDecisions, setSelDecisions] = useState<string[]>(ALL_DECISIONS)
+  const [kind, setKind] = useState<'all' | 'ore' | 'ice'>('all')
   const [search, setSearch] = useState('')
 
   const families = useMemo(() => [...new Set((data ?? []).map((r) => r.family))].sort(), [data])
@@ -50,10 +51,15 @@ export default function OreShortlist() {
     return (data ?? []).filter((r) => {
       if (!effectiveFamilies.includes(r.family)) return false
       if (!selDecisions.includes(r.decision)) return false
-      if (search && !r.item.toLowerCase().includes(search.toLowerCase())) return false
+      if (kind !== 'all' && r.is_ice !== (kind === 'ice')) return false
+      // Most ice types have no "Ice" in their name (Glacial Mass, White Glaze),
+      // so the search also matches the family and the Ore/Ice type.
+      const needle = search.toLowerCase()
+      const haystack = `${r.item} ${r.family} ${r.is_ice ? 'ice' : 'ore'}`.toLowerCase()
+      if (needle && !haystack.includes(needle)) return false
       return true
     })
-  }, [data, effectiveFamilies, selDecisions, search])
+  }, [data, effectiveFamilies, selDecisions, kind, search])
 
   const columns = useMemo<ColumnDef<OreShortlistRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 200, meta: { copyable: true } },
@@ -112,7 +118,10 @@ export default function OreShortlist() {
       <Group grow align="flex-end">
         <MultiSelect label="Family" data={families} value={selFamilies} onChange={setSelFamilies} placeholder="All" clearable />
         <MultiSelect label="Status" data={ALL_DECISIONS} value={selDecisions} onChange={setSelDecisions} />
-        <TextInput label="Search (item)" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+        <Select label="Type" data={[{ value: 'all', label: 'Ore and Ice' }, { value: 'ore', label: 'Ore' },
+          { value: 'ice', label: 'Ice' }]} value={kind} allowDeselect={false}
+          onChange={(v) => setKind((v ?? 'all') as 'all' | 'ore' | 'ice')} />
+        <TextInput label="Search (item, family or type)" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
       </Group>
 
       <Text size="sm" c="dimmed">{filtered.length} of {data.length} items</Text>
