@@ -269,6 +269,36 @@ def contract_doctrine_matches(contract_ids: set[int]) -> dict[int, str]:
     return out
 
 
+def contracts_without_stored_match(contract_ids: set[int]) -> set[int]:
+    """The given contracts the snapshot holds no matching decision for: not
+    in the snapshot at all (listed and sold between two syncs, or dropped
+    from it), or stored but never matched (NULL score). A stored decision,
+    even "unmatched" or no hull, is not included."""
+    if not contract_ids:
+        return set()
+    decided = {ct.contract_id for ct in contract_rows_from_db(storage.list_doctrine_contracts())
+               if ct.contract_id in contract_ids and ct.match_score is not None}
+    return set(contract_ids) - decided
+
+
+def live_doctrine_matches(contracts: dict[int, tuple[Optional[str], list[ContractItemRow]]],
+                          cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict[int, str]:
+    """`{contract id: fitting name}` for contracts matched now from their
+    items (id -> (title, items)), valid/tolerable only - the same rule as
+    contract_doctrine_matches, for contracts the snapshot cannot answer."""
+    if not contracts:
+        return {}
+    candidates = load_match_candidates()
+    names = {c.fitting.fitting_id: c.fitting.name for c in candidates}
+    out: dict[int, str] = {}
+    for contract_id, (title, items) in contracts.items():
+        fitting_id, _score, _devs, status = match_and_validate_contract(
+            contract_id, title, items, candidates, cfg)
+        if fitting_id and status in ("valid", "tolerable") and names.get(fitting_id):
+            out[contract_id] = names[fitting_id]
+    return out
+
+
 #: Status sentinel, never added to constants.VALIDATION_STATUSES. Matching
 #: stores it (score 0.0) so the contract is not re-matched on every read,
 #: and actions.do_list_contracts leaves such rows out of the contract list.

@@ -717,7 +717,9 @@ announced; `mail` stays `live_only` (polled by the alerts job, not
 `do_sync_due`); `contract_status` polls the character's contract list live every
 `alerts_contract_poll_minutes` (15) and announces each contract the character
 issued once when it finishes or passes its expiry (`contract_alert_state`,
-first poll = baseline); messages disable mentions and are English-only, no quiet hours.
+first poll = baseline); its "Doctrine only" filter matches a contract the
+Doctrine snapshot holds no decision for live from its ESI items, and leaves
+it unseen when they cannot be read (a dropped event is marked seen for good); messages disable mentions and are English-only, no quiet hours.
 Contract alert filters (GH #382) are opt-in columns on the `contract_status`
 subscription row (`contract_*`, defaults = unfiltered): finished / expired
 switches, a minimum interval between DMs (15-1440 min), "only valid Doctrine

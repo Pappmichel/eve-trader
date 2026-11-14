@@ -379,3 +379,68 @@ def test_filter_settings_round_trip_and_validation(env, monkeypatch):
         "min_interval_minutes": 60, "notify_finished": True, "notify_expired": False,
         "doctrine_only": False, "sold_out_only": False}
     assert settings["doctrine_granted"] is False
+
+
+def test_contracts_without_stored_match_and_live_matches(monkeypatch):
+    from types import SimpleNamespace
+    from eve_trader.doctrine import engine
+    never = _doctrine_row(2, None)[:10] + (None, "unmatched", NOW)    # stored, score NULL
+    monkeypatch.setattr(engine.storage, "list_doctrine_contracts", lambda: [
+        _doctrine_row(1, "f1"), never, _doctrine_row(3, None, validation="no_relevant_hull")])
+    # 1 matched, 3 decided "no hull", 2 never matched, 4 not in the snapshot.
+    assert engine.contracts_without_stored_match({1, 2, 3, 4}) == {2, 4}
+
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [
+        SimpleNamespace(fitting=SimpleNamespace(fitting_id="f1", name="Ferox", hull_type_id=1))])
+    monkeypatch.setattr(engine, "match_and_validate_contract", lambda cid, title, items, cands, cfg=None: (
+        ("f1", 1.0, [], "valid") if cid == 2 else ("f1", 0.9, [], "invalid")))
+    assert engine.live_doctrine_matches({2: ("t", []), 4: ("t", [])}) == {2: "Ferox"}
+
+
+@pg_helpers.postgres_required()
+def test_doctrine_only_matches_a_contract_the_snapshot_never_saw(env, monkeypatch):
+    """Production 2026-11-14: two doctrine sales were never matched in the
+    snapshot, read as "no Doctrine fit" and were marked seen without a DM."""
+    from eve_trader.doctrine import engine
+    _grant_doctrine(monkeypatch)
+    aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"doctrine_only": True})
+    fake = FakeClient()
+    _run(fake)
+    fake.contracts = [_contract(2, "finished", title="GSF Tomahawk"), _contract(3, "finished", title="Junk")]
+    monkeypatch.setattr(engine, "contract_doctrine_matches", lambda ids: {})
+    monkeypatch.setattr(engine, "sold_out_by_contract", lambda *a: {})
+    monkeypatch.setattr(engine, "contracts_without_stored_match", lambda ids: set(ids))
+    seen_live = []
+    monkeypatch.setattr(engine, "live_doctrine_matches", lambda contracts: seen_live.append(sorted(contracts))
+                        or {2: "Tomahawk"})
+
+    _run(fake, NOW + timedelta(minutes=20))
+
+    assert seen_live == [[2, 3]] and "items2" in fake.calls and "items3" in fake.calls
+    assert len(env) == 1 and '"GSF Tomahawk"' in env[0] and '"Junk"' not in env[0]
+    assert storage.seen_contract_alerts(ALICE) == {(2, "finished"), (3, "finished")}
+
+
+@pg_helpers.postgres_required()
+def test_doctrine_only_keeps_a_contract_whose_items_cannot_be_read(env, monkeypatch):
+    from eve_trader.doctrine import engine
+    _grant_doctrine(monkeypatch)
+    aa.do_set_subscription(ALICE, "contract_status", True, contract_filters={"doctrine_only": True})
+    fake = FakeClient()
+    _run(fake)
+    fake.contracts = [_contract(2, "finished", title="GSF Tomahawk")]
+    monkeypatch.setattr(engine, "contract_doctrine_matches", lambda ids: {})
+    monkeypatch.setattr(engine, "sold_out_by_contract", lambda *a: {})
+    monkeypatch.setattr(engine, "contracts_without_stored_match", lambda ids: set(ids))
+    monkeypatch.setattr(engine, "live_doctrine_matches", lambda contracts: {i: "Tomahawk" for i in contracts})
+    original = fake.character_contract_items
+
+    def failing(cid, contract_id, auth_role):
+        raise ESIError("HTTP 502")
+    fake.character_contract_items = failing
+    _run(fake, NOW + timedelta(minutes=20))
+    assert env == [] and storage.seen_contract_alerts(ALICE) == set()
+
+    fake.character_contract_items = original
+    _run(fake, NOW + timedelta(minutes=40))
+    assert len(env) == 1 and storage.seen_contract_alerts(ALICE) == {(2, "finished")}
