@@ -323,27 +323,63 @@ class _DoctrineUnavailable(Exception):
     """The Doctrine lookup failed for a reason that may pass (not a missing grant)."""
 
 
+def _live_contract_items(client: ESIClient, cid: int, role: str, contract_id: int) -> list:
+    from ..doctrine.models import ContractItemRow
+    rows = client.character_contract_items(cid, contract_id, role) or []
+    return [ContractItemRow(contract_id, int(it.get("record_id", n)), int(it["type_id"]), it["quantity"],
+                            bool(it.get("is_included", True)), bool(it.get("is_singleton", False)))
+            for n, it in enumerate(rows)]
+
+
 def _doctrine_lookups(contracts: list[dict], fresh: list[tuple[int, str, dict]], now: datetime,
-                      tenant_id: Optional[str], need_matches: bool
-                      ) -> tuple[Optional[dict[int, str]], Optional[dict[int, str]]]:
-    """`(sold_out, matches)`: sold contract id -> the fitting its sale emptied,
-    and (only when `need_matches`) contract id -> its valid Doctrine fitting.
-    Reads another tool's data, so both are None without the `doctrine` grant
-    (same rule as the Doctrine skill check). Raises _DoctrineUnavailable when
-    the lookup itself failed."""
+                      tenant_id: Optional[str], need_matches: bool,
+                      client: Optional[ESIClient] = None, cid: Optional[int] = None,
+                      role: Optional[str] = None,
+                      ) -> tuple[Optional[dict[int, str]], Optional[dict[int, str]], set[int]]:
+    """`(sold_out, matches, undecided)`: sold contract id -> the fitting its
+    sale emptied, (only when `need_matches`) contract id -> its valid
+    Doctrine fitting, and the contracts whose fit could not be decided.
+    Reads another tool's data, so the maps are None without the `doctrine`
+    grant (same rule as the Doctrine skill check). Raises
+    _DoctrineUnavailable when the lookup itself failed.
+
+    A contract the Doctrine snapshot holds no decision for (listed and sold
+    between two syncs, dropped from the snapshot, or never matched) is
+    matched now from its ESI items; before, it read as "no Doctrine fit" and
+    was marked seen for good (two missed sales on production, 2026-11-14).
+    One whose items cannot be read is undecided: it stays unseen for the
+    next poll."""
     if not tenant_id or not tenant_eligibility.may_use("doctrine", tenant_eligibility.granted_tools(tenant_id)):
-        return None, None
+        return None, None, set()
     sold = {i for i, e, c in fresh if e == logic.CONTRACT_FINISHED and c.get("type") == "item_exchange"}
     unavailable = {int(c["contract_id"]) for c in contracts if "contract_id" in c and (
         c.get("status") != "outstanding" or (logic.parse_iso(c.get("date_expired")) or now) <= now)}
+    undecided: set[int] = set()
     try:
         from ..doctrine import engine as doctrine_engine
         sold_out = doctrine_engine.sold_out_by_contract(sold, unavailable | sold, now) if sold else {}
-        matches = doctrine_engine.contract_doctrine_matches({i for i, _e, _c in fresh}) if need_matches else None
+        matches = None
+        if need_matches:
+            ids = {i for i, _e, _c in fresh}
+            matches = dict(doctrine_engine.contract_doctrine_matches(ids))
+            unknown = doctrine_engine.contracts_without_stored_match(ids - set(matches))
+            if unknown and client is not None and cid is not None and role is not None:
+                by_id = {i: c for i, _e, c in fresh}
+                live: dict = {}
+                for contract_id in sorted(unknown):
+                    try:
+                        live[contract_id] = (by_id[contract_id].get("title"),
+                                             _live_contract_items(client, cid, role, contract_id))
+                    except Exception as e:  # noqa: BLE001 - this contract waits for the next poll
+                        log.info("Contract %s items for the Doctrine filter failed: %s", contract_id, e)
+                        undecided.add(contract_id)
+                matches.update(doctrine_engine.live_doctrine_matches(live))
+            elif unknown:
+                undecided |= unknown
     except Exception as e:  # noqa: BLE001 - surfaced to the caller as "try again later"
         log.warning("Doctrine lookup for the contract alert failed: %s", e)
         raise _DoctrineUnavailable() from e
-    return sold_out, matches
+    return sold_out, matches, undecided
 
 
 def _contract_filters(cid: int) -> logic.ContractFilters:
@@ -392,12 +428,15 @@ def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, clie
         return
     filters = _contract_filters(cid)
     try:
-        sold_out_map, matches = _doctrine_lookups(contracts, fresh, now, tenant_id, filters.doctrine_only)
+        sold_out_map, matches, undecided = _doctrine_lookups(
+            contracts, fresh, now, tenant_id, filters.doctrine_only, client=client, cid=cid, role=role)
     except _DoctrineUnavailable:
         if filters.needs_doctrine:                     # cannot decide now: keep everything for the next poll
             storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
             return
-        sold_out_map, matches = {}, None
+        sold_out_map, matches, undecided = {}, None, set()
+    if filters.doctrine_only and undecided:            # unreadable items: decide on the next poll
+        fresh = [ev for ev in fresh if ev[0] not in undecided]
     kept, dropped = logic.filter_contract_events(fresh, filters, matches, sold_out_map)
     if dropped:
         storage.mark_contract_alerts(cid, [(i, e) for i, e, _c in dropped], at=now)
