@@ -151,6 +151,29 @@ def test_compressed_gas_is_observed_and_decompresses_at_the_configured_yield(ten
     assert recipes[COMP_GAS].outputs(400) == {GAS: 380.0}
 
 
+def test_gas_decompressed_before_the_series_began_is_still_detected(tenant, monkeypatch):
+    """The series never held the compressed gas (it was gone before the
+    first observation), so only the ledger knows the type."""
+    from eve_trader.refining.config import REFINING_CONFIG
+    monkeypatch.setattr(REFINING_CONFIG, "gas_decompression_yield", 0.95)
+    _share(ALICE, "wallet", "market_orders", "assets")
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, COMP_GAS, LOC, 10.0, 400, True, 101, None, None, None),
+    ])
+    _assets(ALICE, [(6, GAS, 380, False)])
+    ingest.archive_stock_observation(now=T0 + timedelta(days=1))
+    assert _observation_rows()[1] == []
+
+    result = loader.rebuild_realized()
+    assert result["reprocess_events"] == 1
+    [event] = ledger_db.list_reprocess_events()
+    assert int(event[2]) == COMP_GAS and float(event[3]) == 400
+    [output] = event[14]
+    assert (output["type_id"], output["quantity"]) == (GAS, 380.0)
+    assert output["unit_cost"] == pytest.approx(4000.0 / 380.0)
+
+
 def test_new_observed_types_start_a_new_series(tenant, monkeypatch):
     from eve_trader.realized import access
     _share(ALICE, "assets")
