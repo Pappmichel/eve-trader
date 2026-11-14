@@ -1032,7 +1032,11 @@ possible future use.
 After `do_sync_due` the job runs Doctrine's `match_pending_contracts` for a
 tenant holding `doctrine` (`scheduler._sync_due_then_match`): the contracts
 fetcher stores new or status-changed contracts unmatched, and matching used
-to wait for the next Doctrine page read. The fetcher logs every contract
+to wait for the next Doctrine page read. It then adds finished doctrine
+sales the history is missing from the contract archive
+(`doctrine.esi_sync.backfill_history_from_archive`: Doctrine-shared
+contracts at a Doctrine structure, issued by a tenant character to an
+outsider, matched from `ledger_contract_items`). The fetcher logs every contract
 that leaves an owner's doctrine snapshot (and why) and every one that loses
 its match - a dropped contract comes back unmatched.
 `trading_pipeline` is **not** an ESI-owner sync: it still runs
