@@ -1106,3 +1106,8 @@ stayed in stock forever and the raw gas came in as opening at planner value.
 - `realized.access.OBSERVED_TYPES_VERSION` (now 2) is part of the asset
   scope hash: older observation runs never stored gas and would read as
   holding none, so the change starts a new series (and one opening reset).
+- Tracked types are the types the series ever held **plus the reprocessable
+  types the ledger moves** (`loader._reprocess_inputs`). Found on the first
+  deploy: the gas was decompressed before the new series began, was never
+  observed and so never tracked. The same gap applied to ore reprocessed
+  completely before a series started.

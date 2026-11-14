@@ -186,7 +186,9 @@ only SDE material is the raw gas, so a decompression is booked as a
 reprocessing at `RefiningConfig.gas_decompression_yield` (Ore & Minerals
 Settings, default 0.95 from production data). Raising
 `realized.access.OBSERVED_TYPES_VERSION` starts a new observation series
-whenever the observed types change.
+whenever the observed types change. Detection tracks the types the series
+ever held plus the reprocessable types the ledger moves, so a type gone
+before the series began is still detected.
 Ledger stock (opening and inventory drift) counts items waiting in
 Deliveries / CorpDeliveries, unlike the planners: a contract buy is booked
 on completion and the reprocessing observations count them too.

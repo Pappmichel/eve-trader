@@ -26,7 +26,7 @@ import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
 from .. import storage
 from ..config import TRADING_CONFIG
@@ -852,13 +852,16 @@ def _reprocess_blocked() -> Optional[str]:
     return "; ".join(sorted(set(missing))) or None
 
 
-def _reprocess_inputs(t0: datetime) -> dict:
+def _reprocess_inputs(t0: datetime, ledger_type_ids: Iterable[int] = ()) -> dict:
     """LedgerSnapshot fields for reprocessing detection (empty when nothing
-    was observed yet)."""
+    was observed yet). Tracked types are those the observation series ever
+    held plus the reprocessable types the ledger moves: a type bought and
+    fully reprocessed before the series began was never observed, and its
+    absence from every observation is exactly what detects it."""
     observations, held = _stock_observations(t0)
     if not observations:
         return {}
-    recipes = _reprocess_recipes(held)
+    recipes = _reprocess_recipes(set(held) | {int(t) for t in ledger_type_ids})
     return {
         "stock_observations": tuple(observations),
         "reprocess_recipes": recipes,
@@ -1009,7 +1012,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             for inp in job.inputs:
                 type_ids.add(int(inp.type_id))
 
-        reprocess = _reprocess_inputs(t0)
+        reprocess = _reprocess_inputs(t0, type_ids)
         if reprocess and _baseline_changed(min(o.observed_at for o in reprocess["stock_observations"])):
             reset_opening = True
         for obs in reprocess.get("stock_observations", ()):
