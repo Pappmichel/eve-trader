@@ -577,7 +577,12 @@ def _resolve_symmetry(jobs: list[IndustryJob]) -> list[IndustryJob]:
         else:  # not frozen with the job: the installer's current skills
             factor = invention_skill_factor(int(job.blueprint_type_id), job.installer_id)[0]
         if decryptors.is_none_or_symmetry(job.probability, base, factor):
-            ambiguous.append(decryptors.AmbiguousJob(key, int(job.product_type_id), int(job.runs), job.start_date))
+            delivered = (job.status or "").lower() == "delivered"
+            ambiguous.append(decryptors.AmbiguousJob(
+                key, int(job.product_type_id), int(job.runs), job.start_date,
+                delivered_at=(job.end_date or job.completed_date) if delivered else None,
+                successes=job.successful_runs,
+            ))
     if not ambiguous:
         return jobs
     products = {j.product_type_id for j in ambiguous}
@@ -587,8 +592,7 @@ def _resolve_symmetry(jobs: list[IndustryJob]) -> list[IndustryJob]:
         and any(int(inp.type_id) in decryptors.OTHER_ME3 for inp in job.inputs)
     }
     copies = db.blueprint_copies_by_type(access.shared_owners("blueprints"), products)
-    evidence = {p: decryptors.copy_evidence(copies.get(p, ()), p in other_me3) for p in products}
-    decided = decryptors.resolve(ambiguous, evidence)
+    decided = decryptors.resolve(ambiguous, copies, frozenset(other_me3))
     if not decided:
         return jobs
     out = []

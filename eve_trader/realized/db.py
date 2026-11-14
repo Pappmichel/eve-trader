@@ -668,8 +668,8 @@ def invention_skill_levels_for_owners(owners: list[tuple[str, int]]) -> dict[tup
 
 
 def blueprint_copies_by_type(owners: list[tuple[str, int]], type_ids: Iterable[int]) -> dict[int, list[tuple[int, int]]]:
-    """type_id -> [(ME, runs), ...] of every archived blueprint copy (runs > 0)
-    of the owners."""
+    """type_id -> [(item_id, ME), ...] of every archived blueprint copy
+    (runs > 0) of the owners."""
     ids = sorted({int(t) for t in type_ids})
     if not ids or not owners:
         return {}
@@ -677,14 +677,14 @@ def blueprint_copies_by_type(owners: list[tuple[str, int]], type_ids: Iterable[i
     out: dict[int, list[tuple[int, int]]] = {}
     with storage.connect() as conn:
         rows = conn.execute(
-            "SELECT type_id, material_efficiency, runs FROM ledger_blueprints "
+            "SELECT type_id, item_id, material_efficiency FROM ledger_blueprints "
             f"WHERE {where} AND runs > 0 AND type_id = ANY(?)",
             (*params, ids),
         ).fetchall()
-    for type_id, me, runs in rows:
+    for type_id, item_id, me in rows:
         if me is None:
             continue
-        out.setdefault(int(type_id), []).append((int(me), int(runs)))
+        out.setdefault(int(type_id), []).append((int(item_id), int(me)))
     return out
 
 

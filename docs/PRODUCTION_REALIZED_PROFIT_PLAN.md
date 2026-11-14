@@ -1138,13 +1138,18 @@ Symmetry Decryptors (~230 M ISK) were never consumed by any job.
   job's product in `ledger_blueprints`: ME 2 only comes from no decryptor,
   ME 3 from Symmetry - counted only when no Parity / Optimized Attainment
   job (also ME 3) made that product.
-- Only ME 3 -> Symmetry; only ME 2 -> no decryptor; both -> the product's
-  jobs in start order go to Symmetry until its share of their runs reaches
-  the share of ME 3 copies, the rest to no decryptor; no copies ->
-  undecided (stays `assumed_decryptor`). A first version limited the mixed
-  case to Symmetry bought up to the job start; production held 1,226
-  Symmetry before T0, so that left 710 runs undecided (664 of ~1,140 found;
-  the share rule finds 1,063).
+- Per job, not per product: item ids are handed out in ascending order, so
+  the delivered ambiguous jobs of a product are walked from the latest
+  delivery back and each takes as many copies as it had successful runs,
+  from the highest item id down; the majority ME decides (3 -> Symmetry,
+  2 -> no decryptor). Jobs not delivered yet, without a success, or past
+  the available copies stay undecided (`assumed_decryptor`) until a later
+  rebuild sees their copies.
+- History: a first version limited products with both MEs to Symmetry
+  bought up to the job start (production held 1,226 before T0: 664 of
+  ~1,140 found); a second split them by copy share in start order, which
+  gave Symmetry to the earliest jobs and decided 6,429 runs of still
+  running corp jobs from older ME 2 copies.
 - Skill levels not frozen with a job fall back to the installer's current
   skills (some corp jobs had none frozen).
 - `loader._resolve_symmetry` applies it on every rebuild (not frozen: the
