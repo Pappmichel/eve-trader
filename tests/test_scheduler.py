@@ -772,3 +772,28 @@ def test_get_status_reports_the_operator_switches(monkeypatch):
         "backup_job_enabled", "jita_price_cache_job_enabled", "alerts_job_enabled", "inactive_tenant_days",
     }
 
+
+
+def test_sync_due_then_match_matches_doctrine_contracts_only_with_the_grant(monkeypatch):
+    from eve_trader.doctrine import actions as doctrine_actions
+    calls = []
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append(("sync", kw)) or "ok")
+    monkeypatch.setattr(doctrine_actions, "match_pending_contracts", lambda: calls.append("match") or 3)
+
+    assert scheduler._sync_due_then_match({"doctrine", "production"}, extra={"x": 1}) == "ok"
+    assert calls == [("sync", {"granted_tools": {"doctrine", "production"}, "extra": {"x": 1}}), "match"]
+
+    calls.clear()
+    scheduler._sync_due_then_match({"production"})
+    assert calls == [("sync", {"granted_tools": {"production"}})]
+
+
+def test_sync_due_then_match_survives_a_matching_failure(monkeypatch):
+    from eve_trader.doctrine import actions as doctrine_actions
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: "ok")
+
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(doctrine_actions, "match_pending_contracts", boom)
+    assert scheduler._sync_due_then_match(None) == "ok"
