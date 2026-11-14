@@ -3582,6 +3582,7 @@ export interface DoctrineRealizedSummary {
   estimated: boolean
   price_missing: boolean
   production_saving: number | null
+  production_saving_coverage?: number | null
   freight_from_couriers?: number
   freight_configured?: number
   cost_by_origin: DoctrineOriginCost[]
@@ -3623,6 +3624,7 @@ export interface DoctrineRealizedContract {
   coverage: number | null
   warnings: string[]
   production_saving: number | null
+  production_saving_coverage?: number | null
   before_archive: boolean
   flags: RealizedFlags
 }

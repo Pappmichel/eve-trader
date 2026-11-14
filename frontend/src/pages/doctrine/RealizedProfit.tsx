@@ -34,6 +34,14 @@ function rate(value: number | null | undefined): string {
   return value == null ? '–' : pct(value)
 }
 
+// Saving over the produced lines that have a frozen buy price; the share
+// says how much of the produced cost that covers when some lines lack one.
+function savingText(value: number | null | undefined, coverage: number | null | undefined): string {
+  if (value == null) return '–'
+  if (coverage != null && coverage < 0.995) return `${isk(value)} (${pct(coverage)} of produced cost priced)`
+  return isk(value)
+}
+
 function periodFromPreset(preset: string): RealizedPeriod {
   if (preset === 'since_t0') return { mode: 'since_t0' }
   return { mode: 'days', days: Number(preset) as 7 | 30 | 90 }
@@ -113,7 +121,7 @@ export default function DoctrineRealizedProfit() {
       header: 'Production saving',
       accessorKey: 'production_saving',
       size: 150,
-      cell: (info) => money(info.getValue() as number | null),
+      cell: (info) => savingText(info.getValue() as number | null, info.row.original.production_saving_coverage),
     },
   ], [])
 
@@ -159,7 +167,7 @@ export default function DoctrineRealizedProfit() {
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Margin</Text>
               <Title order={3}>{rate(summary.margin)}</Title>
-              <Text size="xs" c="dimmed">Production saving {money(summary.production_saving)}</Text>
+              <Text size="xs" c="dimmed">Production saving {savingText(summary.production_saving, summary.production_saving_coverage)}</Text>
             </Card>
           </SimpleGrid>
           {(typeof summary.freight_from_couriers === 'number' || typeof summary.freight_configured === 'number') && (
@@ -252,7 +260,7 @@ export default function DoctrineRealizedProfit() {
           <Title order={6}>
             {detailQuery.data.fitting_name ?? 'Unmatched'} · {detailQuery.data.buyer_name ?? '–'}
           </Title>
-          <Text size="sm">Production saving {money(detailQuery.data.production_saving)}</Text>
+          <Text size="sm">Production saving {savingText(detailQuery.data.production_saving, detailQuery.data.production_saving_coverage)}</Text>
           <DataTable
             tableId="doctrine-realized-lines"
             data={detailQuery.data.lines}
