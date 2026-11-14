@@ -42,6 +42,7 @@ from ..production.constants import (
     DECRYPTORS,
 )
 from . import access, db, decryptors
+from .inputs import _invention_skill_factor as invention_skill_factor
 from .costing import (
     ORIGIN_BOUGHT,
     UNIT_ITEM,
@@ -57,7 +58,6 @@ from .costing import (
     ReprocessRecipe,
     StockObservation,
     WalletTransaction,
-    classify_contract,
     rebuild_costing,
 )
 
@@ -550,8 +550,7 @@ _SYMMETRY_TYPE_ID = DECRYPTORS[decryptors.SYMMETRY].type_id
 _DECRYPTOR_TYPE_IDS = frozenset(_DECRYPTOR_RUN_BONUS)
 
 
-def _resolve_symmetry(jobs: list[IndustryJob], txs: list[WalletTransaction], contracts,
-                      *, t0: datetime, chars, corps, corp_wallets) -> list[IndustryJob]:
+def _resolve_symmetry(jobs: list[IndustryJob]) -> list[IndustryJob]:
     """Decide Symmetry vs. no decryptor for invention jobs whose probability
     cannot tell them apart (`realized/decryptors.py`). Not frozen: the copies
     that decide it appear only after the job, so every rebuild decides
@@ -573,7 +572,10 @@ def _resolve_symmetry(jobs: list[IndustryJob], txs: list[WalletTransaction], con
         skill = levels.get(key)
         recipe = storage.get_invention_recipe(int(job.blueprint_type_id), int(job.product_type_id))
         base = recipe.get("base_probability") if recipe else None
-        factor = decryptors.skill_factor(*skill) if skill else None
+        if skill:
+            factor = decryptors.skill_factor(*skill)
+        else:  # not frozen with the job: the installer's current skills
+            factor = invention_skill_factor(int(job.blueprint_type_id), job.installer_id)[0]
         if decryptors.is_none_or_symmetry(job.probability, base, factor):
             ambiguous.append(decryptors.AmbiguousJob(key, int(job.product_type_id), int(job.runs), job.start_date))
     if not ambiguous:
@@ -586,18 +588,7 @@ def _resolve_symmetry(jobs: list[IndustryJob], txs: list[WalletTransaction], con
     }
     copies = db.blueprint_copies_by_type(access.shared_owners("blueprints"), products)
     evidence = {p: decryptors.copy_evidence(copies.get(p, ()), p in other_me3) for p in products}
-    purchases = [(tx.date, tx.quantity) for tx in txs if tx.is_buy and int(tx.type_id) == _SYMMETRY_TYPE_ID]
-    for contract in contracts:
-        view, _warning = classify_contract(
-            contract, tenant_character_ids=chars, tenant_corporation_ids=corps, t0=t0,
-            corp_wallet_owner_ids=corp_wallets,
-        )
-        if view is None:
-            continue
-        for item in view.received:
-            if int(item.type_id) == _SYMMETRY_TYPE_ID and not item.is_blueprint:
-                purchases.append((contract.date_completed, float(item.quantity)))
-    decided = decryptors.resolve(ambiguous, evidence, purchases)
+    decided = decryptors.resolve(ambiguous, evidence)
     if not decided:
         return jobs
     out = []
@@ -1078,8 +1069,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         tenant_chars = _tenant_character_ids()
         tenant_corps = _tenant_corporation_ids()
         corp_wallets = _corp_wallet_owner_ids()
-        jobs = _resolve_symmetry(jobs, txs, contracts, t0=t0, chars=tenant_chars,
-                                 corps=tenant_corps, corp_wallets=corp_wallets)
+        jobs = _resolve_symmetry(jobs)
         production_types = _production_type_ids(job_rows)
         type_ids: set[int] = set(production_types)
         for contract in contracts:

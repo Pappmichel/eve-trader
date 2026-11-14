@@ -8,13 +8,14 @@ does), Symmetry yields ME 3 (as do Parity and Optimized Attainment, which
 the probability does identify on their own jobs).
 
 Rules per ambiguous job, from the invented copies of its product:
-- only ME 3 evidence -> Symmetry;
-- only ME 2 evidence -> no decryptor;
-- both -> Symmetry while Symmetry bought up to the job's start still
-  covers its runs (jobs in start order, one decryptor per run), otherwise
-  undecided;
-- no evidence -> undecided.
-Undecided jobs keep the assumed "no decryptor" and its warning.
+- only ME 3 copies -> Symmetry;
+- only ME 2 copies -> no decryptor;
+- both -> the product's jobs in start order go to Symmetry until its share
+  of their runs reaches the share of ME 3 copies, the rest to no decryptor
+  (a job uses one decryptor type for all its runs, so whole jobs);
+- no copies -> undecided.
+Undecided jobs keep the assumed "no decryptor" and its warning. Purchases
+are no limit: stock held before the cutover is unknown.
 """
 from __future__ import annotations
 
@@ -62,38 +63,35 @@ def is_none_or_symmetry(probability: Optional[float], base: Optional[float],
     return bool(matches) and matches <= {NO_DECRYPTOR, SYMMETRY}
 
 
-def copy_evidence(copies: Sequence[tuple[int, int]], ambiguous_me3: bool) -> tuple[bool, bool]:
-    """(Symmetry seen, no decryptor seen) from invented copies (ME, runs) of
-    one product. ME 3 counts only when no Parity / Optimized Attainment job
-    produced that product (`ambiguous_me3`)."""
+def copy_evidence(copies: Sequence[tuple[int, int]], ambiguous_me3: bool) -> tuple[int, int]:
+    """(Symmetry copies, no-decryptor copies) among invented copies (ME,
+    runs) of one product. ME 3 counts only when no Parity / Optimized
+    Attainment job produced that product (`ambiguous_me3`)."""
     me_sym = DECRYPTORS[SYMMETRY].me_bonus
     me_none = DECRYPTORS[NO_DECRYPTOR].me_bonus
-    sym = not ambiguous_me3 and any(int(me) == me_sym for me, _runs in copies)
-    none = any(int(me) == me_none for me, _runs in copies)
+    sym = 0 if ambiguous_me3 else sum(1 for me, _runs in copies if int(me) == me_sym)
+    none = sum(1 for me, _runs in copies if int(me) == me_none)
     return sym, none
 
 
-def resolve(jobs: Sequence[AmbiguousJob], evidence: dict[int, tuple[bool, bool]],
-            purchases: Sequence[tuple[datetime, float]]) -> dict[tuple, str]:
+def resolve(jobs: Sequence[AmbiguousJob], evidence: dict[int, tuple[int, int]]) -> dict[tuple, str]:
     """Decision per job key: SYMMETRY or NO_DECRYPTOR; undecided jobs are
-    left out. `purchases` are (date, quantity) of Symmetry Decryptors the
-    tenant acquired."""
-    bought = sorted(purchases, key=lambda p: p[0])
+    left out."""
+    by_product: dict[int, list[AmbiguousJob]] = {}
+    for job in jobs:
+        by_product.setdefault(int(job.product_type_id), []).append(job)
     out: dict[tuple, str] = {}
-    used = 0.0
-    idx = 0
-    available = 0.0
-    for job in sorted(jobs, key=lambda j: (j.start, j.key)):
-        while idx < len(bought) and bought[idx][0] <= job.start:
-            available += float(bought[idx][1])
-            idx += 1
-        sym, none = evidence.get(int(job.product_type_id), (False, False))
-        if sym and not none:
-            out[job.key] = SYMMETRY
-            used += job.runs
-        elif none and not sym:
-            out[job.key] = NO_DECRYPTOR
-        elif sym and none and available - used >= job.runs:
-            out[job.key] = SYMMETRY
-            used += job.runs
+    for product, group in by_product.items():
+        sym, none = evidence.get(product, (0, 0))
+        if not sym and not none:
+            continue
+        group.sort(key=lambda j: (j.start, j.key))
+        target = sum(j.runs for j in group) * sym / (sym + none)
+        assigned = 0.0
+        for job in group:
+            if sym and assigned + job.runs / 2.0 <= target:
+                out[job.key] = SYMMETRY
+                assigned += job.runs
+            else:
+                out[job.key] = NO_DECRYPTOR
     return out
