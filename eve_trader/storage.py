@@ -8474,6 +8474,17 @@ def load_doctrine_contracts() -> list[tuple]:
         return conn.execute(f"SELECT {', '.join(_CONTRACT_COLUMNS)} FROM doctrine_contracts").fetchall()
 
 
+def doctrine_contract_ids_for_owner(owner_type: str, owner_id: int) -> set[int]:
+    """Contract ids of one owner's partition of the doctrine-contract
+    snapshot (the rows that owner's next sync replaces)."""
+    column = "owner_character_id" if owner_type == "character" else "owner_corporation_id"
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT contract_id FROM doctrine_contracts WHERE {column} = ?", (int(owner_id),),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def load_doctrine_contract_items(contract_id: int) -> list[tuple]:
     """(record_id, type_id, quantity, is_included, is_singleton) for one
     contract - used to carry an unchanged contract's items forward without

@@ -970,6 +970,39 @@ def _fetch_contract_items_for(
     return {"carried": carried, "fetched": fetched, "errors": errors}
 
 
+def _log_contract_snapshot_changes(
+    *, owner_type: str, owner_id: int, previous_ids: set[int], written_ids: set[int],
+    items_errors: dict, all_raw: Optional[list[dict]], structure_ids: Optional[set[int]],
+    rematch: dict[int, str],
+) -> None:
+    """Why a contract leaves an owner's snapshot or loses its fitting match.
+    A dropped contract that comes back on a later sync returns unmatched,
+    which hid 28 matched contracts on production (2026-11-14) with no trace
+    of the cause."""
+    dropped = sorted(previous_ids - written_ids)
+    if not dropped and not rematch:
+        return
+    by_id = {int(c["contract_id"]): c for c in (all_raw or [])}
+    reasons = []
+    for cid in dropped:
+        raw = by_id.get(cid)
+        if cid in items_errors:
+            reason = f"items read failed: {items_errors[cid]}"
+        elif raw is None:
+            reason = "not in this ESI list"
+        elif structure_ids is not None and int(raw.get("start_location_id") or 0) not in structure_ids:
+            reason = f"outside structure filter (location {raw.get('start_location_id')})"
+        else:
+            reason = f"status {raw.get('status')}, type {raw.get('type')}"
+        reasons.append(f"{cid} ({reason})")
+    if reasons:
+        log.warning("doctrine contracts dropped from %s %s snapshot: %s",
+                    owner_type, owner_id, "; ".join(reasons))
+    if rematch:
+        log.info("doctrine contracts of %s %s lose their match and are re-matched: %s",
+                 owner_type, owner_id, "; ".join(f"{cid} ({why})" for cid, why in sorted(rematch.items())))
+
+
 def _write_contract_snapshot(
     contracts_raw: list[dict],
     items_info: dict,
@@ -978,8 +1011,16 @@ def _write_contract_snapshot(
     owner_id: int,
     auth_role: str,
     for_corp: bool,
+    all_raw: Optional[list[dict]] = None,
+    structure_ids: Optional[set[int]] = None,
 ) -> int:
     existing_by_id = {row[0]: row for row in storage.load_doctrine_contracts()}
+    try:
+        previous_ids = storage.doctrine_contract_ids_for_owner(owner_type, owner_id)
+    except Exception:  # noqa: BLE001 - diagnostics must never fail the sync
+        log.exception("doctrine contract snapshot diagnostics failed")
+        previous_ids = set()
+    rematch: dict[int, str] = {}
     synced_at = _now_iso()
     contract_rows: list[tuple] = []
     item_rows: list[tuple] = []
@@ -994,6 +1035,8 @@ def _write_contract_snapshot(
             matched, score, status = existing[9], existing[10], existing[11]
         else:
             matched, score, status = None, None, _VALIDATION_UNMATCHED
+            if existing is not None and existing[10] is not None:
+                rematch[int(cid)] = f"status {existing[5]} -> {raw.get('status')}"
         contract_rows.append((
             cid, auth_role, for_corp, raw.get("issuer_id"), raw.get("start_location_id"),
             raw.get("status"), raw.get("title"), raw.get("price"), raw.get("date_expired"),
@@ -1014,6 +1057,14 @@ def _write_contract_snapshot(
     else:
         kwargs["owner_corporation_id"] = owner_id
     storage.replace_doctrine_sync_snapshot(contract_rows, item_rows, [], **kwargs)
+    try:
+        _log_contract_snapshot_changes(
+            owner_type=owner_type, owner_id=owner_id, previous_ids=previous_ids,
+            written_ids={int(r[0]) for r in contract_rows}, items_errors=items_info.get("errors", {}),
+            all_raw=all_raw, structure_ids=structure_ids, rematch=rematch,
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must never fail the sync
+        log.exception("doctrine contract snapshot diagnostics failed")
     return len(contract_rows)
 
 
@@ -1092,6 +1143,7 @@ def fetch_character_contracts(
     written = _write_contract_snapshot(
         syncable, items_info,
         owner_type="character", owner_id=owner_id, auth_role=auth_role, for_corp=False,
+        all_raw=own, structure_ids=structure_ids,
     )
     # Production ledger archive: all item-exchange where this character is
     # issuer/acceptor - separate from Doctrine's structure filter (13b).
@@ -1138,6 +1190,7 @@ def fetch_corporation_contracts(
     written = _write_contract_snapshot(
         syncable, items_info,
         owner_type="corporation", owner_id=owner_id, auth_role=auth_role, for_corp=True,
+        all_raw=own, structure_ids=structure_ids,
     )
     _archive_contracts_pass(
         client, owner_type="corporation", owner_id=owner_id, auth_role=auth_role,

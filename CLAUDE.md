@@ -1027,6 +1027,12 @@ null for this job) - `get_status()` itself is called nowhere in the UI
 since the Portfolio rework (`docs/PORTFOLIO_REWORK_PLAN.md`) removed that
 page's own "Background Scheduler" card; the function stays for Admin's
 possible future use.
+After `do_sync_due` the job runs Doctrine's `match_pending_contracts` for a
+tenant holding `doctrine` (`scheduler._sync_due_then_match`): the contracts
+fetcher stores new or status-changed contracts unmatched, and matching used
+to wait for the next Doctrine page read. The fetcher logs every contract
+that leaves an owner's doctrine snapshot (and why) and every one that loses
+its match - a dropped contract comes back unmatched.
 `trading_pipeline` is **not** an ESI-owner sync: it still runs
 `do_pipeline` (candidate/shortlist + reconcile). Reconcile consumes wallet snapshots when present and only
 live-pages ESI for a shared owner whose snapshot is empty.
