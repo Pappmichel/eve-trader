@@ -1426,6 +1426,11 @@ def rebuild_realized(reset_opening: bool = False) -> dict:
 
     result = _run_costing(snapshot)
     run_id, extra_warnings = _persist(snapshot, result, scope_hash)
+    from . import saving_prices
+    try:
+        saving_prices.freeze_missing()
+    except Exception:  # noqa: BLE001 - an informational price must not fail the rebuild
+        log.exception("realized: freezing production-saving buy prices failed")
     return {
         "run_id": run_id,
         "cutover_t0": snapshot.t0.isoformat(),

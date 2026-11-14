@@ -699,6 +699,30 @@ CREATE POLICY tenant_isolation ON ledger_valuation_prices
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_valuation_prices TO eve_trader_app;
 
+-- What buying a produced item would have cost on the day a doctrine
+-- contract sold it: Doctrine's informational "production saving" (unified
+-- plan U9). Unlike ledger_valuation_prices this is always the buy-list
+-- purchase price, even when building was cheaper. Frozen per (type, day) by
+-- the rebuild (realized/saving_prices.py), insert-only, not derived.
+-- source: buy_home / buy_hub (the planner's live quote, sale day today or
+-- yesterday), forge_history (The Forge daily average plus buy broker fee and
+-- freight, for an older day), or unavailable (unit_value NULL).
+CREATE TABLE IF NOT EXISTS ledger_saving_buy_prices (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    price_date DATE NOT NULL,
+    unit_value DOUBLE PRECISION,
+    source TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id, price_date)
+);
+ALTER TABLE ledger_saving_buy_prices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_saving_buy_prices;
+CREATE POLICY tenant_isolation ON ledger_saving_buy_prices
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_saving_buy_prices TO eve_trader_app;
+
 -- ====================================================== unified realized profit, Phase 2
 -- Sale channel (production / trading / doctrine / station_trading), the
 -- archive owner the report filters on, and the doctrine fitting when known.

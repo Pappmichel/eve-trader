@@ -564,6 +564,14 @@ Doctrine's. The Doctrine page shows for the produced part an informational
 own production adds is visible without moving profit between tools.
 Alternative: book an internal sale from Production to Doctrine at market
 value - two profits for one ISK flow, harder to reconcile, not recommended.
+*Implementation note (2026-11-14):* the buy price comes from its own frozen
+table, `ledger_saving_buy_prices` (`realized/saving_prices.py`, filled at the
+end of every rebuild). Reading `ledger_valuation_prices` left the figure
+empty on every contract: that table stores the planner's cheaper value,
+which is the build cost for anything worth building. A sale today or
+yesterday takes the live buy-list quote; an older day (the backfill) takes
+The Forge daily average plus buy broker fee and freight. Unpriced lines are
+left out and the report returns `production_saving_coverage`.
 
 **U10 Retire `realized_trades`** after the new Trading report is live:
 Portfolio's Trading figures read the ledger; the Reconcile button becomes
