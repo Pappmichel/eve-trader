@@ -7,15 +7,18 @@ The invented copies can: no decryptor yields ME 2 (no other decryptor
 does), Symmetry yields ME 3 (as do Parity and Optimized Attainment, which
 the probability does identify on their own jobs).
 
-Rules per ambiguous job, from the invented copies of its product:
-- only ME 3 copies -> Symmetry;
-- only ME 2 copies -> no decryptor;
-- both -> the product's jobs in start order go to Symmetry until its share
-  of their runs reaches the share of ME 3 copies, the rest to no decryptor
-  (a job uses one decryptor type for all its runs, so whole jobs);
-- no copies -> undecided.
-Undecided jobs keep the assumed "no decryptor" and its warning. Purchases
-are no limit: stock held before the cutover is unknown.
+ESI does not link a job to the copies it made either, but item ids are
+handed out in ascending order. Per product, the delivered ambiguous jobs
+are walked from the latest delivery back, and each takes as many copies as
+it had successful runs, from the highest item id down. The majority ME of
+those copies decides: ME 3 -> Symmetry, ME 2 -> no decryptor. ME 3 counts
+only when no Parity / Optimized Attainment job made that product; copies
+of any other ME are left out (their jobs are not walked either).
+
+Undecided - and kept as the assumed "no decryptor" with its warning - are
+jobs not delivered yet (their copies do not exist), jobs without a success,
+and jobs the copies run out for. A later rebuild decides them once their
+copies are archived.
 """
 from __future__ import annotations
 
@@ -35,6 +38,8 @@ OTHER_ME3 = frozenset(
     d.type_id for name, d in DECRYPTORS.items()
     if name != SYMMETRY and d.type_id and d.me_bonus == DECRYPTORS[SYMMETRY].me_bonus
 )
+_ME_SYMMETRY = DECRYPTORS[SYMMETRY].me_bonus
+_ME_NONE = DECRYPTORS[NO_DECRYPTOR].me_bonus
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,9 @@ class AmbiguousJob:
     product_type_id: int
     runs: int
     start: datetime
+    # Delivered jobs only: their copies exist.
+    delivered_at: Optional[datetime] = None
+    successes: Optional[int] = None
 
 
 def skill_factor(enc: int, sci1: int, sci2: int) -> float:
@@ -63,35 +71,27 @@ def is_none_or_symmetry(probability: Optional[float], base: Optional[float],
     return bool(matches) and matches <= {NO_DECRYPTOR, SYMMETRY}
 
 
-def copy_evidence(copies: Sequence[tuple[int, int]], ambiguous_me3: bool) -> tuple[int, int]:
-    """(Symmetry copies, no-decryptor copies) among invented copies (ME,
-    runs) of one product. ME 3 counts only when no Parity / Optimized
-    Attainment job produced that product (`ambiguous_me3`)."""
-    me_sym = DECRYPTORS[SYMMETRY].me_bonus
-    me_none = DECRYPTORS[NO_DECRYPTOR].me_bonus
-    sym = 0 if ambiguous_me3 else sum(1 for me, _runs in copies if int(me) == me_sym)
-    none = sum(1 for me, _runs in copies if int(me) == me_none)
-    return sym, none
-
-
-def resolve(jobs: Sequence[AmbiguousJob], evidence: dict[int, tuple[int, int]]) -> dict[tuple, str]:
+def resolve(jobs: Sequence[AmbiguousJob], copies: dict[int, Sequence[tuple[int, int]]],
+            other_me3_products: frozenset = frozenset()) -> dict[tuple, str]:
     """Decision per job key: SYMMETRY or NO_DECRYPTOR; undecided jobs are
-    left out."""
+    left out. `copies`: product -> [(item_id, ME), ...] of archived copies."""
     by_product: dict[int, list[AmbiguousJob]] = {}
     for job in jobs:
-        by_product.setdefault(int(job.product_type_id), []).append(job)
+        if job.delivered_at is not None and job.successes:
+            by_product.setdefault(int(job.product_type_id), []).append(job)
     out: dict[tuple, str] = {}
     for product, group in by_product.items():
-        sym, none = evidence.get(product, (0, 0))
-        if not sym and not none:
-            continue
-        group.sort(key=lambda j: (j.start, j.key))
-        target = sum(j.runs for j in group) * sym / (sym + none)
-        assigned = 0.0
-        for job in group:
-            if sym and assigned + job.runs / 2.0 <= target:
+        valid = {_ME_NONE} if product in other_me3_products else {_ME_NONE, _ME_SYMMETRY}
+        pool = sorted(((int(i), int(me)) for i, me in copies.get(product, ()) if int(me) in valid),
+                      reverse=True)
+        pos = 0
+        for job in sorted(group, key=lambda j: (j.delivered_at, j.key), reverse=True):
+            taken = pool[pos:pos + int(job.successes)]
+            pos += int(job.successes)
+            sym = sum(1 for _i, me in taken if me == _ME_SYMMETRY)
+            none = len(taken) - sym
+            if sym > none:
                 out[job.key] = SYMMETRY
-                assigned += job.runs
-            else:
+            elif none > sym:
                 out[job.key] = NO_DECRYPTOR
     return out
