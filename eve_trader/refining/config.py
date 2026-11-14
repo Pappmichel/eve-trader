@@ -63,6 +63,13 @@ class RefiningConfig:
     # above don't apply here) --
     scrapmetal_processing_skill_level: int = 0
 
+    # -- Gas decompression (realized-profit ledger only) --
+    # Raw gas units per compressed gas unit when decompressing at a refinery.
+    # Default from production data, not a game formula: 25,000 Compressed
+    # Fullerite-C60 became exactly 23,750 Fullerite-C60 (2026-11). A wrong
+    # value shows up as inventory drift on the raw gas.
+    gas_decompression_yield: float = 0.95
+
     # -- Economics --
     # Deducted from mineral value on both the ore/ice (#91) and Reprocessing
     # (#92) tabs' quotes - a separate field from Production's

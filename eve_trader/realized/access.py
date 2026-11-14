@@ -110,15 +110,24 @@ def owner_scope_hash() -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+# Bumped whenever realized.db.reprocessable_asset_totals observes new types.
+# 2: compressed gas (2026-11-14).
+OBSERVED_TYPES_VERSION = 2
+
+
 def assets_scope_hash() -> str:
     """Fingerprint of the owners whose assets the realized tools read. Stock
     observations are stored and read per fingerprint: a total over other
-    owners is not comparable, so a share change starts a new series."""
+    owners is not comparable, so a share change starts a new series. So
+    does a change of the observed types (`OBSERVED_TYPES_VERSION`): an
+    older run never stored the new types and would read as holding none."""
     import hashlib
     import json
 
     owners = sorted([t, int(i)] for t, i in shared_owners("assets"))
     text = json.dumps(owners, separators=(",", ":"))
+    if OBSERVED_TYPES_VERSION > 1:
+        text += f"|types:{OBSERVED_TYPES_VERSION}"
     return hashlib.sha256(text.encode()).hexdigest()
 
 

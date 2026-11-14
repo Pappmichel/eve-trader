@@ -181,7 +181,13 @@ background job; the CLI rebuild calls the same `do_rebuild_realized`
 in-process. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
-for derived rows. Ledger stock (opening and inventory drift) counts items waiting in
+for derived rows. Reprocessing detection also covers compressed gas (SDE group 4168): its
+only SDE material is the raw gas, so a decompression is booked as a
+reprocessing at `RefiningConfig.gas_decompression_yield` (Ore & Minerals
+Settings, default 0.95 from production data). Raising
+`realized.access.OBSERVED_TYPES_VERSION` starts a new observation series
+whenever the observed types change.
+Ledger stock (opening and inventory drift) counts items waiting in
 Deliveries / CorpDeliveries, unlike the planners: a contract buy is booked
 on completion and the reprocessing observations count them too.
 The tenant's characters are the registry entry plus every character

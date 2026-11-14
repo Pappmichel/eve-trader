@@ -30,6 +30,9 @@ COMP = 990902
 MINERAL = 990903
 ORE_GROUP = 990950
 MINERAL_GROUP = 990951
+GAS = 990904
+COMP_GAS = 990905
+GAS_GROUP = 990952
 LOC = 60003760
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -61,13 +64,18 @@ def _seed(_apply_ledger_schema):
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         cur = conn.cursor()
         cur.executemany("INSERT INTO sde_groups VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                        [(ORE_GROUP, 25, "Test Ore"), (MINERAL_GROUP, 4, "Test Mineral")])
+                        [(ORE_GROUP, 25, "Test Ore"), (MINERAL_GROUP, 4, "Test Mineral"),
+                         (GAS_GROUP, 2, "Test Cloud"), (4168, 2, "Compressed Gas")])
         cur.executemany(
             "INSERT INTO sde_types (type_id, group_id, type_name, volume, published) "
             "VALUES (%s,%s,%s,%s,1) ON CONFLICT (type_id) DO NOTHING",
             [(ORE, ORE_GROUP, "Testite", 0.1), (COMP, ORE_GROUP, "Compressed Testite", 0.001),
-             (MINERAL, MINERAL_GROUP, "Testium", 0.01)],
+             (MINERAL, MINERAL_GROUP, "Testium", 0.01), (GAS, GAS_GROUP, "Testerene", 5.0),
+             (COMP_GAS, 4168, "Compressed Testerene", 0.5)],
         )
+        cur.execute("UPDATE sde_types SET portion_size = 1 WHERE type_id = %s", (COMP_GAS,))
+        cur.execute("INSERT INTO sde_type_materials (type_id, material_type_id, quantity) "
+                    "VALUES (%s, %s, 1) ON CONFLICT DO NOTHING", (COMP_GAS, GAS))
     yield
     pg_helpers.wipe_tables(*_TABLES)
 
@@ -128,6 +136,27 @@ def test_observation_counts_every_owner_and_writes_only_changes(tenant):
     assert runs == 3
     # Minerals are not observed; ore 1200, then 0.
     assert rows == [(ORE, 1200.0), (ORE, 0.0)]
+
+
+def test_compressed_gas_is_observed_and_decompresses_at_the_configured_yield(tenant, monkeypatch):
+    from eve_trader.refining.config import REFINING_CONFIG
+    _share(ALICE, "assets")
+    _assets(ALICE, [(1, COMP_GAS, 400, False), (2, GAS, 90, False)])
+    ingest.archive_stock_observation(now=T0)
+    assert _observation_rows()[1] == [(COMP_GAS, 400.0)]   # raw gas is not observed
+
+    monkeypatch.setattr(REFINING_CONFIG, "gas_decompression_yield", 0.95)
+    recipes = loader._reprocess_recipes({COMP_GAS, GAS})
+    assert set(recipes) == {COMP_GAS}
+    assert recipes[COMP_GAS].outputs(400) == {GAS: 380.0}
+
+
+def test_new_observed_types_start_a_new_series(tenant, monkeypatch):
+    from eve_trader.realized import access
+    _share(ALICE, "assets")
+    current = access.assets_scope_hash()
+    monkeypatch.setattr(access, "OBSERVED_TYPES_VERSION", access.OBSERVED_TYPES_VERSION + 1)
+    assert access.assets_scope_hash() != current
 
 
 def test_observation_skips_owners_not_shared_with_a_realized_tool(tenant):

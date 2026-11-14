@@ -666,6 +666,7 @@ class RefiningSettings(_Base):
     refining_tax_rate: float
     shopping_price_tolerance: float = 0.05
     credit_byproducts: bool = False
+    gas_decompression_yield: float = 0.95
 
 
 # ------------------------------------------------------------ station trading

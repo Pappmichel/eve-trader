@@ -2395,6 +2395,10 @@ def produced_stock_value() -> float:
 # ---------------------------------------------------------------- reprocessing detection
 # Ore/ice (SDE category 25, raw and compressed).
 ORE_ICE_CATEGORY_ID = 25
+# Compressed gas (Fullerite, Cytoserocin, Mykoserocin): decompressing it at
+# a refinery turns each unit into raw gas, recorded in the SDE as its only
+# reprocessing material. Observed like ore so the ledger sees it go.
+COMPRESSED_GAS_GROUP_ID = 4168
 
 
 def active_module_reprocessing_type_ids() -> list[int]:
@@ -2409,9 +2413,10 @@ def active_module_reprocessing_type_ids() -> list[int]:
 
 def reprocessable_asset_totals(character_ids: list[int], corporation_ids: list[int],
                                extra_type_ids: list[int]) -> dict[int, float]:
-    """Tenant-wide asset quantity of ore/ice and `extra_type_ids` for the
-    given owners. Every asset counts - fitted, assembled, Asset Safety and
-    deliveries too - because an item that still exists was not reprocessed."""
+    """Tenant-wide asset quantity of ore/ice, compressed gas and
+    `extra_type_ids` for the given owners. Every asset counts - fitted,
+    assembled, Asset Safety and deliveries too - because an item that still
+    exists was not reprocessed."""
     if not character_ids and not corporation_ids:
         return {}
     totals: dict[int, float] = {}
@@ -2427,9 +2432,10 @@ def reprocessable_asset_totals(character_ids: list[int], corporation_ids: list[i
                 f"SELECT a.type_id, COALESCE(SUM(a.quantity), 0) FROM {table} a "
                 "LEFT JOIN sde_types t ON t.type_id = a.type_id "
                 "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
-                f"WHERE a.{column} = ANY(?) AND (g.category_id = ? OR a.type_id = ANY(?)) "
+                f"WHERE a.{column} = ANY(?) AND (g.category_id = ? OR g.group_id = ? "
+                "OR a.type_id = ANY(?)) "
                 "GROUP BY a.type_id",
-                (ids, ORE_ICE_CATEGORY_ID, [int(t) for t in extra_type_ids]),
+                (ids, ORE_ICE_CATEGORY_ID, COMPRESSED_GAS_GROUP_ID, [int(t) for t in extra_type_ids]),
             ).fetchall()
             for type_id, qty in rows:
                 totals[int(type_id)] = totals.get(int(type_id), 0.0) + float(qty)
@@ -2471,6 +2477,18 @@ def delivery_qty_by_type(type_ids: Iterable[int], character_ids: list[int],
     return totals
 
 
+def compressed_gas_type_ids(type_ids: Iterable[int]) -> set[int]:
+    ids = sorted({int(t) for t in type_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id FROM sde_types WHERE type_id = ANY(?) AND group_id = ?",
+            (ids, COMPRESSED_GAS_GROUP_ID),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def ore_ice_type_ids(type_ids: Iterable[int]) -> set[int]:
     ids = sorted({int(t) for t in type_ids})
     if not ids:
@@ -2478,8 +2496,8 @@ def ore_ice_type_ids(type_ids: Iterable[int]) -> set[int]:
     with storage.connect() as conn:
         rows = conn.execute(
             "SELECT t.type_id FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
-            "WHERE t.type_id = ANY(?) AND g.category_id = ?",
-            (ids, ORE_ICE_CATEGORY_ID),
+            "WHERE t.type_id = ANY(?) AND (g.category_id = ? OR g.group_id = ?)",
+            (ids, ORE_ICE_CATEGORY_ID, COMPRESSED_GAS_GROUP_ID),
         ).fetchall()
     return {int(r[0]) for r in rows}
 
