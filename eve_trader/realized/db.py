@@ -2436,6 +2436,41 @@ def reprocessable_asset_totals(character_ids: list[int], corporation_ids: list[i
     return totals
 
 
+DELIVERY_FLAGS = ("Deliveries", "CorpDeliveries")
+
+
+def delivery_qty_by_type(type_ids: Iterable[int], character_ids: list[int],
+                         corporation_ids: list[int]) -> dict[int, float]:
+    """Quantity per type waiting in Deliveries / CorpDeliveries for the given
+    owners. The planners do not count it as stock (storage.NON_STOCK_
+    LOCATION_FLAGS), but the ledger does: a contract buy books its items on
+    completion, while they still sit in deliveries, and the stock
+    observations for reprocessing detection count them too."""
+    ids = sorted({int(t) for t in type_ids})
+    if not ids or (not character_ids and not corporation_ids):
+        return {}
+    totals: dict[int, float] = {}
+    queries = (
+        ("character_assets", "owner_character_id", [int(c) for c in character_ids]),
+        ("corp_assets", "owner_corporation_id", [int(c) for c in corporation_ids]),
+    )
+    flags = list(DELIVERY_FLAGS)
+    with storage.connect() as conn:
+        for table, column, owners in queries:
+            if not owners:
+                continue
+            rows = conn.execute(
+                f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
+                f"WHERE {column} = ANY(?) AND type_id = ANY(?) AND NOT assembled_or_fitted "
+                "AND (location_flag = ANY(?) OR resolved_hangar_flag = ANY(?)) "
+                "GROUP BY type_id",
+                (owners, ids, flags, flags),
+            ).fetchall()
+            for type_id, qty in rows:
+                totals[int(type_id)] = totals.get(int(type_id), 0.0) + float(qty)
+    return totals
+
+
 def ore_ice_type_ids(type_ids: Iterable[int]) -> set[int]:
     ids = sorted({int(t) for t in type_ids})
     if not ids:

@@ -570,6 +570,10 @@ class LedgerSnapshot:
     # for the ledger). Used only with `corp_issued`, never as "anyone in
     # this corp".
     tenant_corporation_ids: frozenset = frozenset()
+    # Corporations whose wallet is shared with a realized tool. A contract
+    # whose only tenant side is such a corp as acceptor is booked as a buy
+    # (D7 revision 2026-11-14); other corp-only contracts stay skipped.
+    corp_wallet_owner_ids: frozenset = frozenset()
     # None: every layer stays in the global pool and draw order is unchanged.
     station_trading_station_id: Optional[int] = None
     # (owner_type, owner_id) whose wallet is shared with Station Trading.
@@ -1088,9 +1092,17 @@ def contract_sides(contract: ItemExchangeContract, chars, corps) -> tuple:
 
 
 def classify_contract(contract: ItemExchangeContract, *, tenant_character_ids,
-                      tenant_corporation_ids, t0: datetime):
+                      tenant_corporation_ids, t0: datetime,
+                      corp_wallet_owner_ids=frozenset()):
     """(view, warning). `warning` is set for an unknown party. None view
-    means the contract is not a finished item exchange against an outsider."""
+    means the contract is not a finished item exchange against an outsider.
+
+    D7: a contract counts through the tenant character that issued or
+    accepted it. ESI names no member when a corporation accepts, so a
+    contract the corp accepted from an outsider is booked as a buy only when
+    that corp's wallet is shared with a realized tool (`corp_wallet_owner_
+    ids`), like corp market transactions. Any other contract whose only
+    tenant side is a corp is skipped."""
     if contract.contract_type != CONTRACT_ITEM_EXCHANGE:
         return None, None
     if (contract.status or "").lower() != "finished" or contract.date_completed is None:
@@ -1102,12 +1114,16 @@ def classify_contract(contract: ItemExchangeContract, *, tenant_character_ids,
     )
     if (issuer_char or issuer_corp) and (acceptor_char or acceptor_corp):
         return None, None
-    if not issuer_char and not acceptor_char:
+    corp_buy = (
+        not issuer_char and not acceptor_char and acceptor_corp
+        and int(contract.acceptor_id) in {int(c) for c in corp_wallet_owner_ids}
+    )
+    if not issuer_char and not acceptor_char and not corp_buy:
         if not issuer_corp and not acceptor_corp:
             return None, f"contract_party_unknown: {contract.ref}"
         return None, None
     items = list(contract.items)
-    if acceptor_char:
+    if acceptor_char or corp_buy:
         view = _ContractView(
             contract,
             [item for item in items if item.is_included],
@@ -1151,6 +1167,7 @@ def freight_purchases(ledger: LedgerSnapshot) -> list:
             tenant_character_ids=ledger.tenant_character_ids,
             tenant_corporation_ids=ledger.tenant_corporation_ids,
             t0=ledger.t0,
+            corp_wallet_owner_ids=ledger.corp_wallet_owner_ids,
         )
         if view is None:
             continue
@@ -1469,13 +1486,14 @@ class _Costing:
         the tenant's characters issued or accepted against an outside party.
         Internal transfers (character to character, or character to the
         tenant's own corp) are skipped. A contract whose only tenant side is a
-        corporation is skipped too (D7): a corp contract counts only through
-        the member character that issued or accepted it."""
+        corporation is skipped too (D7), except a buy the corp accepted while
+        its wallet is shared (see `classify_contract`)."""
         view, warning = classify_contract(
             contract,
             tenant_character_ids=self.ledger.tenant_character_ids,
             tenant_corporation_ids=self.ledger.tenant_corporation_ids,
             t0=self.t0,
+            corp_wallet_owner_ids=self.ledger.corp_wallet_owner_ids,
         )
         if warning:
             self.warn(warning)

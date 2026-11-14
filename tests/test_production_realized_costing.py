@@ -888,6 +888,35 @@ def test_corp_side_contracts_count_only_through_a_tenant_character():
     assert not has_warning(result, "contract_party_unknown")
 
 
+def test_corp_accepted_buy_counts_when_the_corp_wallet_is_shared():
+    """D7 revision: ESI names no member when the corp accepts, so a corp's
+    purchase from an outsider books once its wallet is shared with a
+    realized tool. A corp-to-corp move and a gift from the own corp stay
+    skipped."""
+    corp_buy = exchange(
+        20, at(2), [item_line(MINERAL, 3)], issuer=7001, acceptor=CORP, price=30.0,
+        owner=CORP, owner_type="corporation",
+    )
+    to_own_corp = exchange(
+        21, at(2), [item_line(MINERAL, 1)], issuer=CHAR, acceptor=CORP, price=0.0,
+    )
+    result = rebuild_costing(snapshot(
+        contracts=[corp_buy, to_own_corp],
+        tenant_corporation_ids={CORP}, corp_wallet_owner_ids=frozenset({CORP}),
+    ))
+    [layer] = result.all_layers
+    assert layer.source_ref == "contract:20"
+    assert layer.quantity == pytest.approx(3)
+    assert layer.unit_cost == pytest.approx(10.0)
+    assert layer.origin == c.ORIGIN_BOUGHT
+
+    other_corp = rebuild_costing(snapshot(
+        contracts=[corp_buy], tenant_corporation_ids={CORP},
+        corp_wallet_owner_ids=frozenset({CORP + 1}),
+    ))
+    assert other_corp.all_layers == []
+
+
 def test_filling_a_buy_contract_is_a_sale_at_the_reward():
     produced = job(1, BP, PRODUCT, 1, at(1, 10), at(2), 20.0, [(MINERAL, 4, "esi_blueprint")],
                    output_quantity=2)
