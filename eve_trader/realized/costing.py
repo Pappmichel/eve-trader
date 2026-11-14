@@ -36,8 +36,12 @@ a quantity-only pre-pass before costing. Per observation:
 Pending stock older than the window becomes ledger stock without a layer
 (mined, looted): a later consumption draws it as unknown origin.
 
-A reprocess event is placed at the previous observation, or this type's
-last inflow after it, so a job in between can already use the minerals. It
+A reprocess event is split over the FIFO lots it drew since the previous
+observation (the stock held then, then each inflow), in whole portions,
+each part dated when its lot arrived. Between two observations this is
+close to the previous observation; on the first observation of a series it
+places ore bought earlier when it came in, so a job in between can already
+use the minerals. It
 consumes the input FIFO, adds the window's `reprocessing_tax` journal
 entries as fees, and splits the cost over the outputs by reference value
 on that day (like D4). Output quantities come from the configured yield
@@ -2130,6 +2134,28 @@ class _Costing:
             return []
         qty: dict[int, float] = {t: max(0.0, self._raw_opening(t, flows)) for t in tracked}
         last_inflow: dict[int, datetime] = {}
+        # FIFO lots since the previous observation: [[since, qty], ...], the
+        # stock held at that observation first, then each inflow. A deficit
+        # is placed lot by lot, oldest first (catch-up placement below).
+        lots: dict[int, list[list]] = {t: ([[self.t0, qty[t]]] if qty[t] > _EPS else []) for t in tracked}
+
+        def take_lots(type_id: int, amount: float) -> list[tuple[datetime, float]]:
+            taken: list[tuple[datetime, float]] = []
+            queue = lots.setdefault(type_id, [])
+            while amount > _EPS and queue:
+                lot = queue[0]
+                part = min(amount, lot[1])
+                taken.append((lot[0], part))
+                lot[1] -= part
+                amount -= part
+                if lot[1] <= _EPS:
+                    queue.pop(0)
+            return taken
+
+        def add_lot(type_id: int, since: datetime, amount: float) -> None:
+            queue = lots.setdefault(type_id, [])
+            queue.append([since, float(amount)])
+            queue.sort(key=lambda lot: lot[0])
         pending: dict[int, list[list]] = defaultdict(list)  # type -> [[observed_at, qty], ...]
         candidates: dict[int, list[dict]] = defaultdict(list)
         ordered: list[dict] = []
@@ -2147,8 +2173,10 @@ class _Costing:
                     if delta > 0:
                         qty[type_id] += delta
                         last_inflow[type_id] = when
+                        add_lot(type_id, when, delta)
                     else:
                         qty[type_id] = max(0.0, qty[type_id] + delta)
+                        take_lots(type_id, -delta)
                 continue
             now = item.observed_at
             window_start = now - REPROCESS_MATCH_WINDOW
@@ -2158,6 +2186,7 @@ class _Costing:
                 for entry in entries:
                     if entry[0] < window_start:
                         qty[type_id] += entry[1]
+                        add_lot(type_id, entry[0], entry[1])
                     else:
                         keep.append(entry)
                 entries[:] = keep
@@ -2191,6 +2220,8 @@ class _Costing:
                 ordered.append(cand)
                 qty[raw] -= raw_units
                 qty[comp] += comp_units
+                take_lots(raw, raw_units)
+                add_lot(comp, cand["when"], comp_units)
                 deficit[raw] -= raw_units
                 surplus[comp] -= comp_units
             # 2. Surplus: undo recent reprocessing of this type, hold the rest.
@@ -2203,6 +2234,7 @@ class _Costing:
                     back = min(s, cand["qty"])
                     cand["qty"] -= back
                     qty[type_id] += back
+                    add_lot(type_id, cand["when"], back)
                     s -= back
                 if s > _EPS:
                     pending[type_id].append([now, s])
@@ -2225,13 +2257,43 @@ class _Costing:
                 if whole <= _EPS:
                     self.warn(f"reprocess_partial_portion: type {type_id} less than one portion missing, not booked")
                     continue
-                cand = {"kind": KIND_REPROCESS, "type_id": type_id, "qty": whole, "when": place(type_id),
-                        "detected_at": now}
-                candidates[type_id].append(cand)
-                ordered.append(cand)
+                for part, (when, part_qty) in enumerate(
+                        self._place_reprocess(take_lots(type_id, whole), whole, recipe, place(type_id))):
+                    cand = {"kind": KIND_REPROCESS, "type_id": type_id, "qty": part_qty, "when": when,
+                            "detected_at": now, "part": part}
+                    candidates[type_id].append(cand)
+                    ordered.append(cand)
                 qty[type_id] -= whole
             prev_obs = now
+            # Whatever is left counts as held at this observation.
+            lots = {t: ([[now, qty[t]]] if qty[t] > _EPS else []) for t in tracked}
         return self._reprocess_records(ordered, recipes, [o.observed_at for o in observations])
+
+    @staticmethod
+    def _place_reprocess(parts: list, whole: float, recipe: ReprocessRecipe,
+                         fallback: datetime) -> list[tuple[datetime, float]]:
+        """Split `whole` over the FIFO lots it drew, in whole portions, each
+        part dated when its lot arrived: ore bought before the first
+        observation of a series is reprocessed as it came in, so a job in
+        between already finds the minerals. The parts sum exactly to
+        `whole`; a rounding remainder goes to the last part, and anything
+        the lots do not cover is placed at `fallback`."""
+        portion = max(1, int(recipe.portion_size))
+        out: dict[datetime, float] = {}
+        assigned = 0.0
+        cum = 0.0
+        for when, amount in parts:
+            cum += float(amount)
+            target = min(whole, math.floor(cum / portion + _EPS) * portion)
+            chunk = target - assigned
+            if chunk > _EPS:
+                out[when] = out.get(when, 0.0) + chunk
+                assigned += chunk
+        rest = whole - assigned
+        if rest > _EPS:
+            last = max(out) if out else fallback
+            out[last] = out.get(last, 0.0) + rest
+        return sorted(out.items())
 
     def _reprocess_records(self, ordered: list[dict], recipes: dict, obs_times: list[datetime]) -> list[ReprocessRecord]:
         records: list[ReprocessRecord] = []
@@ -2254,8 +2316,11 @@ class _Costing:
             if not outputs:
                 self.warn(f"reprocess_without_output: type {type_id} {qty:g} yields nothing, not booked")
                 continue
+            ref = f"reprocess:{type_id}:{cand['detected_at'].isoformat()}"
+            if cand.get("part"):
+                ref += f":{int(cand['part'])}"
             rec = ReprocessRecord(
-                ref=f"reprocess:{type_id}:{cand['detected_at'].isoformat()}", kind=KIND_REPROCESS,
+                ref=ref, kind=KIND_REPROCESS,
                 type_id=type_id, quantity=qty, when=cand["when"], detected_at=cand["detected_at"],
                 outputs=outputs,
             )
