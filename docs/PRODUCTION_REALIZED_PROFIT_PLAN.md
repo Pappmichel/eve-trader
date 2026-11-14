@@ -1138,9 +1138,15 @@ Symmetry Decryptors (~230 M ISK) were never consumed by any job.
   job's product in `ledger_blueprints`: ME 2 only comes from no decryptor,
   ME 3 from Symmetry - counted only when no Parity / Optimized Attainment
   job (also ME 3) made that product.
-- Only ME 3 -> Symmetry; only ME 2 -> no decryptor; both -> Symmetry while
-  Symmetry bought up to the job start covers its runs (start order, one per
-  run); no copies -> undecided (stays `assumed_decryptor`).
+- Only ME 3 -> Symmetry; only ME 2 -> no decryptor; both -> the product's
+  jobs in start order go to Symmetry until its share of their runs reaches
+  the share of ME 3 copies, the rest to no decryptor; no copies ->
+  undecided (stays `assumed_decryptor`). A first version limited the mixed
+  case to Symmetry bought up to the job start; production held 1,226
+  Symmetry before T0, so that left 710 runs undecided (664 of ~1,140 found;
+  the share rule finds 1,063).
+- Skill levels not frozen with a job fall back to the installer's current
+  skills (some corp jobs had none frozen).
 - `loader._resolve_symmetry` applies it on every rebuild (not frozen: the
   copies appear only after the job). A Symmetry job gets one decryptor per
   run as input and +2 output runs per success; a decided job no longer
