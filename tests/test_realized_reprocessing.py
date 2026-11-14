@@ -151,14 +151,44 @@ def test_partial_portion_is_left_alone():
     assert remaining(result, VELD) == [(c.ORIGIN_BOUGHT, 50, 10.0)]
 
 
-def test_catch_up_on_first_observation_is_placed_at_the_last_purchase():
+def test_catch_up_on_first_observation_is_placed_lot_by_lot():
+    """Before the first observation nothing says when the ore went, so each
+    purchase is reprocessed as it arrived (FIFO, whole portions)."""
     result = rebuild_costing(ledger(
         txs=[buy(VELD, 600, 10.0, at(1)), buy(VELD, 400, 10.0, at(2))],
         observations=[obs(4, veld=0)],
     ))
-    [rec] = result.reprocess_records
-    assert rec.quantity == 1000
-    assert rec.when == at(2)
+    assert [(r.when, r.quantity) for r in result.reprocess_records] == [(at(1), 600), (at(2), 400)]
+    assert len({r.ref for r in result.reprocess_records}) == 2
+    assert cost_left(result, TRIT) + cost_left(result, PYE) == pytest.approx(10000.0)
+
+
+def test_catch_up_lets_an_earlier_job_use_the_first_lot():
+    """Production case (Fullerite-C72): ore bought early, a job uses the
+    minerals, more ore arrives, and the series starts only afterwards."""
+    build = job(c.ACTIVITY_MANUFACTURING, WIDGET_BP, WIDGET, 1, at(2, 18), at(2, 20), 100.0,
+                inputs=[(TRIT, 1200, "computed")], output_quantity=1)
+    result = rebuild_costing(ledger(
+        txs=[buy(VELD, 600, 10.0, at(1)), buy(VELD, 400, 10.0, at(3))],
+        jobs=[build],
+        observations=[obs(4, veld=0)],
+    ))
+    assert [(r.when, r.quantity) for r in result.reprocess_records] == [(at(1), 600), (at(3), 400)]
+    assert not any(w.startswith("unknown_origin: type 34") for w in result.warnings)
+    # 1200 TRIT came out of the first lot, 800 TRIT of the second are left.
+    assert sum(l.quantity_left for l in result.layers if l.type_id == TRIT) == pytest.approx(800)
+
+
+def test_catch_up_skips_ore_sold_before_it_and_rounds_to_portions():
+    result = rebuild_costing(ledger(
+        txs=[buy(VELD, 650, 10.0, at(1)), sell(VELD, 300, 15.0, at(1, 18)), buy(VELD, 450, 10.0, at(2))],
+        observations=[obs(4, veld=0)],
+    ))
+    # 350 left of the first lot + 450 = 800 -> 800 in whole portions of 100.
+    parts = [(r.when, r.quantity) for r in result.reprocess_records]
+    assert sum(q for _w, q in parts) == 800
+    assert all(q % 100 == 0 for _w, q in parts)
+    assert parts[0][0] == at(1)
 
 
 # ---------------------------------------------------------------- false positives

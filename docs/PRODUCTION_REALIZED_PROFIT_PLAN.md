@@ -1111,3 +1111,17 @@ stayed in stock forever and the raw gas came in as opening at planner value.
   deploy: the gas was decompressed before the new series began, was never
   observed and so never tracked. The same gap applied to ore reprocessed
   completely before a series started.
+
+## 15. Catch-up placement of reprocessing (added 2026-11-14)
+
+A deficit used to be placed at the previous observation or the type's last
+inflow. On the first observation of a series that is the latest purchase,
+so a job that ran earlier drew unknown origin and the reprocessed minerals
+came on top later (production: Pyerite -7.2 M, Fullerite-C72 -24.9 k).
+Now the deficit is split over the FIFO lots it draws since the previous
+observation - the stock held at that observation first, then each inflow -
+in whole portions, each part dated when its lot arrived. Outflows in
+between (sales, jobs, contracts) consume the lots FIFO first. Between two
+regular observations this changes little; the real date of a reprocessing
+before the series began stays unknown, and early placement errs less than
+late.
