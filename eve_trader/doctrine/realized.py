@@ -18,7 +18,8 @@ from ..realized import access, db, names as display_names
 from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 
 CHANNEL = "doctrine"
-_BUY_SOURCES = ("buy_home", "buy_hub")
+# A frozen buy price this many days before the sale day still counts.
+_SAVING_PRICE_MAX_AGE_DAYS = 7
 
 
 def _scope() -> dict:
@@ -186,6 +187,7 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "estimated": False,
         "price_missing": False,
         "production_saving": None,
+        "production_saving_coverage": None,
         "freight_from_couriers": 0.0,
         "freight_configured": 0.0,
         "cost_by_origin": [],
@@ -280,40 +282,53 @@ def _origin_rows(draws: list[tuple], names: dict[int, str], broker_fee: float) -
     return rows
 
 
+def _saving_prices(draws: list[tuple]) -> dict:
+    """Frozen saving buy prices (ledger_saving_buy_prices) for every produced
+    type in `draws`, read once per report."""
+    type_ids = sorted({int(row[3]) for row in draws if str(row[6]) == "produced"})
+    return db.list_saving_buy_prices(type_ids)
+
+
 def _buy_price(prices: dict, type_id: int, day) -> Optional[float]:
-    best = None
-    best_day = None
-    for (tid, price_date), (value, source) in prices.items():
-        if int(tid) != int(type_id) or source not in _BUY_SOURCES or value is None:
-            continue
-        priced = _as_date(price_date)
-        if priced <= day and (best_day is None or priced > best_day):
-            best_day = priced
-            best = float(value)
-    return best
+    """The sale day's frozen buy price, else the newest earlier one within
+    _SAVING_PRICE_MAX_AGE_DAYS."""
+    for offset in range(_SAVING_PRICE_MAX_AGE_DAYS + 1):
+        hit = prices.get((int(type_id), day - timedelta(days=offset)))
+        if hit is not None and hit[0] is not None:
+            return float(hit[0])
+    return None
 
 
-def _production_saving(draws: list[tuple], sale_date: datetime) -> Optional[float]:
-    """Planner buy price minus production cost, for the produced lines (U9).
+def _production_saving(draws: list[tuple], sale_date, prices: dict) -> tuple[Optional[float], float, float]:
+    """(saving, priced produced cost, produced cost) for one sale (U9).
 
-    None when any produced line has no frozen buy price. A build-only
-    valuation is not a buy price, so it does not count.
+    saving is the buy price minus production cost over the produced lines
+    that have a frozen buy price; None when none has one (or nothing in the
+    sale was produced). A line without a price is left out, and the caller
+    shows the priced share of the produced cost next to the figure.
     """
     produced = [row for row in draws if str(row[6]) == "produced"]
     if not produced:
-        return None
-    type_ids = sorted({int(row[3]) for row in produced})
-    prices = db.list_cached_valuation_prices(type_ids)
-    day = _as_utc(sale_date).date() if isinstance(sale_date, datetime) else sale_date
-    buy = 0.0
-    cost = 0.0
+        return None, 0.0, 0.0
+    day = _as_utc(sale_date).date() if isinstance(sale_date, datetime) else _as_date(sale_date)
+    saving = 0.0
+    priced_cost = 0.0
+    produced_cost = 0.0
+    priced_any = False
     for row in produced:
+        cost = _draw_cost(row)
+        produced_cost += cost
         price = _buy_price(prices, int(row[3]), day)
         if price is None:
-            return None
-        buy += price * _num(row[5])
-        cost += _draw_cost(row)
-    return buy - cost
+            continue
+        priced_any = True
+        priced_cost += cost
+        saving += price * _num(row[5]) - cost
+    return (saving if priced_any else None), priced_cost, produced_cost
+
+
+def _saving_coverage(priced_cost: float, produced_cost: float) -> Optional[float]:
+    return (priced_cost / produced_cost) if produced_cost > 0 else None
 
 
 def _attach_names(nodes: list[dict], names: dict[int, str]) -> None:
@@ -412,9 +427,14 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
     profit = _num(totals[2])
     draws = [draw for rows in grouped.values() for draw in rows]
     broker = sum(_num(row[10]) for row in results)
+    prices = _saving_prices(draws)
     saving_parts = []
+    priced_total = 0.0
+    produced_total = 0.0
     for row in results:
-        saving = _production_saving(grouped.get(str(row[0]), []), row[7])
+        saving, priced_cost, produced_cost = _production_saving(grouped.get(str(row[0]), []), row[7], prices)
+        priced_total += priced_cost
+        produced_total += produced_cost
         if saving is not None:
             saving_parts.append(saving)
     return {
@@ -429,6 +449,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "estimated": estimated,
         "price_missing": price_missing,
         "production_saving": sum(saving_parts) if saving_parts else None,
+        "production_saving_coverage": _saving_coverage(priced_total, produced_total),
         "freight_from_couriers": freight_from_couriers,
         "freight_configured": freight_configured,
         "cost_by_origin": _origin_rows(draws, {}, broker),
@@ -494,7 +515,8 @@ def fittings(*, start: Optional[datetime], end: datetime, since_t0: bool, days: 
     return {"period": period, "needs_rebuild": False, "rows": rows}
 
 
-def _contract_row(row, draws: list[tuple], history: dict, fitting_names: dict, owner_names: dict) -> dict:
+def _contract_row(row, draws: list[tuple], history: dict, fitting_names: dict, owner_names: dict,
+                  prices: dict) -> dict:
     contract_id = _contract_id(str(row[0]))
     hist = history.get(contract_id) if contract_id is not None else None
     fitting_id = None if row[24] is None else str(row[24])
@@ -510,6 +532,7 @@ def _contract_row(row, draws: list[tuple], history: dict, fitting_names: dict, o
     components = _components_from(row, 15)
     price_missing = bool(row[12])
     cov, estimated = _coverage(components, price_missing)
+    saving, priced_cost, produced_cost = _production_saving(draws, row[7], prices)
     return {
         "sale_ref": str(row[0]),
         "contract_id": contract_id,
@@ -527,7 +550,8 @@ def _contract_row(row, draws: list[tuple], history: dict, fitting_names: dict, o
         "margin": _margin(_num(row[5]), _num(row[3])),
         "coverage": cov,
         "warnings": _warnings(row[14]),
-        "production_saving": _production_saving(draws, row[7]),
+        "production_saving": saving,
+        "production_saving_coverage": _saving_coverage(priced_cost, produced_cost),
         "before_archive": False,
         "flags": _flags(estimated=estimated, price_missing=price_missing, coverage=cov),
     }
@@ -551,8 +575,9 @@ def contracts(*, start: Optional[datetime], end: datetime, since_t0: bool, days:
         if hist[7] is not None:
             owner_ids.add(int(hist[7]))
     owner_names = display_names.owner_names(owner_ids)
+    prices = _saving_prices([draw for rows in grouped.values() for draw in rows])
     rows = [
-        _contract_row(row, grouped.get(str(row[0]), []), history, fitting_names, owner_names)
+        _contract_row(row, grouped.get(str(row[0]), []), history, fitting_names, owner_names, prices)
         for row in results
     ]
     before = _before_archive(history, known, window[0], window[1], owner_names)
@@ -606,6 +631,7 @@ def _before_archive(history: dict, known: set[int], start: datetime, end: dateti
             "coverage": None,
             "warnings": ["before_archive"],
             "production_saving": None,
+            "production_saving_coverage": None,
             "before_archive": True,
             "flags": _flags(estimated=False, price_missing=False, coverage=None),
         })
@@ -640,7 +666,8 @@ def contract(sale_ref: str) -> Optional[dict]:
     hist = history.get(contract_id) if contract_id is not None else None
     if hist is not None and hist[7] is not None:
         owner_ids.add(int(hist[7]))
-    detail = _contract_row(match, draws, history, fitting_names, display_names.owner_names(owner_ids))
+    detail = _contract_row(match, draws, history, fitting_names, display_names.owner_names(owner_ids),
+                           _saving_prices(draws))
     detail["lines"] = _lines(draws, names)
     detail["cost_by_origin"] = _origin_rows(draws, names, _num(match[10]))
     return detail

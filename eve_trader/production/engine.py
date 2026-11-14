@@ -6939,3 +6939,27 @@ def planner_unit_values(type_ids: Iterable[int],
             source = "build"
         out[type_id] = (float(value), source)
     return out
+
+
+@storage.with_batch_session()
+def planner_buy_prices(type_ids: Iterable[int],
+                       cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, tuple[float, str]]:
+    """The buy-list purchase price right now (pricing.buy_price: home market
+    or hub plus freight, both with the buy broker fee), whether or not
+    building would be cheaper. {type_id: (value, "buy_home" | "buy_hub")};
+    types with no sell order anywhere are left out. Doctrine's production
+    saving freezes this (unified plan U9)."""
+    ids = sorted({int(t) for t in type_ids})
+    if not ids:
+        return {}
+    home = pricing.home_prices(cfg, ids)
+    jita = pricing.jita_prices(ids, cfg.hub_region_id)
+    out: dict[int, tuple[float, str]] = {}
+    for type_id in ids:
+        volume = _haul_volume(type_id, cfg)
+        buy = pricing.buy_price(type_id, home, jita, volume, cfg)
+        if buy is None or buy <= 0:
+            continue
+        where = pricing.buy_source(type_id, home, jita, volume, cfg)
+        out[type_id] = (float(buy), "buy_home" if where == "C-J" else "buy_hub")
+    return out

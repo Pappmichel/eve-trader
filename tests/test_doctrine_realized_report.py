@@ -12,7 +12,7 @@ from eve_trader.doctrine import realized as doctrine_realized
 from eve_trader.doctrine.config import DoctrineConfig, _doctrine_config_var
 from eve_trader.production import actions as production_actions
 from eve_trader.realized import db as ledger_db
-from eve_trader.realized import loader
+from eve_trader.realized import loader, saving_prices
 from eve_trader.trade_realized import actions as trade_actions
 
 from . import pg_helpers
@@ -69,7 +69,7 @@ def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
         "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs",
-        "ledger_valuation_prices", "ledger_blueprints", "ledger_market_orders",
+        "ledger_valuation_prices", "ledger_saving_buy_prices", "ledger_blueprints", "ledger_market_orders",
         "ledger_contracts", "ledger_contract_items", "ledger_archive_gaps",
         "ledger_sync_state", "ledger_reference_prices", "ledger_manual_entries",
         "prod_cost_layers", "prod_realized_results", "prod_cost_draws",
@@ -84,6 +84,7 @@ def _wipe(_apply_production_ledger_schema):
 @pytest.fixture(autouse=True)
 def _no_remote(monkeypatch):
     monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {})
+    monkeypatch.setattr(saving_prices, "_live_buy_prices", lambda type_ids: {})
     from eve_trader.realized import names
     monkeypatch.setattr(names, "_esi_names", lambda ids: {})
 
@@ -148,7 +149,9 @@ def _seed_doctrine_sale():
         ("character", ALICE, 70, 2, MODULE, 1, True, False),
         ("character", DAVE, 71, 1, OTHER, 1, True, False),
     ])
-    ledger_db.upsert_valuation_prices([(HULL, T_SALE.date(), 80.0, "buy_hub")])
+    # A build valuation must not feed the saving: only the frozen buy price does.
+    ledger_db.upsert_valuation_prices([(HULL, T_SALE.date(), 10.0, "build")])
+    ledger_db.upsert_saving_buy_prices([(HULL, T_SALE.date(), 80.0, "buy_hub")])
     storage.upsert_doctrine_contract_history([(
         70, "doctrine:1", FIT, "Stabber Fleet", HULL, "Stabber", 100.0,
         999, "Buyer", T0, T_SALE,
@@ -289,3 +292,89 @@ def test_contract_units_sold_counts_every_channel_of_shared_owners(tenant):
     assert got == {HULL: 3.0}
     assert ledger_db.contract_units_sold(T_JOB, T_SALE.replace(hour=13), contract_owners=[]) == {}
     assert ledger_db.contract_units_sold(T_JOB, T_SALE.replace(hour=13), contract_owners=None) == {HULL: 8.0}
+
+
+def test_rebuild_freezes_live_buy_price_for_a_recent_doctrine_sale(tenant, _doctrine_structure, monkeypatch):
+    _seed_doctrine_sale()
+    with storage.connect() as conn:
+        conn.execute("DELETE FROM ledger_saving_buy_prices")
+    with patch.object(saving_prices, "freeze_missing", return_value=0):
+        _rebuild()
+    assert doctrine_realized.do_get_doctrine_realized_summary(days=30)["production_saving"] is None
+
+    asked: list[set] = []
+
+    def live(type_ids):
+        asked.append(set(type_ids))
+        return {HULL: (90.0, "buy_home")}
+
+    monkeypatch.setattr(saving_prices, "_live_buy_prices", live)
+    assert saving_prices.freeze_missing(today=T_SALE.date()) == 1
+    assert asked == [{HULL}]
+    assert ledger_db.list_saving_buy_prices([HULL]) == {(HULL, T_SALE.date()): (90.0, "buy_home")}
+    # Frozen: a second pass finds nothing to price.
+    assert saving_prices.freeze_missing(today=T_SALE.date()) == 0
+
+    summary = doctrine_realized.do_get_doctrine_realized_summary(days=30)
+    assert summary["production_saving"] == pytest.approx(75.0)
+    assert summary["production_saving_coverage"] == pytest.approx(1.0)
+    row = doctrine_realized.do_get_doctrine_realized_contracts(days=30)["rows"][0]
+    assert row["production_saving"] == pytest.approx(75.0)
+
+
+def test_backfill_prices_an_old_sale_from_forge_history(tenant, _doctrine_structure, monkeypatch):
+    from eve_trader.config import TRADING_CONFIG
+
+    _seed_doctrine_sale()
+    with storage.connect() as conn:
+        conn.execute("DELETE FROM ledger_saving_buy_prices")
+    with patch.object(saving_prices, "freeze_missing", return_value=0):
+        _rebuild()
+
+    def live(_type_ids):
+        raise AssertionError("an old sale day must not use live quotes")
+
+    monkeypatch.setattr(saving_prices, "_live_buy_prices", live)
+    monkeypatch.setattr(saving_prices, "_haul_volume", lambda type_id: 2.0)
+    day = T_SALE.date()
+    with patch.object(loader, "_fetch_reference_prices", return_value={(HULL, day): 50.0}):
+        assert saving_prices.freeze_missing(today=day + timedelta(days=10)) == 1
+    expected = 50.0 * (1 + TRADING_CONFIG.jita_buy_broker_fee) + 2.0 * saving_prices.PRODUCTION_CONFIG.haul_cost_per_m3
+    value, source = ledger_db.list_saving_buy_prices([HULL])[(HULL, day)]
+    assert source == saving_prices.SOURCE_HISTORY
+    assert value == pytest.approx(expected)
+    summary = doctrine_realized.do_get_doctrine_realized_summary(days=30)
+    assert summary["production_saving"] == pytest.approx(expected - 15.0)
+
+
+def test_history_miss_is_retried_while_recent_and_frozen_when_old(tenant, _doctrine_structure, monkeypatch):
+    _seed_doctrine_sale()
+    with storage.connect() as conn:
+        conn.execute("DELETE FROM ledger_saving_buy_prices")
+    with patch.object(saving_prices, "freeze_missing", return_value=0):
+        _rebuild()
+    day = T_SALE.date()
+    with patch.object(loader, "_fetch_reference_prices", return_value={}):
+        assert saving_prices.freeze_missing(today=day + timedelta(days=3)) == 0
+        assert saving_prices.freeze_missing(today=day + timedelta(days=8)) == 1
+    assert ledger_db.list_saving_buy_prices([HULL]) == {(HULL, day): (None, "unavailable")}
+
+
+def test_saving_leaves_out_unpriced_lines_and_reports_coverage():
+    when = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+
+    def draw(type_id, qty, cost, origin="produced"):
+        return ("contract:1", 0, 0, type_id, "item", qty, origin, None,
+                cost, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    draws = [draw(1, 2, 30.0), draw(2, 1, 10.0), draw(3, 1, 99.0, origin="bought")]
+    prices = {(1, when.date() - timedelta(days=2)): (25.0, "buy_hub"),
+              (2, when.date()): (None, "unavailable")}
+    saving, priced, produced = doctrine_realized._production_saving(draws, when, prices)
+    assert saving == pytest.approx(2 * 25.0 - 30.0)
+    assert priced == pytest.approx(30.0)
+    assert produced == pytest.approx(40.0)
+    assert doctrine_realized._saving_coverage(priced, produced) == pytest.approx(0.75)
+    # Too old a price does not count.
+    stale = {(1, when.date() - timedelta(days=8)): (25.0, "buy_hub")}
+    assert doctrine_realized._production_saving(draws, when, stale)[0] is None

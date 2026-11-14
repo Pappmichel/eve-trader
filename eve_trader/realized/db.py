@@ -1197,6 +1197,53 @@ def upsert_valuation_prices(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def missing_saving_buy_price_pairs() -> set[tuple[int, object]]:
+    """(type_id, UTC sale day) of produced items sold through a doctrine
+    contract that have no frozen saving buy price yet (U9)."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT d.type_id, (r.sale_date AT TIME ZONE 'UTC')::date "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "LEFT JOIN ledger_saving_buy_prices p ON p.type_id = d.type_id "
+            "AND p.price_date = (r.sale_date AT TIME ZONE 'UTC')::date "
+            "WHERE r.channel = 'doctrine' AND d.origin = 'produced' AND d.unit = 'item' "
+            "AND p.type_id IS NULL",
+        ).fetchall()
+    return {(int(r[0]), r[1]) for r in rows}
+
+
+def list_saving_buy_prices(
+    type_ids: list[int],
+) -> dict[tuple[int, object], tuple[Optional[float], str]]:
+    """{(type_id, price_date): (unit_value, source)}; unit_value is None for
+    source "unavailable"."""
+    if not type_ids:
+        return {}
+    unique = list(dict.fromkeys(int(t) for t in type_ids))
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, price_date, unit_value, source "
+            "FROM ledger_saving_buy_prices WHERE type_id = ANY(?)",
+            (unique,),
+        ).fetchall()
+    return {(int(r[0]), r[1]): (None if r[2] is None else float(r[2]), str(r[3])) for r in rows}
+
+
+def upsert_saving_buy_prices(rows: list[tuple]) -> int:
+    """`rows`: (type_id, price_date, unit_value, source). Insert-only freeze."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "INSERT INTO ledger_saving_buy_prices (type_id, price_date, unit_value, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, type_id, price_date) DO NOTHING",
+            rows,
+        )
+    return len(rows)
+
+
 def price_sources_on(type_ids: list[int], day) -> dict[int, str]:
     """How each type was valued on `day`: the valuation source (buy_home /
     buy_hub / build), else "forge_average" when only The Forge daily
