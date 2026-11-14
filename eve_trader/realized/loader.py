@@ -768,9 +768,11 @@ def _stock_observations(t0: datetime) -> tuple[list[StockObservation], set[int]]
 
 
 def _reprocess_recipes(type_ids: set[int]) -> dict[int, ReprocessRecipe]:
-    """Ore/ice at the Ore & Minerals yield (that tool's Settings), Module
-    Reprocessing shortlist types at that tool's scrapmetal yield. A type
-    without SDE portion size or materials has no recipe (never detected)."""
+    """Ore/ice at the Ore & Minerals yield (that tool's Settings), compressed
+    gas at `gas_decompression_yield` (its SDE material is the raw gas, so a
+    decompression is booked like a reprocessing), Module Reprocessing
+    shortlist types at that tool's scrapmetal yield. A type without SDE
+    portion size or materials has no recipe (never detected)."""
     if not type_ids:
         return {}
     from ..module_reprocessing.config import MODULE_REPROCESSING_CONFIG
@@ -780,11 +782,14 @@ def _reprocess_recipes(type_ids: set[int]) -> dict[int, ReprocessRecipe]:
     from ..refining.engine import ore_ice_yield
 
     families = ore_ice_families_for_types(sorted(type_ids))
+    gas = db.compressed_gas_type_ids(type_ids)
     modules = set(db.active_module_reprocessing_type_ids())
     recipes: dict[int, ReprocessRecipe] = {}
     for type_id in sorted(type_ids):
         if type_id in families:
             yield_pct = ore_ice_yield(REFINING_CONFIG, families[type_id][0])
+        elif type_id in gas:
+            yield_pct = float(REFINING_CONFIG.gas_decompression_yield)
         elif type_id in modules:
             yield_pct = scrapmetal_yield(MODULE_REPROCESSING_CONFIG)
         else:

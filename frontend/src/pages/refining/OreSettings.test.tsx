@@ -18,6 +18,7 @@ const SETTINGS = {
   structure_type: 'Tatara', rig_tier: 'T2', security_status: 0,
   implant: 'none', reprocessing_skill_level: 5, reprocessing_efficiency_skill_level: 5,
   scrapmetal_processing_skill_level: 5, ore_family_skill_levels: {}, refining_tax_rate: 0.05,
+  gas_decompression_yield: 0.95,
 }
 const OPTIONS = { structure_types: ['Tatara'], rig_tiers: ['T2'], implants: ['none'] }
 

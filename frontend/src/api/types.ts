@@ -1942,6 +1942,7 @@ export interface RefiningSettings {
   refining_tax_rate: number
   shopping_price_tolerance: number
   credit_byproducts: boolean
+  gas_decompression_yield: number
 }
 
 export interface ReprocessingQuoteRow {

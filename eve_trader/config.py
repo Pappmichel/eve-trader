@@ -271,6 +271,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "reprocessing_efficiency_skill_level": (0, 5),
     "scrapmetal_processing_skill_level": (0, 5),
     "refining_tax_rate": (0, 1),
+    "gas_decompression_yield": (0, 1),
     "shopping_price_tolerance": (0, 1),  # RefiningConfig and ModuleReprocessingConfig
     # -- Station Trading tool (see station_trading/config.py's StationTradingConfig) --
     "station_id": (1, None),
