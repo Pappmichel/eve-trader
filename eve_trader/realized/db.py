@@ -651,6 +651,43 @@ def industry_job_cost_rows(
         ).fetchall()
 
 
+def invention_skill_levels_for_owners(owners: list[tuple[str, int]]) -> dict[tuple, tuple[int, int, int]]:
+    """(owner_type, owner_id, job_id) -> (encryption, science 1, science 2)
+    levels frozen with an invention job's inputs, where they were known."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, job_id, max(encryption_skill_level), "
+            "max(science_skill_1_level), max(science_skill_2_level) FROM ledger_job_inputs "
+            f"WHERE {where} AND encryption_skill_level IS NOT NULL "
+            "AND science_skill_1_level IS NOT NULL AND science_skill_2_level IS NOT NULL "
+            "GROUP BY owner_type, owner_id, job_id",
+            tuple(params),
+        ).fetchall()
+    return {(r[0], int(r[1]), int(r[2])): (int(r[3]), int(r[4]), int(r[5])) for r in rows}
+
+
+def blueprint_copies_by_type(owners: list[tuple[str, int]], type_ids: Iterable[int]) -> dict[int, list[tuple[int, int]]]:
+    """type_id -> [(ME, runs), ...] of every archived blueprint copy (runs > 0)
+    of the owners."""
+    ids = sorted({int(t) for t in type_ids})
+    if not ids or not owners:
+        return {}
+    where, params = _owner_in_clause(owners)
+    out: dict[int, list[tuple[int, int]]] = {}
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, material_efficiency, runs FROM ledger_blueprints "
+            f"WHERE {where} AND runs > 0 AND type_id = ANY(?)",
+            (*params, ids),
+        ).fetchall()
+    for type_id, me, runs in rows:
+        if me is None:
+            continue
+        out.setdefault(int(type_id), []).append((int(me), int(runs)))
+    return out
+
+
 def list_job_inputs_for_owners(
     owners: list[tuple[str, int]],
 ) -> list[tuple]:
