@@ -181,7 +181,10 @@ background job; the CLI rebuild calls the same `do_rebuild_realized`
 in-process. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
-for derived rows. The tenant's characters are the registry entry plus every character
+for derived rows. Ledger stock (opening and inventory drift) counts items waiting in
+Deliveries / CorpDeliveries, unlike the planners: a contract buy is booked
+on completion and the reprocessing observations count them too.
+The tenant's characters are the registry entry plus every character
 holding a token in the tenant (the registry alone has one character per
 tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
@@ -212,7 +215,9 @@ Finished item-exchange contracts (`status = 'finished'`, `date_completed`
 set) enter costing through `LedgerSnapshot.contracts`. A contract whose
 issuer and acceptor are both tenant owners is ignored. The tenant as
 acceptor books items the issuer provides (`is_included`) as `bought` layers
-dated `date_completed`, origin stays `bought` and `source` is `contract`;
+dated `date_completed` (a corporation counts as acceptor only when its
+wallet is shared with a realized tool - ESI names no member for a corp
+acceptance, D7 revision 2026-11-14), origin stays `bought` and `source` is `contract`;
 the price is split by reference value at that date (D4) and the shares sum
 exactly to the price. The tenant as issuer books Production-type items it
 gives as sales under the same FIFO order as market sales, with no sales tax

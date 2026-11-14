@@ -1067,3 +1067,25 @@ module docstring ("Reprocessing") and CLAUDE.md "Production realized profit".
   also disappear through losses and gifts, which ESI cannot tell apart.
 - Report: `GET /api/production/realized/reprocessing`, the Inventory tab's
   Reprocessing section, and a reprocess node in the sale cost chain.
+
+## 13. Corp-accepted contracts and deliveries (added 2026-11-14)
+
+Found on production: the corp bought ~8.3 B ISK of compressed ore through
+item-exchange contracts it accepted itself, and the reprocessing of the
+ore a character had bought was hidden behind those unbooked units.
+
+- **D7 revision.** ESI names no member when a corporation accepts a
+  contract (`acceptor_id` is the corp). Such a contract from an outside
+  issuer is booked as a buy when the corp's wallet is shared with a
+  realized tool (`LedgerSnapshot.corp_wallet_owner_ids`), the same rule
+  corp market transactions already follow. Sharing the corp wallet is the
+  tenant's statement that the corp's spending is its own, so a corp shared
+  by several tenants books only where its wallet is shared. Every other
+  corp-only contract stays skipped; character-to-own-corp stays internal.
+- **Deliveries.** Ledger stock (opening, inventory drift) counts Deliveries /
+  CorpDeliveries (`realized.db.delivery_qty_by_type`). The planners still
+  skip them (`storage.NON_STOCK_LOCATION_FLAGS`). Before, the drift showed
+  every contract buy still waiting in deliveries as missing, while the
+  stock observations counted it.
+- After deploying this, rebuild once with `reset_opening`: the stock
+  definition changed for every type.
