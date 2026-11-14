@@ -350,6 +350,27 @@ def test_opening_stock_adds_listed_and_contracted_items_from_shared_owners(tenan
     assert seen == {"owner_character_ids": [ALICE], "owner_corporation_ids": []}
 
 
+def test_opening_stock_counts_items_waiting_in_deliveries(tenant):
+    """The planners skip Deliveries, the ledger does not: a contract buy is
+    booked on completion and the reprocessing observations count them."""
+    _share(ALICE, "assets")
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO character_assets (item_id, type_id, location_id, location_flag, quantity, "
+            "owner_name, resolved_location_id, resolved_hangar_flag, owner_character_id) VALUES "
+            "(91, ?, ?, 'Hangar', 5, 'a', ?, 'Hangar', ?), "
+            "(92, ?, ?, 'Deliveries', 7, 'a', ?, 'Deliveries', ?), "
+            "(93, ?, ?, 'Deliveries', 50, 'b', ?, 'Deliveries', 999)",
+            (TYPE_A, LOC, LOC, ALICE, TYPE_A, LOC, LOC, ALICE, TYPE_A, LOC, LOC),
+        )
+    try:
+        stock = loader._opening_stock({TYPE_A})
+    finally:
+        with storage.connect() as conn:
+            conn.execute("DELETE FROM character_assets WHERE item_id IN (91, 92, 93)")
+    assert stock == {TYPE_A: 12.0}   # 5 in the hangar + 7 in deliveries, not owner 999's
+
+
 def test_jobs_know_whether_they_ran_on_a_bpc(tenant, monkeypatch):
     _share(ALICE, "wallet")
     _share(ALICE, "industry_jobs")

@@ -131,6 +131,15 @@ def _tenant_character_ids() -> frozenset[int]:
     return frozenset(ids)
 
 
+def _corp_wallet_owner_ids() -> frozenset[int]:
+    """Corporations whose wallet is shared with a realized-profit tool. A
+    contract the corp itself accepted is booked only for these (D7
+    revision): sharing the corp wallet is the tenant's statement that the
+    corp's spending is its own, the same rule corp market transactions
+    already follow."""
+    return frozenset(int(oid) for ot, oid in access.shared_owners("wallet") if ot == "corporation")
+
+
 def _tenant_corporation_ids() -> frozenset[int]:
     """Corps this tenant owns: each character's registered corporation, plus
     corporation owners shared for the ledger kinds. A personal contract's
@@ -355,6 +364,7 @@ def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
         contracts=_load_item_exchanges_readonly(),
         couriers=_load_couriers(),
         tenant_corporation_ids=_tenant_corporation_ids(),
+        corp_wallet_owner_ids=_corp_wallet_owner_ids(),
     )
     return snapshot, cutover
 
@@ -699,7 +709,9 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
     shared with Production (assembled ships/fitting excluded by the stock
     reader, blueprints excluded), plus quantities still listed in open sell
     orders and outstanding contracts - they left the hangar, not the
-    inventory."""
+    inventory. Items waiting in Deliveries / CorpDeliveries count too: a
+    contract buy is booked on completion, and the reprocessing stock
+    observations count them, so leaving them out reads as drift."""
     if not type_ids:
         return {}
     blueprints = _blueprint_type_ids(type_ids)
@@ -713,6 +725,13 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
         owner_corporation_ids=[oid for ot, oid in asset_owners if ot == "corporation"],
     )
     totals = defaultdict(float, {int(k): float(v) for k, v in stock.items()})
+    deliveries = db.delivery_qty_by_type(
+        item_ids,
+        [oid for ot, oid in asset_owners if ot == "character"],
+        [oid for ot, oid in asset_owners if ot == "corporation"],
+    )
+    for tid, qty in deliveries.items():
+        totals[int(tid)] += float(qty)
     order_owners = access.shared_owners("market_orders")
     listed = db.listed_sell_qty_by_type(
         [oid for ot, oid in order_owners if ot == "character"],
@@ -1019,6 +1038,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             contracts=contracts,
             couriers=_load_couriers(),
             tenant_corporation_ids=_tenant_corporation_ids(),
+            corp_wallet_owner_ids=_corp_wallet_owner_ids(),
             # No station pool until someone shares a wallet with Station Trading,
             # so a tenant without it keeps one global pool (ST1).
             station_trading_station_id=STATION_TRADING_CONFIG.station_id if station_owners else None,
