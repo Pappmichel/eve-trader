@@ -22,8 +22,9 @@ def at(day: int) -> datetime:
     return T0 + timedelta(days=day)
 
 
-def amb(key: int, runs: int, day: int, product: int = PRODUCT) -> d.AmbiguousJob:
-    return d.AmbiguousJob(("corporation", 1, key), product, runs, at(day))
+def amb(key: int, day: int, successes: int, *, product: int = PRODUCT, delivered: bool = True) -> d.AmbiguousJob:
+    return d.AmbiguousJob(("corporation", 1, key), product, 10, at(day),
+                          delivered_at=at(day + 1) if delivered else None, successes=successes)
 
 
 # ---------------------------------------------------------------- pure rules
@@ -35,31 +36,40 @@ def test_probability_matches_only_none_or_symmetry():
     assert not d.is_none_or_symmetry(0.4, 0.3, None)                     # skills unknown
 
 
-def test_copy_evidence_counts_me3_only_without_another_me3_decryptor():
-    assert d.copy_evidence([(3, 12), (3, 5)], ambiguous_me3=False) == (2, 0)
-    assert d.copy_evidence([(3, 12)], ambiguous_me3=True) == (0, 0)
-    assert d.copy_evidence([(2, 10), (3, 12), (3, 12)], ambiguous_me3=False) == (2, 1)
-    assert d.copy_evidence([(0, 10), (4, 11)], ambiguous_me3=False) == (0, 0)
+def test_latest_delivery_takes_the_highest_item_ids():
+    # Older ME 2 copies (ids 1-4), then a Symmetry batch (ids 10-12).
+    copies = {PRODUCT: [(1, 2), (2, 2), (3, 2), (4, 2), (10, 3), (11, 3), (12, 3)]}
+    jobs = [amb(1, 1, 2), amb(2, 3, 2), amb(3, 6, 3)]
+    out = d.resolve(jobs, copies)
+    assert out[("corporation", 1, 3)] == d.SYMMETRY       # ids 12, 11, 10
+    assert out[("corporation", 1, 2)] == d.NO_DECRYPTOR   # ids 4, 3
+    assert out[("corporation", 1, 1)] == d.NO_DECRYPTOR   # ids 2, 1
 
 
-def test_resolve_by_evidence_and_by_copy_share_when_mixed():
-    # PRODUCT: 2 of 3 copies ME 3 -> 2/3 of 300 runs = 200 to Symmetry.
-    evidence = {PRODUCT: (2, 1), OTHER: (5, 0), 6000: (0, 4)}
-    jobs = [amb(1, 100, 2), amb(2, 100, 5), amb(6, 100, 7),
-            amb(3, 50, 1, OTHER), amb(4, 10, 3, 6000), amb(5, 10, 4, 7000)]
-    out = d.resolve(jobs, evidence)
-    assert [out[("corporation", 1, k)] for k in (1, 2, 6)] == [d.SYMMETRY, d.SYMMETRY, d.NO_DECRYPTOR]
-    assert out[("corporation", 1, 3)] == d.SYMMETRY       # only ME 3 copies
-    assert out[("corporation", 1, 4)] == d.NO_DECRYPTOR   # only ME 2 copies
-    assert ("corporation", 1, 5) not in out                # no copies at all
+def test_running_failed_and_uncovered_jobs_stay_undecided():
+    copies = {PRODUCT: [(1, 2), (2, 2)], OTHER: [(5, 3)]}
+    jobs = [amb(1, 1, 2), amb(2, 5, 0), amb(3, 8, 4, delivered=False),
+            amb(4, 0, 3, product=OTHER), amb(5, 9, 1, product=7000)]
+    out = d.resolve(jobs, copies)
+    assert out == {("corporation", 1, 1): d.NO_DECRYPTOR, ("corporation", 1, 4): d.SYMMETRY}
+
+
+def test_me3_copies_do_not_count_when_parity_made_the_product():
+    copies = {PRODUCT: [(1, 3), (2, 3)]}
+    assert d.resolve([amb(1, 1, 2)], copies, frozenset({PRODUCT})) == {}
+    # Copies of other decryptors (ME 4) are skipped, not taken.
+    copies = {PRODUCT: [(1, 3), (2, 3), (9, 4)]}
+    assert d.resolve([amb(1, 1, 2)], copies) == {("corporation", 1, 1): d.SYMMETRY}
 
 
 # ---------------------------------------------------------------- loader step
-def _job(job_id: int, runs: int, day: int, *, product=PRODUCT, inputs=None, probability=0.4) -> IndustryJob:
+def _job(job_id: int, runs: int, day: int, *, product=PRODUCT, inputs=None, probability=0.4,
+         status="delivered", successes=None) -> IndustryJob:
     return IndustryJob(
         owner_type="corporation", owner_id=1, job_id=job_id, activity_id=8,
         blueprint_type_id=T1_BP, product_type_id=product, runs=runs, start_date=at(day),
-        status="delivered", probability=probability,
+        end_date=at(day + 1), status=status, probability=probability,
+        successful_runs=runs if successes is None else successes,
         inputs=tuple(inputs or [JobInput(20410, 2.0 * runs, "assumed_decryptor")]),
         output_runs_per_success=10.0,
     )
@@ -73,20 +83,22 @@ def patched(monkeypatch):
                         lambda owners: {("corporation", 1, j): (4, 4, 4) for j in range(1, 10)})
     monkeypatch.setattr(loader.storage, "get_invention_recipe",
                         lambda bp, product: {"base_probability": 0.4 / factor, "base_runs": 10})
-    copies = {PRODUCT: [(3, 12)], OTHER: [(2, 10)]}
+    copies = {PRODUCT: [(100 + i, 3) for i in range(30)], OTHER: [(200 + i, 2) for i in range(10)]}
     monkeypatch.setattr(loader.db, "blueprint_copies_by_type",
                         lambda owners, types: {t: copies[t] for t in types if t in copies})
 
 
 def test_loader_adds_symmetry_and_clears_the_assumption(patched):
-    jobs = [_job(1, 30, 2), _job(2, 10, 3, product=OTHER), _job(3, 5, 4, probability=0.9)]
-    sym, none, unmatched = loader._resolve_symmetry(jobs)
+    jobs = [_job(1, 30, 2), _job(2, 10, 3, product=OTHER), _job(3, 5, 4, probability=0.9),
+            _job(5, 20, 6, status="active")]
+    sym, none, unmatched, running = loader._resolve_symmetry(jobs)
     assert [(i.type_id, i.quantity, i.source) for i in sym.inputs] == [
         (20410, 60.0, "probability_decryptor"), (SYMMETRY, 30.0, "probability_decryptor")]
     assert sym.output_runs_per_success == 12.0
     assert [i.source for i in none.inputs] == ["probability_decryptor"]
     assert not any(i.type_id == SYMMETRY for i in none.inputs)
     assert unmatched is jobs[2]    # probability is not 1.0x: left alone
+    assert running is jobs[3]      # no copies yet: stays assumed
 
 
 def test_loader_ignores_me3_copies_when_parity_made_that_product(patched):
