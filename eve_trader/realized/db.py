@@ -754,6 +754,46 @@ def insert_planned_costs(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def finished_item_exchanges_at(owners: list[tuple[str, int]], location_ids: Iterable[int]) -> list[tuple]:
+    """Finished item-exchange contracts of the owners that started at one of
+    `location_ids`, one row per contract: (contract_id, issuer_id,
+    acceptor_id, title, price, date_issued, date_completed). Doctrine fills
+    gaps in its sales history from these."""
+    locations = sorted({int(i) for i in location_ids})
+    if not owners or not locations:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT DISTINCT ON (contract_id) contract_id, issuer_id, acceptor_id, title, price, "
+            "date_issued, date_completed FROM ledger_contracts "
+            f"WHERE {where} AND type = 'item_exchange' AND status = 'finished' "
+            "AND date_completed IS NOT NULL AND start_location_id = ANY(?) "
+            "ORDER BY contract_id, (title IS NULL OR title = '')",
+            (*params, locations),
+        ).fetchall()
+
+
+def contract_items_by_id(owners: list[tuple[str, int]], contract_ids: Iterable[int]) -> dict[int, list[tuple]]:
+    """contract_id -> [(record_id, type_id, quantity, is_included, is_singleton)]
+    from the archive, one row per record."""
+    ids = sorted({int(i) for i in contract_ids})
+    if not owners or not ids:
+        return {}
+    where, params = _owner_in_clause(owners)
+    out: dict[int, list[tuple]] = {}
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (contract_id, record_id) contract_id, record_id, type_id, quantity, "
+            "is_included, is_singleton FROM ledger_contract_items "
+            f"WHERE {where} AND contract_id = ANY(?) ORDER BY contract_id, record_id",
+            (*params, ids),
+        ).fetchall()
+    for cid, rid, tid, qty, incl, single in rows:
+        out.setdefault(int(cid), []).append((int(rid), int(tid), float(qty), bool(incl), bool(single)))
+    return out
+
+
 def contract_titles(contract_ids: list[int]) -> dict[int, str]:
     """First non-empty title stored for each contract id."""
     ids = [int(i) for i in contract_ids]

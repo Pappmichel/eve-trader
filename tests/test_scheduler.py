@@ -779,9 +779,12 @@ def test_sync_due_then_match_matches_doctrine_contracts_only_with_the_grant(monk
     calls = []
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append(("sync", kw)) or "ok")
     monkeypatch.setattr(doctrine_actions, "match_pending_contracts", lambda: calls.append("match") or 3)
+    from eve_trader.doctrine import esi_sync as doctrine_esi_sync
+    monkeypatch.setattr(doctrine_esi_sync, "backfill_history_from_archive", lambda: calls.append("history") or 0)
 
     assert scheduler._sync_due_then_match({"doctrine", "production"}, extra={"x": 1}) == "ok"
-    assert calls == [("sync", {"granted_tools": {"doctrine", "production"}, "extra": {"x": 1}}), "match"]
+    assert calls == [("sync", {"granted_tools": {"doctrine", "production"}, "extra": {"x": 1}}),
+                     "match", "history"]
 
     calls.clear()
     scheduler._sync_due_then_match({"production"})
@@ -796,4 +799,6 @@ def test_sync_due_then_match_survives_a_matching_failure(monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(doctrine_actions, "match_pending_contracts", boom)
+    from eve_trader.doctrine import esi_sync as doctrine_esi_sync
+    monkeypatch.setattr(doctrine_esi_sync, "backfill_history_from_archive", boom)
     assert scheduler._sync_due_then_match(None) == "ok"

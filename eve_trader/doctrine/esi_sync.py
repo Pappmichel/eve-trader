@@ -214,6 +214,66 @@ def _record_unmatched_finished(finished: dict[int, tuple[dict, list[tuple[str, i
     return len(matched)
 
 
+def backfill_history_from_archive(cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                                  client: Optional[ESIClient] = None) -> int:
+    """Sales history for finished doctrine contracts it is missing, from the
+    contract archive (`ledger_contracts` / `ledger_contract_items`). The
+    contracts fetcher records only contracts the snapshot had matched, and
+    `_record_unmatched_finished` runs only in the manual Doctrine sync, so a
+    contract sold before it was ever matched stayed out of the history
+    (three on production, 2026-11-14). No ESI read except acceptor names.
+
+    Only contracts shared with Doctrine, at a Doctrine structure, issued by
+    one of the tenant's characters (personally or for the corporation) to
+    someone outside the tenant, matched to a fitting like a live contract."""
+    from ..realized import access as realized_access
+    from ..realized import db as realized_db
+    from ..realized import loader as realized_loader
+
+    owners = realized_access.shared_owners_for("contracts", "doctrine")
+    rows = realized_db.finished_item_exchanges_at(owners, cfg.effective_structure_ids)
+    if not rows:
+        return 0
+    recorded = storage.doctrine_contract_history_ids([int(r[0]) for r in rows])
+    chars = realized_loader._tenant_character_ids()
+    corps = realized_loader._tenant_corporation_ids()
+    todo = [r for r in rows if int(r[0]) not in recorded and r[1] is not None and int(r[1]) in chars
+            and not (r[2] is not None and (int(r[2]) in chars or int(r[2]) in corps))]
+    if not todo:
+        return 0
+    items_by_id = realized_db.contract_items_by_id(owners, [int(r[0]) for r in todo])
+    candidates = engine.load_match_candidates()
+    matched = []
+    for cid, issuer, acceptor, title, price, issued, completed in todo:
+        items = [ContractItemRow(int(cid), *it) for it in items_by_id.get(int(cid), [])]
+        if not items:
+            continue
+        fitting_id, _score, _devs, _status = engine.match_and_validate_contract(
+            int(cid), title, items, candidates, cfg)
+        fitting = storage.get_fitting(fitting_id) if fitting_id else None
+        if fitting is not None:
+            matched.append((cid, issuer, acceptor, title, price, issued, completed, fitting_id, fitting))
+    if not matched:
+        return 0
+    tm = TokenManager(OAUTH_CONFIG)
+    roles = {}
+    for rec in tm.list_records():
+        if rec.character_id is not None:
+            roles.setdefault(int(rec.character_id), rec.role)
+    acceptor_ids = sorted({int(m[2]) for m in matched if m[2]})
+    try:
+        names = (client or ESIClient(tokens=tm)).resolve_names(acceptor_ids) if acceptor_ids else {}
+    except ESIError:
+        names = {}
+    storage.upsert_doctrine_contract_history([
+        (int(cid), roles.get(int(issuer), f"esi:{int(issuer)}"), fitting_id, fitting[2], fitting[4], title,
+         price, acceptor, names.get(acceptor), issued, completed)
+        for cid, issuer, acceptor, title, price, issued, completed, fitting_id, fitting in matched
+    ])
+    log.info("Doctrine history: %d finished contracts added from the contract archive", len(matched))
+    return len(matched)
+
+
 # =========================================================== asset sync (Stockpile)
 def list_shared_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
     """Returns (auth_role, character_id, character_name) for every character

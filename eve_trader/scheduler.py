@@ -170,13 +170,15 @@ def _calendar_job_ready_after_failure(tenant_id: str, name: str) -> bool:
 
 
 def _sync_due_then_match(grants, **kwargs):
-    """do_sync_due, then match doctrine contracts the sync stored unmatched.
+    """do_sync_due, then match doctrine contracts the sync stored unmatched
+    and add finished doctrine sales the history is missing.
 
     The contracts fetcher stores a new or status-changed contract with no
     match (it may not import the doctrine package); matching used to wait for
     the next Doctrine page read, so the ampel, contract counts and the
-    contract history saw those contracts as unmatched until then. A matching
-    failure never fails the sync job."""
+    contract history saw those contracts as unmatched until then. A contract
+    sold before it was ever matched is added to the history from the
+    contract archive. A failure here never fails the sync job."""
     from .esi_data import orchestrator as esi_orchestrator
     result = esi_orchestrator.do_sync_due(granted_tools=grants, **kwargs)
     if tenant_eligibility.may_use("doctrine", grants):
@@ -187,6 +189,11 @@ def _sync_due_then_match(grants, **kwargs):
                 log.info("Matched %d doctrine contracts after the scheduled ESI sync", matched)
         except Exception:  # noqa: BLE001
             log.exception("Doctrine contract matching after the scheduled ESI sync failed")
+        try:
+            from .doctrine.esi_sync import backfill_history_from_archive
+            backfill_history_from_archive()
+        except Exception:  # noqa: BLE001
+            log.exception("Doctrine history backfill after the scheduled ESI sync failed")
     return result
 
 
