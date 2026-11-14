@@ -41,7 +41,7 @@ from ..production.constants import (
     ACTIVITY_REACTION,
     DECRYPTORS,
 )
-from . import access, db
+from . import access, db, decryptors
 from .costing import (
     ORIGIN_BOUGHT,
     UNIT_ITEM,
@@ -57,6 +57,7 @@ from .costing import (
     ReprocessRecipe,
     StockObservation,
     WalletTransaction,
+    classify_contract,
     rebuild_costing,
 )
 
@@ -545,6 +546,83 @@ def _output_runs_per_success(job_row: tuple, inputs: list[JobInput]) -> Optional
     return float(recipe["base_runs"]) + float(bonus)
 
 
+_SYMMETRY_TYPE_ID = DECRYPTORS[decryptors.SYMMETRY].type_id
+_DECRYPTOR_TYPE_IDS = frozenset(_DECRYPTOR_RUN_BONUS)
+
+
+def _resolve_symmetry(jobs: list[IndustryJob], txs: list[WalletTransaction], contracts,
+                      *, t0: datetime, chars, corps, corp_wallets) -> list[IndustryJob]:
+    """Decide Symmetry vs. no decryptor for invention jobs whose probability
+    cannot tell them apart (`realized/decryptors.py`). Not frozen: the copies
+    that decide it appear only after the job, so every rebuild decides
+    again. A Symmetry job gets one decryptor per run as input; a decided job
+    (either way) no longer counts as an assumed decryptor."""
+    candidates = [
+        job for job in jobs
+        if job.activity == ACTIVITY_INVENTION and job.product_type_id is not None
+        and job.start_date is not None and job.runs > 0
+        and any(inp.source == "assumed_decryptor" for inp in job.inputs)
+        and not any(int(inp.type_id) in _DECRYPTOR_TYPE_IDS for inp in job.inputs)
+    ]
+    if not candidates:
+        return jobs
+    levels = db.invention_skill_levels_for_owners(access.shared_owners("industry_jobs"))
+    ambiguous: list[decryptors.AmbiguousJob] = []
+    for job in candidates:
+        key = (job.owner_type, int(job.owner_id), int(job.job_id))
+        skill = levels.get(key)
+        recipe = storage.get_invention_recipe(int(job.blueprint_type_id), int(job.product_type_id))
+        base = recipe.get("base_probability") if recipe else None
+        factor = decryptors.skill_factor(*skill) if skill else None
+        if decryptors.is_none_or_symmetry(job.probability, base, factor):
+            ambiguous.append(decryptors.AmbiguousJob(key, int(job.product_type_id), int(job.runs), job.start_date))
+    if not ambiguous:
+        return jobs
+    products = {j.product_type_id for j in ambiguous}
+    other_me3 = {
+        int(job.product_type_id) for job in jobs
+        if job.activity == ACTIVITY_INVENTION and job.product_type_id is not None
+        and any(int(inp.type_id) in decryptors.OTHER_ME3 for inp in job.inputs)
+    }
+    copies = db.blueprint_copies_by_type(access.shared_owners("blueprints"), products)
+    evidence = {p: decryptors.copy_evidence(copies.get(p, ()), p in other_me3) for p in products}
+    purchases = [(tx.date, tx.quantity) for tx in txs if tx.is_buy and int(tx.type_id) == _SYMMETRY_TYPE_ID]
+    for contract in contracts:
+        view, _warning = classify_contract(
+            contract, tenant_character_ids=chars, tenant_corporation_ids=corps, t0=t0,
+            corp_wallet_owner_ids=corp_wallets,
+        )
+        if view is None:
+            continue
+        for item in view.received:
+            if int(item.type_id) == _SYMMETRY_TYPE_ID and not item.is_blueprint:
+                purchases.append((contract.date_completed, float(item.quantity)))
+    decided = decryptors.resolve(ambiguous, evidence, purchases)
+    if not decided:
+        return jobs
+    out = []
+    for job in jobs:
+        choice = decided.get((job.owner_type, int(job.owner_id), int(job.job_id)))
+        if choice is None:
+            out.append(job)
+            continue
+        inputs = [
+            dataclasses.replace(inp, source="probability_decryptor") if inp.source == "assumed_decryptor" else inp
+            for inp in job.inputs
+        ]
+        if choice == decryptors.SYMMETRY:
+            inputs.append(JobInput(type_id=_SYMMETRY_TYPE_ID, quantity=float(job.runs),
+                                   source="probability_decryptor"))
+            per_success = job.output_runs_per_success
+            if per_success is not None:
+                per_success = float(per_success) + float(_DECRYPTOR_RUN_BONUS[_SYMMETRY_TYPE_ID])
+            job = dataclasses.replace(job, inputs=tuple(inputs), output_runs_per_success=per_success)
+        else:
+            job = dataclasses.replace(job, inputs=tuple(inputs))
+        out.append(job)
+    return out
+
+
 def _uses_bpc(job_row: tuple, bp_runs: dict[int, int], invented: frozenset[int]) -> Optional[bool]:
     """Manufacturing/reaction only: did the job run on a BPC? From the
     archived blueprint (runs -1 = BPO); a T2/T3 blueprint is always a copy."""
@@ -997,6 +1075,11 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
 
     contracts = _load_contracts()
     with storage.batch_session():
+        tenant_chars = _tenant_character_ids()
+        tenant_corps = _tenant_corporation_ids()
+        corp_wallets = _corp_wallet_owner_ids()
+        jobs = _resolve_symmetry(jobs, txs, contracts, t0=t0, chars=tenant_chars,
+                                 corps=tenant_corps, corp_wallets=corp_wallets)
         production_types = _production_type_ids(job_rows)
         type_ids: set[int] = set(production_types)
         for contract in contracts:
@@ -1032,7 +1115,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             reference_prices=prices,
             esi_stock_by_type={int(k): float(v) for k, v in stock.items()},
             production_type_ids=production_types,
-            tenant_character_ids=_tenant_character_ids(),
+            tenant_character_ids=tenant_chars,
             wallet_transactions=tuple(txs),
             journal_entries=tuple(journals),
             market_orders=tuple(orders),
@@ -1045,8 +1128,8 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
             contracts=contracts,
             couriers=_load_couriers(),
-            tenant_corporation_ids=_tenant_corporation_ids(),
-            corp_wallet_owner_ids=_corp_wallet_owner_ids(),
+            tenant_corporation_ids=tenant_corps,
+            corp_wallet_owner_ids=corp_wallets,
             # No station pool until someone shares a wallet with Station Trading,
             # so a tenant without it keeps one global pool (ST1).
             station_trading_station_id=STATION_TRADING_CONFIG.station_id if station_owners else None,
