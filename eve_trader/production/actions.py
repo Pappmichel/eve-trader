@@ -1411,22 +1411,43 @@ def do_get_item_margin(item_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG
     return ShipMarginRow(**item_margin_detail(type_id, resolved_name, cfg))
 
 
-def _fetch_unlisted_character_personal(client: ESIClient, role: str, character_id: int) -> dict:
+def _unlisted_read_scope() -> dict[str, set[int]]:
+    """Which owners do_unlisted_stock may read, per kind: assets only where
+    Assets are shared with Production, orders only where Market Orders are.
+    A character listed for one kind is not read for the other (confirmed
+    bug 2026-11-14: a Market-Orders-only share made the character's whole
+    Doctrine stockpile count as unlisted Production stock)."""
+    from ..esi_data.access import shared_owner_ids
+    return {
+        "asset_chars": set(shared_owner_ids("assets", "production", "character")),
+        "order_chars": set(shared_owner_ids("market_orders", "production", "character")),
+        "asset_corps": set(shared_owner_ids("assets", "production", "corporation")),
+        "order_corps": set(shared_owner_ids("market_orders", "production", "corporation")),
+    }
+
+
+def _fetch_unlisted_character_personal(client: ESIClient, role: str, character_id: int,
+                                       read_assets: bool = True, read_orders: bool = True) -> dict:
     """Phase A of do_unlisted_stock: character-scoped assets/orders/corp id
     in isolation. Same error-per-character contract as the old sequential
     loop (ESIError -> empty list / None, never abort the rest). Corp
     assets/orders stay sequential in the caller - they are stateful across
     characters (first Director/Accountant in original list order claims
     that corp; parallelizing would race two characters to "claim" it),
-    matching esi_sync.sync_esi's Phase A/B split."""
-    try:
-        assets = client.character_assets(character_id, auth_role=role)
-    except ESIError:
-        assets = []
-    try:
-        orders = client.character_orders(character_id, auth_role=role)
-    except ESIError:
-        orders = []
+    matching esi_sync.sync_esi's Phase A/B split. A kind the character does
+    not share with Production is not read."""
+    assets: list = []
+    orders: list = []
+    if read_assets:
+        try:
+            assets = client.character_assets(character_id, auth_role=role)
+        except ESIError:
+            assets = []
+    if read_orders:
+        try:
+            orders = client.character_orders(character_id, auth_role=role)
+        except ESIError:
+            orders = []
     try:
         corporation_id = client.character_public_info(character_id)["corporation_id"]
     except ESIError:
@@ -1491,6 +1512,7 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     if not characters:
         raise ActionError("No Production character shared yet.")
 
+    scope = _unlisted_read_scope()
     client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
     stock_qty: dict[int, float] = {}
     sell_qty: dict[int, float] = {}
@@ -1510,7 +1532,10 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     with ThreadPoolExecutor(max_workers=min(8, len(characters))) as pool:
         char_results = list(pool.map(
             storage.with_current_tenant(
-                lambda c: _fetch_unlisted_character_personal(client, c[0], c[1])),
+                lambda c: _fetch_unlisted_character_personal(
+                    client, c[0], c[1],
+                    read_assets=c[1] in scope["asset_chars"],
+                    read_orders=c[1] in scope["order_chars"])),
             characters,
         ))
 
@@ -1528,7 +1553,7 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             continue
         role = r["role"]
 
-        if corporation_id not in seen_corp_assets:
+        if corporation_id not in seen_corp_assets and corporation_id in scope["asset_corps"]:
             try:
                 corp_assets = client.corporation_assets(corporation_id, auth_role=role)
             except ESIError:
@@ -1540,7 +1565,7 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     skip_flag=storage.hangar_flag_for(reserve_hangar, "corporation", corporation_id,
                                                       cfg.home_location_id))
 
-        if corporation_id not in seen_corp_orders:
+        if corporation_id not in seen_corp_orders and corporation_id in scope["order_corps"]:
             try:
                 corp_orders = client.corporation_orders(corporation_id, auth_role=role)
             except ESIError:

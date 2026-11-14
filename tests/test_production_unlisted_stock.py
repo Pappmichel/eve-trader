@@ -10,6 +10,21 @@ from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
 
 
+class _Everyone(set):
+    def __contains__(self, item):
+        return True
+
+
+@pytest.fixture(autouse=True)
+def _all_shared(monkeypatch):
+    """These tests are about the ESI asset/order path; sharing is tested in
+    test_market_orders_share_alone_does_not_read_assets below."""
+    monkeypatch.setattr(actions, "_unlisted_read_scope", lambda: {
+        "asset_chars": _Everyone(), "order_chars": _Everyone(),
+        "asset_corps": _Everyone(), "order_corps": _Everyone(),
+    })
+
+
 def _stub_unlisted_margin(monkeypatch, raise_exc=None):
     """do_unlisted_stock now builds one _PlanContext then calls
     _item_margin_detail_with_context per row - stub both so tests that
@@ -329,3 +344,42 @@ def test_unlisted_stock_builds_plan_context_once_for_all_rows(monkeypatch):
     assert ctx_calls["n"] == 1
     assert helper_calls["n"] == 2
     assert {r.type_id for r in result["rows"]} == {1, 2}
+
+def test_market_orders_share_alone_does_not_read_assets(monkeypatch, tenant):
+    """Confirmed bug 2026-11-14: a character sharing only Market Orders with
+    Production had its whole Doctrine stockpile read as unlisted stock."""
+    cfg = ProductionConfig(home_location_id=HOME_LOCATION_ID)
+    _stub_unlisted_margin(monkeypatch)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0, 50, None)])
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters",
+                         lambda: [("producer:1", 1, "Orders"), ("producer:2", 2, "Assets")])
+    monkeypatch.setattr(actions, "_unlisted_read_scope", lambda: {
+        "asset_chars": {2}, "order_chars": {1}, "asset_corps": set(), "order_corps": {500},
+    })
+    monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
+    asset_reads, order_reads, corp_asset_reads = [], [], []
+
+    def char_assets(self, character_id, auth_role):
+        asset_reads.append(character_id)
+        return [_asset(10 + character_id, 1, 100, HOME_LOCATION_ID)]
+
+    def char_orders(self, character_id, auth_role):
+        order_reads.append(character_id)
+        return []
+
+    def corp_assets(self, corporation_id, auth_role):
+        corp_asset_reads.append(corporation_id)
+        return [_asset(99, 1, 500, HOME_LOCATION_ID)]
+
+    monkeypatch.setattr(ESIClient, "character_assets", char_assets)
+    monkeypatch.setattr(ESIClient, "character_orders", char_orders)
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 500})
+    monkeypatch.setattr(ESIClient, "corporation_assets", corp_assets)
+    monkeypatch.setattr(ESIClient, "corporation_orders", lambda self, corporation_id, auth_role: [])
+    monkeypatch.setattr(ESIClient, "structure_order_stats_bulk", lambda self, *a, **k: {})
+
+    result = actions.do_unlisted_stock(cfg)
+
+    assert asset_reads == [2] and order_reads == [1] and corp_asset_reads == []
+    [row] = result["rows"]
+    assert row.stock_quantity == 100   # only the Assets-sharing character's hangar
