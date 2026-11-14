@@ -1125,3 +1125,23 @@ between (sales, jobs, contracts) consume the lots FIFO first. Between two
 regular observations this changes little; the real date of a reprocessing
 before the series began stays unknown, and early placement errs less than
 late.
+
+## 16. Symmetry Decryptor (added 2026-11-14)
+
+Symmetry and "no decryptor" share the probability multiplier 1.0, so
+`inputs._match_decryptor` booked every such job as no decryptor unless the
+Production selection named one of the two. Production picks the cheapest
+decryptor automatically, so nothing was selected: on production 1,140
+Symmetry Decryptors (~230 M ISK) were never consumed by any job.
+
+- `realized/decryptors.py` (pure) decides from the invented copies of the
+  job's product in `ledger_blueprints`: ME 2 only comes from no decryptor,
+  ME 3 from Symmetry - counted only when no Parity / Optimized Attainment
+  job (also ME 3) made that product.
+- Only ME 3 -> Symmetry; only ME 2 -> no decryptor; both -> Symmetry while
+  Symmetry bought up to the job start covers its runs (start order, one per
+  run); no copies -> undecided (stays `assumed_decryptor`).
+- `loader._resolve_symmetry` applies it on every rebuild (not frozen: the
+  copies appear only after the job). A Symmetry job gets one decryptor per
+  run as input and +2 output runs per success; a decided job no longer
+  counts as an assumed decryptor.
