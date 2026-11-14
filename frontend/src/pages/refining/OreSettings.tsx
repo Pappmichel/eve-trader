@@ -129,6 +129,10 @@ export default function OreSettings() {
           description="Buy along sell orders up to this much above the reference price"
           value={form.shopping_price_tolerance * 100} min={0} max={100} step={1}
           onChange={(v) => set('shopping_price_tolerance', Number(v) / 100)} />
+        <NumberInput label="Gas decompression yield" suffix="%" decimalScale={2}
+          description="Raw gas per compressed gas unit (realized-profit ledger)"
+          value={form.gas_decompression_yield * 100} min={0} max={100} step={1}
+          onChange={(v) => set('gas_decompression_yield', Number(v) / 100)} />
       </SimpleGrid>
       <Checkbox label="Shopping list: credit by-product value (e.g. Atmospheric Gases from Zeolites) in the optimizer"
         description="Off: by-products are only listed. On: their home-market value (after the sell haircut) lowers their source's cost."

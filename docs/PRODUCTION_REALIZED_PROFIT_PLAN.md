@@ -1089,3 +1089,20 @@ ore a character had bought was hidden behind those unbooked units.
   stock observations counted it.
 - After deploying this, rebuild once with `reset_opening`: the stock
   definition changed for every type.
+
+## 14. Gas decompression (added 2026-11-14)
+
+Compressed gas was bought, contracted on and decompressed at a refinery,
+but the ledger did not observe it (category 2, not ore/ice). Its layers
+stayed in stock forever and the raw gas came in as opening at planner value.
+
+- Stock observations and `ore_ice_type_ids` include SDE group 4168
+  (Compressed Gas). Its only SDE material is the raw gas (1 per unit), so
+  a disappearance is booked as a reprocessing into raw gas: the cost moves
+  to the raw gas, no compression link is needed.
+- Yield: `RefiningConfig.gas_decompression_yield` (Ore & Minerals Settings),
+  default 0.95 - production data, not a game formula: 25,000 Compressed
+  Fullerite-C60 became exactly 23,750 Fullerite-C60.
+- `realized.access.OBSERVED_TYPES_VERSION` (now 2) is part of the asset
+  scope hash: older observation runs never stored gas and would read as
+  holding none, so the change starts a new series (and one opening reset).
