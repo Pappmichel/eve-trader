@@ -169,6 +169,27 @@ def _calendar_job_ready_after_failure(tenant_id: str, name: str) -> bool:
     return _hours_since(attempt) >= FAILURE_BACKOFF_HOURS
 
 
+def _sync_due_then_match(grants, **kwargs):
+    """do_sync_due, then match doctrine contracts the sync stored unmatched.
+
+    The contracts fetcher stores a new or status-changed contract with no
+    match (it may not import the doctrine package); matching used to wait for
+    the next Doctrine page read, so the ampel, contract counts and the
+    contract history saw those contracts as unmatched until then. A matching
+    failure never fails the sync job."""
+    from .esi_data import orchestrator as esi_orchestrator
+    result = esi_orchestrator.do_sync_due(granted_tools=grants, **kwargs)
+    if tenant_eligibility.may_use("doctrine", grants):
+        try:
+            from .doctrine.actions import match_pending_contracts
+            matched = match_pending_contracts()
+            if matched:
+                log.info("Matched %d doctrine contracts after the scheduled ESI sync", matched)
+        except Exception:  # noqa: BLE001
+            log.exception("Doctrine contract matching after the scheduled ESI sync failed")
+    return result
+
+
 def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
     """tenant_id=None records into the matching global status dict (looked
     up by `name` via _GLOBAL_JOB_STATUS) instead of a per-tenant slot - only
@@ -285,9 +306,7 @@ def _check_and_run_due_jobs_for_tenant(
                 extra = fetcher_extra(DOCTRINE_CONFIG)
                 _run_job(
                     tenant_id, "esi_data_sync",
-                    lambda: esi_orchestrator.do_sync_due(
-                        granted_tools=archive_tools, extra=extra, kinds=archive_kinds,
-                    ),
+                    lambda: _sync_due_then_match(archive_tools, extra=extra, kinds=archive_kinds),
                 )
         return
 
@@ -309,7 +328,7 @@ def _check_and_run_due_jobs_for_tenant(
         extra = fetcher_extra(DOCTRINE_CONFIG)
         _run_job(
             tenant_id, "esi_data_sync",
-            lambda: esi_orchestrator.do_sync_due(granted_tools=grants, extra=extra),
+            lambda: _sync_due_then_match(grants, extra=extra),
         )
 
     if (
