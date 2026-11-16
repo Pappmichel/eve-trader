@@ -1630,6 +1630,25 @@ def set_sde_refresh_state(refreshed_at: str, dump_etag: Optional[str],
         )
 
 
+def set_sde_remote_check(remote_etag: str, checked_at: str) -> None:
+    """Records the remote dump's ETag seen by the daily freshness check job.
+    Updates the existing row only: before the first apply there is nothing
+    to compare the remote ETag with."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE sde_refresh_state SET remote_etag = ?, remote_checked_at = ? WHERE id = 1",
+            (remote_etag, checked_at),
+        )
+
+
+def get_sde_remote_check() -> Optional[tuple[Optional[str], Optional[str]]]:
+    """(remote_etag, remote_checked_at) stored by the freshness check job, or
+    None while the SDE has never been applied."""
+    with connect() as conn:
+        row = conn.execute("SELECT remote_etag, remote_checked_at FROM sde_refresh_state WHERE id = 1").fetchone()
+    return (row[0], row[1]) if row else None
+
+
 def get_sde_trading_inputs_changed_at() -> Optional[str]:
     """When an SDE apply last changed data Trading's candidate universe is
     built from (see production/sde.py's apply_sde), or None if never."""

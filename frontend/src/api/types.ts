@@ -660,6 +660,8 @@ export interface AssetPlan {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -710,6 +712,8 @@ export interface SpecialOrderComputeResult {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
 }
 
 export interface SpecialOrderDetail {
@@ -1085,6 +1089,8 @@ export interface ProductionPlan {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
   order_progress?: OrderProgressRow[]
   // See AssetPlan.stale.
   stale?: boolean
@@ -1156,6 +1162,9 @@ export interface SdeFreshness {
   local_refreshed_at: string | null
   remote_check_succeeded: boolean
   newer_sde_available: boolean
+  // When the daily check job last saw the remote dump (set only when the
+  // live check failed and its stored result was used).
+  remote_checked_at?: string | null
   trading_universe_stale: boolean
   trading_universe_built_at: string | null
 }
@@ -1362,6 +1371,33 @@ export interface SdeDiff {
   changed_items: SdeChangedItem[]
   changed_blueprints: SdeChangedBlueprint[]
   other_tables: Record<string, SdeTableRowDiff>
+  // Tables that would lose more than 20 % of their rows. Apply needs an
+  // explicit confirmation while this is not empty.
+  shrink_warnings?: SdeShrinkWarning[]
+  // Hard-coded industry constants compared with the dump's dogma.
+  constant_drift?: SdeConstantDrift
+}
+
+export interface SdeShrinkWarning {
+  table: string
+  old: number
+  new: number
+  drop_percent: number
+}
+
+export interface SdeConstantDriftRow {
+  constant: string
+  type_id: number
+  type_name: string | null
+  attribute: string
+  expected: number
+  actual: number
+}
+
+export interface SdeConstantDrift {
+  checked: number
+  drifts: SdeConstantDriftRow[]
+  unchecked: string[]
 }
 
 export type SdeApplyResult = Record<string, number>

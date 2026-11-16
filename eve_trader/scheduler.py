@@ -43,6 +43,7 @@ from typing import Optional
 from . import backup, portfolio, storage, tenant_eligibility, tenant_scope, timeutil
 from .config import SCHEDULER_OPERATOR_CONFIG, TRADING_CONFIG, TradingConfig
 from .production import jita_price_cache
+from .production import sde as production_sde
 
 log = logging.getLogger("eve_trader.scheduler")
 
@@ -80,6 +81,11 @@ _backup_status: dict = {}
 # tenant-independent ESI data, so like backup it runs once per tick, not
 # once per tenant.
 _jita_price_cache_status: dict = {}
+
+# And for the daily SDE freshness check (production/sde.py record_remote_sde_check).
+_sde_check_status: dict = {}
+
+SDE_CHECK_INTERVAL_HOURS = 24.0
 
 
 def _hours_since(iso_ts: str | None) -> float:
@@ -144,7 +150,11 @@ def _master_enabled() -> bool:
         return bool(TRADING_CONFIG.scheduler_enabled)
 
 
-_GLOBAL_JOB_STATUS = {"backup": _backup_status, "jita_price_cache": _jita_price_cache_status}
+_GLOBAL_JOB_STATUS = {
+    "backup": _backup_status,
+    "jita_price_cache": _jita_price_cache_status,
+    "sde_freshness_check": _sde_check_status,
+}
 
 # One in-flight worker per (tenant_id, job name). Released in the worker's
 # finally — not after join — so a timed-out thread keeps blocking a restart
@@ -391,6 +401,31 @@ def _check_and_run_jita_price_cache_job() -> None:
         _run_job(None, "jita_price_cache", jita_price_cache.refresh_jita_price_cache)
 
 
+def _sde_check_job() -> None:
+    # The SDE tables are global, but storage needs an ambient tenant for any
+    # connection; the Default tenant is the operator's stand-in (same as the
+    # SDE cache warm-up at server start).
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        production_sde.record_remote_sde_check()
+
+
+def _check_and_run_sde_check_job() -> None:
+    """Global, unscoped, daily: one HEAD request against the Fuzzwork dump
+    stored as sde_refresh_state.remote_etag. The Admin page shows "New SDE
+    available" when it differs from the applied one. A failed check backs
+    off like every job (_job_due) and never claims an update. Skipped when
+    the operator switched it off (sde_check_job_enabled)."""
+    if not SCHEDULER_OPERATOR_CONFIG.sde_check_job_enabled:
+        return
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        stored = storage.get_sde_remote_check()
+    if stored is None:
+        return  # SDE never applied: nothing to compare a remote ETag with
+    checked_at = stored[1]
+    if _job_due(checked_at, _last_attempt(None, "sde_freshness_check"), SDE_CHECK_INTERVAL_HOURS):
+        _run_job(None, "sde_freshness_check", _sde_check_job)
+
+
 def _check_and_run_alerts_job() -> None:
     """Per tenant with an enabled alert opt-in. Independent of the tenant's
     own `scheduler_enabled` and of the tenant activity gate (see
@@ -433,6 +468,10 @@ def _check_and_run_due_jobs() -> None:
 
         _check_and_run_backup_job()
         _check_and_run_jita_price_cache_job()
+        try:
+            _check_and_run_sde_check_job()
+        except Exception as e:  # noqa: BLE001 - an advisory check must not stop the alerts job below
+            log.warning("SDE freshness check scheduling failed: %s", e)
 
     # The opt-in alerts job runs regardless of `master`, gated only by its own
     # operator switch (CLAUDE.md "Discord alerts").
@@ -503,6 +542,7 @@ def get_status() -> dict:
         "operator": {
             "backup_job_enabled": SCHEDULER_OPERATOR_CONFIG.backup_job_enabled,
             "jita_price_cache_job_enabled": SCHEDULER_OPERATOR_CONFIG.jita_price_cache_job_enabled,
+            "sde_check_job_enabled": SCHEDULER_OPERATOR_CONFIG.sde_check_job_enabled,
             "alerts_job_enabled": SCHEDULER_OPERATOR_CONFIG.alerts_job_enabled,
             "inactive_tenant_days": SCHEDULER_OPERATOR_CONFIG.inactive_tenant_days,
         },
@@ -532,6 +572,11 @@ def get_status() -> dict:
                 "interval_hours": TRADING_CONFIG.jita_price_cache_interval_hours,
                 "last_run_at": jita_price_cache.last_updated_at(),
                 "last_error": _jita_price_cache_status.get("error"),
+            },
+            "sde_freshness_check": {
+                "interval_hours": SDE_CHECK_INTERVAL_HOURS,
+                "last_run_at": _sde_check_status.get("ran_at"),
+                "last_error": _sde_check_status.get("error"),
             },
         },
     }

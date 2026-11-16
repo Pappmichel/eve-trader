@@ -1011,6 +1011,7 @@ def refresh_production():
         "cost_indices_available": plan.get("cost_indices_available", True),
         "prices_available": plan.get("prices_available", True),
         "price_data_stale_hours": plan.get("price_data_stale_hours"),
+        "adjusted_prices_missing": plan.get("adjusted_prices_missing", []),
         "order_progress": plan.get("order_progress", []),
         "reaction_capacity": plan.get("reaction_capacity"),
         "stale": False,

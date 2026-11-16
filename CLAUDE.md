@@ -154,7 +154,7 @@ they laid out side by side:
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
-| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price. Blueprint-copy runs without a cost layer are not priced from the original: they take the per-run value Total Wealth uses (`portfolio.bpc_run_values_with_status`: invention cost per run, or the copy job fee per run for a Tech I copy), frozen per (blueprint type, day) in `ledger_bpc_run_prices` only when that computation ran completely, and stay `estimated` (warning `bpc_run_estimated`); a faction/officer copy stays `price_missing` | `realized/loader.py` |
+| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price. A miss is cached (`ledger_reference_prices`, source `none`) only for a type ESI, the last source, actually answered for (404 counts); an outage of either source never stores a zero price, the next rebuild asks again. Blueprint-copy runs without a cost layer are not priced from the original: they take the per-run value Total Wealth uses (`portfolio.bpc_run_values_with_status`: invention cost per run, or the copy job fee per run for a Tech I copy), frozen per (blueprint type, day) in `ledger_bpc_run_prices` only when that computation ran completely, and stay `estimated` (warning `bpc_run_estimated`); a faction/officer copy stays `price_missing` | `realized/loader.py` |
 | What would a produced item sold through Doctrine have cost to buy (production saving, informational)? | The buy-list purchase price even when building was cheaper, frozen per (type, sale day) in `ledger_saving_buy_prices` by every rebuild: the planner's live quote for a sale today or yesterday, otherwise The Forge daily average plus buy broker fee and haul cost per packaged m3. Never `ledger_valuation_prices` (that holds the cheaper value, i.e. the build cost). Lines without a price are left out and the priced share is shown | `realized/saving_prices.py`, `doctrine/realized.py` |
 | What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
 | What is an owned item worth (Portfolio Total Wealth and Capital)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
@@ -1229,6 +1229,37 @@ them):
   default, so check the real one.
 - Tick stays 300 s on purpose (returning tenants and the future mail alerts need
   short latency; after the above an idle tick is a few small queries).
+
+### SDE guards and the daily SDE check
+
+- **Import checks** (`production/sde.py`): `_fetch_csv` and the two streamed
+  files reject a file with missing columns, a cut-off or over-long row, or fewer
+  rows than `_CSV_SPEC` / `_MIN_STREAM_ROWS` (about half of the real size; invTypes
+  26,000) with `SdeDumpInvalid`, which the preview turns into an `ActionError`.
+  `sde_diff.build_diff` adds `shrink_warnings` (a table losing more than 20 %,
+  `SHRINK_LIMIT_PERCENT`); `admin.do_apply_sde(confirm_shrink=False)` refuses while
+  there are warnings, recomputed from the staged dump (which stays) against
+  `storage.sde_row_counts()`. The first fill of an empty table is no shrink.
+- **Constant drift**: the preview also reports `constant_drift` (`production/
+  constant_drift.py`): skill time bonuses, decryptor stats and example rig bonuses
+  against the dump's dogma. Attribute ids are looked up by name in
+  `dgmAttributeTypes.csv` at fetch time, never hard-coded; a name the dump lacks is
+  listed as not compared. Structure bonuses are not compared. Nothing is changed
+  automatically.
+- **Daily check job**: global job `sde_freshness_check` (switch
+  `SchedulerOperatorConfig.sde_check_job_enabled`, default on; needs the master
+  switch like backup and the Jita cache) stores the remote ETag and time in
+  `sde_refresh_state.remote_etag` / `remote_checked_at` through one HEAD request,
+  once per 24 h with the usual failure backoff, and only after the SDE was applied
+  once. `sde.check_for_newer_sde` (the manual route) falls back to the stored ETag
+  when its live HEAD fails; the Admin page shows "New SDE available".
+- **Jita price cache age**: `jita_price_cache.get_cached_prices` still serves a
+  snapshot older than twice `jita_price_cache_interval_hours` but
+  `stale_age_seconds()` feeds it into `price_data_stale_hours`; older than 24 h it
+  serves nothing and `pricing.jita_prices` falls back to live ESI.
+- **Missing adjusted prices**: plans carry `adjusted_prices_missing` (recipe
+  materials of the priced types that ESI's adjusted-price list lacks; their EIV
+  share reads 0). Informational only, numbers and `job_costs_reliable` stay.
 
 ## Backup
 

@@ -152,6 +152,11 @@ CREATE TABLE IF NOT EXISTS sde_refresh_state (
 -- "candidate list may be outdated" warning only appears after a real change.
 -- NULL = no such change recorded yet (no warning).
 ALTER TABLE sde_refresh_state ADD COLUMN IF NOT EXISTS trading_inputs_changed_at TEXT;
+-- The daily freshness check job (scheduler sde_freshness_check) stores the
+-- ETag it saw on the remote dump and when. A remote ETag that differs from
+-- dump_etag (the one applied) means a newer SDE is available.
+ALTER TABLE sde_refresh_state ADD COLUMN IF NOT EXISTS remote_etag TEXT;
+ALTER TABLE sde_refresh_state ADD COLUMN IF NOT EXISTS remote_checked_at TEXT;
 
 CREATE TABLE IF NOT EXISTS goonmetrics_history (
     region_id INTEGER,

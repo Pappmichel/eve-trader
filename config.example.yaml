@@ -63,6 +63,9 @@ inactive_tenant_days: 14
 # switch is true.
 backup_job_enabled: true
 jita_price_cache_job_enabled: true
+# Daily check whether Fuzzwork published a newer SDE (one HEAD request); the
+# Admin page shows "New SDE available". Runs with the scheduler master switch.
+sde_check_job_enabled: true
 # Discord alerts job (CLAUDE.md "Discord alerts"). Runs for opted-in
 # characters only, independent of every tenant's scheduler_enabled. Also needs
 # DISCORD_BOT_TOKEN / DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET in .env.

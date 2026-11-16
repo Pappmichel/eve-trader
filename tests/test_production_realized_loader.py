@@ -284,7 +284,7 @@ def test_reference_prices_fall_back_to_esi_and_nearest_day_and_cache_misses(tena
             # Goonmetrics has TYPE_A only for Oct 3 (an untraded day is 0).
             return [_Point(TYPE_A, date(2026, 10, 3), 50.0), _Point(TYPE_A, date(2026, 10, 2), 0.0)]
 
-    def fake_esi(type_ids):
+    def fake_esi(type_ids, failed=None):
         calls["esi"].append(sorted(type_ids))
         # ESI knows TYPE_B on Oct 1 only.
         return {TYPE_B: {date(2026, 10, 1): (7.0, "esi")}}
@@ -310,6 +310,63 @@ def test_reference_prices_fall_back_to_esi_and_nearest_day_and_cache_misses(tena
     loader._fetch_reference_prices({(999, date(2026, 10, 16))}, today)
     _prices, misses = loader._cached_prices({999})
     assert (999, date(2026, 10, 16)) not in misses
+
+
+class _Esi:
+    """ESIClient double: per-type history, a status error, or an outage."""
+
+    def __init__(self, answers):
+        self.answers = answers
+
+    def region_market_history(self, region_id, type_id):
+        from eve_trader.esi_client import ESIError
+        answer = self.answers.get(type_id, ESIError("down"))
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _reference_miss_setup(monkeypatch, goon_points, esi_answers):
+    class FakeGoon:
+        def price_history_chunked(self, region_id, type_ids):
+            return goon_points  # an outage yields no points (the client never raises)
+
+    monkeypatch.setattr(loader, "GoonmetricsClient", FakeGoon)
+    monkeypatch.setattr(loader, "ESIClient", lambda: _Esi(esi_answers))
+
+
+def _misses(types):
+    """Cached misses (source "none") in ledger_reference_prices."""
+    cached = ledger_db.list_cached_reference_prices(sorted(types))
+    return {(int(t), loader._as_date(d)) for (t, d), (_p, src) in cached.items()
+            if src == loader._MISSING_SOURCE}
+
+
+def test_no_miss_is_cached_when_every_source_is_down(tenant, monkeypatch):
+    from datetime import date
+    _reference_miss_setup(monkeypatch, [], {})
+    day = date(2026, 10, 1)
+    loader._fetch_reference_prices({(TYPE_A, day), (TYPE_B, day)}, date(2026, 10, 17))
+    assert _misses({TYPE_A, TYPE_B}) == set()
+
+
+def test_miss_is_cached_when_esi_answers_empty_or_404(tenant, monkeypatch):
+    from datetime import date
+    from eve_trader.esi_client import ESIStatusError
+    _reference_miss_setup(monkeypatch, [],
+                          {TYPE_A: [], TYPE_B: ESIStatusError(404, "not found")})
+    day = date(2026, 10, 1)
+    loader._fetch_reference_prices({(TYPE_A, day), (TYPE_B, day)}, date(2026, 10, 17))
+    assert _misses({TYPE_A, TYPE_B}) == {(TYPE_A, day), (TYPE_B, day)}
+
+
+def test_miss_is_not_cached_when_esi_fails_for_the_type(tenant, monkeypatch):
+    from datetime import date
+    from eve_trader.esi_client import ESIStatusError
+    _reference_miss_setup(monkeypatch, [], {TYPE_A: ESIStatusError(503, "busy"), TYPE_B: []})
+    day = date(2026, 10, 1)
+    loader._fetch_reference_prices({(TYPE_A, day), (TYPE_B, day)}, date(2026, 10, 17))
+    assert _misses({TYPE_A, TYPE_B}) == {(TYPE_B, day)}
 
 
 def test_opening_stock_adds_listed_and_contracted_items_from_shared_owners(tenant, monkeypatch):

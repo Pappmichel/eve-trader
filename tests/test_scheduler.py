@@ -492,6 +492,7 @@ def test_check_and_run_due_jobs_iterates_tenants_independently(
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append(storage.get_current_tenant()))
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: None)
     monkeypatch.setattr(scheduler, "_master_enabled", lambda: True)  # operator switch, tested separately
+    monkeypatch.setattr(scheduler, "_check_and_run_sde_check_job", lambda: None)  # no real HEAD request
 
     with storage.tenant_context(tenant_a):
         storage.save_tenant_settings("trading", {"scheduler_enabled": True, "trading_pipeline_interval_hours": 24.0})
@@ -770,7 +771,8 @@ def test_get_status_reports_the_operator_switches(monkeypatch):
     _stub_get_status_deps(monkeypatch)
     status = scheduler.get_status()
     assert set(status["operator"]) == {
-        "backup_job_enabled", "jita_price_cache_job_enabled", "alerts_job_enabled", "inactive_tenant_days",
+        "backup_job_enabled", "jita_price_cache_job_enabled", "sde_check_job_enabled", "alerts_job_enabled",
+        "inactive_tenant_days",
     }
 
 

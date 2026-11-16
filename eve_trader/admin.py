@@ -133,6 +133,8 @@ def _preview_worker(progress_callback=None) -> dict:
     global _staged_sde
     try:
         fetched = sde.fetch_sde(progress_callback=progress_callback)
+    except sde.SdeDumpInvalid as e:
+        raise ActionError(f"SDE dump rejected: {e}") from e
     except requests.RequestException as e:
         # Confirmed real gap (see the original do_refresh_sde in production/
         # actions.py this was moved from): the fetch's network errors used
@@ -146,7 +148,7 @@ def _preview_worker(progress_callback=None) -> dict:
     return diff
 
 
-def do_apply_sde() -> dict:
+def do_apply_sde(confirm_shrink: bool = False) -> dict:
     """Writes the staged preview dump into the shared SDE cache. Moved here
     from production/actions.py (GitHub issue #34): the SDE cache (sde_types/
     sde_blueprint_materials/etc.) is global, shared data, not per-tenant, so
@@ -159,6 +161,14 @@ def do_apply_sde() -> dict:
     global _staged_sde
     if _staged_sde is None:
         raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
+    # Recomputed from the staged dump against the current tables, never taken
+    # from the client. The staged dump stays after a refusal.
+    warnings = sde_diff.shrink_warnings(_staged_sde, storage.sde_row_counts())
+    if warnings and not confirm_shrink:
+        tables = ", ".join(f"{w['table']} {w['old']} -> {w['new']} (-{w['drop_percent']}%)" for w in warnings)
+        raise ActionError(
+            f"The staged SDE would shrink tables by more than {sde_diff.SHRINK_LIMIT_PERCENT:.0f}%: "
+            f"{tables}. Nothing was written; confirm the shrink to apply it anyway.")
     equivalents_before = storage.get_sde_equivalence_class_map()
     result = sde.apply_sde(_staged_sde)
     if storage.get_sde_equivalence_class_map() != equivalents_before:

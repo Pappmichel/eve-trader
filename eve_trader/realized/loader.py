@@ -30,7 +30,7 @@ from typing import Iterable, Optional
 
 from .. import storage
 from ..config import TRADING_CONFIG
-from ..esi_client import ESIClient, ESIError
+from ..esi_client import ESIClient, ESIError, ESIStatusError
 from ..goonmetrics_client import GoonmetricsClient
 from ..industry_activity import normalize_activity_id
 from ..doctrine.config import DOCTRINE_CONFIG
@@ -837,13 +837,22 @@ def _pick_price(series: dict[date, tuple[float, str]], day: date) -> Optional[tu
     return None
 
 
-def _esi_history(type_ids: list[int]) -> dict[int, dict[date, tuple[float, str]]]:
+def _esi_history(type_ids: list[int],
+                 failed: Optional[set[int]] = None) -> dict[int, dict[date, tuple[float, str]]]:
+    """`failed`, when given, collects the types ESI did not answer for (an
+    error other than 404). A 404 is an answer: no history for that type."""
     client = ESIClient()
 
     def one(tid: int):
         try:
             return tid, client.region_market_history(_REFERENCE_REGION_ID, tid)
+        except ESIStatusError as e:
+            if e.status != 404 and failed is not None:
+                failed.add(int(tid))
+            return tid, []
         except ESIError:
+            if failed is not None:
+                failed.add(int(tid))
             return tid, []
 
     out: dict[int, dict[date, tuple[float, str]]] = defaultdict(dict)
@@ -877,7 +886,8 @@ def _fetch_reference_prices(requests: set[tuple[int, date]], today: date) -> dic
         if hit is not None:
             found[(tid, day)] = hit
     esi_types = sorted({tid for tid, day in requests if (tid, day) not in found})
-    for tid, points in _esi_history(esi_types).items():
+    esi_failed: set[int] = set()
+    for tid, points in _esi_history(esi_types, failed=esi_failed).items():
         for day_, point in points.items():
             series[tid].setdefault(day_, point)
     for tid, day in requests:
@@ -888,8 +898,10 @@ def _fetch_reference_prices(requests: set[tuple[int, date]], today: date) -> dic
 
     rows = [(tid, day, price, source) for (tid, day), (price, source) in sorted(found.items())]
     cutoff = today - timedelta(days=_NEGATIVE_CACHE_MIN_AGE_DAYS)
+    # A miss is cached only for a type ESI (the last source) answered for; an
+    # outage must not turn into a permanent zero price.
     rows += [(tid, day, 0.0, _MISSING_SOURCE) for tid, day in sorted(requests)
-             if (tid, day) not in found and day <= cutoff]
+             if (tid, day) not in found and day <= cutoff and tid not in esi_failed]
     db.upsert_reference_prices(rows)
     return {key: price for key, (price, _source) in found.items()}
 

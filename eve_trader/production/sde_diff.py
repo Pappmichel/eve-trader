@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import struct
 
+from . import constant_drift
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
 from .sde import FetchedSde
 
@@ -22,6 +23,42 @@ _PRIMARY_PRODUCT_ACTIVITIES = (ACTIVITY_MANUFACTURING, ACTIVITY_REACTION)
 _TIME_ACTIVITY_ORDER = (
     ACTIVITY_MANUFACTURING, ACTIVITY_REACTION, ACTIVITY_INVENTION, ACTIVITY_COPYING,
 )
+
+# A table that loses more than this share of its rows needs an explicit
+# confirmation before Apply (see admin.do_apply_sde).
+SHRINK_LIMIT_PERCENT = 20.0
+
+# sde_* table -> the FetchedSde field holding its new rows.
+_TABLE_FIELDS = {
+    "sde_types": "types", "sde_groups": "groups", "sde_market_groups": "market_groups",
+    "sde_blueprint_time": "blueprint_time", "sde_blueprint_materials": "blueprint_materials",
+    "sde_blueprint_products": "blueprint_products",
+    "sde_invention_probability": "invention_probability",
+    "sde_blueprint_skills": "blueprint_skills", "sde_solar_systems": "solar_systems",
+    "sde_regions": "regions", "sde_stations": "stations", "sde_categories": "categories",
+    "sde_type_slots": "type_slots", "sde_type_equivalents": "type_equivalents",
+    "sde_type_materials": "type_materials", "sde_skill_requirements": "skill_requirements",
+    "sde_skill_meta": "skill_meta", "sde_pi_schematics": "pi_schematics",
+    "sde_pi_schematic_types": "pi_schematic_types", "sde_pi_schematic_pins": "pi_schematic_pins",
+    "sde_pi_type_attributes": "pi_type_attributes", "sde_pi_planets": "pi_planets",
+}
+
+
+def shrink_warnings(fetched: FetchedSde, old_counts: dict) -> list[dict]:
+    """One entry per table that would lose more than SHRINK_LIMIT_PERCENT of
+    its rows: {table, old, new, drop_percent}. An empty table being filled
+    for the first time is not a drop."""
+    warnings = []
+    for table, attr in _TABLE_FIELDS.items():
+        old = int(old_counts.get(table) or 0)
+        new = len(getattr(fetched, attr))
+        if old <= 0 or new >= old:
+            continue
+        drop = (old - new) * 100.0 / old
+        if drop > SHRINK_LIMIT_PERCENT:
+            warnings.append({"table": table, "old": old, "new": new, "drop_percent": round(drop, 1)})
+    return warnings
+
 
 def _pg_real(value):
     """Round-trip through Postgres REAL (float4). sde_* float columns are
@@ -398,4 +435,9 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         "changed_items": changed_items,
         "changed_blueprints": changed_blueprints,
         "other_tables": _other_tables(fetched, snapshot, new_types, old_types),
+        "constant_drift": constant_drift.compare(
+            fetched.drift_attribute_ids, fetched.drift_values,
+            {tid: row[2] for tid, row in new_types.items() if tid in constant_drift.wanted_type_ids()}),
+        "shrink_warnings": shrink_warnings(
+            fetched, {table: len(_rows(snapshot, table)) for table in _TABLE_FIELDS}),
     }
