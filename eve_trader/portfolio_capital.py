@@ -1,7 +1,10 @@
 """Capital deployed, aggregated from the realized-profit ledger.
 
-Listed quantities are taken from the oldest cost layer of that type
+Listed quantities are taken from the oldest item layer of that type
 first, then outstanding contract quantities. What remains is stock.
+Blueprint-copy run layers are their own bucket, counted in runs and valued
+at the per-run copy/invention value; sell orders and contracts never draw
+from them.
 Unrealized profit is market value minus cost for units that have both.
 A missing price is left out of both sides. Escrow stays unknown (None)
 until every open buy has an archived escrow amount.
@@ -23,10 +26,15 @@ def _layer_estimated(layer: dict) -> bool:
     )
 
 
-def _queues(layers: list[dict]) -> dict[int, list[dict]]:
-    queues: dict[int, list[dict]] = {}
+UNIT_ITEM = "item"
+UNIT_BPC_RUN = "bpc_run"
+
+
+def _queues(layers: list[dict]) -> dict[tuple[int, str], list[dict]]:
+    queues: dict[tuple[int, str], list[dict]] = {}
     for layer in layers:
-        queues.setdefault(int(layer["type_id"]), []).append({
+        key = (int(layer["type_id"]), str(layer.get("unit") or UNIT_ITEM))
+        queues.setdefault(key, []).append({
             "quantity": float(layer["quantity"]),
             "unit_cost": float(layer["unit_cost"]),
             "estimated": _layer_estimated(layer),
@@ -146,11 +154,14 @@ def report(
     escrow: Optional[float],
     prices: dict,
     in_production: Optional[dict] = None,
+    bpc_run_prices: Optional[dict] = None,
 ) -> dict:
-    """`layers` are oldest-first within each type. `listed` is
-    {type_id, quantity, order_price}. `contracts` is
-    {contract_id, type_id, quantity, contract_price}. `escrow` None means
-    unknown. `in_production` {count, cost} is omitted when count is 0.
+    """`layers` are oldest-first within each type, with `unit` "item"
+    (default) or "bpc_run". `listed` is {type_id, quantity, order_price}.
+    `contracts` is {contract_id, type_id, quantity, contract_price}.
+    `escrow` None means unknown. `in_production` {count, cost} is omitted
+    when count is 0. `bpc_run_prices` is the value per copy run by
+    blueprint type; a run type without one is left out of both sides.
     """
     queues = _queues(layers)
     listed_by_type: dict[int, float] = {}
@@ -169,7 +180,7 @@ def report(
 
     listed_take = {"cost": 0.0, "covered": 0.0, "estimated_qty": 0.0, "uncovered": 0.0}
     for type_id, quantity in listed_by_type.items():
-        taken = _take(queues.setdefault(type_id, []), quantity)
+        taken = _take(queues.setdefault((type_id, UNIT_ITEM), []), quantity)
         for key in listed_take:
             listed_take[key] += taken[key]
 
@@ -190,7 +201,7 @@ def report(
 
     contract_take = {"cost": 0.0, "covered": 0.0, "estimated_qty": 0.0, "uncovered": 0.0}
     for type_id, quantity in contract_qty.items():
-        taken = _take(queues.setdefault(type_id, []), quantity)
+        taken = _take(queues.setdefault((type_id, UNIT_ITEM), []), quantity)
         for key in contract_take:
             contract_take[key] += taken[key]
 
@@ -199,7 +210,9 @@ def report(
     stock_estimated = 0.0
     stock_unpriced = 0.0
     stock_cost_basis = 0.0
-    for type_id, queue in queues.items():
+    for (type_id, unit), queue in queues.items():
+        if unit != UNIT_ITEM:
+            continue
         price = prices.get(type_id)
         for layer in queue:
             if layer["quantity"] <= _EPS:
@@ -215,9 +228,34 @@ def report(
                 stock_cost_basis += layer["quantity"] * layer["unit_cost"]
                 stock_market += layer["quantity"] * float(price)
 
+    run_prices = bpc_run_prices or {}
+    runs = runs_estimated = runs_unpriced = runs_cost = runs_market = 0.0
+    for (type_id, unit), queue in queues.items():
+        if unit != UNIT_BPC_RUN:
+            continue
+        price = run_prices.get(type_id)
+        for layer in queue:
+            if layer["quantity"] <= _EPS:
+                continue
+            runs += layer["quantity"]
+            if layer["estimated"]:
+                runs_estimated += layer["quantity"]
+            if price is None:
+                runs_unpriced += layer["quantity"]
+            else:
+                runs_cost += layer["quantity"] * layer["unit_cost"]
+                runs_market += layer["quantity"] * float(price)
+
     listed_qty = sum(listed_by_type.values())
     buckets = [
         _bucket("stock", "Stock", stock_qty, stock_cost_basis, stock_market, stock_estimated, stock_unpriced),
+    ]
+    if runs > _EPS:
+        # Quantity is in runs, not items.
+        buckets.append(_bucket(
+            "bpc_runs", "Blueprint copies", runs, runs_cost, runs_market, runs_estimated, runs_unpriced,
+        ))
+    buckets += [
         _bucket(
             "listed", "Listed for sale", listed_qty, listed_take["cost"], listed_market,
             listed_take["estimated_qty"], listed_take["uncovered"],

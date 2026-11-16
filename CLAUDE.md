@@ -90,8 +90,11 @@ excluded and are listed. The page
 (`GET /api/portfolio/wealth`, `/wealth/breakdown`, `/realized-cards`,
 `/realized-history`, `/capital`, `/attention`) shows the breakdown,
 realized profit for every granted channel, capital at FIFO cost from the
-realized-profit ledger (labeled as such), and an attention list. The
-frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
+realized-profit ledger (labeled as such), and an attention list. Capital
+keeps blueprint-copy run layers in their own "Blueprint copies" bucket
+(quantity in runs, market value = the per-run copy value x runs, a copy
+without one left out of both sides); sell orders and contracts draw only
+item layers. The frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
 `/attention` share one priced computation per tenant for 120 s
 (`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
 price-setting change, manual price, or SDE apply drops it at once, nothing is

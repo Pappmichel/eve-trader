@@ -512,6 +512,11 @@ function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) 
           {row.comparison_value != null && (
             <Text size="xs" c="dimmed" mt={4}>Wealth price {isk(row.comparison_value)}</Text>
           )}
+          {row.key === 'bpc_runs' && row.quantity != null && (
+            <Text size="xs" c="dimmed" mt={4}>
+              {Math.round(row.quantity).toLocaleString()} runs, valued at copy or invention cost per run
+            </Text>
+          )}
         </Card>
       ))}
       <Text size="sm">

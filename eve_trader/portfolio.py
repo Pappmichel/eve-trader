@@ -1117,7 +1117,7 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     contract_owners = shared_item_exchange_owners()
     layers = [
         {
-            "type_id": row[0], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
+            "type_id": row[0], "unit": row[1], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
             "assumed_me": row[5], "assumed_decryptor": row[6], "estimated_origin": row[7],
             "price_missing": row[8],
         }
@@ -1133,13 +1133,17 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     ]
     escrow_rows = ledger_db.open_buy_escrow_by_owner(order_owners)
     escrow = None if escrow_rows is None else sum(amount for _ot, _oid, amount in escrow_rows)
-    type_ids = {int(layer["type_id"]) for layer in layers}
+    # Copy runs are valued per run like Total Wealth's copies, never at the
+    # original's quote; a manual price is per copy, so it does not apply.
+    run_type_ids = {int(layer["type_id"]) for layer in layers if layer["unit"] == "bpc_run"}
+    type_ids = {int(layer["type_id"]) for layer in layers if layer["unit"] != "bpc_run"}
     type_ids.update(int(row["type_id"]) for row in listed)
     type_ids.update(int(row["type_id"]) for row in contracts)
     prices = _priced(type_ids)
+    run_prices = _bpc_run_values(run_type_ids)
     count, cost = ledger_db.running_job_cost()
     in_production = {"count": int(count or 0), "cost": float(cost or 0)}
-    return report(layers, listed, contracts, escrow, prices, in_production)
+    return report(layers, listed, contracts, escrow, prices, in_production, bpc_run_prices=run_prices)
 
 
 def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
