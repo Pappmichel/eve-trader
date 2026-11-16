@@ -252,7 +252,7 @@ def test_rebuild_keeps_sales_before_a_truncated_journal_and_flags_only_those(ten
     bob_early = next(r for r in rows if int(r[0]) == BOB and r[1] == early)
     assert "fees_missing" in bob_early[3]
     run = ledger_db.latest_ledger_run()
-    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 6
+    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 7
     totals = ledger_db.realized_totals(T0, T1 + (T1 - T0))
     assert int(totals[16]) == 1                      # one flagged sale
     assert float(totals[17]) == pytest.approx(150.0)  # its stored (gross) revenue

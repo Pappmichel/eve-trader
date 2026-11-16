@@ -69,8 +69,12 @@ log = logging.getLogger(__name__)
 # price instead of The Forge daily average. 4: sale channels, station pool
 # and hub freight (unified plan Phase 2). 5: reprocessing detection.
 # 6: T0 is no longer pushed forward by a truncated journal; sales before a
-# wallet's journal start stay and are flagged fees_missing. NULL counts as older.
-COSTING_VERSION = 6
+# wallet's journal start stay and are flagged fees_missing. 7: own characters
+# by token or sharing rows; internal market trades are transfers (also
+# re-derives the opening once after the reprocessing, gas decompression and
+# corp-accepted contract flow changes that shipped without a bump).
+# NULL counts as older.
+COSTING_VERSION = 7
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
