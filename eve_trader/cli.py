@@ -21,7 +21,7 @@ import logging
 
 import click
 
-from . import actions, config, storage, tenant_scope
+from . import actions, backup, config, storage, tenant_scope
 from .auth import import_tokens_file
 from .production import actions as production_actions
 from .production import config as production_config
@@ -203,6 +203,30 @@ def refresh_shortlist():
                     f"max_profit/day={row['max_profit_per_day']:,.0f} ISK")
     if any(result["audit"].values()):
         click.echo(f"Audit warnings: {result['audit']}")
+
+
+@main.group("backup")
+def backup_group():
+    """Database backups (same function the Admin tool and scheduler use)."""
+
+
+@backup_group.command("create")
+@click.option("--pre-deploy", is_flag=True, default=False,
+              help="Use the pre-deploy file-name family (own retention: last 5), "
+                   "as deploy/deploy.sh does before a schema migration.")
+def backup_create(pre_deploy: bool):
+    """Create one backup zip under data/backups and print its path.
+
+    Exits 1 on failure; pg_dump's own error text stays in the process log.
+    """
+    prefix = backup.PREDEPLOY_BACKUP_PREFIX if pre_deploy else backup.BACKUP_NAME_PREFIX
+    try:
+        info = backup.create_backup(prefix=prefix)
+    except (OSError, RuntimeError) as e:
+        log.error("backup failed: %s", e)
+        click.echo("Backup failed (see log).", err=True)
+        raise SystemExit(1) from e
+    click.echo(f"Backup created: {backup.BACKUP_DIR / info['name']} ({info['size_bytes']} bytes)")
 
 
 @main.group("realized")

@@ -83,6 +83,12 @@ BACKUP_NAME_PREFIX = "eve_trader_backup_"
 # background process can't grow this without bound" reasoning as
 # logging_setup.py's RotatingFileHandler.
 MAX_BACKUPS = 14
+# Backups taken by deploy/deploy.sh before a schema migration. Own prefix and
+# own retention so several deploys on one day do not push the regular daily
+# backups out of MAX_BACKUPS; list_backups() (the Admin list) does not show
+# them on purpose.
+PREDEPLOY_BACKUP_PREFIX = "eve_trader_predeploy_"
+MAX_PREDEPLOY_BACKUPS = 5
 
 log = logging.getLogger(__name__)
 _backup_lock = threading.Lock()
@@ -97,21 +103,27 @@ DOCKER_BIN = os.getenv("EVE_TRADER_DOCKER_BIN", "docker")
 PG_DB_NAME = "eve_trader"
 
 
-def create_backup() -> dict:
+def create_backup(prefix: str = BACKUP_NAME_PREFIX) -> dict:
     """Creates one timestamped .zip under BACKUP_DIR containing a pg_dump
     (`-Fc`) of the whole Postgres database plus config.yaml (if present),
     then prunes anything beyond MAX_BACKUPS. Returns the same shape as one
     entry of list_backups(). Serialized so parallel callers cannot collide
-    on a filename or race the retention prune."""
+    on a filename or race the retention prune.
+
+    ``prefix`` selects the file-name family and with it the retention: the
+    default is the regular daily family (MAX_BACKUPS); PREDEPLOY_BACKUP_PREFIX
+    keeps the last MAX_PREDEPLOY_BACKUPS, counted separately."""
+    if prefix not in _KNOWN_PREFIXES:
+        raise ValueError(f"unknown backup prefix {prefix!r}")
     with _backup_lock:
-        return _create_backup_locked()
+        return _create_backup_locked(prefix)
 
 
-def _create_backup_locked() -> dict:
+def _create_backup_locked(prefix: str = BACKUP_NAME_PREFIX) -> dict:
     BACKUP_DIR.mkdir(exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
     unique = uuid.uuid4().hex[:8]
-    backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}_{unique}.zip"
+    backup_path = BACKUP_DIR / f"{prefix}{ts}_{unique}.zip"
     tmp_dump_path = BACKUP_DIR / f".tmp_{ts}_{unique}.dump"
 
     if PG_CONTAINER:
@@ -182,7 +194,7 @@ def _create_backup_locked() -> dict:
         # match BACKUP_NAME_PREFIX, so nothing else here ever notices it).
         tmp_dump_path.unlink(missing_ok=True)
 
-    _prune_old_backups()
+    _prune_old_backups(prefix)
     info = _backup_info(backup_path)
     # T1-06 (2026-09-26): _run_job only ever logs a scheduled backup's
     # FAILURE, never its success - manual (Admin "Create Backup") and
@@ -193,9 +205,18 @@ def _create_backup_locked() -> dict:
     return info
 
 
-def _prune_old_backups() -> None:
-    backups = sorted(BACKUP_DIR.glob(f"{BACKUP_NAME_PREFIX}*.zip"), key=lambda p: p.name)
-    for old in backups[:-MAX_BACKUPS]:
+_KNOWN_PREFIXES = (BACKUP_NAME_PREFIX, PREDEPLOY_BACKUP_PREFIX)
+
+
+def _retention(prefix: str) -> int:
+    # Read at call time so the limits stay patchable.
+    return MAX_PREDEPLOY_BACKUPS if prefix == PREDEPLOY_BACKUP_PREFIX else MAX_BACKUPS
+
+
+def _prune_old_backups(prefix: str = BACKUP_NAME_PREFIX) -> None:
+    keep = _retention(prefix)
+    backups = sorted(BACKUP_DIR.glob(f"{prefix}*.zip"), key=lambda p: p.name)
+    for old in backups[:-keep]:
         old.unlink()
 
 
