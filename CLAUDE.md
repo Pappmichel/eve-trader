@@ -90,8 +90,14 @@ excluded and are listed. The page
 (`GET /api/portfolio/wealth`, `/wealth/breakdown`, `/realized-cards`,
 `/realized-history`, `/capital`, `/attention`) shows the breakdown,
 realized profit for every granted channel, capital at FIFO cost from the
-realized-profit ledger (labeled as such), and an attention list. The
-frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
+realized-profit ledger (labeled as such), and an attention list. Capital
+keeps blueprint-copy run layers in their own "Blueprint copies" bucket
+(quantity in runs, market value = the per-run copy value x runs, a copy
+without one left out of both sides); sell orders and contracts draw only
+item layers. Like the realized reports, Capital compares the last run's
+owner fingerprint (`access.owner_scope_hash`): without a run or after a
+sharing change it returns `needs_rebuild` with a hint, no buckets and no
+total. The frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
 `/attention` share one priced computation per tenant for 120 s
 (`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
 price-setting change, manual price, or SDE apply drops it at once, nothing is
@@ -141,7 +147,7 @@ they laid out side by side:
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
-| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `realized/loader.py` |
+| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price. Blueprint-copy runs without a cost layer are not priced from the original: they take the per-run value Total Wealth uses (`portfolio.bpc_run_values_with_status`: invention cost per run, or the copy job fee per run for a Tech I copy), frozen per (blueprint type, day) in `ledger_bpc_run_prices` only when that computation ran completely, and stay `estimated` (warning `bpc_run_estimated`); a faction/officer copy stays `price_missing` | `realized/loader.py` |
 | What would a produced item sold through Doctrine have cost to buy (production saving, informational)? | The buy-list purchase price even when building was cheaper, frozen per (type, sale day) in `ledger_saving_buy_prices` by every rebuild: the planner's live quote for a sale today or yesterday, otherwise The Forge daily average plus buy broker fee and haul cost per packaged m3. Never `ledger_valuation_prices` (that holds the cheaper value, i.e. the build cost). Lines without a price are left out and the priced share is shown | `realized/saving_prices.py`, `doctrine/realized.py` |
 | What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
 | What is an owned item worth (Portfolio Total Wealth and Capital)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
@@ -248,7 +254,10 @@ acceptance, D7 revision 2026-11-14), origin stays `bought` and `source` is `cont
 the price is split by reference value at that date (D4) and the shares sum
 exactly to the price. The tenant as issuer books Production-type items it
 gives as sales under the same FIFO order as market sales, with no sales tax
-and no broker fee. A contract that both gives and receives items is booked
+and no broker fee. A given blueprint line gets no result; the share of the
+price split onto it (by quantity, blueprints have no reference value) is not
+booked and is warned `contract_blueprint_share_unbooked` with its amount.
+A contract that both gives and receives items is booked
 on both sides and warned `contract_item_swap`. Freight on a contract buy
 is the courier rate when a shipment covers that purchase, otherwise the
 configured rate times packaged m3. The packaged m3 stays frozen on

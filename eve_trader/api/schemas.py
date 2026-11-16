@@ -1025,6 +1025,10 @@ class CapitalTotal(_Base):
 
 class PortfolioCapital(_Base):
     source: str
+    # True when there is no ledger run or the shared owners changed since
+    # it: buckets are empty and the total is None until a recompute.
+    needs_rebuild: bool = False
+    hint: Optional[str] = None
     buckets: list[CapitalBucket] = []
     total: CapitalTotal = CapitalTotal()
 

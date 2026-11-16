@@ -615,8 +615,19 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
     each compare every decryptor, and Total Wealth is read several times
     per page load. Tenant-keyed because skills, structure and fees are
     tenant settings."""
+    values, _complete = bpc_run_values_with_status(type_ids)
+    return {tid: value for tid, value in values.items() if value is not None}
+
+
+def bpc_run_values_with_status(type_ids: set[int]) -> tuple[dict[int, Optional[float]], bool]:
+    """`_bpc_run_values` plus whether every value came from a complete
+    computation: ({type_id: value or None}, complete). `complete` is False
+    when this call computed something during a quote or fee-rate outage;
+    a caller that freezes the values (the realized-profit ledger) must then
+    store nothing. A None value under `complete` means the copy has no
+    per-run value (faction/officer copy, unpriced input)."""
     if not type_ids:
-        return {}
+        return {}, True
     tenant = str(storage.get_current_tenant())
     with _bpc_lock:
         now = time.time()
@@ -625,27 +636,28 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
                 del _bpc_cache[key]
             _bpc_cache_at[tenant] = now
         missing = [tid for tid in type_ids if (tenant, tid) not in _bpc_cache]
-        if missing:
-            computed, cacheable = _compute_bpc_run_values(missing)
-            if cacheable:
-                for tid, value in computed.items():
-                    _bpc_cache[(tenant, tid)] = value
-            # Always return cached values plus this call's computed ones.
-            # Only the write above depends on cacheable - otherwise a partial
-            # outage would drop already-known BPC values from Total Wealth.
-            out = {
-                tid: _bpc_cache[(tenant, tid)]
-                for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-            }
-            if not cacheable:
-                for tid, value in computed.items():
-                    if value is not None and tid in type_ids:
-                        out[tid] = value
-            return out
-        return {
-            tid: _bpc_cache[(tenant, tid)]
-            for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-        }
+        cached = {tid: _bpc_cache.get((tenant, tid)) for tid in type_ids if (tenant, tid) in _bpc_cache}
+        if not missing:
+            return cached, True
+        computed, cacheable = _compute_bpc_run_values(missing)
+        if cacheable:
+            for tid, value in computed.items():
+                _bpc_cache[(tenant, tid)] = value
+        # Always return cached values plus this call's computed ones. Only
+        # the write above depends on cacheable - otherwise a partial outage
+        # would drop already-known BPC values from Total Wealth.
+        out = dict(cached)
+        for tid in missing:
+            out[tid] = computed.get(tid)
+        return out, bool(cacheable)
+
+
+def bpc_run_value_source(type_id: int) -> str:
+    """How `_compute_bpc_run_values` values a copy of this blueprint:
+    "invention" for an invented blueprint, else "copy"."""
+    if storage.find_invention_recipe_candidates_by_product_type_id(int(type_id)):
+        return "invention"
+    return "copy"
 
 
 def _original_on_market(type_id: int) -> bool:
@@ -1097,15 +1109,23 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     Owners are the union of realized-tool shares, not the Portfolio share.
     Prices are the same manual / home sell / Jita sell function as Total Wealth.
     """
-    from .portfolio_capital import report
-    from .realized.access import shared_item_exchange_owners, shared_owners
+    from .portfolio_capital import needs_rebuild, report
+    from .realized.access import owner_scope_hash, shared_item_exchange_owners, shared_owners
     from .realized import db as ledger_db
+
+    # Same check as the realized reports: layers built from other owners
+    # than the ones shared now must not be shown (D11).
+    run = ledger_db.latest_ledger_run()
+    if run is None:
+        return needs_rebuild("Recompute realized profit to build capital from the archive.")
+    if run[4] is None or run[4] != owner_scope_hash():
+        return needs_rebuild("Sharing changed since the last recompute. Recompute realized profit to update.")
 
     order_owners = shared_owners("market_orders")
     contract_owners = shared_item_exchange_owners()
     layers = [
         {
-            "type_id": row[0], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
+            "type_id": row[0], "unit": row[1], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
             "assumed_me": row[5], "assumed_decryptor": row[6], "estimated_origin": row[7],
             "price_missing": row[8],
         }
@@ -1121,13 +1141,17 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     ]
     escrow_rows = ledger_db.open_buy_escrow_by_owner(order_owners)
     escrow = None if escrow_rows is None else sum(amount for _ot, _oid, amount in escrow_rows)
-    type_ids = {int(layer["type_id"]) for layer in layers}
+    # Copy runs are valued per run like Total Wealth's copies, never at the
+    # original's quote; a manual price is per copy, so it does not apply.
+    run_type_ids = {int(layer["type_id"]) for layer in layers if layer["unit"] == "bpc_run"}
+    type_ids = {int(layer["type_id"]) for layer in layers if layer["unit"] != "bpc_run"}
     type_ids.update(int(row["type_id"]) for row in listed)
     type_ids.update(int(row["type_id"]) for row in contracts)
     prices = _priced(type_ids)
+    run_prices = _bpc_run_values(run_type_ids)
     count, cost = ledger_db.running_job_cost()
     in_production = {"count": int(count or 0), "cost": float(cost or 0)}
-    return report(layers, listed, contracts, escrow, prices, in_production)
+    return report(layers, listed, contracts, escrow, prices, in_production, bpc_run_prices=run_prices)
 
 
 def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:

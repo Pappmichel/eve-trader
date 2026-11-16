@@ -240,4 +240,37 @@ describe('Portfolio overview', () => {
     expect(await screen.findByText(/Without In production/)).toBeInTheDocument()
     expect(await screen.findByText(/1 of 250 types shown/)).toBeInTheDocument()
   })
+
+  it('shows blueprint copies in runs', async () => {
+    vi.mocked(portfolioApi.capital).mockResolvedValue({
+      source: 'realized-profit ledger',
+      buckets: [
+        {
+          key: 'bpc_runs', label: 'Blueprint copies', quantity: 1200, cost_basis: 100, market_value: 120,
+          unrealized: 20, coverage: 1, estimated: false,
+        },
+      ],
+      total: {
+        cost_basis: 100, market_value: 120, unrealized: 20, estimated: false, coverage: 1, excluded: [],
+      },
+    })
+    renderPortfolio()
+    expect(await screen.findByText('Blueprint copies')).toBeInTheDocument()
+    expect(await screen.findByText(/runs, valued at copy or invention cost per run/)).toBeInTheDocument()
+  })
+
+  it('shows the recompute hint instead of capital after sharing changed', async () => {
+    vi.mocked(portfolioApi.capital).mockResolvedValue({
+      source: 'realized-profit ledger',
+      needs_rebuild: true,
+      hint: 'Sharing changed since the last recompute. Recompute realized profit to update.',
+      buckets: [],
+      total: {
+        cost_basis: null, market_value: null, unrealized: null, estimated: false, coverage: null, excluded: [],
+      },
+    })
+    renderPortfolio()
+    expect(await screen.findByText(/Sharing changed since the last recompute/)).toBeInTheDocument()
+    expect(screen.queryByText(/Total cost/)).toBeNull()
+  })
 })

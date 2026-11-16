@@ -1829,6 +1829,20 @@ def test_portfolio_attention_route(monkeypatch):
     assert "portfolio" in seen["keys"]
 
 
+def test_portfolio_capital_route_passes_needs_rebuild(monkeypatch):
+    from eve_trader import portfolio
+    from eve_trader.portfolio_capital import needs_rebuild
+
+    monkeypatch.setattr(portfolio, "do_get_portfolio_capital", lambda cfg=None: needs_rebuild("Recompute."))
+    resp = client.get("/api/portfolio/capital")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["needs_rebuild"] is True
+    assert body["hint"] == "Recompute."
+    assert body["buckets"] == []
+    assert body["total"]["cost_basis"] is None
+
+
 def test_get_portfolio_history_defaults_to_unbounded(monkeypatch):
     from eve_trader import portfolio
     calls = {}

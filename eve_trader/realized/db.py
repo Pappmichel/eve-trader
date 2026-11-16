@@ -1233,6 +1233,30 @@ def upsert_valuation_prices(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def list_bpc_run_prices() -> dict[tuple[int, object], tuple[Optional[float], str]]:
+    """{(blueprint type_id, price_date): (unit_value, source)} - every frozen
+    per-run copy value of this tenant. unit_value is None for "unavailable"."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, price_date, unit_value, source FROM ledger_bpc_run_prices",
+        ).fetchall()
+    return {(int(r[0]), r[1]): (None if r[2] is None else float(r[2]), str(r[3])) for r in rows}
+
+
+def insert_bpc_run_prices(rows: list[tuple]) -> int:
+    """`rows`: (type_id, price_date, unit_value, source). Insert-only freeze."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "INSERT INTO ledger_bpc_run_prices (type_id, price_date, unit_value, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, type_id, price_date) DO NOTHING",
+            rows,
+        )
+    return len(rows)
+
+
 def missing_saving_buy_price_pairs() -> set[tuple[int, object]]:
     """(type_id, UTC sale day) of produced items sold through a doctrine
     contract that have no frozen saving buy price yet (U9)."""

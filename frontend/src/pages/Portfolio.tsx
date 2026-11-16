@@ -493,6 +493,14 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
 
 function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) {
   if (!capital) return null
+  if (capital.needs_rebuild) {
+    return (
+      <Stack gap="sm">
+        <Title order={4}>Capital</Title>
+        <Text size="sm" c="dimmed">{capital.hint ?? 'Recompute realized profit to update capital.'}</Text>
+      </Stack>
+    )
+  }
   return (
     <Stack gap="sm">
       <Title order={4}>Capital</Title>
@@ -511,6 +519,11 @@ function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) 
           </Group>
           {row.comparison_value != null && (
             <Text size="xs" c="dimmed" mt={4}>Wealth price {isk(row.comparison_value)}</Text>
+          )}
+          {row.key === 'bpc_runs' && row.quantity != null && (
+            <Text size="xs" c="dimmed" mt={4}>
+              {Math.round(row.quantity).toLocaleString()} runs, valued at copy or invention cost per run
+            </Text>
           )}
         </Card>
       ))}
