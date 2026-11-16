@@ -130,7 +130,7 @@ def test_evaluate_line_uses_ore_ice_yield_not_scrapmetal_when_family_given(monke
 
     monkeypatch.setattr(storage, "search_sde_types", lambda name, limit=5: [(45490, "Compressed Veldspar")])
     monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 100)
-    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(34, 0.415)])
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(34, 415.0)])
     refining_cfg = RefiningConfig(reprocessing_skill_level=5, reprocessing_efficiency_skill_level=5,
                                    scrapmetal_processing_skill_level=0, refining_tax_rate=0.0)
     item_stats = OrderStats(sell_percentile=1.0, sell_volume=1000.0, buy_percentile=None, buy_volume=0.0)
