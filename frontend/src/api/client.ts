@@ -151,7 +151,7 @@ export const tradingApi = {
   startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
   realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
-  updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
+  updateSettings: (s: Partial<T.TradingSettings>) => post<T.TradingSettings>('/api/trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
   buildUniverse: () => post<{ count: number }>('/api/trading/universe/build'),
@@ -291,7 +291,7 @@ export const productionApi = {
   removeManualBlueprintMeTeOverride: (typeId: number) =>
     del(`/api/production/blueprints/manual-me-te-overrides/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
-  updateSettings: (s: T.ProductionSettings) => post<T.ProductionSettings>('/api/production/settings', s),
+  updateSettings: (s: Partial<T.ProductionSettings>) => post<T.ProductionSettings>('/api/production/settings', s),
   reactionCapacityStatus: () => get<T.ReactionCapacityStatus>('/api/production/settings/reaction-capacity'),
   reactionChainChoices: () => get<Record<number, string>>('/api/production/reaction-chain-choices'),
   setReactionChainChoice: (typeId: number, choice: 'buy' | 'wait' | null) =>
@@ -651,7 +651,7 @@ export const doctrineApi = {
   removeAssetCharacter: (roleKey: string) => del(`/api/doctrine/asset-characters/${roleKey}`),
 
   settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
-  updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
+  updateSettings: (s: Partial<T.DoctrineSettings>) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
   hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
     '/api/doctrine/settings/hangar-division-options',
   ),
@@ -686,7 +686,7 @@ export const refiningApi = {
   activateShortlistItems: (itemIds: number[]) =>
     post<{ activated: number }>('/api/refining/shortlist/activate', { item_ids: itemIds }),
   settings: () => get<T.RefiningSettings>('/api/refining/settings'),
-  updateSettings: (s: T.RefiningSettings) => post<T.RefiningSettings>('/api/refining/settings', s),
+  updateSettings: (s: Partial<T.RefiningSettings>) => post<T.RefiningSettings>('/api/refining/settings', s),
   settingsOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; implants: string[] }>(
     '/api/refining/settings/options',
   ),
@@ -715,7 +715,7 @@ export const stationTradingApi = {
   checkUndercut: () => post<T.StationTradingUndercutCheckResult>('/api/station-trading/undercut/check'),
   skills: () => get<T.SkillSummary[]>('/api/station-trading/skills'),
   settings: () => get<T.StationTradingSettings>('/api/station-trading/settings'),
-  updateSettings: (s: T.StationTradingSettings) =>
+  updateSettings: (s: Partial<T.StationTradingSettings>) =>
     post<T.StationTradingSettings>('/api/station-trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/station-trading/esi/sync-time'),
 
@@ -1051,7 +1051,7 @@ export const moduleReprocessingApi = {
   activateShortlistItems: (itemIds: number[]) =>
     post<{ activated: number }>('/api/module-reprocessing/shortlist/activate', { item_ids: itemIds }),
   settings: () => get<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings'),
-  updateSettings: (s: T.ModuleReprocessingSettings) =>
+  updateSettings: (s: Partial<T.ModuleReprocessingSettings>) =>
     post<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/module-reprocessing/esi/sync-time'),
   // Mineral Shopping List (ore/ice AND modules/drones as reprocessing sources)

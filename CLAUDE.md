@@ -428,6 +428,19 @@ is what actually resolves and `.set()`s that per-request/per-job-tick (see
 tenant's Settings-page save into every other tenant's live config, since
 they'd all be reading/writing the exact same object.
 
+**Settings saves are partial.** The six settings routes (Trading, Production,
+Station Trading, Ore & Minerals, Module Reprocessing, Doctrine) take an update
+model built by `api/partial.py` (`partial_model`: every field optional, same
+types) and save `model_dump(exclude_unset=True)`: only fields the client sent
+change, an explicit null on a nullable field is a value. Validation that spans
+fields runs on stored values plus the update (`validate_production_merged`,
+Doctrine's hangar groups via `_with_saved_hangar_fields`). The settings pages
+send only the fields changed against the loaded data (`frontend/src/api/
+changedFields.ts`) and each direct-save site (toggles, hub pickers) sends only
+its own field. The boot load (`api/app.py` `_load_default_tenant_config`)
+applies all seven scopes (trading, production, doctrine, pi, refining,
+station_trading, module_reprocessing) for the default tenant.
+
 If you add a new config field, it's automatically type-checked - no extra
 work needed unless it's an enum-style string field, in which case add it to
 `validate_production_overrides` (Production-specific checks stay out of the
@@ -489,6 +502,11 @@ function or table after that migration (all 5 of its phases are done).
   `storage.py` or elsewhere in the app - doing so would silently bypass
   this entirely, and nothing would catch it (Postgres itself only enforces
   RLS based on `app.tenant_id` actually being set on *that* connection).
+  `batch_session(isolation="repeatable read")` runs the whole batch on one
+  snapshot (the realized ledger loader reads the archive that way so a sync
+  committing mid-load cannot give a rebuild rows of two moments); nothing in
+  such a block may write what a sync also writes, and a nested batch asking
+  for it inside a weaker one raises `RuntimeError`.
   `storage.connect_unscoped()` is a narrow, deliberate exception for the
   handful of genuinely tenant-independent tables (`tenants`,
   `tenant_registry_entries`) - don't reach for it for anything else.
@@ -1048,6 +1066,10 @@ slightly different shapes as new needs came up, not one uniform pattern:
   refresh) -   TTL alone would let a just-changed Setting serve stale results
  for the rest of the TTL window, a real correctness problem, not just a
  performance one.
+- `production/engine.py`'s market-velocity estimate (`_w2_market_velocity`)
+  keeps a small dict (cap 8, other days dropped on insert) behind a lock that
+  guards only the dict, plus one lock per key, so a slow network call blocks
+  only callers with the same key; a failed estimate is never cached.
 - Per-id SDE lookups (`get_sde_type`, `get_type_materials`, and the recipe
  getters `get_blueprint_for_product` / `get_blueprint_materials` /
  `get_blueprint_time` / `find_invention_recipe_candidates_by_product_type_id`)

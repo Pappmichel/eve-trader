@@ -1111,10 +1111,21 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                          reset_opening: bool = False) -> Optional[LedgerSnapshot]:
     """Assemble a LedgerSnapshot from the archive (with cached reference
     prices only), or None when T0 is unknown."""
-    # Pure archive reads share one pooled connection. `_load_contracts` stays
-    # outside both batches: it writes freight/regions back and its enricher
-    # can resolve a ship/module volume over ESI.
+    # `_load_contracts` runs first and outside the snapshot block: it writes
+    # freight/regions back and its enricher can resolve a ship/module volume
+    # over ESI. Every other archive read then happens in ONE repeatable-read
+    # block, so a sync that commits while the rebuild loads cannot give it
+    # rows of two different moments. The contracts are therefore read an
+    # instant before the other rows; the next rebuild corrects that.
+    # Nothing in the block writes (a write that collides with a sync's update
+    # of the same row would fail the whole block); the price freezes and the
+    # derived tables are written later, outside it.
     with storage.batch_session():
+        if access.cutover_t0_for_production() is None:
+            return None
+        pre_chars = _tenant_character_ids()
+    contracts = _load_contracts(pre_chars)
+    with storage.batch_session(isolation="repeatable read"):
         t0 = access.cutover_t0_for_production()
         if t0 is None:
             return None
@@ -1201,8 +1212,6 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 uses_bpc=_uses_bpc(r, bp_runs, invented),
             ))
 
-    contracts = _load_contracts(tenant_chars)
-    with storage.batch_session():
         foreign_warnings = _foreign_character_warnings(
             tenant_chars, tx_rows, journal_rows, job_rows,
             [(contract.owner_type, contract.owner_id) for contract in contracts],

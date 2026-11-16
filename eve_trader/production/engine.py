@@ -2723,12 +2723,33 @@ def _reaction_capacity_gross_demand(
 # history call per plan otherwise. Market history is daily, so a result is
 # reused for the rest of the UTC day; key includes everything it depends on.
 _w2_market_cache: dict[tuple, dict[int, float]] = {}
-_w2_market_lock = threading.Lock()
+_w2_market_lock = threading.Lock()  # guards the two dicts only, never held over a network call
+_w2_market_key_locks: dict[tuple, threading.Lock] = {}  # one per key: same-key callers share one computation
+_W2_MARKET_CACHE_MAX = 8
 
 
 def clear_w2_market_velocity_cache() -> None:
     with _w2_market_lock:
         _w2_market_cache.clear()
+
+
+def _w2_market_cache_get(key: tuple) -> Optional[dict[int, float]]:
+    with _w2_market_lock:
+        cached = _w2_market_cache.get(key)
+        return dict(cached) if cached is not None else None
+
+
+def _w2_market_cache_put(key: tuple, found: dict[int, float]) -> None:
+    """Drops entries of other days, then the oldest ones beyond the cap, so
+    several tenants' keys coexist instead of evicting each other."""
+    with _w2_market_lock:
+        day = key[1]
+        for old in [k for k in _w2_market_cache if k[1] != day]:
+            del _w2_market_cache[old]
+        _w2_market_cache.pop(key, None)
+        _w2_market_cache[key] = dict(found)
+        while len(_w2_market_cache) > _W2_MARKET_CACHE_MAX:
+            del _w2_market_cache[next(iter(_w2_market_cache))]
 
 
 def _w2_market_velocity(cfg: ProductionConfig, type_ids: list[int]) -> Optional[dict[int, float]]:
@@ -2737,23 +2758,36 @@ def _w2_market_velocity(cfg: ProductionConfig, type_ids: list[int]) -> Optional[
     no type got a value at all. The history client swallows failed requests,
     so an outage and "none of these trade" look the same; the caller then
     keeps the backlog (the pre-D17 rule) rather than read an outage as
-    "nothing sells". Not cached, so the next plan asks again."""
+    "nothing sells". Not cached, so the next plan asks again.
+
+    The network call runs outside the module lock: tenants with different keys
+    do not wait for each other. Callers with the same key queue on that key's
+    own lock and find the first one's result."""
     ids = sorted({int(t) for t in type_ids})
     if not ids:
         return {}
     region_id = TRADING_CONFIG.reference_region_id
     key = (region_id, dynamic_targets._today().isoformat(), int(cfg.dynamic_target_window_days),
            float(cfg.dynamic_target_market_share), tuple(ids))
+    cached = _w2_market_cache_get(key)
+    if cached is not None:
+        return cached
     with _w2_market_lock:
-        cached = _w2_market_cache.get(key)
-        if cached is not None:
-            return dict(cached)
-        found = dynamic_targets.compute_market_velocity(cfg, ids, region_id=region_id)
-        if not found:
-            return None
-        _w2_market_cache.clear()  # one key per tenant config and day is enough
-        _w2_market_cache[key] = dict(found)
-        return dict(found)
+        key_lock = _w2_market_key_locks.setdefault(key, threading.Lock())
+    try:
+        with key_lock:
+            cached = _w2_market_cache_get(key)
+            if cached is not None:
+                return cached
+            found = dynamic_targets.compute_market_velocity(cfg, ids, region_id=region_id)
+            if not found:
+                return None
+            _w2_market_cache_put(key, found)
+            return dict(found)
+    finally:
+        with _w2_market_lock:
+            if _w2_market_key_locks.get(key) is key_lock:
+                del _w2_market_key_locks[key]
 
 
 # A unit value above this is a data error, not a real end product; keeps the

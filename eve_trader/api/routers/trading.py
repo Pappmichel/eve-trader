@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
+from ..partial import partial_model
 from ... import actions, storage, timeutil
 from ...actions import ActionError
 from ...config import TRADING_CONFIG
@@ -168,9 +169,12 @@ def get_settings():
     return TradingSettings(**{f: getattr(TRADING_CONFIG, f) for f in TradingSettings.model_fields})
 
 
+TradingSettingsUpdate = partial_model(TradingSettings, "TradingSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: TradingSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: TradingSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 @router.get("/esi/sync-time")

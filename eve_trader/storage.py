@@ -315,7 +315,7 @@ def connect_own_transaction():
 
 
 @contextmanager
-def batch_session():
+def batch_session(isolation: Optional[str] = None):
     """Opens ONE pooled connection and makes every connect() call on this
     thread reuse it until this `with` block exits, instead of each one
     checking out its own - see connect()'s docstring for the pattern this
@@ -333,7 +333,19 @@ def batch_session():
     (reuses the outer batch). A nested call under a *different* ambient
     tenant opens its own connection (and holds two pool connections until
     it exits), then restores the outer batch - do not loop over tenants
-    inside one batch."""
+    inside one batch.
+
+    `isolation="repeatable read"` runs the whole batch on one snapshot: a
+    commit by another connection mid-batch is not visible inside it (the
+    default, READ COMMITTED, sees it on the next statement). It is set as the
+    transaction's first statement, so it ends with the batch and the pooled
+    connection goes back at its default. Only for read blocks: a write that
+    collides with a concurrent update of the same row fails with a
+    serialization error. A nested batch of the same tenant ignores the
+    argument but raises RuntimeError when it asks for repeatable read and the
+    outer batch is not one - a silent downgrade would void the guarantee."""
+    if isolation is not None and isolation != "repeatable read":
+        raise ValueError(f"unsupported isolation level: {isolation!r}")
     tenant_id = _tenant_id_var.get()
     if tenant_id is None:
         raise RuntimeError(
@@ -342,16 +354,25 @@ def batch_session():
         )
     active = getattr(_batch_local, "conn", None)
     if active is not None and getattr(_batch_local, "tenant_id", None) == tenant_id:
+        if isolation is not None and getattr(_batch_local, "isolation", None) != isolation:
+            raise RuntimeError(
+                f"batch_session(isolation={isolation!r}) nested in a batch without that isolation level"
+            )
         yield  # same-tenant nested batch - reuse outer, nothing to set up
         return
     outer_conn = active
     outer_tenant = getattr(_batch_local, "tenant_id", None)
+    outer_isolation = getattr(_batch_local, "isolation", None)
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            if isolation is not None:
+                # Must be the transaction's first statement.
+                cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
         _batch_local.conn = _TranslatingConnection(conn)
         _batch_local.tenant_id = tenant_id
+        _batch_local.isolation = isolation
         try:
             yield
             conn.commit()
@@ -362,9 +383,11 @@ def batch_session():
             if outer_conn is not None:
                 _batch_local.conn = outer_conn
                 _batch_local.tenant_id = outer_tenant
+                _batch_local.isolation = outer_isolation
             else:
                 _batch_local.conn = None
                 _batch_local.tenant_id = None
+                _batch_local.isolation = None
 
 
 @contextmanager

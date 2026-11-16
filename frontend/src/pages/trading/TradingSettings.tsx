@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, Switch } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
@@ -47,7 +48,7 @@ export default function TradingSettings() {
             value={form.structure_sell_haircut * 100} min={0} max={100} step={1}
             onChange={(v) => set('structure_sell_haircut', Number(v) / 100)} />
           <ObservedSellFeeHint fees={observedFees} current={form.structure_sell_haircut} applying={save.isPending}
-            onApply={(v) => { set('structure_sell_haircut', v); save.mutate({ ...form, structure_sell_haircut: v }) }} />
+            onApply={(v) => { set('structure_sell_haircut', v); save.mutate(changedFields(data, { ...form, structure_sell_haircut: v })) }} />
         </Stack>
         <NumberInput label="Minimum profit/unit (ISK)" value={form.min_profit_threshold} min={0} step={100}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
@@ -158,7 +159,7 @@ export default function TradingSettings() {
           onChange={(v) => set('esi_stale_clear_multiples', Number(v))} />
       </SimpleGrid>
 
-      <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={240} onClick={() => save.mutate(changedFields(data, form))} loading={save.isPending}>
         Save Settings
       </Button>
     </Stack>

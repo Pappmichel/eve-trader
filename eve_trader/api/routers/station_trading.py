@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
+from ..partial import partial_model
 from ...actions import ActionError
 from ...station_trading import actions
 from ...station_trading import realized as station_realized
@@ -87,9 +88,12 @@ def remove_trader_character(role_key: str):
     return _wrap(actions.do_remove_trader_character, role_key=role_key)
 
 
+StationTradingSettingsUpdate = partial_model(schemas.StationTradingSettings, "StationTradingSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: schemas.StationTradingSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: StationTradingSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 # ------------------------------------------------------------- realized profit

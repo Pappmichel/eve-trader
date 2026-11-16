@@ -298,3 +298,71 @@ def test_nested_batch_under_other_tenant_restores_outer(tenant, monkeypatch):
             assert conn.execute(
                 "SELECT item FROM shortlist WHERE item_id = 812"
             ).fetchone() == ("inner",)
+
+
+# ------------------------------------------------------- repeatable read batch
+def _isolation() -> str:
+    with storage.connect() as conn:
+        return conn.execute("SHOW transaction_isolation").fetchone()[0]
+
+
+def test_batch_isolation_is_repeatable_read_inside_and_default_after(tenant):
+    with storage.batch_session():
+        assert _isolation() == "read committed"
+    with storage.batch_session(isolation="repeatable read"):
+        assert _isolation() == "repeatable read"
+    with storage.batch_session():
+        assert _isolation() == "read committed"
+    with storage.connect():
+        assert _isolation() == "read committed"
+
+
+def test_repeatable_read_batch_does_not_see_a_concurrent_commit(tenant):
+    pg_helpers.wipe_tables("stock_targets")
+
+    def add(type_id):
+        with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as other:
+            other.execute(
+                "INSERT INTO stock_targets (tenant_id, type_id, type_name, backup_stock) VALUES (%s, %s, 'T', 1)",
+                (tenant, type_id),
+            )
+
+    def count():
+        with storage.connect() as conn:
+            return conn.execute("SELECT count(*) FROM stock_targets").fetchone()[0]
+
+    try:
+        add(910001)
+        with storage.batch_session(isolation="repeatable read"):
+            assert count() == 1
+            add(910002)  # another connection commits mid-batch
+            assert count() == 1
+        assert count() == 2
+
+        with storage.batch_session():  # read committed sees it within the batch
+            assert count() == 2
+            add(910003)
+            assert count() == 3
+    finally:
+        pg_helpers.wipe_tables("stock_targets")
+
+
+def test_nested_batch_asking_for_repeatable_read_in_a_weaker_batch_raises(tenant):
+    with storage.batch_session():
+        with pytest.raises(RuntimeError, match="repeatable read"):
+            with storage.batch_session(isolation="repeatable read"):
+                pass
+        with storage.batch_session():  # a plain nested batch is still a no-op
+            pass
+    with storage.batch_session(isolation="repeatable read"):
+        with storage.batch_session(isolation="repeatable read"):  # same level: reused
+            assert _isolation() == "repeatable read"
+        with storage.batch_session():  # plain nested inside RR: reused, still RR
+            assert _isolation() == "repeatable read"
+    assert storage._batch_local.conn is None
+
+
+def test_unknown_isolation_level_is_rejected(tenant):
+    with pytest.raises(ValueError):
+        with storage.batch_session(isolation="serializable"):
+            pass

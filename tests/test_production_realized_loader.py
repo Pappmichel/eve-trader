@@ -703,3 +703,35 @@ def test_snapshot_carries_the_archived_client_id(tenant, monkeypatch):
     monkeypatch.setattr(loader, "_relic_type_ids", lambda: frozenset())
     snap = loader.load_ledger_snapshot()
     assert {tx.transaction_id: tx.client_id for tx in snap.wallet_transactions} == {1: None, 2: 910002}
+
+
+def test_snapshot_does_not_see_a_row_committed_while_it_loads(tenant, monkeypatch):
+    """All archive reads run on one repeatable-read snapshot: a sync that
+    commits a journal row between two reads does not reach the snapshot."""
+    _seed_buy_and_sell(tenant)
+    monkeypatch.setattr(loader, "_opening_stock", lambda type_ids: {})
+    monkeypatch.setattr(loader, "_tenant_corporation_ids", lambda: frozenset())
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    committed = []
+    real = ledger_access.list_all_wallet_transactions_for_production
+
+    def _read_then_sync_commits():
+        rows = real()
+        with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO ledger_wallet_journal (tenant_id, owner_type, owner_id, division, journal_id, "
+                "date, ref_type, amount) VALUES (%s, 'character', %s, 0, 777, %s, 'transaction_tax', -5)",
+                (tenant, ALICE, T1),
+            )
+        committed.append(True)
+        return rows
+
+    monkeypatch.setattr(ledger_access, "list_all_wallet_transactions_for_production", _read_then_sync_commits)
+
+    snap = loader.load_ledger_snapshot()
+
+    assert committed == [True]
+    assert 777 not in {j.journal_id for j in snap.journal_entries}
+    # The row is committed: the next snapshot (a later rebuild) sees it.
+    monkeypatch.setattr(ledger_access, "list_all_wallet_transactions_for_production", real)
+    assert 777 in {j.journal_id for j in loader.load_ledger_snapshot().journal_entries}
