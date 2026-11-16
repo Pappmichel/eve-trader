@@ -45,6 +45,7 @@ from . import access, db, decryptors
 from .inputs import _invention_skill_factor as invention_skill_factor
 from .costing import (
     ORIGIN_BOUGHT,
+    SOURCE_TRANSFER,
     UNIT_ITEM,
     CompressionLink,
     ContractItem,
@@ -100,6 +101,13 @@ def _as_date(value) -> date:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value)[:10])
+
+
+def _client_id(tx_row: tuple) -> Optional[int]:
+    """ESI's counterparty (column 14 of the bulk wallet read), if archived."""
+    if len(tx_row) > 14 and tx_row[14] is not None:
+        return int(tx_row[14])
+    return None
 
 
 def _production_type_ids(job_rows: list[tuple]) -> frozenset[int]:
@@ -391,6 +399,7 @@ def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
             region_id=int(r[11]) if r[11] is not None else None,
             freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
             freight_m3=float(r[13]) if r[13] is not None else None,
+            client_id=_client_id(r),
         )
         for r in access.list_all_wallet_transactions_for_production()
     ]
@@ -1056,6 +1065,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 region_id=int(r[11]) if r[11] is not None else None,
                 freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
                 freight_m3=float(r[13]) if r[13] is not None else None,
+                client_id=_client_id(r),
             )
             for r in tx_rows
         ]
@@ -1264,7 +1274,12 @@ def _draw_rows(result, snapshot) -> list[tuple]:
         # The rate that costing applied (courier or configured), not the
         # frozen archive rate. ST3 clears it on a station draw.
         rate = None if draw.freight_rate_per_m3 is None else float(draw.freight_rate_per_m3)
-        if layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
+        if layer is not None and tx is not None and layer.source == SOURCE_TRANSFER:
+            # Bought from an own owner: the cost moved with the units, the
+            # internal price is not a purchase price.
+            location_id = int(tx.location_id)
+            unit_price = float(layer.unit_cost)
+        elif layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
             location_id = int(tx.location_id)
             unit_price = float(tx.unit_price)
         elif layer is not None and layer.origin == ORIGIN_BOUGHT and str(layer.source_ref).startswith("contract:"):

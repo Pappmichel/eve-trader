@@ -16,6 +16,16 @@ Events at or after the cutover `t0` are sorted by
 So at the same second a purchase is available to a job that starts, a job's
 output is available to a sale, and a sale never consumes a job's inputs.
 
+Market trades between own owners
+--------------------------------
+A sale whose `client_id` is an own character or corporation, with the
+buyer's archived purchase of the same fill (`internal_trade_pairs`), is a
+transfer, not a result: the sale draws its layers, the buyer gets layers
+with the same cost plus the fill's tax and broker fees (source `transfer`),
+and the purchase is not booked again. Without that purchase the sale stays
+a result warned `internal_trade_unmatched`. Rows without a client_id (older
+archive rows) are booked as before.
+
 Reprocessing
 ------------
 ESI has no reprocessing event. The loader passes tenant-wide stock
@@ -143,6 +153,10 @@ _OBSERVATION_RANK = 100
 
 SOURCE_MARKET = "market"
 SOURCE_CONTRACT = "contract"
+# A layer the buyer side of a market trade between two own owners received.
+SOURCE_TRANSFER = "transfer"
+# Result warning: a sale to an own owner whose purchase is not archived.
+INTERNAL_TRADE_UNMATCHED = "internal_trade_unmatched"
 CONTRACT_ITEM_EXCHANGE = "item_exchange"
 
 # Who sold it (unified plan U1). Origin on each draw stays independent.
@@ -298,6 +312,8 @@ class WalletTransaction:
     freight_rate_per_m3: Optional[float] = None
     freight_m3: Optional[float] = None  # total for the transaction
     journal_ref_id: Optional[int] = None
+    # ESI's counterparty. None on rows archived before it was stored.
+    client_id: Optional[int] = None
 
     @property
     def key(self) -> tuple:
@@ -1150,13 +1166,91 @@ def classify_contract(contract: ItemExchangeContract, *, tenant_character_ids,
     return view, None
 
 
+def _trade_match_key(tx: WalletTransaction) -> tuple:
+    return (tx.date, int(tx.type_id), int(tx.location_id),
+            round(float(tx.unit_price), 2), float(tx.quantity))
+
+
+def _buy_matches_internal_sale(sale: WalletTransaction, buy: WalletTransaction, chars) -> bool:
+    """Does `buy` belong to the same fill as `sale`, seen from the other side?
+
+    The buyer must be the sale's client: the character itself, or a
+    corporation owner (ESI names a character as the client of a corp
+    transaction, and may name the corporation). When the seller is a
+    character and the buy carries its own client_id, that must be the seller.
+    """
+    if (buy.owner_type, int(buy.owner_id)) == (sale.owner_type, int(sale.owner_id)):
+        return False
+    client = int(sale.client_id)
+    if buy.owner_type == "character":
+        if int(buy.owner_id) != client:
+            return False
+    elif int(buy.owner_id) != client and client not in chars:
+        return False
+    if sale.owner_type == "character" and buy.client_id is not None:
+        return int(buy.client_id) == int(sale.owner_id)
+    return True
+
+
+def internal_trade_pairs(ledger: LedgerSnapshot) -> tuple[dict, frozenset]:
+    """Market fills between two of the tenant's own owners, at or after T0.
+
+    A sale is internal when its `client_id` is an own character or an own
+    corporation. Its purchase is the archived buy of the same fill: same
+    second, type, location, unit price (to the cent) and quantity, by the
+    client (`_buy_matches_internal_sale`). A buy with the same transaction id
+    is preferred; otherwise candidates are taken in a fixed order. Fills that
+    agree on all of these fields are interchangeable for costing (layers are
+    tenant-wide and the pool follows the location), so the choice among them
+    does not change any figure.
+
+    Returns ({sale key: buy}, unmatched sale keys). An unmatched internal
+    sale (the buyer's wallet is not shared) stays a sale and is warned. Rows
+    without a client_id are never internal. BPO types are not paired.
+    """
+    chars = {int(c) for c in ledger.tenant_character_ids}
+    own = chars | {int(c) for c in ledger.tenant_corporation_ids}
+    bpo = ledger.bpo_type_ids
+    candidates: dict[tuple, list[WalletTransaction]] = defaultdict(list)
+    sales: list[WalletTransaction] = []
+    for tx in ledger.wallet_transactions:
+        if tx.date < ledger.t0 or int(tx.type_id) in bpo:
+            continue
+        if tx.is_buy:
+            candidates[_trade_match_key(tx)].append(tx)
+        elif tx.client_id is not None and int(tx.client_id) in own:
+            sales.append(tx)
+    pairs: dict[tuple, WalletTransaction] = {}
+    unmatched: set[tuple] = set()
+    used: set[tuple] = set()
+    for sale in sorted(sales, key=lambda t: (t.date, int(t.transaction_id), t.key)):
+        options = [
+            buy for buy in sorted(candidates.get(_trade_match_key(sale), ()), key=lambda t: t.key)
+            if buy.key not in used and _buy_matches_internal_sale(sale, buy, chars)
+        ]
+        same_id = [buy for buy in options if int(buy.transaction_id) == int(sale.transaction_id)]
+        chosen = (same_id or options or [None])[0]
+        if chosen is None:
+            unmatched.add(sale.key)
+            continue
+        used.add(chosen.key)
+        pairs[sale.key] = chosen
+    return pairs, frozenset(unmatched)
+
+
 def freight_purchases(ledger: LedgerSnapshot) -> list:
     """Purchases costing freights: market buys with frozen m3 (not BPOs)
-    and contract-buy lines with frozen m3, at or after T0."""
+    and contract-buy lines with frozen m3, at or after T0. The buy side of a
+    trade between own owners is not freighted: the units keep the cost,
+    freight included, of the layers the seller drew."""
     out: list[FreightPurchase] = []
     bpo = ledger.bpo_type_ids
+    pairs, _unmatched = internal_trade_pairs(ledger)
+    transferred = {buy.key for buy in pairs.values()}
     for tx in ledger.wallet_transactions:
         if not tx.is_buy or tx.date < ledger.t0:
+            continue
+        if tx.key in transferred:
             continue
         if tx.freight_m3 is None or float(tx.freight_m3) <= _EPS:
             continue
@@ -1724,7 +1818,7 @@ class _Costing:
             return CHANNEL_PRODUCTION
         return CHANNEL_TRADING
 
-    def _on_sell(self, tx: WalletTransaction) -> None:
+    def _on_sell(self, tx: WalletTransaction, *, internal_unmatched: bool = False) -> None:
         type_id = int(tx.type_id)
         fee = self.fee_by_tx.get(tx.key, 0.0)
         qty = float(tx.quantity)
@@ -1736,6 +1830,12 @@ class _Costing:
         production = type_id in self.ledger.production_type_ids
         gross = float(tx.unit_price) * qty
         result_warnings: list[str] = []
+        if internal_unmatched:
+            result_warnings.append(INTERNAL_TRADE_UNMATCHED)
+            self.warn(
+                f"{INTERNAL_TRADE_UNMATCHED}: {tx.ref} sold to own owner {int(tx.client_id)} "
+                f"but its purchase is not archived; booked as a sale"
+            )
         tax = self._sales_tax(tx, gross)
         fees_missing = self._fees_missing_for(tx)
         if tax is None:
@@ -1770,6 +1870,45 @@ class _Costing:
             location_id=int(tx.location_id), warnings=result_warnings, source=SOURCE_MARKET,
             channel=self._market_channel(tx), owner_type=tx.owner_type, owner_id=int(tx.owner_id),
         )
+
+    def _on_transfer(self, sale: WalletTransaction, buy: WalletTransaction) -> None:
+        """A market fill between two own owners moves stock, it earns nothing.
+
+        The sale draws its layers as a sale would (D6 order for a Production
+        type, the station pool first at the station) and books no result.
+        The buyer gets one layer per draw with that draw's cost components,
+        origin and flags, plus the fill's real costs to third parties as
+        `fees`: the seller's sales tax and broker fee share and the buyer's
+        broker fee share. Source `transfer`; its buy event is skipped."""
+        type_id = int(sale.type_id)
+        qty = float(sale.quantity)
+        if qty <= _EPS:
+            return
+        gross = float(sale.unit_price) * qty
+        tax = self._sales_tax(sale, gross) or 0.0
+        fees = tax + self.fee_by_tx.get(sale.key, 0.0) + self.fee_by_tx.get(buy.key, 0.0)
+        production = type_id in self.ledger.production_type_ids
+        draws, _consumed = self._consume(
+            type_id, UNIT_ITEM, qty, sale.date, sale.ref,
+            sale_order=production, at_location=sale.location_id,
+        )
+        fee_shares = split_exact(fees, [float(d.quantity) for d in draws])
+        pool = self._pool_for_location(buy.location_id)
+        for draw, fee in zip(draws, fee_shares):
+            dq = float(draw.quantity)
+            if dq <= _EPS:
+                continue
+            source_layer = self.all_layers[int(draw.layer_id) - 1]
+            total = draw.components.add(CostComponents(fees=fee))
+            self._new_layer(
+                type_id=type_id, unit=UNIT_ITEM, quantity=dq, unit_components=total.scale(1.0 / dq),
+                origin=draw.origin, source_ref=buy.ref, layer_date=sale.date,
+                job_id=source_layer.job_id, assumed_me=source_layer.assumed_me,
+                assumed_decryptor=source_layer.assumed_decryptor,
+                estimated_origin=draw.estimated_origin, price_missing=draw.price_missing,
+                source=SOURCE_TRANSFER, pool=pool, freight_source=draw.freight_source,
+                shipment_ref=draw.shipment_ref, freight_rate_per_m3=draw.freight_rate_per_m3,
+            )
 
     def _split_prices(self, lines: Sequence[ContractItem], when: datetime) -> list[Optional[float]]:
         """Per-line reference prices for a multi-type split. A single type
@@ -2478,16 +2617,25 @@ class _Costing:
                 key=lambda e: e[:6],
             )
         self._seed_opening(flows, explained)
+        # A trade between own owners is resolved at its sale event; the buy
+        # event (rank 10, before the sale's 50 at the same second) is skipped.
+        transfers, unmatched = internal_trade_pairs(self.ledger)
+        transferred_buys = {buy.key for buy in transfers.values()}
         for ev in events:
             when, kind, obj = ev[0], ev[6], ev[7]
             if kind == KIND_BUY:
-                self._on_buy(obj)
+                if obj.key not in transferred_buys:
+                    self._on_buy(obj)
             elif kind == KIND_CONTRACT_BUY:
                 self._on_contract_buy(obj)
             elif kind == KIND_CONTRACT_GIVE:
                 self._on_contract_give(obj)
             elif kind == KIND_SELL:
-                self._on_sell(obj)
+                buy = transfers.get(obj.key)
+                if buy is not None:
+                    self._on_transfer(obj, buy)
+                else:
+                    self._on_sell(obj, internal_unmatched=obj.key in unmatched)
             elif kind == KIND_JOB_START:
                 self._on_job_start(obj)
             elif kind == KIND_JOB_CANCEL:

@@ -633,3 +633,16 @@ def test_courier_rate_follows_the_contracts_share(tenant, monkeypatch):
         ).fetchone()[0]
     assert float(freight) == pytest.approx(9000.0)
     assert ledger_db.latest_ledger_run()[4] == after
+
+
+def test_snapshot_carries_the_archived_client_id(tenant, monkeypatch):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 1.0, 1, True, 1, None, None, None),
+        ("character", ALICE, 0, 2, T1, TYPE_A, LOC, 1.0, 1, False, 2, None, None, None, 910002),
+    ])
+    monkeypatch.setattr(loader, "_opening_stock", lambda type_ids: {})
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    monkeypatch.setattr(loader, "_relic_type_ids", lambda: frozenset())
+    snap = loader.load_ledger_snapshot()
+    assert {tx.transaction_id: tx.client_id for tx in snap.wallet_transactions} == {1: None, 2: 910002}

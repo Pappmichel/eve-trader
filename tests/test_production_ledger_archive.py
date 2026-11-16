@@ -560,3 +560,38 @@ def test_open_buy_order_volume_counts_open_buys_in_the_region_only(tenant):
     assert ledger_db.open_buy_order_volume(owners, {10000002}) == {TYPE_ID: 7.0, 35: 1.0}
     assert ledger_db.open_buy_order_volume(owners, {10000002, 10000043}) == {TYPE_ID: 16.0, 35: 1.0}
     assert ledger_db.open_buy_order_volume([], {10000002}) == {}
+
+
+def _client(owner_id: int) -> dict:
+    rows = ledger_db.list_wallet_transactions_for_owners([("character", owner_id)])
+    return {int(r[3]): r[14] for r in rows}
+
+
+def test_wallet_archive_stores_client_id_and_fills_older_rows_once(tenant, monkeypatch):
+    """ESI's client_id rides along as a tenth field on the archive path only.
+    Rows archived before it existed are filled once while ESI still lists
+    them; a stored value is never overwritten."""
+    from eve_trader.esi_data import fetchers
+
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=[_txn(1)], journal_raw=[], now=T0)
+    assert _client(ALICE) == {1: None}
+
+    esi = [{"transaction_id": 1, "date": DATE1, "type_id": TYPE_ID, "location_id": 60000042,
+            "unit_price": 10.0, "quantity": 5, "is_buy": True, "journal_ref_id": 1,
+            "client_id": BOB},
+           {"transaction_id": 2, "date": DATE2, "type_id": TYPE_ID, "location_id": 60000042,
+            "unit_price": 10.0, "quantity": 5, "is_buy": False, "journal_ref_id": 2,
+            "client_id": 777}]
+    rows = fetchers._wallet_txn_archive_rows(esi, 0)
+    assert [len(r) for r in rows] == [10, 10]
+    assert fetchers._wallet_txn_rows(esi, 0) == [r[:9] for r in rows]
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=rows,
+                                 journal_raw=[], now=T0 + timedelta(hours=1))
+    assert _client(ALICE) == {1: BOB, 2: 777}
+
+    changed = [r[:9] + (999,) for r in rows]
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=changed,
+                                 journal_raw=[], now=T0 + timedelta(hours=2))
+    assert _client(ALICE) == {1: BOB, 2: 777}

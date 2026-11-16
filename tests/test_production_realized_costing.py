@@ -1704,3 +1704,112 @@ def test_fees_missing_sales_do_not_emit_a_tax_missing_run_warning_per_sale():
     assert all("tax_missing" in r.warnings for r in result.realized_results)
     assert sum(1 for w in result.warnings if w.startswith("fees_missing:")) == 1
     assert not any(w.startswith("tax_missing:") for w in result.warnings)
+
+
+# ------------------------------------------------- market trades between own owners
+TRANSFER_TYPE = 8800
+OUTSIDE_BUYER = 4242
+
+
+def _with_client(tx: WalletTransaction, client_id) -> WalletTransaction:
+    from dataclasses import replace
+    return replace(tx, client_id=client_id)
+
+
+def _internal_trade_ledger(*, client_ids: bool = True, buyer_side: bool = True, **kw):
+    """CHAR buys 10 at 10, sells them to OTHER_CHAR at 100 (tax 30, broker
+    fee 5), OTHER_CHAR sells them outside at 120 (tax 40)."""
+    bought = buy(TRANSFER_TYPE, 10, 10.0, at(1, 9), tx_id=8801)
+    to_b = sell(TRANSFER_TYPE, 10, 100.0, at(2, 10), tx_id=8802)
+    b_buys = buy(TRANSFER_TYPE, 10, 100.0, at(2, 10), owner=OTHER_CHAR, tx_id=8802)
+    outside = sell(TRANSFER_TYPE, 10, 120.0, at(3, 10), owner=OTHER_CHAR, tx_id=8803)
+    if client_ids:
+        to_b = _with_client(to_b, OTHER_CHAR)
+        b_buys = _with_client(b_buys, CHAR)
+        outside = _with_client(outside, OUTSIDE_BUYER)
+    txs = [bought, to_b, outside] + ([b_buys] if buyer_side else [])
+    kw.setdefault("wallet_transactions", txs)
+    kw.setdefault("journal_entries", [
+        *tax_pair(to_b, 100, 30.0),
+        JournalEntry("character", CHAR, 200, at(2, 10), "brokers_fee", -5.0),
+        *tax_pair(outside, 300, 40.0),
+    ])
+    kw.setdefault("market_orders", [MarketOrder("character", CHAR, 1, TRANSFER_TYPE, HOME, False, 100.0)])
+    return snapshot(**kw)
+
+
+def test_market_trade_between_own_owners_is_a_transfer_not_a_result():
+    result = rebuild_costing(_internal_trade_ledger())
+    # One result: the outside sale. Its cost is what CHAR paid (100) plus the
+    # transfer's real fees to third parties (tax 30 + broker fee 5).
+    assert [r.sale_ref for r in result.realized_results] == [f"tx:character:{OTHER_CHAR}:0:8803"]
+    (sale,) = result.realized_results
+    assert sale.cost == pytest.approx(135.0)
+    assert sale.components.materials_bought == pytest.approx(100.0)
+    assert sale.components.fees == pytest.approx(35.0)
+    assert sale.revenue == pytest.approx(1160.0)
+    assert sale.profit == pytest.approx(1025.0)
+    transfer = [l for l in result.all_layers if l.source == c.SOURCE_TRANSFER]
+    assert [(l.origin, l.quantity, l.source_ref) for l in transfer] == [
+        (c.ORIGIN_BOUGHT, 10.0, f"tx:character:{OTHER_CHAR}:0:8802"),
+    ]
+    assert not has_warning(result, c.INTERNAL_TRADE_UNMATCHED)
+    assert remaining(result, TRANSFER_TYPE) == []
+
+
+def test_internal_sale_without_the_buyers_purchase_stays_a_sale_and_warns():
+    result = rebuild_costing(_internal_trade_ledger(buyer_side=False))
+    by_ref = {r.sale_ref: r for r in result.realized_results}
+    internal = by_ref[f"tx:character:{CHAR}:0:8802"]
+    assert c.INTERNAL_TRADE_UNMATCHED in internal.warnings
+    # Booked like any sale: gross 1000 less its 30 tax, broker fee 5 in cost.
+    assert internal.revenue == pytest.approx(970.0)
+    assert internal.broker_fee == pytest.approx(5.0)
+    assert has_warning(result, f"{c.INTERNAL_TRADE_UNMATCHED}: tx:character:{CHAR}:0:8802")
+
+
+def test_rows_without_client_id_are_booked_as_before():
+    result = rebuild_costing(_internal_trade_ledger(client_ids=False))
+    by_ref = {r.sale_ref: r for r in result.realized_results}
+    assert set(by_ref) == {f"tx:character:{CHAR}:0:8802", f"tx:character:{OTHER_CHAR}:0:8803"}
+    # CHAR earns 1000 - 30 tax - 5 fee - 100 cost; OTHER_CHAR's layer is the
+    # 1000 purchase.
+    assert by_ref[f"tx:character:{CHAR}:0:8802"].profit == pytest.approx(865.0)
+    assert by_ref[f"tx:character:{OTHER_CHAR}:0:8803"].cost == pytest.approx(1000.0)
+    assert not any(l.source == c.SOURCE_TRANSFER for l in result.all_layers)
+
+
+def test_internal_trade_pairing_needs_the_same_fill_and_skips_freight():
+    """The buyer's purchase must be the same fill (second, type, location,
+    price, quantity) by the sale's client. A transferred buy is not
+    freighted: the units keep the seller's cost, freight included."""
+    bought = buy(TRANSFER_TYPE, 10, 10.0, at(1, 9), location=JITA, rate=100.0, m3=10.0, tx_id=8901)
+    to_b = _with_client(sell(TRANSFER_TYPE, 10, 100.0, at(2, 10), location=JITA, tx_id=8902), OTHER_CHAR)
+    b_buys = _with_client(buy(TRANSFER_TYPE, 10, 100.0, at(2, 10), location=JITA, rate=100.0, m3=10.0,
+                              owner=OTHER_CHAR, tx_id=8903), CHAR)
+    other_fill = buy(TRANSFER_TYPE, 10, 100.0, at(2, 10, 1), location=JITA, owner=OTHER_CHAR, tx_id=8904)
+    ledger = snapshot(wallet_transactions=[bought, to_b, b_buys, other_fill])
+    pairs, unmatched = c.internal_trade_pairs(ledger)
+    assert pairs == {to_b.key: b_buys} and unmatched == frozenset()
+    assert {p.ref for p in c.freight_purchases(ledger)} == {bought.ref}
+    result = rebuild_costing(ledger)
+    transfer = [l for l in result.all_layers if l.source == c.SOURCE_TRANSFER]
+    # 100 materials + the seller's 1000 freight (100 ISK/m3 x 10 m3), once.
+    assert [l.unit_cost * l.quantity for l in transfer] == [pytest.approx(1100.0)]
+
+
+def test_sale_to_an_own_corporation_pairs_with_the_corporation_purchase():
+    bought = buy(TRANSFER_TYPE, 5, 10.0, at(1, 9), tx_id=9001)
+    to_corp = _with_client(sell(TRANSFER_TYPE, 5, 50.0, at(2, 10), tx_id=9002), OTHER_CHAR)
+    corp_buys = WalletTransaction(
+        owner_type="corporation", owner_id=CORP, division=1, transaction_id=9002, date=at(2, 10),
+        type_id=TRANSFER_TYPE, location_id=HOME, unit_price=50.0, quantity=5, is_buy=True,
+        client_id=CHAR,
+    )
+    # ESI names a character as the client of a corp transaction: the sale's
+    # client here is OTHER_CHAR, who placed the corp's buy order.
+    ledger = snapshot(wallet_transactions=[bought, to_corp, corp_buys],
+                      tenant_corporation_ids={CORP})
+    pairs, _unmatched = c.internal_trade_pairs(ledger)
+    assert pairs == {to_corp.key: corp_buys}
+    assert rebuild_costing(ledger).realized_results == []

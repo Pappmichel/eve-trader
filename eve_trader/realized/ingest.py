@@ -191,12 +191,19 @@ class _TxnEnricher:
 def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],
                       enricher: _TxnEnricher) -> int:
     """Insert only rows new to the archive, then retry region resolution
-    for archived rows that are still unresolved. Returns rows inserted."""
+    for archived rows that are still unresolved. Returns rows inserted.
+
+    A row may carry ESI's `client_id` as a tenth field. Rows archived before
+    that column existed get it filled once while ESI still lists them."""
     known = db.archived_transaction_keys(owner_type, owner_id, [r[1] for r in txn_rows])
     ledger_txns: list[tuple] = []
+    known_clients: dict[tuple[int, int], int] = {}
     for r in txn_rows:
-        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r
+        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r[:9]
+        client_id = r[9] if len(r) > 9 and r[9] is not None else None
         if (int(division), int(txn_id)) in known:
+            if client_id is not None:
+                known_clients[(int(division), int(txn_id))] = int(client_id)
             continue
         region_id = enricher.region(location_id)
         rate, m3 = enricher.freight(region_id, location_id, type_id, quantity, is_buy)
@@ -204,8 +211,18 @@ def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],
             owner_type, int(owner_id), int(division), int(txn_id), date,
             int(type_id), int(location_id), float(unit_price), int(quantity),
             bool(is_buy), int(journal_ref_id), region_id, rate, m3,
+            None if client_id is None else int(client_id),
         ))
     db.upsert_ledger_wallet_transactions(ledger_txns)
+
+    if known_clients:
+        missing = db.transactions_missing_client(
+            owner_type, owner_id, [txn_id for _division, txn_id in known_clients],
+        )
+        db.set_transaction_client([
+            (known_clients[key], owner_type, int(owner_id), key[0], key[1])
+            for key in sorted(missing) if key in known_clients
+        ])
 
     updates: list[tuple] = []
     for division, txn_id, location_id, type_id, quantity, is_buy in db.transactions_missing_region(
@@ -267,10 +284,11 @@ def archive_wallet(
 ) -> dict:
     """Archive wallet transactions + journal after the snapshot write.
 
-    `txn_rows` is the same shape as `storage.replace_wallet_transactions`
+    `txn_rows` is the shape of `storage.replace_wallet_transactions`
     ((division, transaction_id, date, type_id, location_id, unit_price,
-    quantity, is_buy, journal_ref_id), ...). Journal is the raw ESI list
-    (needs context_id etc.).
+    quantity, is_buy, journal_ref_id), ...) plus ESI's client_id as an
+    optional tenth field (the snapshot keeps nine). Journal is the raw ESI
+    list (needs context_id etc.).
     """
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     now = _now(now)
