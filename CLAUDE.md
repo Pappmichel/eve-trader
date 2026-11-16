@@ -24,7 +24,10 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 `do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
-`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
+`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. The live reaction activity id 9 -> SDE 11 conversion is one helper,
+`eve_trader/industry_activity.py` (`normalize_activity_id`), imported by the
+fetchers, `production/esi_sync.py` and the realized ledger; do not write
+another inline `== 9` conversion. One deliberate
 exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
 right after a snapshot write to fill the realized-profit
 archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
@@ -1165,6 +1168,25 @@ them):
   sync themselves once per open when their data was last tried more than 6 h
   ago (`frontend/src/hooks/useSyncWhenStale.ts`, fixed 6 h = default normal
   tier). `skills` stays scheduled (Production/Station Trading need it).
+- **ESI read integrity.** `ESIClient._get_all_pages` checks that every page
+  of one list agrees on `X-Pages` and `Last-Modified` (never `ETag`) and, when
+  the last page is as long as page 1 and page 1 has 1,000 or more rows, probes
+  page N+1 once (404/400 or `[]` is the end). A mismatch reloads the whole list
+  once; a second one raises `ESIError`, so the owner batch rolls back and the
+  old snapshot stays. The collector gets the `Last-Modified` stamps of the
+  accepted pass only. Fetchers (`esi_data/fetchers.py`) additionally reload an
+  empty `assets`/`blueprints` list once when 50 or more rows are stored, and
+  reject it with a `suspicious_empty:` error; the next attempt, whose
+  `esi_freshness.last_error` still starts with that prefix, accepts it (other
+  kinds never do this: 0 after many rows is normal for jobs, orders, wallet).
+  `is_buy` and `is_singleton` are required fields (indexed, a missing one fails
+  the sync); `is_buy_order` and journal `amount` are optional in ESI's spec.
+  `ESI_COMPATIBILITY_DATE` (`config.py`) is None until a date is pinned after
+  diffing the public spec; setting it sends `X-Compatibility-Date` and drops
+  `/latest` from the default `esi_base`. The ESI, Goonmetrics and SDE clients
+  share `esi_client.USER_AGENT`. Goonmetrics `current_prices` remembers a
+  failed market for 45 s (no network for callers in that window) and does not
+  cache an empty list.
 - Defaults: `trading_pipeline_interval_hours` 48 (was 24),
   `jita_price_cache_interval_hours` 3 (was 1), `wallet_balance` in the normal
   tier (was frequent). They only change tenants without a saved override; a

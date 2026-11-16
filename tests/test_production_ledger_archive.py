@@ -668,3 +668,16 @@ def test_corp_transaction_gap_is_checked_per_division(tenant, monkeypatch):
     assert [(g[0], g[1], g[2]) for g in gaps] == [
         ("wallet_transactions", T0, newer - timedelta(seconds=cap - 1)),
     ]
+
+
+def test_archived_reaction_job_is_stored_under_the_sde_activity_id(tenant, monkeypatch):
+    monkeypatch.setattr(ledger_ingest.inputs, "freeze_job_inputs", lambda **kw: [])
+    job = {
+        "job_id": 56, "activity_id": 9, "blueprint_id": 1, "blueprint_type_id": 999,
+        "product_type_id": 34, "runs": 1, "licensed_runs": None, "successful_runs": None,
+        "cost": 100.0, "facility_id": None, "station_id": None, "output_location_id": None,
+        "installer_id": ALICE, "start_date": DATE1, "end_date": DATE2,
+        "completed_date": DATE2, "status": "delivered", "probability": None,
+    }
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE, jobs=[job])
+    assert ledger_db.list_ledger_industry_jobs("character", ALICE)[0][3] == 11

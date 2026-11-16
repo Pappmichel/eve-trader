@@ -32,6 +32,7 @@ from .. import storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import GoonmetricsClient
+from ..industry_activity import normalize_activity_id
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from ..station_trading.config import STATION_TRADING_CONFIG
@@ -570,9 +571,7 @@ def _relic_type_ids() -> frozenset[int]:
 
 def _output_quantity(job_row: tuple) -> Optional[float]:
     """runs (or successful_runs) x SDE product qty for manufacturing/reaction."""
-    activity_id = int(job_row[3])
-    if activity_id == 9:
-        activity_id = ACTIVITY_REACTION
+    activity_id = normalize_activity_id(job_row[3])
     if activity_id not in (ACTIVITY_MANUFACTURING, ACTIVITY_REACTION):
         return None
     blueprint_type_id = int(job_row[5])
@@ -675,9 +674,7 @@ def _resolve_symmetry(jobs: list[IndustryJob]) -> list[IndustryJob]:
 def _uses_bpc(job_row: tuple, bp_runs: dict[int, int], invented: frozenset[int]) -> Optional[bool]:
     """Manufacturing/reaction only: did the job run on a BPC? From the
     archived blueprint (runs -1 = BPO); a T2/T3 blueprint is always a copy."""
-    activity_id = int(job_row[3])
-    if activity_id == 9:
-        activity_id = ACTIVITY_REACTION
+    activity_id = normalize_activity_id(job_row[3])
     if activity_id not in (ACTIVITY_MANUFACTURING, ACTIVITY_REACTION):
         return None
     blueprint_id = job_row[4]

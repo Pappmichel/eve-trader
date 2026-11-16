@@ -11,6 +11,7 @@ from typing import Optional
 
 from .. import storage
 from ..esi_data.access import is_shared, read_esi
+from ..industry_activity import normalize_activity_id
 from ..production import config as production_config
 from ..production.constants import (
     ACTIVITY_INVENTION,
@@ -251,10 +252,8 @@ def freeze_job_inputs(
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     selected = selected_decryptors if selected_decryptors is not None else storage.load_selected_decryptors()
 
-    activity_id = int(job["activity_id"])
     # ESI reactions arrive as 9; fetchers normalize to 11 before archive.
-    if activity_id == 9:
-        activity_id = ACTIVITY_REACTION
+    activity_id = normalize_activity_id(job["activity_id"])
 
     runs = float(job.get("runs") or 0)
     blueprint_type_id = int(job["blueprint_type_id"])

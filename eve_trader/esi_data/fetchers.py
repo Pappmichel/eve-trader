@@ -17,14 +17,9 @@ from typing import Callable, Collection, Optional
 from .. import storage
 from ..config import WALLET_DIVISION_IDS
 from ..esi_client import ESIClient, ESIError, ignore_last_modified
+from ..industry_activity import normalize_activity_id
 
 log = logging.getLogger(__name__)
-
-# Confirmed CCP live/SDE mismatch: ESI industry jobs report Reactions as
-# activity_id 9, the SDE files them under 11. Same normalization
-# production/esi_sync.py has always applied at ingestion.
-_LIVE_REACTION_ACTIVITY_ID = 9
-_SDE_REACTION_ACTIVITY_ID = 11
 
 # CCP type IDs for the three slot-skill pairs (duplicated from
 # production/constants.py so this package does not import a tool).
@@ -47,10 +42,6 @@ _VALIDATION_UNMATCHED = "unmatched"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _normalize_activity_id(activity_id: int) -> int:
-    return _SDE_REACTION_ACTIVITY_ID if activity_id == _LIVE_REACTION_ACTIVITY_ID else activity_id
 
 
 def _job_slots_from_skills(skill_levels: dict[int, int]) -> dict[str, int]:
@@ -112,7 +103,7 @@ def _asset_rows(assets: list[dict], owner_name: str,
 
 def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> list[tuple]:
     return [
-        (j["job_id"], _normalize_activity_id(j["activity_id"]), j["blueprint_type_id"],
+        (j["job_id"], normalize_activity_id(j["activity_id"]), j["blueprint_type_id"],
          j.get("product_type_id"), j["runs"], j.get("output_location_id"), j["status"],
          j["end_date"], j.get("start_date"), j.get("installer_id"),
          installer_names.get(j.get("installer_id"), str(j.get("installer_id"))),
