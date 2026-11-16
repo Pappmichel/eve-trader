@@ -34,6 +34,7 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..pi.config import PI_CONFIG
 from ..production.config import PRODUCTION_CONFIG
+from .body_limit import BodyLimitMiddleware
 from .request_id import RequestIdMiddleware
 from .routers import (
     admin, asset_manager, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, health, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
@@ -524,6 +525,9 @@ def create_app() -> FastAPI:
     # chunks, and GZip only honors minimum_size for a body it sees whole.
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.add_middleware(AccessGateMiddleware)
+    # Outside the gate (an oversized body is refused before any session lookup),
+    # inside RequestIdMiddleware (its 413 still carries X-Request-ID).
+    app.add_middleware(BodyLimitMiddleware)
     # Added last = outermost: every response, including the gate's own 401/403
     # and CORS preflights, carries X-Request-ID and its log lines the id.
     app.add_middleware(RequestIdMiddleware)

@@ -579,6 +579,9 @@ def do_save_plan(plan: dict, plan_id: Optional[int] = None) -> dict:
         v = plan.get(key)
         if v is not None and not (lo <= float(v) <= hi):
             raise ActionError(f"{key} out of range")
+    notes = plan.get("notes")
+    if notes is not None and len(str(notes)) > 2000:
+        raise ActionError("Notes are limited to 2,000 characters")
     row = {
         "name": name, "planet_id": plan.get("planet_id"), "planet_type_id": planet_type_id,
         "radius_km": float(plan.get("radius_km") or 0) or 5000.0,

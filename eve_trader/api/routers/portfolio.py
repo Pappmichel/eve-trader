@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from .. import schemas
 from ... import portfolio
 from ...actions import ActionError
+from ..schemas import NameText
 
 router = APIRouter()
 
@@ -97,7 +98,7 @@ def get_manual_item_prices():
 
 
 class SetManualItemPriceRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     price: float
 
 

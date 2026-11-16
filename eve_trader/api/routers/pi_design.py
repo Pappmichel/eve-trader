@@ -3,13 +3,14 @@ around eve_trader/pi/design_actions.py. Gated on the `pi` grant through the
 /api/pi/ path prefix."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ...actions import ActionError
 from ...pi import chain_actions, design_actions
+from ..schemas import BoundedDesign, BoundedTemplate, NameText
 
 router = APIRouter()
 
@@ -25,7 +26,7 @@ class PlanetBody(BaseModel):
     planet_id: Optional[int] = None
     planet_type_id: Optional[int] = None
     radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
-    zone: Optional[str] = None
+    zone: Optional[NameText] = None
     cc_level: Optional[int] = Field(default=None, ge=0, le=5)
 
 
@@ -39,7 +40,7 @@ def post_ways(body: WaysBody):
 
 
 class MixedBody(PlanetBody):
-    assignments: dict[int, int]
+    assignments: Annotated[dict[int, int], Field(max_length=100)]
     launchpads: int = Field(default=1, ge=1, le=10)
     storages: int = Field(default=0, ge=0, le=10)
 
@@ -50,9 +51,9 @@ def post_mixed(body: MixedBody):
 
 
 class DesignBody(PlanetBody):
-    chain: str
+    chain: NameText
     product_type_id: int
-    design: Optional[dict[str, Any]] = None
+    design: Optional[BoundedDesign] = None
 
 
 class StorageBody(DesignBody):
@@ -74,8 +75,8 @@ def post_grow(body: GrowBody):
 
 
 class EditBody(BaseModel):
-    template: Any
-    edit: dict[str, Any]
+    template: BoundedTemplate
+    edit: BoundedDesign
     planet_id: Optional[int] = None
     radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
 

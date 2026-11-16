@@ -15,6 +15,7 @@ from .. import schemas
 from ... import admin, error_log
 from ...access_gate import SESSION_COOKIE_NAME, authorize_session_cookie
 from ...actions import ActionError, ConflictError
+from ..schemas import NameText, ShortTextList
 
 router = APIRouter()
 
@@ -57,7 +58,7 @@ def list_users():
 
 
 class AddUserRequest(BaseModel):
-    character_name: str
+    character_name: NameText
 
 
 @router.post("/users")
@@ -76,7 +77,7 @@ def remove_user(character_id: int):
 
 
 class SetToolGrantsRequest(BaseModel):
-    tool_keys: list[str]
+    tool_keys: ShortTextList
 
 
 @router.put("/users/{character_id}/tools")
@@ -109,7 +110,7 @@ def allowlist_impact(entry_type: str, entry_id: int, action: str,
 
 
 class AllowlistEntryRequest(BaseModel):
-    entry_type: str
+    entry_type: NameText
     entry_id: int
 
 
@@ -138,7 +139,7 @@ def list_access_requests(status: Optional[str] = None):
 
 
 class ApproveAccessRequest(BaseModel):
-    tool_keys: list[str]
+    tool_keys: ShortTextList
 
 
 @router.post("/access-requests/{character_id}/approve")
