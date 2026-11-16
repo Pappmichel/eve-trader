@@ -323,3 +323,63 @@ def test_rebuild_is_deterministic():
            [(r.ref, r.quantity, r.when) for r in b.reprocess_records]
     assert len(a.reprocess_records) == 2
     assert isinstance(a.reprocess_records[0].when.date(), date)
+
+
+# ---------------------------------------------------------------- courier transit window
+def _courier(contract_id, issued_day, *, status, completed_day=None, issuer=CHAR):
+    return c.CourierContract(
+        contract_id=contract_id, issuer_id=issuer, start_location_id=60003760,
+        end_location_id=60008494, date_issued=at(issued_day), volume=100.0, reward=1.0,
+        collateral=0.0, status=status,
+        date_completed=None if completed_day is None else at(completed_day),
+    )
+
+
+def _long_transit(*couriers, back_day=23):
+    return rebuild_costing(ledger(
+        txs=[buy(VELD, 1000, 10.0, at(1))],
+        observations=[obs(2, veld=1000), obs(3, veld=0), obs(back_day, veld=1000)],
+        reference_prices=prices(*range(1, 30)),
+        couriers=tuple(couriers),
+    ))
+
+
+def test_twenty_day_courier_keeps_the_ore_as_stock():
+    result = _long_transit(_courier(1, 3, status="finished", completed_day=23))
+    assert result.reprocess_records == []
+    assert remaining(result, VELD) == [(c.ORIGIN_BOUGHT, 1000, 10.0)]
+    assert not any(w.startswith("unknown_origin") for w in result.warnings)
+
+
+def test_extended_window_is_reported_once_per_run():
+    result = _long_transit(_courier(1, 3, status="finished", completed_day=23))
+    assert any(w.startswith("reprocess_undo_window_extended: 1") for w in result.warnings)
+
+
+def test_ten_day_courier_works_as_before():
+    result = _long_transit(_courier(1, 3, status="finished", completed_day=13), back_day=13)
+    assert result.reprocess_records == []
+
+
+def test_failed_courier_does_not_extend_the_window():
+    base = _long_transit()
+    failed = _long_transit(_courier(1, 3, status="failed", completed_day=23))
+    assert [r.ref for r in failed.reprocess_records] == [r.ref for r in base.reprocess_records]
+    assert failed.reprocess_records and failed.reprocess_records[0].quantity == 1000
+
+
+def test_courier_of_another_issuer_does_not_extend_the_window():
+    result = _long_transit(_courier(1, 3, status="finished", completed_day=23, issuer=555))
+    assert result.reprocess_records
+
+
+def test_courier_completed_before_the_detection_does_not_extend_it():
+    result = _long_transit(_courier(1, 1, status="finished", completed_day=2))
+    assert result.reprocess_records
+
+
+def test_without_a_courier_the_long_gap_is_reprocessing_as_before():
+    result = _long_transit()
+    [rec] = result.reprocess_records
+    assert rec.quantity == 1000
+    assert not any(w.startswith("reprocess_undo_window_extended") for w in result.warnings)

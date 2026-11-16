@@ -2398,7 +2398,7 @@ def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
     """Archived couriers for the shared owners, one row per contract_id.
 
     (contract_id, issuer_id, start_location_id, end_location_id, date_issued,
-    volume, reward, collateral, status). A row that already has a volume
+    volume, reward, collateral, status, date_completed). A row that already has a volume
     wins when the same contract was archived twice. Courier rows never
     enter costing as buys or sales; the loader uses them only to price
     freight.
@@ -2410,7 +2410,7 @@ def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
         return conn.execute(
             "SELECT DISTINCT ON (contract_id) contract_id, issuer_id, "
             "start_location_id, end_location_id, date_issued, volume, reward, "
-            "collateral, status "
+            "collateral, status, date_completed "
             "FROM ledger_contracts "
             f"WHERE {where} AND type = 'courier' "
             "ORDER BY contract_id, (volume IS NULL), date_issued NULLS LAST",
