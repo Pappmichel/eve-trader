@@ -87,6 +87,11 @@ _sde_check_status: dict = {}
 
 SDE_CHECK_INTERVAL_HOURS = 24.0
 
+# And for the global goonmetrics_history retention prune.
+_goonmetrics_retention_status: dict = {}
+
+RETENTION_INTERVAL_HOURS = 24.0
+
 
 def _hours_since(iso_ts: str | None) -> float:
     if iso_ts is None:
@@ -154,6 +159,7 @@ _GLOBAL_JOB_STATUS = {
     "backup": _backup_status,
     "jita_price_cache": _jita_price_cache_status,
     "sde_freshness_check": _sde_check_status,
+    "goonmetrics_retention": _goonmetrics_retention_status,
 }
 
 # One in-flight worker per (tenant_id, job name). Released in the worker's
@@ -379,6 +385,52 @@ def _check_and_run_due_jobs_for_tenant(
         ):
             _run_job(tenant_id, "asset_history", asset_manager_actions.take_history_snapshot)
 
+    # Old shortlist runs (only the newest run is ever read), once a day.
+    if tenant_eligibility.may_use("trading", grants) and _retention_due(tenant_id, "shortlist_retention"):
+        _run_job(tenant_id, "shortlist_retention", _prune_shortlist_snapshot_job)
+
+
+def _retention_due(tenant_id: Optional[str], name: str) -> bool:
+    """Once a day per (tenant, job), measured from the last successful run in
+    this process (a restart allows one extra run; deleting is idempotent). A
+    failed run backs off like every job (_job_due)."""
+    status = (
+        _GLOBAL_JOB_STATUS[name] if tenant_id is None
+        else last_run_status.get(tenant_id, {}).get(name, {})
+    )
+    ran_at = status.get("ran_at")
+    success = ran_at if ran_at and not status.get("error") else None
+    return _job_due(success, ran_at, RETENTION_INTERVAL_HOURS)
+
+
+def _retention_days() -> float:
+    return max(30.0, float(TRADING_CONFIG.history_retention_days or 90.0))
+
+
+def _prune_shortlist_snapshot_job() -> None:
+    cutoff = timeutil.utc_now_naive() - dt.timedelta(days=_retention_days())
+    deleted = storage.prune_shortlist_snapshot(cutoff.isoformat(timespec="seconds"))
+    if deleted:
+        log.info("Pruned %d old shortlist_snapshot rows", deleted)
+
+
+def _prune_goonmetrics_history_job() -> None:
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        cutoff = timeutil.utc_today() - dt.timedelta(days=_retention_days())
+        deleted = storage.prune_goonmetrics_history(cutoff.isoformat())
+    if deleted:
+        log.info("Pruned %d old goonmetrics_history rows", deleted)
+
+
+def _check_and_run_goonmetrics_retention_job() -> None:
+    """Global, unscoped (the table has no tenant_id); the retention value is
+    DEFAULT_TENANT_ID's, like the backup interval. Runs under the master
+    switch only."""
+    if _retention_due(None, "goonmetrics_retention"):
+        with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+            fn = _prune_goonmetrics_history_job
+            _run_job(None, "goonmetrics_retention", fn)
+
 
 def _check_and_run_backup_job() -> None:
     """Global, unscoped - reads DEFAULT_TENANT_ID's own backup_interval_hours
@@ -483,6 +535,10 @@ def _check_and_run_due_jobs() -> None:
 
         _check_and_run_backup_job()
         _check_and_run_jita_price_cache_job()
+        try:
+            _check_and_run_goonmetrics_retention_job()
+        except Exception as e:  # noqa: BLE001 - housekeeping must not stop the other jobs
+            log.warning("Goonmetrics retention scheduling failed: %s", e)
         try:
             _check_and_run_sde_check_job()
         except Exception as e:  # noqa: BLE001 - an advisory check must not stop the alerts job below

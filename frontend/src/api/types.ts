@@ -1414,6 +1414,17 @@ export interface ErrorLogRow {
   created_at: string | null
 }
 
+export interface ErrorLogGroup {
+  source: string
+  message: string
+  count: number
+  tenant_count: number
+  first_seen: string | null
+  last_seen: string | null
+  detail: string | null
+  path: string | null
+}
+
 export interface BackupInfo {
   name: string
   created_at: string

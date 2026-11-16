@@ -765,6 +765,7 @@ export const adminApi = {
     post<{ cached_type_ids: number; updated_at: string | null }>('/api/admin/jita-price-cache/refresh'),
   // GitHub issue #88 - cross-tenant, same reasoning as everything else here.
   errors: (limit = 200) => get<T.ErrorLogRow[]>(`/api/admin/errors?limit=${limit}`),
+  errorGroups: (limit = 1000) => get<T.ErrorLogGroup[]>(`/api/admin/errors/groups?limit=${limit}`),
   // Moved from portfolioApi (confirmed real misplacement 2026-09-21, see
   // admin.do_create_backup's own docstring) - one pg_dump already covers
   // every tenant's data in one shot, same cross-tenant-impacting reasoning

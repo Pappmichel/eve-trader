@@ -18,9 +18,10 @@ import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import { ALL_TOOL_KEYS, DEFAULT_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
 import type {
-  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow, LocationReportUnresolved,
+  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, LocationReportUnresolved,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { ErrorsSection } from './ErrorsSection'
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
 // previewing/applying it is a cross-tenant-impacting action - moved here from
@@ -517,45 +518,6 @@ function UsersSection() {
           </Button>
         </Tooltip>
       </Group>
-    </div>
-  )
-}
-
-// GitHub issue #88: self-hosted error tracking - ErrorBoundary.tsx and
-// main.tsx's global error/unhandledrejection listeners report here, this
-// is the only place that ever reads it back out. Cross-tenant (error_log
-// is deliberately unscoped, see docs/observability_schema.sql), same
-// pattern as TenantSection/UsersSection above.
-function ErrorsSection() {
-  const { data: errorRows, isLoading } = useQuery({ queryKey: ['admin', 'errors'], queryFn: () => adminApi.errors() })
-
-  const columns = useMemo<ColumnDef<ErrorLogRow, any>[]>(() => [
-    { header: 'When', accessorKey: 'created_at', size: 170, cell: (i) => dateTime(i.getValue()) },
-    { header: 'Source', accessorKey: 'source', size: 170 },
-    { header: 'Message', accessorKey: 'message', size: 360 },
-    { header: 'Page', accessorKey: 'path', size: 200, cell: (i) => i.getValue() ?? '—' },
-    { header: 'Tenant', accessorKey: 'tenant_id', size: 280, cell: (i) => i.getValue() ?? '—' },
-  ], [])
-
-  return (
-    <div>
-      <Title order={4} mb="xs">Recent Errors</Title>
-      <Text size="sm" c="dimmed" mb="sm">
-        The last 200 frontend errors reported across every tenant (a render crash, an uncaught exception, or an
-        unhandled promise rejection) - best-effort, never blocks the page that hit the error.
-      </Text>
-      {!isLoading && (errorRows ?? []).length === 0 && <Text c="dimmed" size="sm">No errors reported yet.</Text>}
-      {(isLoading || (errorRows ?? []).length > 0) && (
-        <DataTable
-          data={errorRows ?? []}
-          columns={columns}
-          tableId="admin-errors"
-          exportFilename="errors"
-          getRowId={(r) => String(r.id)}
-          isLoading={isLoading}
-          maxHeight={400}
-        />
-      )}
     </div>
   )
 }

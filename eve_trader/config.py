@@ -258,6 +258,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "jita_price_cache_interval_hours": (0, None),
     "portfolio_snapshot_interval_hours": (0, None),
     "asset_history_retention_days": (1, None),
+    "history_retention_days": (30, None),            # above the longest trend window (lookback 30 d)
     "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
     "alerts_mail_poll_minutes": (1, None),            # SchedulerOperatorConfig (operator-only)
     "alerts_contract_poll_minutes": (5, None),        # SchedulerOperatorConfig (operator-only)
@@ -640,6 +641,11 @@ class TradingConfig:
     # Asset Manager daily quantity history (docs/ASSET_MANAGER_PLAN.md phase 6):
     # days kept before the daily snapshot job prunes them.
     asset_history_retention_days: float = 90.0
+    # Operator value (config.yaml / tenant_settings, not on the Settings page):
+    # days of shortlist_snapshot runs and goonmetrics_history kept by the
+    # daily retention jobs. The lower bound sits above the longest trend
+    # window that reads them.
+    history_retention_days: float = 90.0
 
 
 @dataclass

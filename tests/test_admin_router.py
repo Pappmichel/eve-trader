@@ -413,3 +413,14 @@ def test_remove_allowlist_entry_forwards_path_params(monkeypatch):
 
     assert resp.status_code == 200
     assert captured == {"entry_type": "corporation", "entry_id": 500}
+
+
+def test_list_error_groups_returns_groups(monkeypatch):
+    monkeypatch.setattr(error_log, "do_list_error_groups", lambda limit: [
+        {"source": "frontend", "message": "boom", "count": 4, "tenant_count": 2,
+         "first_seen": "2026-11-01T00:00:00", "last_seen": "2026-11-02T00:00:00",
+         "detail": None, "path": "/trading"},
+    ])
+    resp = client.get("/api/admin/errors/groups")
+    assert resp.status_code == 200
+    assert resp.json()[0]["count"] == 4 and resp.json()[0]["tenant_count"] == 2

@@ -1092,6 +1092,17 @@ class ErrorLogRow(_Base):
     created_at: Optional[str] = None
 
 
+class ErrorLogGroup(_Base):
+    source: str
+    message: str
+    count: int
+    tenant_count: int
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+    detail: Optional[str] = None
+    path: Optional[str] = None
+
+
 # ------------------------------------------------------------ plan payloads
 class OrderProgressRow(BaseModel):
     order_id: str
