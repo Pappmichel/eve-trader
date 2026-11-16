@@ -23,8 +23,11 @@ from typing import Optional
 
 from . import storage
 
-_QUANTITY_CLEAN_RE = re.compile(r"[^\d]")  # EVE item quantities are always whole numbers -
-                                             # any comma/period present is a thousands separator, never a decimal.
+# EVE item quantities are always whole numbers. A comma or period is accepted
+# only as a thousands separator (followed by exactly three digits, as in
+# "1,000" or the German client's "1.000"); "12.5" or "1,25" is an error, never
+# 125. Spaces and non-breaking spaces are grouping separators too.
+_QUANTITY_STRIP_RE = re.compile(r"[^\d.,]")
 _VOLUME_CLEAN_RE = re.compile(r"[^\d.]")   # volume IS fractional ("5.0 m3") - strip the " m3" suffix/commas only.
 
 _EXPECTED_COLUMNS = 9
@@ -40,9 +43,21 @@ class ParsedPasteLine:
     error: Optional[str] = None  # set instead of raising - a single bad line shouldn't abort the whole paste
 
 
+class NotWholeQuantity(ValueError):
+    """The quantity has a decimal-looking separator, not a thousands one."""
+
+
 def _parse_quantity(raw: str) -> Optional[int]:
-    cleaned = _QUANTITY_CLEAN_RE.sub("", raw)
-    return int(cleaned) if cleaned else None
+    """Whole-number quantity, None if there are no digits at all. Raises
+    NotWholeQuantity when a "." or "," is not followed by exactly three
+    digits."""
+    cleaned = _QUANTITY_STRIP_RE.sub("", raw)
+    if not any(ch.isdigit() for ch in cleaned):
+        return None
+    groups = re.split(r"[.,]", cleaned)
+    if len(groups) > 1 and (not groups[0] or any(len(g) != 3 for g in groups[1:])):
+        raise NotWholeQuantity(raw)
+    return int("".join(groups))
 
 
 def _parse_volume(raw: str) -> Optional[float]:
@@ -73,7 +88,13 @@ def parse_paste(text: str) -> list[ParsedPasteLine]:
         fields = (fields + [""] * _EXPECTED_COLUMNS)[:_EXPECTED_COLUMNS]
         name, qty_raw, _group, category, _size, _slot, volume_raw, _meta, _tech = fields
         name = name.strip()
-        quantity = _parse_quantity(qty_raw)
+        try:
+            quantity = _parse_quantity(qty_raw)
+        except NotWholeQuantity:
+            results.append(ParsedPasteLine(raw_line=line, name=name or line.strip(), quantity=0,
+                                            category=category.strip(), volume_m3=None,
+                                            error="Quantity must be a whole number."))
+            continue
         if not name or quantity is None:
             results.append(ParsedPasteLine(raw_line=line, name=name or line.strip(), quantity=0,
                                             category=category.strip(), volume_m3=None,
