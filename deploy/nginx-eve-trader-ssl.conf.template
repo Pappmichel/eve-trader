@@ -1,0 +1,119 @@
+# nginx reverse-proxy config, HTTPS variant - installed by setup.sh, which
+# substitutes __DOMAIN__ and writes the result to
+# /etc/nginx/sites-available/eve-trader once a certificate exists under
+# /etc/letsencrypt/live/<domain>/ (obtain it with
+# `certbot certonly --nginx -d <domain>`, see deploy/README.md). Same
+# headers, limits and proxy settings as nginx-eve-trader.conf.template, plus
+# the http->https redirect and Strict-Transport-Security; change both
+# templates together.
+
+# --- http{}-level definitions (this file is included inside http{}) ---------
+
+# Timing log: its own format name, the stock "main" format is left alone.
+# rt = total request time, urt = time the backend needed, rid = the request id
+# also sent to the backend (X-Request-ID, appears in the application log).
+log_format eve_trader_timing '$remote_addr - $remote_user [$time_local] "$request" '
+                             '$status $body_bytes_sent "$http_referer" '
+                             'rt=$request_time urt=$upstream_response_time rid=$request_id';
+
+# Rate limiting. ALL NUMBERS ARE PROPOSALS, not measured values; adjust them
+# once the timing log shows real traffic. A request whose key is empty is not
+# counted, so the maps below decide which requests fall into which zone and
+# one proxy location can carry both limits.
+#  - General zone, every /api/ request: 10 r/s per client address, burst 40.
+#    A page load fires several parallel queries; 40 absorbs that.
+#  - Strict zone, the expensive solver / rebuild endpoints listed in the map:
+#    6 requests per minute per client address, burst 3. One of these can keep
+#    the CPU busy for many seconds on a small host.
+map $uri $eve_trader_general_key {
+    default "";
+    ~^/api/ $binary_remote_addr;
+}
+map "$request_method $uri" $eve_trader_solver_key {
+    default "";
+    ~^POST\ /api/(refining|module-reprocessing)/(shopping-list/optimize|import/plan)$ $binary_remote_addr;
+    ~^POST\ /api/production/(max-buildable|plan/refresh|asset-plan/refresh)$ $binary_remote_addr;
+    ~^POST\ /api/(production|trading|doctrine|station-trading)/realized/rebuild$ $binary_remote_addr;
+}
+limit_req_zone $eve_trader_general_key zone=eve_trader_api:10m rate=10r/s;
+limit_req_zone $eve_trader_solver_key zone=eve_trader_solver:10m rate=6r/m;
+limit_req_status 429;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__;
+
+    server_tokens off;
+    access_log /var/log/nginx/eve-trader.access.log eve_trader_timing;
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name __DOMAIN__;
+
+    ssl_certificate     /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:eve_trader_ssl:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    server_tokens off;
+    access_log /var/log/nginx/eve-trader.access.log eve_trader_timing;
+
+    # Request body cap. 1m: the largest legitimate request is a pasted
+    # inventory of a few hundred KB (the API caps those pastes at 500,000
+    # characters). The application will enforce 1 MiB itself in a later
+    # change; this is the outer limit. Larger bodies get 413 from nginx.
+    client_max_body_size 1m;
+
+    # Security headers.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # HSTS for about 6 months, without the subdomain flag: other hosts under the
+    # same domain may still be served over plain HTTP.
+    add_header Strict-Transport-Security "max-age=15768000" always;
+
+    # CSP grounded in what this app's own built frontend actually loads
+    # (confirmed 2026-09-26 by grepping frontend/dist's built JS for
+    # external URLs - none - and index.html for external tags - only Google
+    # Fonts): same-origin API (`/api/*`, same host, no separate API
+    # domain), no third-party CDN scripts, no analytics. The EVE SSO login
+    # redirect (`/api/auth/gate/start` -> login.eveonline.com) is a plain
+    # server-side 302 the browser navigates to - top-level navigation isn't
+    # governed by CSP at all, so no `login.eveonline.com` allowance is
+    # needed anywhere below.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" always;
+    # style-src needs 'unsafe-inline': the UI library stack (floating-ui,
+    # Radix-style portals/positioning) sets inline style="..." attributes for
+    # positioning at runtime, not just stylesheet classes - a real
+    # requirement, not a lazy default. script-src stays strict (no
+    # 'unsafe-inline'/'unsafe-eval') since nothing in the built bundle needed
+    # either. The Google Fonts entries stay until the fonts are served locally.
+
+    location / {
+        # 429 comes from limit_req (zones defined at the top of this file).
+        limit_req zone=eve_trader_api burst=40 nodelay;
+        limit_req zone=eve_trader_solver burst=3 nodelay;
+
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        # User-triggered HTTP jobs return immediately (background thread +
+        # status polling, see eve_trader/pipeline_runner.py), so nginx's own
+        # default of 60s is enough for the remaining request-scoped actions.
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}
