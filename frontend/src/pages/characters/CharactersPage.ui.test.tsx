@@ -140,6 +140,21 @@ describe('Characters page', () => {
     })
   })
 
+  it('shows Re-authorize needed for a character whose refresh token was rejected', async () => {
+    vi.mocked(charactersApi.owners).mockResolvedValue([
+      {
+        character_id: 1, character_name: 'Alice', write_role: 'esi:1',
+        character_has_token_pool: false, refresh_rejected: true, roles: ['esi:1'],
+        corporation_id: 99, corporation_name: null,
+      },
+    ])
+    vi.mocked(charactersApi.sharing).mockResolvedValue([])
+    vi.mocked(charactersApi.freshness).mockResolvedValue([])
+    vi.mocked(charactersApi.capabilities).mockResolvedValue([])
+    renderPage()
+    expect(await screen.findByText('Re-authorize needed')).toBeInTheDocument()
+  })
+
   it('shows a role-missing badge after Check corp roles reports has_role: false', async () => {
     vi.mocked(charactersApi.owners).mockResolvedValue([
       {
