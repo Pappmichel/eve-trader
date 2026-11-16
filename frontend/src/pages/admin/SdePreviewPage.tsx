@@ -14,6 +14,7 @@ import { DataTable } from '../../components/DataTable'
 import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { JobProgress } from '../../components/JobProgress'
+import { SdePreviewWarnings } from './SdePreviewWarnings'
 
 const SDE_RESULT_KEYS: string[][] = [['production', 'sde', 'counts'], ['production', 'sde-freshness']]
 const SDE_LABELS = { sde_preview: 'Preview SDE' }
@@ -149,6 +150,11 @@ export default function SdePreviewPage() {
     setApplied(true)
     return result
   }, SDE_RESULT_KEYS)
+  const applyShrink = useAction('Apply Changes (confirm shrink)', async () => {
+    const result = await adminApi.applySde(true)
+    setApplied(true)
+    return result
+  }, SDE_RESULT_KEYS)
 
   const statusLoaded = sdeJob.status !== undefined
   const running = Boolean(sdeJob.runningStatus || previewStart.isPending)
@@ -165,6 +171,8 @@ export default function SdePreviewPage() {
   const rawResult = sdeJob.status?.result
   const diff = isSdeDiff(rawResult) ? rawResult : null
   const canApply = sdeJob.status?.status === 'succeeded' && diff != null && !applied && !running
+  const shrinkWarnings = diff?.shrink_warnings ?? []
+  const shrinks = shrinkWarnings.length > 0
 
   const newItems = useMemo(() => [...(diff?.new_items ?? [])].sort(byName), [diff])
   const removedItems = useMemo(() => [...(diff?.removed_items ?? [])].sort(byName), [diff])
@@ -212,10 +220,21 @@ export default function SdePreviewPage() {
             size="xs"
             onClick={() => apply.mutate()}
             loading={apply.isPending}
-            disabled={!canApply || apply.isPending}
+            disabled={!canApply || apply.isPending || shrinks}
           >
             Apply Changes
           </Button>
+          {shrinks && (
+            <Button
+              size="xs"
+              color="danger"
+              onClick={() => applyShrink.mutate()}
+              loading={applyShrink.isPending}
+              disabled={!canApply || applyShrink.isPending}
+            >
+              Apply anyway (confirm shrink)
+            </Button>
+          )}
         </Group>
 
         {running && (
@@ -228,6 +247,7 @@ export default function SdePreviewPage() {
 
         {diff && !running && (
           <>
+            <SdePreviewWarnings shrinkWarnings={shrinkWarnings} drift={diff.constant_drift} />
             <Accordion multiple>
               <Accordion.Item value="new">
                 <Accordion.Control>New Items ({newItems.length})</Accordion.Control>

@@ -41,7 +41,7 @@ function SdeDataSection() {
         <Title order={4}>SDE Data</Title>
         {sdeFreshness && (
           sdeFreshness.newer_sde_available ? (
-            <Badge size="xs" color="warn" variant="light">Update available</Badge>
+            <Badge size="xs" color="warn" variant="light">New SDE available</Badge>
           ) : sdeFreshness.remote_check_succeeded ? (
             <Badge size="xs" color="accent" variant="light">Up to date</Badge>
           ) : (

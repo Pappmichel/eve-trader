@@ -753,7 +753,8 @@ export const adminApi = {
   // cross-tenant-impacting action, not a per-tenant Production one.
   previewSde: () => post<T.PipelineRunStatus>('/api/admin/sde/preview'),
   previewSdeStatus: () => get<T.PipelineRunStatus>('/api/admin/sde/preview/status'),
-  applySde: () => post<T.SdeApplyResult>('/api/admin/sde/apply'),
+  applySde: (confirmShrink = false) =>
+    post<T.SdeApplyResult>('/api/admin/sde/apply', { confirm_shrink: confirmShrink }),
   // Same cross-tenant-cache reasoning as previewSde above - see
   // production/jita_price_cache.py's own docstring.
   refreshJitaPriceCache: () =>
