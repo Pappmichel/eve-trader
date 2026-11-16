@@ -151,9 +151,11 @@ class ProductionConfig:
     manufacturing_rig_tier: str = "No Rig"
 
     # -- Invention (see production/invention.py) --
-    encryption_skill_level: int = 4
-    datacore_skill_1_level: int = 4
-    datacore_skill_2_level: int = 4
+    # Default 5/5/5: real invention jobs match maxed skills far more often
+    # than 4/4/4 (which overstated the cost per success by about 6.7%).
+    encryption_skill_level: int = 5
+    datacore_skill_1_level: int = 5
+    datacore_skill_2_level: int = 5
 
     # -- Job-time skills (see production/engine.py's _skill_time_mult) --
     # Flat, manually-set assumptions - same "one tenant-wide number, no per-
@@ -161,11 +163,10 @@ class ProductionConfig:
     # (confirmed with the user 2026-09-27: real ESI character skills already
     # exist for job-slot counts, but deliberately are not wired up here
     # either, to avoid re-opening the "which character, if several hold the
-    # relevant skill" question). Default 5 (max) rather than the invention
-    # fields' 4, since Industry/Advanced Industry/Reactions/the "specialist"
-    # skills (constants.SPECIALIST_TIME_SKILLS) are common, cheap-to-max
-    # skills most industrialists train to 5 early, unlike the invention
-    # skills' 4 (a more typical, non-maxed assumption for those).
+    # relevant skill" question). Default 5 (max), like the invention skill
+    # fields: Industry/Advanced Industry/Reactions/the "specialist" skills
+    # (constants.SPECIALIST_TIME_SKILLS) are common, cheap-to-max skills most
+    # industrialists train to 5 early.
     industry_skill_level: int = 5
     advanced_industry_skill_level: int = 5
     reactions_skill_level: int = 5

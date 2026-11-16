@@ -386,3 +386,14 @@ def test_fee_rates_falls_back_without_tenant(monkeypatch):
     assert rates is not None
     assert seen == [mfg_sys]
     assert rates.invention_rate == pytest.approx(0.2 + SCC_SURCHARGE_RATE)
+
+
+def test_default_config_assumes_maxed_invention_skills():
+    from eve_trader.production.config import ProductionConfig
+
+    cfg = ProductionConfig()
+    assert (cfg.encryption_skill_level, cfg.datacore_skill_1_level, cfg.datacore_skill_2_level) == (5, 5, 5)
+    # 1 + (5 + 5) / 30 + 5 / 40
+    assert invention.skill_multiplier(cfg) == pytest.approx(1.458333, rel=1e-5)
+    # base probability x multiplier, no decryptor
+    assert RECIPE["base_probability"] * invention.skill_multiplier(cfg) == pytest.approx(0.34 * 1.458333, rel=1e-5)

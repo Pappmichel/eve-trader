@@ -114,9 +114,9 @@ manufacturing_rig_tier: "No Rig"
 
 # Invention skill levels (see production/invention.py) - Encryption Methods +
 # the two datacore skills relevant to whatever you're inventing.
-encryption_skill_level: 4
-datacore_skill_1_level: 4
-datacore_skill_2_level: 4
+encryption_skill_level: 5
+datacore_skill_1_level: 5
+datacore_skill_2_level: 5
 
 # ---- Access gate (see eve_trader/access_gate.py) - on by default. Every
 # /api/* route requires an EVE SSO login (identity only, no ESI scopes) that
