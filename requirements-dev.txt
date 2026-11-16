@@ -1,0 +1,21 @@
+# Development and CI: the runtime pins plus the test packages. Production and
+# the start scripts install requirements.lock (runtime only) instead.
+# Dependabot reads this file and the requirements.txt it includes.
+#
+#   pip install -r requirements-dev.txt
+#   pip install -e . --no-deps
+-r requirements.txt
+
+# starlette's TestClient needs httpx.
+httpx==0.28.1
+httpcore==1.0.9
+# Test runner and its dependencies (+ packaging, used by the lock tests).
+execnet==2.1.2
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+Pygments==2.21.0
+pytest==9.2.0
+pytest-xdist==3.8.0
+# pytest on Python <3.11. Not installed on 3.11+.
+tomli==2.5.0; python_version < "3.11"
