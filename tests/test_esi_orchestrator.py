@@ -523,7 +523,9 @@ def test_corp_member_loop_continues_when_first_member_refresh_fails(tenant, monk
         members=[alice, bob], corp_name="Test Corp", extra={}, tokens=tm,
     )
     assert result["ok"] is True
-    assert refresh_tokens == ["revoked"]
+    # Once in the pre-refresh before the batch (fails, only logged), once in
+    # the lazy path inside the batch, which still reports the failure.
+    assert refresh_tokens == ["revoked", "revoked"]
     assert asset_auths == ["Bearer good"]
     assert _count("corp_assets", owner_corporation_id=CORP_ID) == 1
     with storage.connect() as conn:

@@ -35,6 +35,7 @@ import logging
 import math
 import pickle
 import subprocess
+import threading
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -111,10 +112,29 @@ def _tier_cap_portions(tier: SupplyTier, portion_size: int) -> Optional[int]:
     return None if tier.max_units is None else tier.max_units // portion_size
 
 
+# One solver process at a time (1 CPU): concurrent requests queue here for at
+# most MIP_QUEUE_WAIT_SECONDS (below the reverse proxy's timeout) and fall back
+# to the rounded LP plan when they do not get a turn.
+MIP_QUEUE_WAIT_SECONDS = 25.0
+_mip_slot = threading.BoundedSemaphore(1)
+
+
 def _solve_mip_in_child(kwargs: dict) -> Optional[np.ndarray]:
     """The integer solution from a mip_worker process, or None when it found
-    none, failed or passed MIP_PROCESS_DEADLINE_SECONDS (subprocess.run kills
-    it then)."""
+    none, failed, passed MIP_PROCESS_DEADLINE_SECONDS (subprocess.run kills
+    it then) or waited more than MIP_QUEUE_WAIT_SECONDS for its turn."""
+    if not _mip_slot.acquire(timeout=MIP_QUEUE_WAIT_SECONDS):
+        log.warning("Mineral shopping list: no solver slot within %.0f s, using the rounded LP plan.",
+                    MIP_QUEUE_WAIT_SECONDS)
+        return None
+    try:
+        return _run_mip_process(kwargs)
+    finally:
+        _mip_slot.release()
+
+
+def _run_mip_process(kwargs: dict) -> Optional[np.ndarray]:
+    """One mip_worker process (see _solve_mip_in_child)."""
     try:
         done = subprocess.run([sys.executable, "-m", "eve_trader.mip_worker"], input=pickle.dumps(kwargs),
                               capture_output=True, timeout=MIP_PROCESS_DEADLINE_SECONDS, cwd=_APP_ROOT)

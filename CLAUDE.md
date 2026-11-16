@@ -541,6 +541,22 @@ function or table after that migration (all 5 of its phases are done).
   it only trades connection-pool cold-start latency for idle-connection
   overhead on Postgres's side, not something to guess at without a measured
   problem.
+- **`storage.with_current_tenant(fn)` carries the whole context.** It snapshots
+  `contextvars.copy_context()` on the calling thread when it wraps and runs
+  every call in its own `ctx.copy()` (one Context cannot be entered by two
+  threads), so the tenant id *and* the per-tenant `TRADING_CONFIG` /
+  `PRODUCTION_CONFIG` values travel into worker threads. The snapshot is
+  taken at wrap time: wrap after `enter_tenant`, not before.
+- **Refresh tokens before a batch, not inside it.** `orchestrator.
+  _run_character_owner` / `_run_corporation_kinds_for_members` call
+  `TokenManager.ensure_fresh(role)` (refreshes below 300 s of validity) for
+  every role they will use *before* `storage.batch_session()` opens: a refresh
+  inside the batch needs a second pooled connection for `save_tenant_token`
+  and ten such owners exhausted the pool of 10. A failing pre-refresh is only
+  logged; the lazy refresh in the fetch stays as the fallback. The save after
+  a successful SSO refresh retries `PoolTimeout`/`OperationalError` 3 times and
+  then keeps the new record in memory (SSO may already have rotated the
+  refresh token). Pool size stays 10.
 - **`ThreadPoolExecutor`/raw `threading.Thread` don't inherit contextvars**
   from the thread that spawned them (confirmed live, twice, in this
   migration - `production/esi_sync.py`'s `sync_esi` and `esi_client.py`'s
@@ -747,6 +763,12 @@ runs only with the operator switch `alerts_job_enabled`, independent of every
 tenant's `scheduler_enabled` and of tenant inactivity
 (`tenant_eligibility.alerts_allowed`: gate on -> registered, not suspended,
 holds `char_alerts`). Frontend: `/character-management/alerts`.
+Failed attempts are stamped with the failure time (`runner._failure_time()`), not
+the run's start `now`; three ESI failures in a row (`_RunHealth`) abort the
+subscription loop (`{"ran": True, "aborted": "esi_failures"}`, the rest stays
+unstamped). The alerts job runs via `_run_job(..., wait=False)`: the tick never
+waits for it, the worker writes the status itself, and the per-(tenant, job)
+guard holds until the thread ends.
 `runner.run_for_tenant` guards itself per tenant (`_try_begin_tenant`/
 `_end_tenant`, same shape as `esi_data.orchestrator`'s own per-owner
 `_try_begin_owner`/`_end_owner`, one level up) - confirmed real gap fixed
@@ -1139,7 +1161,9 @@ true now (the paragraphs above are still right except where this overrides
 them):
 
 - **Job switches.** `scheduler_enabled` on `DEFAULT_TENANT_ID` is the master
-  switch (it also gates every other tenant's per-tenant jobs, which still need
+  switch (saving it through `do_update_settings` under the Default tenant calls
+  the idempotent `scheduler.start()`; `_run_job` records `SystemExit`/
+  `KeyboardInterrupt` and re-raises; `_loop` always resets `_thread` on exit) (it also gates every other tenant's per-tenant jobs, which still need
   their own `scheduler_enabled` too - now reachable from Trading Settings'
   "Background scheduler" switch, added 2026-10-01 after a code review found it
   was previously writable only via a direct `tenant_settings` SQL update, no UI
@@ -1159,6 +1183,13 @@ them):
   before this UI existed) still shadows a `config.yaml` default the way any
   other `TradingConfig` field would, unlike the operator-only switches above,
   which have no per-tenant override path at all.
+- **Transient ESI failures retry sooner (ESI kinds only).** A kind whose last
+  failure was transient (5xx, timeout/network `ESIError`, 420/429, `ESIRateLimited`)
+  waits 15 min, then 30, 60, ... (`esi_freshness.consecutive_failures`, read via
+  `storage.list_esi_failure_counts()`, capped at the long backoff below). Dead
+  owners (401/403, SSO rejection), re-auth skips, `suspicious_empty:` rejections
+  and non-ESI errors keep the long backoff and reset the count to 0; a success
+  resets it too. `list_esi_freshness()` keeps its 7-field tuple.
 - **Failure backoff.** A job/kind is due only if the interval since the last
   *success* has elapsed **and** `min(interval, 6 h)` has elapsed since the last
   *attempt* (`scheduler._job_due`, `orchestrator._kind_is_due`). Before this an
@@ -1300,6 +1331,11 @@ more read/write split needing a one-off exception in `api/app.py`'s
 `_required_tool_for_path` (the old `F-06` carve-out, now gone) - plus the
 scheduler's own global backup job (opt-in via `DEFAULT_TENANT_ID`'s
 `backup_interval_hours`).
+A backup is written to `<name>.zip.partial` (matches no `*.zip` glob, so
+`list_backups()` and both prefixes' pruning never see it), verified with
+`testzip()`, fsynced and only then `os.replace`d to its final name; the
+retention prune runs after that. `backup.cleanup_partial_files()` (app start,
+not under pytest) deletes `.tmp_*` and `*.partial` older than 10 minutes.
 Filenames include microseconds and a uuid so two backups cannot collide;
 `pg_dump` stderr stays in the process log, not in the HTTP 400.
 
@@ -1786,6 +1822,12 @@ portions and topped up greedily. It never uses integer columns, because of the
 HiGHS hang below. Mineral value is the Shortlist's C-J figure. The minerals table
 shows output against the quantity listed at C-J as a hint only; that does not
 change the selection. Nothing is stored.
+
+**One solver process at a time.** `mineral_supply_lp._solve_mip_in_child` holds a
+module-wide `BoundedSemaphore(1)` around the worker process; a caller that does not
+get the slot within `MIP_QUEUE_WAIT_SECONDS` (25 s) gets `None` and the usual
+rounded, `approximate` LP plan. Do not put the semaphore in `_run_mip` (tests
+replace it).
 
 **HiGHS can ignore its time limit (found 2026-11-05).** Production is aarch64
 with one CPU. With integer column bounds in the billions (3.0B of listed

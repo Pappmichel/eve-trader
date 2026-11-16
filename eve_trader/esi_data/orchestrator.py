@@ -12,11 +12,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
+import requests
+
 from .. import storage, wealth_cache
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
-from ..esi_client import ESIClient, ESIError, ESIRateLimited, ESIStatusError, collect_last_modified
+from ..esi_client import (
+    ESIClient, ESIError, ESIHTTPError, ESIRateLimited, ESIStatusError, collect_last_modified,
+)
 from .fetchers import fetcher_for
 from .registry import OWNED_DATA_KINDS, ON_DEMAND, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
 from .selector import REAUTH_NEEDED, select_auth_role
@@ -101,11 +105,45 @@ def _backoff_hours(data_kind: str) -> float:
     return min(_tier_hours(data_kind), FAILURE_BACKOFF_HOURS)
 
 
-def _freshness_map() -> dict[tuple[str, int, str], tuple[Optional[str], Optional[str]]]:
-    """`{(owner_type, owner_id, kind): (last_success_at, last_attempt_at)}` in
-    one query - due-ness used to cost one query per sharing row per tick."""
+# A transient failure (5xx, timeout, network, rate limit) retries sooner:
+# 15 min after the first one, doubling with each failure in a row, never past
+# the long backoff above. Dead owners and re-auth skips keep the long backoff.
+TRANSIENT_BACKOFF_FIRST_HOURS = 0.25
+
+
+def _backoff_hours_for(data_kind: str, consecutive_failures: int = 0) -> float:
+    long_backoff = _backoff_hours(data_kind)
+    if consecutive_failures <= 0:
+        return long_backoff
+    short = TRANSIENT_BACKOFF_FIRST_HOURS * (2 ** (min(consecutive_failures, 10) - 1))
+    return min(short, long_backoff)
+
+
+def _is_transient_error(error: BaseException) -> bool:
+    """A short-lived ESI problem worth a quick retry. Not a dead owner, not a
+    `suspicious_empty:` rejection (that one keeps the long backoff so a brief
+    outage is not accepted as real emptiness 15 minutes later), not a storage
+    or logic error."""
+    if isinstance(error, ESIRateLimited):
+        return True
+    if _is_dead_owner_error(error):
+        return False
+    if isinstance(error, ESIStatusError):
+        return error.status >= 500 or error.status in (420, 429)
+    if isinstance(error, ESIHTTPError):
+        return False
+    if isinstance(error, ESIError):
+        return not str(error).startswith("suspicious_empty:")
+    return isinstance(error, (requests.RequestException, TimeoutError, ConnectionError))
+
+
+def _freshness_map() -> dict[tuple[str, int, str], tuple]:
+    """`{(owner_type, owner_id, kind): (last_success_at, last_attempt_at,
+    consecutive_failures)}` in two small queries - due-ness used to cost one
+    query per sharing row per tick."""
+    failures = storage.list_esi_failure_counts()
     return {
-        (ot, oid, kind): (success, attempt)
+        (ot, oid, kind): (success, attempt, failures.get((ot, oid, kind), 0))
         for ot, oid, kind, success, attempt, _err, _as_of in storage.list_esi_freshness()
     }
 
@@ -119,10 +157,14 @@ def _kind_is_due(
     equal, so the backoff only ever matters after a failed/skipped attempt."""
     if freshness is None:
         freshness = _freshness_map()
-    success, attempt = freshness.get((owner_type, owner_id, data_kind), (None, None))
+    entry = freshness.get((owner_type, owner_id, data_kind), (None, None, 0))
+    success, attempt = entry[0], entry[1]
+    failures = entry[2] if len(entry) > 2 else 0
     if _hours_since_success(success, now) < _tier_hours(data_kind):
         return False
-    if attempt is not None and _hours_since_success(attempt, now) < _backoff_hours(data_kind):
+    if attempt is not None and _hours_since_success(attempt, now) < _backoff_hours_for(
+        data_kind, failures,
+    ):
         return False
     return True
 
@@ -252,6 +294,7 @@ def _record_failure(
         return
     storage.upsert_esi_freshness(
         owner_type, owner_id, data_kind, success=False, error=str(error),
+        transient=_is_transient_error(error),
     )
     if _KIND_BY_KEY[data_kind].schedule_mode == ON_DEMAND:
         # Display-only snapshots are expected to age between page visits; one
@@ -304,6 +347,18 @@ def _kinds_for_owner(
     return kinds
 
 
+def _prefresh_tokens(tokens: TokenManager, roles: "set[str]") -> None:
+    """Refresh tokens that are (nearly) expired *before* a batch session pins
+    a pooled connection: a refresh inside the batch needs a second
+    connection to store the new token. A failure is only logged; the lazy
+    refresh inside the fetch stays as the fallback and reports as before."""
+    for role in sorted(roles):
+        try:
+            tokens.ensure_fresh(role)
+        except Exception as e:  # noqa: BLE001 - the lazy path handles it
+            log.warning("token pre-refresh failed for %s: %s", role, type(e).__name__)
+
+
 def _run_character_owner(
     *,
     client: ESIClient,
@@ -328,6 +383,12 @@ def _run_character_owner(
     # failure happens outside a kind (e.g. committing the batch).
     current_kind: Optional[str] = None
     try:
+        _prefresh_tokens(tokens, {
+            r for r in (
+                select_auth_role(owner_id, sc, tokens=tokens)
+                for sc in (_required_scope(k, owner_type) for k in kinds) if sc
+            ) if r and r != REAUTH_NEEDED
+        })
         with storage.batch_session():
             for data_kind in kinds:
                 current_kind = data_kind
@@ -413,6 +474,13 @@ def _run_corporation_kinds_for_members(
     reauth_kinds: list[str] = []
     current_kind: Optional[str] = None  # see _run_character_owner
     try:
+        _prefresh_tokens(tokens, {
+            r for r in (
+                select_auth_role(rec.character_id, sc, tokens=tokens)
+                for sc in (_required_scope(k, owner_type) for k in kinds) if sc
+                for rec in members
+            ) if r and r != REAUTH_NEEDED
+        })
         with storage.batch_session():
             for data_kind in kinds:
                 current_kind = data_kind

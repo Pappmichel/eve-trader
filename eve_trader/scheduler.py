@@ -207,7 +207,7 @@ def _sync_due_then_match(grants, **kwargs):
     return result
 
 
-def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
+def _run_job(tenant_id: Optional[str], name: str, fn, *, wait: bool = True) -> None:
     """tenant_id=None records into the matching global status dict (looked
     up by `name` via _GLOBAL_JOB_STATUS) instead of a per-tenant slot - only
     the backup and jita_price_cache jobs ever pass None.
@@ -218,7 +218,12 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
     threading.Thread does not inherit contextvars (CLAUDE.md).
 
     If a previous worker for the same (tenant, name) is still alive, skip
-    without overwriting its status."""
+    without overwriting its status.
+
+    `wait=False` starts the worker and returns at once (the alerts job, so
+    its long runs never hold the tick loop): the worker writes the status
+    itself when it ends, and JOB_TIMEOUT_SECONDS does not apply - the
+    per-(tenant, job) guard stays held until the thread is done."""
     key = (tenant_id, name)
     with _job_mu:
         existing = _running_jobs.get(key)
@@ -231,16 +236,32 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
 
     outcome: dict = {"error": None}
 
+    def _record_status() -> None:
+        result = {
+            "ran_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "error": outcome["error"],
+        }
+        if tenant_id is None:
+            _GLOBAL_JOB_STATUS[name].update(result)
+        else:
+            last_run_status.setdefault(tenant_id, {})[name] = result
+
     def _worker() -> None:
         try:
             fn()
         except Exception as e:  # noqa: BLE001 - a job's own failure must never kill the scheduler thread
             log.warning("Scheduled job %r (tenant=%s) failed: %s", name, tenant_id, e)
             outcome["error"] = str(e)
+        except BaseException as e:  # SystemExit, KeyboardInterrupt, GeneratorExit
+            log.warning("Scheduled job %r (tenant=%s) aborted: %r", name, tenant_id, e)
+            outcome["error"] = f"{type(e).__name__}: {e}"
+            raise
         finally:
             with _job_mu:
                 if _running_jobs.get(key) is thread:
                     _running_jobs.pop(key, None)
+            if not wait:
+                _record_status()
 
     ctx = contextvars.copy_context()
     thread = threading.Thread(
@@ -257,6 +278,8 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
             return
         _running_jobs[key] = thread
     thread.start()
+    if not wait:
+        return
     thread.join(JOB_TIMEOUT_SECONDS)
     if thread.is_alive():
         log.warning(
@@ -266,15 +289,7 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
         )
         outcome["error"] = f"timed out after {JOB_TIMEOUT_SECONDS}s (still running)"
 
-    result = {
-        "ran_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "error": outcome["error"],
-    }
-
-    if tenant_id is None:
-        _GLOBAL_JOB_STATUS[name].update(result)
-    else:
-        last_run_status.setdefault(tenant_id, {})[name] = result
+    _record_status()
 
 
 def _check_and_run_due_jobs_for_tenant(
@@ -441,7 +456,7 @@ def _check_and_run_alerts_job() -> None:
             with tenant_scope.enter_tenant(tenant_id):
                 if not tenant_eligibility.alerts_allowed(tenant_id) or not alert_runner.enabled_subscriptions():
                     continue
-                _run_job(tenant_id, "alerts", alert_runner.run_for_tenant)
+                _run_job(tenant_id, "alerts", alert_runner.run_for_tenant, wait=False)
         except Exception as e:  # noqa: BLE001 - one tenant's failure must not block the others
             log.warning("Alerts check failed for tenant %s: %s", tenant_id, e)
 
@@ -479,12 +494,20 @@ def _check_and_run_due_jobs() -> None:
 
 
 def _loop() -> None:
-    while not _stop_event.is_set():
-        try:
-            _check_and_run_due_jobs()
-        except Exception as e:  # noqa: BLE001 - one bad check must not end the background thread
-            log.warning("Scheduler check failed: %s", e)
-        _stop_event.wait(CHECK_INTERVAL_SECONDS)
+    global _thread
+    try:
+        while not _stop_event.is_set():
+            try:
+                _check_and_run_due_jobs()
+            except Exception as e:  # noqa: BLE001 - one bad check must not end the background thread
+                log.warning("Scheduler check failed: %s", e)
+            _stop_event.wait(CHECK_INTERVAL_SECONDS)
+    finally:
+        # Whatever ended the loop (stop(), SystemExit, ...), the next start()
+        # must be able to start a fresh thread.
+        log.error("scheduler thread ended")
+        if _thread is threading.current_thread() or _thread is None or not _thread.is_alive():
+            _thread = None
 
 
 def start() -> None:
@@ -510,8 +533,9 @@ def start() -> None:
 
 def stop() -> None:
     _stop_event.set()
-    if _thread is not None:
-        _thread.join(timeout=5)
+    thread = _thread
+    if thread is not None:
+        thread.join(timeout=5)
 
 
 def get_status() -> dict:

@@ -66,6 +66,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON esi_freshness TO eve_trader_app;
 -- readers fall back to `last_success_at`.
 ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS data_as_of TIMESTAMPTZ;
 
+-- Transient ESI failures (5xx, timeout, network, rate limit) in a row. Drives
+-- the short retry backoff; reset by a success, by a dead-owner failure and by
+-- a re-auth skip, which keep the long backoff.
+ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
+
 -- ====================================================== per-tenant: group-3 capabilities
 -- On/off per character, no tool_key. Presence of a row means the
 -- capability is ticked. Not a sharing row.

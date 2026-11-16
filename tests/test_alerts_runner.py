@@ -3,6 +3,8 @@ dedupe, backoff), mail (baseline, count-only, content opt-in, failures), the
 demand-only ESI sync and the scheduler hook."""
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
@@ -99,8 +101,21 @@ def _live(hours):
              "finish_date": (NOW + timedelta(hours=hours)).isoformat()}]
 
 
+_CLOCK = [NOW]
+
+
+@pytest.fixture(autouse=True)
+def _simulated_failure_clock(monkeypatch):
+    """Failed attempts are stamped with the time of the failure; these tests
+    simulate the clock through `now`, so the failure time follows it."""
+    _CLOCK[0] = NOW
+    monkeypatch.setattr(runner, "_failure_time", lambda: _CLOCK[0])
+
+
 def _run(client, **kw):
-    return runner.run_for_tenant(now=kw.pop("now", NOW), client=client, poll_minutes=kw.pop("poll", 10), **kw)
+    now = kw.pop("now", NOW)
+    _CLOCK[0] = now
+    return runner.run_for_tenant(now=now, client=client, poll_minutes=kw.pop("poll", 10), **kw)
 
 
 @pytest.fixture(autouse=True)
@@ -310,7 +325,7 @@ def test_scheduler_runs_alerts_only_when_the_operator_switch_is_on(tenant, monke
     _setup()
     aa.do_set_subscription(ALICE, "mail_new", True)
     ran = []
-    monkeypatch.setattr(scheduler, "_run_job", lambda tid, name, fn: ran.append((tid, name)))
+    monkeypatch.setattr(scheduler, "_run_job", lambda tid, name, fn, **kw: ran.append((tid, name)))
     monkeypatch.setattr(storage, "list_tenants", lambda: [(tenant, "t", None)])
     monkeypatch.setattr(scheduler.SCHEDULER_OPERATOR_CONFIG, "alerts_job_enabled", False)
     scheduler._check_and_run_alerts_job()
@@ -322,7 +337,7 @@ def test_scheduler_runs_alerts_only_when_the_operator_switch_is_on(tenant, monke
 
 def test_alerts_run_without_master_switch_and_for_inactive_tenants(tenant, monkeypatch):
     ran = []
-    monkeypatch.setattr(scheduler, "_run_job", lambda tid, name, fn: ran.append(name))
+    monkeypatch.setattr(scheduler, "_run_job", lambda tid, name, fn, **kw: ran.append(name))
     monkeypatch.setattr(scheduler, "_master_enabled", lambda: False)
     monkeypatch.setattr(scheduler.SCHEDULER_OPERATOR_CONFIG, "alerts_job_enabled", True)
     monkeypatch.setattr(scheduler, "_check_and_run_alerts_job", lambda: ran.append("alerts-hook"))
@@ -344,3 +359,81 @@ def test_alerts_allowed_needs_registration_no_suspension_and_the_grant(tenant, m
     with storage.connect_unscoped() as conn:
         conn.execute("DELETE FROM tool_grants WHERE tenant_id = ?", (tenant,))
         conn.execute("DELETE FROM tenant_registry_entries WHERE tenant_id = ?", (tenant,))
+
+
+# ------------------------------------------------- repeated ESI failures abort
+def _setup_many(cids):
+    storage.set_alert_destination(UID)
+    for cid in cids:
+        role = f"esi:{cid}"
+        storage.save_tenant_token(role, asdict(TokenRecord(
+            role=role, character_id=cid, character_name=f"C{cid}", access_token="a", refresh_token="r",
+            expires_at=9999999999.0, scopes=SCOPES)))
+        with storage.connect() as conn:
+            conn.execute("INSERT INTO esi_sharing (owner_type, owner_id, data_kind, tool_key) "
+                         "VALUES ('character', ?, 'mail', 'char_alerts') ON CONFLICT DO NOTHING", (cid,))
+        aa.do_set_subscription(cid, "mail_new", True)
+
+
+class _SeqClient(FakeClient):
+    """Mail poll outcome per call: True = ESI error, False = empty inbox."""
+
+    def __init__(self, failures):
+        super().__init__()
+        self.failures = list(failures)
+
+    def character_mail_headers(self, cid, role, labels=None, last_mail_id=None, cache=True):
+        self.calls.append(f"headers{cid}")
+        if self.failures.pop(0):
+            raise ESIError("HTTP 503")
+        return []
+
+
+def test_three_esi_failures_in_a_row_abort_the_run_and_stamp_the_failure_time(tenant, monkeypatch):
+    cids = [3101, 3102, 3103, 3104, 3105]
+    _setup_many(cids)
+    failed_at = NOW + timedelta(minutes=7)
+    monkeypatch.setattr(runner, "_failure_time", lambda: failed_at)
+    client = _SeqClient([True] * 5)
+    result = _run(client)
+    assert result == {"subscriptions": 5, "ran": True, "aborted": "esi_failures"}
+    assert len(client.calls) == 3
+    stamped = [c for c in cids if storage.get_alert_state(c, "mail_new") is not None]
+    assert len(stamped) == 3
+    for cid in stamped:
+        assert storage.get_alert_state(cid, "mail_new")[3] == failed_at
+
+
+def test_a_success_in_between_resets_the_failure_count(tenant):
+    cids = [3201, 3202, 3203, 3204, 3205]
+    _setup_many(cids)
+    client = _SeqClient([True, True, False, True, True])
+    result = _run(client)
+    assert result == {"subscriptions": 5, "ran": True}
+    assert len(client.calls) == 5
+
+
+def test_alerts_job_returns_at_once_and_the_guard_blocks_a_second_start(tenant, monkeypatch):
+    release = threading.Event()
+    started = threading.Event()
+    scheduler.last_run_status.clear()
+    with scheduler._job_mu:
+        scheduler._running_jobs.clear()
+
+    def slow():
+        started.set()
+        release.wait(5)
+
+    t0 = time.monotonic()
+    scheduler._run_job(tenant, "alerts", slow, wait=False)
+    assert time.monotonic() - t0 < 1.0
+    assert started.wait(5)
+    assert "alerts" not in scheduler.last_run_status.get(tenant, {})   # status is written when it ends
+    ran = []
+    scheduler._run_job(tenant, "alerts", lambda: ran.append(1), wait=False)
+    assert ran == []
+    release.set()
+    deadline = time.monotonic() + 5
+    while "alerts" not in scheduler.last_run_status.get(tenant, {}) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert scheduler.last_run_status[tenant]["alerts"]["error"] is None

@@ -415,6 +415,11 @@ async def _lifespan(app: FastAPI):
             fail_stale_pipeline_runs_on_startup()
         except Exception:  # noqa: BLE001 - never block app start on cleanup
             log.exception("failed to clear stale pipeline_runs on startup")
+        try:
+            from .. import backup
+            backup.cleanup_partial_files()
+        except Exception:  # noqa: BLE001 - never block app start on cleanup
+            log.exception("failed to clean leftover backup files on startup")
     scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
     # Load the SDE recipe index and type rows in the background so the first
     # planner run after a restart does not pay thousands of one-row queries.

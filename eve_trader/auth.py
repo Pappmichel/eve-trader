@@ -25,6 +25,7 @@ import base64
 import hashlib
 import http.server
 import json
+import logging
 import re
 import secrets
 import threading
@@ -39,6 +40,8 @@ import requests
 
 from . import storage
 from .config import OAUTH_CONFIG, OAuthConfig
+
+_log = logging.getLogger(__name__)
 
 
 class InvalidRoleKey(ValueError):
@@ -410,9 +413,32 @@ class TokenManager:
         new_record = self._to_record(record.role, token_json, record.scopes,
                                       character_id=record.character_id,
                                       character_name=record.character_name)
+        # Keep the record in memory first: SSO may already have rotated the
+        # refresh token, so it must survive a failing save for this run.
         self._tokens[record.role] = new_record
-        self._save_record(record.role)
+        self._save_record_with_retry(record.role)
         return new_record
+
+    _SAVE_ATTEMPTS = 3
+    _SAVE_RETRY_WAIT_SECONDS = 0.5
+
+    def _save_record_with_retry(self, role: str) -> None:
+        """Save after a successful SSO refresh; retry a busy pool or a
+        transient database error, then log (no token values) and carry on
+        with the in-memory record."""
+        from psycopg import OperationalError
+        from psycopg_pool import PoolTimeout
+        for attempt in range(1, self._SAVE_ATTEMPTS + 1):
+            try:
+                self._save_record(role)
+                return
+            except (PoolTimeout, OperationalError) as exc:
+                if attempt >= self._SAVE_ATTEMPTS:
+                    _log.error(
+                        "could not store refreshed token for role %s after %d attempts: %s",
+                        role, attempt, type(exc).__name__)
+                    return
+                time.sleep(self._SAVE_RETRY_WAIT_SECONDS)
 
     def _to_record(self, role: str, token_json: dict, scopes: str,
                     character_id: Optional[int] = None,
@@ -458,6 +484,22 @@ class TokenManager:
                 self._load()
                 record = self._tokens.get(role, record)
                 if record.is_expired():
+                    record = self._refresh(record)
+        return record
+
+    def ensure_fresh(self, role: str, min_valid_seconds: int = 300) -> TokenRecord:
+        """Like get_token, but refreshes already when less than
+        `min_valid_seconds` of validity remain. Called before a batch session
+        opens so the refresh does not need a second pooled connection."""
+        self._ensure_loaded()
+        record = self._tokens.get(role)
+        if record is None:
+            raise RuntimeError(f"No stored token for role '{role}'.")
+        if record.is_expired(skew_seconds=min_valid_seconds):
+            with self._refresh_lock_for(role):
+                self._load()
+                record = self._tokens.get(role, record)
+                if record.is_expired(skew_seconds=min_valid_seconds):
                     record = self._refresh(record)
         return record
 
