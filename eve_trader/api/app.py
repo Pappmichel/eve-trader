@@ -331,6 +331,9 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
             blocked = await _affiliation_block(session)
             if blocked is not None:
                 return blocked
+            if "admin" not in session.tool_keys:
+                # The schema lists every route and field: admins only.
+                return JSONResponse({"detail": "Forbidden - missing tool grant"}, status_code=403)
             return await call_next(request)
 
         if not path.startswith("/api/") or path in _GATE_EXEMPT_PATHS:
