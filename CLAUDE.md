@@ -94,7 +94,10 @@ realized-profit ledger (labeled as such), and an attention list. Capital
 keeps blueprint-copy run layers in their own "Blueprint copies" bucket
 (quantity in runs, market value = the per-run copy value x runs, a copy
 without one left out of both sides); sell orders and contracts draw only
-item layers. The frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
+item layers. Like the realized reports, Capital compares the last run's
+owner fingerprint (`access.owner_scope_hash`): without a run or after a
+sharing change it returns `needs_rebuild` with a hint, no buckets and no
+total. The frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
 `/attention` share one priced computation per tenant for 120 s
 (`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
 price-setting change, manual price, or SDE apply drops it at once, nothing is

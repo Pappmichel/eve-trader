@@ -135,6 +135,8 @@ def _finish(buckets: list[dict]) -> dict:
     coverage = min(coverages) if coverages else None
     return {
         "source": "realized-profit ledger",
+        "needs_rebuild": False,
+        "hint": None,
         "buckets": buckets,
         "total": {
             "cost_basis": cost,
@@ -143,6 +145,25 @@ def _finish(buckets: list[dict]) -> dict:
             "estimated": estimated,
             "coverage": coverage,
             "excluded": excluded,
+        },
+    }
+
+
+def needs_rebuild(hint: str) -> dict:
+    """No ledger run, or the run was built from other shared owners than
+    today's: no buckets and no total until the next recompute."""
+    return {
+        "source": "realized-profit ledger",
+        "needs_rebuild": True,
+        "hint": hint,
+        "buckets": [],
+        "total": {
+            "cost_basis": None,
+            "market_value": None,
+            "unrealized": None,
+            "estimated": False,
+            "coverage": None,
+            "excluded": [],
         },
     }
 

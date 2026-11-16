@@ -1031,6 +1031,9 @@ export interface CapitalBucket {
 
 export interface PortfolioCapital {
   source: string
+  // No ledger run, or sharing changed since it: no buckets, total null.
+  needs_rebuild?: boolean
+  hint?: string | null
   buckets: CapitalBucket[]
   total: {
     cost_basis: number | null

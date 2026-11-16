@@ -1109,9 +1109,17 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     Owners are the union of realized-tool shares, not the Portfolio share.
     Prices are the same manual / home sell / Jita sell function as Total Wealth.
     """
-    from .portfolio_capital import report
-    from .realized.access import shared_item_exchange_owners, shared_owners
+    from .portfolio_capital import needs_rebuild, report
+    from .realized.access import owner_scope_hash, shared_item_exchange_owners, shared_owners
     from .realized import db as ledger_db
+
+    # Same check as the realized reports: layers built from other owners
+    # than the ones shared now must not be shown (D11).
+    run = ledger_db.latest_ledger_run()
+    if run is None:
+        return needs_rebuild("Recompute realized profit to build capital from the archive.")
+    if run[4] is None or run[4] != owner_scope_hash():
+        return needs_rebuild("Sharing changed since the last recompute. Recompute realized profit to update.")
 
     order_owners = shared_owners("market_orders")
     contract_owners = shared_item_exchange_owners()

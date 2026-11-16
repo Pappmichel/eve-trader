@@ -202,6 +202,8 @@ def _patch_capital_inputs(monkeypatch, layers, listed=()):
     monkeypatch.setattr(ledger_db, "outstanding_priced_contract_items", lambda owners: [])
     monkeypatch.setattr(ledger_db, "open_buy_escrow_by_owner", lambda owners: [])
     monkeypatch.setattr(ledger_db, "running_job_cost", lambda: (0, 0.0))
+    monkeypatch.setattr(ledger_db, "latest_ledger_run", lambda: (1, None, None, [], "scope"))
+    monkeypatch.setattr(access, "owner_scope_hash", lambda: "scope")
 
 
 def test_capital_action_values_copy_runs_with_the_per_run_value(monkeypatch):
