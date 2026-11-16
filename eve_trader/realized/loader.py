@@ -75,7 +75,10 @@ log = logging.getLogger(__name__)
 # by token or sharing rows; internal market trades are transfers (also
 # re-derives the opening once after the reprocessing, gas decompression and
 # corp-accepted contract flow changes that shipped without a bump; goods in
-# a finished courier's transit are not reprocessing).
+# a finished courier's transit are not reprocessing; a refinery without a rig
+# no longer gets the security yield factor, which is a rig attribute: the
+# no-rig reprocessing yield changed with this version, not with a bump of its
+# own, because 7 had not been deployed yet).
 # NULL counts as older.
 COSTING_VERSION = 7
 

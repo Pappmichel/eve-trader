@@ -304,7 +304,8 @@ outputs by reference value (`origin = reprocessed`). A raw deficit next to a
 compressed surplus is a compression (`origin = compressed`, ratio from SDE
 materials). A surplus within 14 days undoes an earlier deficit and the other
 way round (couriers, moves between owners). Yields come from Ore & Minerals /
-Module Reprocessing settings, so outputs are estimates; a wrong yield shows as
+Module Reprocessing settings (a refinery without a rig gets no security yield
+factor, it is a rig attribute), so outputs are estimates; a wrong yield shows as
 inventory drift. A reprocess candidate or pending surplus detected while a courier issued by an own
 character was in transit counts its 14-day undo window from that courier's
 completion (`CourierContract.date_completed`; warning

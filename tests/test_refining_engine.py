@@ -7,6 +7,7 @@ portion-rounding tests.
 import pytest
 
 from eve_trader.refining.config import RefiningConfig
+from eve_trader.refining.constants import STRUCTURE_YIELD_MODIFIER
 from eve_trader.refining.engine import ore_ice_base_yield, ore_ice_yield, scrapmetal_yield
 
 
@@ -72,9 +73,16 @@ def test_ore_ice_base_yield_whole_base_is_scaled_by_security():
     nullsec = RefiningConfig(structure_type="Tatara (L Refinery)", rig_tier="T2-Rig", security_status=-1.0)
     assert ore_ice_base_yield(nullsec) > ore_ice_base_yield(highsec)
 
+    # The security modifier is a rig attribute: without a rig it is 0, so a
+    # bare structure yields 50% x (1 + structure modifier) everywhere.
     highsec_no_rig = RefiningConfig(rig_tier="No Rig", security_status=0.9)
     nullsec_no_rig = RefiningConfig(rig_tier="No Rig", security_status=-1.0)
-    assert ore_ice_base_yield(nullsec_no_rig) > ore_ice_base_yield(highsec_no_rig)
+    assert ore_ice_base_yield(nullsec_no_rig) == ore_ice_base_yield(highsec_no_rig)
+    assert ore_ice_base_yield(nullsec_no_rig) == pytest.approx(0.50 * (1 + STRUCTURE_YIELD_MODIFIER[nullsec_no_rig.structure_type]))
+
+    highsec_t1 = RefiningConfig(rig_tier="T1-Rig", security_status=0.9)
+    nullsec_t1 = RefiningConfig(rig_tier="T1-Rig", security_status=-1.0)
+    assert ore_ice_base_yield(nullsec_t1) > ore_ice_base_yield(highsec_t1)
 
 
 def test_scrapmetal_yield_hits_confirmed_maximum_of_55_percent():

@@ -7,6 +7,7 @@ during planning (2026-08-22), not an oversight that they diverge so much:
 ore_ice_yield) - the real Upwell structure reprocessing formula, confirmed
 live against wiki.eveuniversity.org/Reprocessing (2026-08-23):
     Yield = (50 + Rig points) x (1 + Security modifier) x (1 + Structure modifier)
+    (the Security modifier is a rig attribute: 0 when no rig is fitted)
                                x (1 + Reprocessing skill)
                                x (1 + Reprocessing Efficiency skill)
                                x (1 + ore-or-ice-family skill)
@@ -130,7 +131,8 @@ def _rounded_security(security_status: float) -> float:
 
 def security_yield_modifier(security_status: Optional[float]) -> float:
     """Sec in the real reprocessing formula (see this module's own
-    docstring) - 0.00 highsec, 0.06 lowsec, 0.12 null-sec/wormhole,
+    docstring). It is a rig attribute: ore_ice_base_yield applies it only
+    when a rig is fitted and uses 0 for "No Rig". 0.00 highsec, 0.06 lowsec, 0.12 null-sec/wormhole,
     confirmed live against wiki.eveuniversity.org/Reprocessing (2026-08-23).
     A genuinely different mechanic from production/constants.py's
     rig_security_multiplier (that one scales only an Engineering Complex's
