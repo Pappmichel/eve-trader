@@ -1813,3 +1813,57 @@ def test_sale_to_an_own_corporation_pairs_with_the_corporation_purchase():
     pairs, _unmatched = c.internal_trade_pairs(ledger)
     assert pairs == {to_corp.key: corp_buys}
     assert rebuild_costing(ledger).realized_results == []
+
+
+# ------------------------------------------------- blueprint-copy run values
+def test_invention_bpc_shortfall_uses_frozen_run_value():
+    # Same job as the shortfall test above, now with a per-run copy value:
+    # 2 T1 runs x 15 = 30 estimated, so the T2 runs are 13 + 30/20 = 14.5.
+    inv = job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 2, at(2), at(3), 60.0,
+              [(DATACORE, 4, "probability_decryptor"), (T1_BP, 2, "probability_decryptor")],
+              licensed_runs=ESI_INVENTION_LICENSED_RUNS, successful_runs=2, runs_per_success=10)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(DATACORE, 4, 50.0, at(1))],
+        industry_jobs=[inv],
+        bpc_run_reference_prices={(T1_BP, at(2).date()): 15.0},
+    ))
+    [layer] = [l for l in result.layers if l.type_id == T2_BP]
+    assert layer.unit_cost == pytest.approx(14.5)
+    assert not layer.price_missing
+    [unknown] = [l for l in result.all_layers if l.type_id == T1_BP and l.unit == c.UNIT_BPC_RUN]
+    assert unknown.origin == "unknown" and unknown.estimated_origin and not unknown.price_missing
+    assert unknown.unit_cost == pytest.approx(15.0)
+    assert not has_warning(result, "missing_reference_price")
+    assert "bpc_run_estimated: type 300 2 runs valued at copy/invention cost" in result.warnings
+    assert result.price_requests == frozenset()
+
+
+def test_manufacturing_on_unrecorded_bpc_costs_frozen_run_value():
+    # 5 runs on a copy with no layer at 20/run = 100 estimated, plus minerals
+    # 50 and job 50: 200 for 5 units. The sale is estimated, not price_missing.
+    build = job(1, BP, PRODUCT, 5, at(1, 10), at(2), 50.0, [(MINERAL, 5, "esi_blueprint")],
+                output_quantity=5, uses_bpc=True)
+    sale = sell(PRODUCT, 5, 100.0, at(3))
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(MINERAL, 5, 10.0, at(1, 8)), sale],
+        journal_entries=tax_pair(sale, 4000, 10.0),
+        industry_jobs=[build],
+        production_type_ids={PRODUCT},
+        bpc_run_reference_prices={(BP, at(1).date()): 20.0},
+    ))
+    [r] = result.realized_results
+    assert r.cost == pytest.approx(200.0)
+    assert r.components.materials_estimated == pytest.approx(100.0)
+    assert r.estimated and not r.price_missing
+    assert "price_missing" not in r.warnings
+    assert "bpc_run_estimated: type 701 5 runs valued at copy/invention cost" in result.warnings
+
+
+def test_bpc_without_run_value_stays_price_missing():
+    # A faction copy has no per-run value: the run stays a 0 and flagged.
+    build = job(1, BP, PRODUCT, 2, at(1, 10), at(2), 10.0, [], output_quantity=2, uses_bpc=True)
+    result = rebuild_costing(snapshot(industry_jobs=[build], production_type_ids={PRODUCT}))
+    [layer] = [l for l in result.layers if l.type_id == PRODUCT]
+    assert layer.price_missing
+    assert not has_warning(result, "bpc_run_estimated")
+    assert (BP, c.UNIT_BPC_RUN, at(1).date()) in result.price_requests

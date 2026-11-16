@@ -47,6 +47,7 @@ from .inputs import _invention_skill_factor as invention_skill_factor
 from .costing import (
     ORIGIN_BOUGHT,
     SOURCE_TRANSFER,
+    UNIT_BPC_RUN,
     UNIT_ITEM,
     CompressionLink,
     ContractItem,
@@ -90,6 +91,8 @@ _PRICE_NEAREST_DAYS = 7
 _NEGATIVE_CACHE_MIN_AGE_DAYS = 2
 _MISSING_SOURCE = "none"
 _VALUATION_UNAVAILABLE = "unavailable"
+# ledger_bpc_run_prices source for a copy without a per-run value.
+_BPC_RUN_UNAVAILABLE = "unavailable"
 
 _DECRYPTOR_RUN_BONUS = {d.type_id: d.run_bonus for d in DECRYPTORS.values() if d.type_id}
 
@@ -756,6 +759,68 @@ def _fetch_valuations(requests: set[tuple[int, date]]) -> dict[tuple[int, date],
     return found
 
 
+def _cached_bpc_run_prices() -> tuple[dict[tuple[int, date], float], set[tuple[int, date]]]:
+    """(prices, known keys) of the frozen per-run copy values. A known key
+    without a price is a copy that has no per-run value ("unavailable")."""
+    prices: dict[tuple[int, date], float] = {}
+    known: set[tuple[int, date]] = set()
+    for (tid, pd), (value, source) in db.list_bpc_run_prices().items():
+        key = (int(tid), _as_date(pd))
+        known.add(key)
+        if source != _BPC_RUN_UNAVAILABLE and value is not None:
+            prices[key] = float(value)
+    return prices, known
+
+
+def _bpc_run_values_with_status(type_ids: set[int]) -> tuple[dict[int, Optional[float]], bool]:
+    # Lazy: portfolio imports half the app; realized must not import it at load.
+    from ..portfolio import bpc_run_values_with_status
+    return bpc_run_values_with_status(set(type_ids))
+
+
+def _bpc_run_value_source(type_id: int) -> str:
+    from ..portfolio import bpc_run_value_source
+    return bpc_run_value_source(int(type_id))
+
+
+def _fetch_bpc_run_prices(requests: set[tuple[int, date]]) -> dict[tuple[int, date], float]:
+    """Value the requested (blueprint type, day) copy runs that have no
+    frozen row yet with today's per-run value (Total Wealth's: invention
+    cost per run, or the copy job fee per run for a Tech I copy) and freeze
+    them, like `_fetch_valuations`. A type without a value is stored as
+    unavailable and stays price_missing. Nothing is stored when the value
+    computation was incomplete (a quote or fee-rate outage): the next
+    rebuild tries again."""
+    if not requests:
+        return {}
+    _prices, known = _cached_bpc_run_prices()
+    todo = sorted(key for key in requests if key not in known)
+    if not todo:
+        return {}
+    try:
+        values, complete = _bpc_run_values_with_status({tid for tid, _d in todo})
+    except Exception:  # noqa: BLE001 - a valuation failure must not fail the rebuild
+        log.exception("realized: blueprint-copy run valuation failed; runs stay price_missing")
+        return {}
+    if not complete:
+        log.warning("realized: blueprint-copy run valuation incomplete; nothing frozen")
+        return {}
+    rows: list[tuple] = []
+    found: dict[tuple[int, date], float] = {}
+    sources: dict[int, str] = {}
+    for tid, day in todo:
+        value = values.get(tid)
+        if value is None:
+            rows.append((tid, day, None, _BPC_RUN_UNAVAILABLE))
+            continue
+        if tid not in sources:
+            sources[tid] = _bpc_run_value_source(tid)
+        rows.append((tid, day, float(value), sources[tid]))
+        found[(tid, day)] = float(value)
+    db.insert_bpc_run_prices(rows)
+    return found
+
+
 def _pick_price(series: dict[date, tuple[float, str]], day: date) -> Optional[tuple[float, str]]:
     """Exact day, else the nearest traded day (earlier first) within
     _PRICE_NEAREST_DAYS. Deterministic for a given series."""
@@ -1173,7 +1238,8 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             industry_jobs=tuple(jobs),
             opening_cost_overrides=db.list_opening_cost_overrides(),
             home_structure_id=PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id,
-            bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
+            # Frozen per-run copy values; missing days are valued by _run_costing.
+            bpc_run_reference_prices=_cached_bpc_run_prices()[0],
             relic_type_ids=_relic_type_ids(),
             bpo_type_ids=bpo_types,
             frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
@@ -1199,21 +1265,29 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
 
 
 def _run_costing(snapshot: LedgerSnapshot, today: Optional[date] = None):
-    """Run costing; fetch exactly the item prices it missed (minus cached
-    misses) and run once more if anything new was found."""
+    """Run costing; fetch exactly the item prices and blueprint-copy run
+    values it missed (minus cached misses) and run once more if anything new
+    was found."""
     result = rebuild_costing(snapshot)
     requests = {(tid, day) for tid, unit, day in result.price_requests if unit == UNIT_ITEM}
-    if not requests:
+    bpc_requests = {(tid, day) for tid, unit, day in result.price_requests if unit == UNIT_BPC_RUN}
+    if not requests and not bpc_requests:
         return result
-    _prices, misses = _cached_prices({tid for tid, _d in requests})
-    requests -= misses
-    found = _fetch_valuations(requests)
-    rest = requests - set(found)
-    found.update(_fetch_reference_prices(rest, today or datetime.now(timezone.utc).date()))
-    if not found:
+    found: dict[tuple[int, date], float] = {}
+    if requests:
+        _prices, misses = _cached_prices({tid for tid, _d in requests})
+        requests -= misses
+        found = _fetch_valuations(requests)
+        rest = requests - set(found)
+        found.update(_fetch_reference_prices(rest, today or datetime.now(timezone.utc).date()))
+    bpc_found = _fetch_bpc_run_prices(bpc_requests)
+    if not found and not bpc_found:
         return result
-    merged = {**snapshot.reference_prices, **found}
-    return rebuild_costing(dataclasses.replace(snapshot, reference_prices=merged))
+    return rebuild_costing(dataclasses.replace(
+        snapshot,
+        reference_prices={**snapshot.reference_prices, **found},
+        bpc_run_reference_prices={**snapshot.bpc_run_reference_prices, **bpc_found},
+    ))
 
 
 def _components(c) -> tuple:

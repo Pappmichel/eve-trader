@@ -615,8 +615,19 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
     each compare every decryptor, and Total Wealth is read several times
     per page load. Tenant-keyed because skills, structure and fees are
     tenant settings."""
+    values, _complete = bpc_run_values_with_status(type_ids)
+    return {tid: value for tid, value in values.items() if value is not None}
+
+
+def bpc_run_values_with_status(type_ids: set[int]) -> tuple[dict[int, Optional[float]], bool]:
+    """`_bpc_run_values` plus whether every value came from a complete
+    computation: ({type_id: value or None}, complete). `complete` is False
+    when this call computed something during a quote or fee-rate outage;
+    a caller that freezes the values (the realized-profit ledger) must then
+    store nothing. A None value under `complete` means the copy has no
+    per-run value (faction/officer copy, unpriced input)."""
     if not type_ids:
-        return {}
+        return {}, True
     tenant = str(storage.get_current_tenant())
     with _bpc_lock:
         now = time.time()
@@ -625,27 +636,28 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
                 del _bpc_cache[key]
             _bpc_cache_at[tenant] = now
         missing = [tid for tid in type_ids if (tenant, tid) not in _bpc_cache]
-        if missing:
-            computed, cacheable = _compute_bpc_run_values(missing)
-            if cacheable:
-                for tid, value in computed.items():
-                    _bpc_cache[(tenant, tid)] = value
-            # Always return cached values plus this call's computed ones.
-            # Only the write above depends on cacheable - otherwise a partial
-            # outage would drop already-known BPC values from Total Wealth.
-            out = {
-                tid: _bpc_cache[(tenant, tid)]
-                for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-            }
-            if not cacheable:
-                for tid, value in computed.items():
-                    if value is not None and tid in type_ids:
-                        out[tid] = value
-            return out
-        return {
-            tid: _bpc_cache[(tenant, tid)]
-            for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-        }
+        cached = {tid: _bpc_cache.get((tenant, tid)) for tid in type_ids if (tenant, tid) in _bpc_cache}
+        if not missing:
+            return cached, True
+        computed, cacheable = _compute_bpc_run_values(missing)
+        if cacheable:
+            for tid, value in computed.items():
+                _bpc_cache[(tenant, tid)] = value
+        # Always return cached values plus this call's computed ones. Only
+        # the write above depends on cacheable - otherwise a partial outage
+        # would drop already-known BPC values from Total Wealth.
+        out = dict(cached)
+        for tid in missing:
+            out[tid] = computed.get(tid)
+        return out, bool(cacheable)
+
+
+def bpc_run_value_source(type_id: int) -> str:
+    """How `_compute_bpc_run_values` values a copy of this blueprint:
+    "invention" for an invented blueprint, else "copy"."""
+    if storage.find_invention_recipe_candidates_by_product_type_id(int(type_id)):
+        return "invention"
+    return "copy"
 
 
 def _original_on_market(type_id: int) -> bool:

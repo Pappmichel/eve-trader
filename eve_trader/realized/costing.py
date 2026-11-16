@@ -100,7 +100,13 @@ Inputs the loader must prepare (not checked here)
   on a BPC (consumes BPC runs), False for a BPO, None when unknown (treated
   like a BPO: no BPC runs drawn).
 - `reference_prices` are item prices; BPC runs use the separate
-  `bpc_run_reference_prices` (a BPO market price is not a per-run price).
+  `bpc_run_reference_prices` (a BPO market price is not a per-run price):
+  keyed by blueprint type id and day, the copy job fee per run for a Tech I
+  copy or the invention cost per run for an invented blueprint (Total
+  Wealth's per-run value, frozen per day by the loader). A run valued this
+  way stays `estimated` (unknown origin) but is not `price_missing`, and
+  each blueprint type gets one `bpc_run_estimated` warning. A copy without
+  a per-run value (faction/officer) stays `price_missing`.
   Every lookup that finds nothing is listed in `CostingResult.price_requests`
   so the loader can fetch exactly those and run again.
 - `bpo_type_ids`: blueprint types bought on the market - always BPOs, since
@@ -1368,6 +1374,9 @@ class _Costing:
         self.fee_by_tx: dict[tuple, float] = {}
         self.contract_fee_by_ref: dict[str, float] = {}
         self.price_requests: set[tuple] = set()
+        # Blueprint-copy runs without a layer valued at the frozen per-run
+        # copy/invention cost, per blueprint type (one warning each).
+        self.bpc_runs_estimated: dict[int, float] = defaultdict(float)
         self._rates: dict = {}
         self.reprocess_records: list[ReprocessRecord] = []
 
@@ -1497,6 +1506,8 @@ class _Costing:
                 self.warn(f"missing_reference_price: type {type_id} ({unit}) on {_day(when).isoformat()}, "
                           f"unknown-origin {need:g} valued at 0")
                 price = 0.0
+            elif unit == UNIT_BPC_RUN:
+                self.bpc_runs_estimated[int(type_id)] += need
             self.warn(f"unknown_origin: type {type_id} ({unit}) {need:g} without a layer ({context})")
             layer = self._new_layer(
                 type_id=type_id, unit=unit, quantity=need,
@@ -2644,6 +2655,11 @@ class _Costing:
                 self._on_job_end(obj, when)
             elif kind in (KIND_REPROCESS, KIND_COMPRESS):
                 self._on_reprocess(obj)
+        for type_id in sorted(self.bpc_runs_estimated):
+            self.warn(
+                f"bpc_run_estimated: type {type_id} {self.bpc_runs_estimated[type_id]:g} runs "
+                f"valued at copy/invention cost"
+            )
         return CostingResult(
             t0=self.t0,
             layers=[l for l in self.all_layers if l.quantity_left > _EPS],

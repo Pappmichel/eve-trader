@@ -39,7 +39,7 @@ T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 _TABLES = (
     "ledger_wallet_transactions", "ledger_wallet_journal", "ledger_industry_jobs", "ledger_job_inputs",
     "ledger_market_orders", "ledger_contracts", "ledger_contract_items", "ledger_reference_prices",
-    "ledger_valuation_prices", "ledger_sync_state", "ledger_archive_gaps",
+    "ledger_valuation_prices", "ledger_bpc_run_prices", "ledger_sync_state", "ledger_archive_gaps",
     "ledger_stock_observation_runs", "ledger_stock_observations", "prod_reprocess_events",
     "prod_cost_layers", "prod_realized_results", "prod_cost_draws", "prod_job_records",
     "prod_fee_lines", "prod_job_losses", "prod_capital_bpos", "prod_inventory_drift",
