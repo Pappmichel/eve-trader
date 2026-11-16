@@ -2748,6 +2748,8 @@ export interface AlertSettings {
   bot_configured: boolean
   link_configured: boolean
   linked: boolean
+  // A logout since the link: mail text stays out of DMs until Discord is linked again.
+  mail_content_paused?: boolean
   // The Doctrine contract filters need the doctrine grant.
   doctrine_granted?: boolean
   characters: Array<{
