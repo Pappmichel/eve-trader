@@ -43,6 +43,8 @@ from typing import Iterable, Optional
 
 import pandas as pd
 from dotenv import load_dotenv
+import psycopg
+import psycopg.conninfo
 from psycopg_pool import ConnectionPool
 from psycopg.types.json import Jsonb
 
@@ -59,13 +61,23 @@ from .models import Candidate, NewCandidateResult, ShortlistItem, ShortlistRow
 # load_dotenv() is safe to call more than once per process.
 load_dotenv()
 
-# Dev default matches the local `eve-trader-pg` Docker container (see
-# docs/MULTI_TENANT_PLAN.md's Phase 0/1) - override via env var for any
-# other environment. Never a hardcoded production credential.
-PG_DSN = os.getenv(
-    "EVE_TRADER_PG_DSN",
-    "host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=app_devpassword",
-)
+# No default: a credential in source is a credential in every checkout. The
+# variable is read here, after load_dotenv(), so a deployment's .env counts.
+# An empty value keeps the module importable (CLI --help, tests that never
+# touch the database); _get_pool() refuses to connect without it.
+PG_DSN = os.getenv("EVE_TRADER_PG_DSN", "")
+
+# Per-statement ceiling for app connections, in milliseconds (0 = off). Applied
+# as a connection option unless the DSN carries its own `options`; background
+# jobs and the CLI lift it per transaction through long_running().
+def _statement_timeout_ms() -> int:
+    raw = os.getenv("EVE_TRADER_STATEMENT_TIMEOUT_MS", "").strip()
+    if not raw:
+        return 60000
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 60000
 
 # The fixed tenant used when there's no real tenant-resolution to defer to -
 # access-gate disabled (this app's default: trusted single operator, no
@@ -79,11 +91,65 @@ _tenant_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("
 
 _pool: Optional[ConnectionPool] = None
 
+# True while code runs that may legitimately hold one statement longer than the
+# request-time statement timeout (background jobs, rebuilds, the CLI). A plain
+# ContextVar, not registered as thread-local: with_current_tenant and
+# copy_context carry it into worker threads on purpose.
+_long_running_var: contextvars.ContextVar[bool] = contextvars.ContextVar("long_running", default=False)
+
+
+@contextmanager
+def long_running():
+    """Lifts the statement timeout for every transaction opened inside the
+    block (and in threads that inherit its context). Use it only at the entry
+    point of a background job or operator command, never in a request."""
+    token = _long_running_var.set(True)
+    try:
+        yield
+    finally:
+        _long_running_var.reset(token)
+
+
+def enable_long_running() -> None:
+    """Turns long_running on for the rest of this context, with no block to
+    leave: for process-wide entry points such as the CLI."""
+    _long_running_var.set(True)
+
+
+def _lift_statement_timeout(cur) -> None:
+    """Called right after a transaction's own first statements: the timeout
+    is switched off for this transaction only (set_config is_local), so the
+    pooled connection goes back to the default."""
+    if _long_running_var.get():
+        cur.execute("SELECT set_config('statement_timeout', '0', true)")
+
+
+def _pool_kwargs(dsn: str) -> dict:
+    """Connection options for the pool: the statement timeout, unless the DSN
+    sets `options` itself (then the operator's value stands)."""
+    timeout_ms = _statement_timeout_ms()
+    if timeout_ms <= 0:
+        return {}
+    try:
+        if psycopg.conninfo.conninfo_to_dict(dsn).get("options"):
+            return {}
+    except psycopg.ProgrammingError:
+        return {}
+    return {"options": f"-c statement_timeout={timeout_ms}"}
+
 
 def _get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(PG_DSN, min_size=1, max_size=10, open=True)
+        if not PG_DSN:
+            raise RuntimeError(
+                "EVE_TRADER_PG_DSN is not set. Put the app role's connection "
+                "string in .env or the environment (see .env.example); the "
+                "application has no built-in database credentials."
+            )
+        _pool = ConnectionPool(
+            PG_DSN, min_size=1, max_size=10, open=True, kwargs=_pool_kwargs(PG_DSN)
+        )
     return _pool
 
 
@@ -306,6 +372,7 @@ def connect_own_transaction():
             # call, takes a normal parameter, and with is_local=true is the
             # functional equivalent of SET LOCAL (reverts at COMMIT/ROLLBACK).
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            _lift_statement_timeout(cur)
         try:
             yield _TranslatingConnection(conn)
             conn.commit()
@@ -370,6 +437,7 @@ def batch_session(isolation: Optional[str] = None):
                 # Must be the transaction's first statement.
                 cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            _lift_statement_timeout(cur)
         _batch_local.conn = _TranslatingConnection(conn)
         _batch_local.tenant_id = tenant_id
         _batch_local.isolation = isolation
@@ -447,6 +515,9 @@ def connect_unscoped(timeout: Optional[float] = None):
     connect()'s own check, just enforced by Postgres instead of Python."""
     pool = _get_pool()
     with pool.connection(timeout=timeout) as conn:
+        if _long_running_var.get():
+            with conn.cursor() as cur:
+                _lift_statement_timeout(cur)
         try:
             yield _TranslatingConnection(conn)
             conn.commit()

@@ -17,6 +17,17 @@ runs that need it - see tests/pg_helpers.py for the fixture itself.
 """
 from __future__ import annotations
 
+import os
+
+# The app has no built-in database credentials. Tests get a local-dev DSN
+# before anything imports eve_trader (storage reads it at import time); an
+# EVE_TRADER_PG_DSN already in the environment wins. tests/pg_helpers.py sets
+# the app role's password to match whichever DSN is in effect.
+os.environ.setdefault(
+    "EVE_TRADER_PG_DSN",
+    "host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=app_devpassword",
+)
+
 import pytest
 
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG

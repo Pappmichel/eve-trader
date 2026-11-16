@@ -157,6 +157,17 @@ def _apply_phase1_schema() -> None:
     with _cluster_lock(), psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         # phase1 creates the eve_trader_app role (cluster-wide): serialized.
         conn.execute(files[0].read_text(encoding="utf-8"))
+        # The schema creates the role without a password; give it the one the
+        # test DSN carries (still under the cluster lock: roles are
+        # cluster-wide).
+        app_conninfo = psycopg.conninfo.conninfo_to_dict(storage.PG_DSN)
+        if app_conninfo.get("password"):
+            conn.execute(
+                psycopg.sql.SQL("ALTER ROLE {} WITH PASSWORD {}").format(
+                    psycopg.sql.Identifier(app_conninfo.get("user") or "eve_trader_app"),
+                    psycopg.sql.Literal(app_conninfo["password"]),
+                )
+            )
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         for path in files[1:]:
             conn.execute(path.read_text(encoding="utf-8"))

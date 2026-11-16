@@ -48,4 +48,8 @@ for f in phase1_schema phase2_schema phase3_schema admin_schema doctrine_schema 
   psql "$APP_DSN" -v ON_ERROR_STOP=1 -q -f "docs/$f.sql" >/dev/null
 done
 
+# --- App role password (the schema creates the role without one) ---
+# Local dev value only; matches EVE_TRADER_PG_DSN in .cursor/environment.json.
+psql "$APP_DSN" -v ON_ERROR_STOP=1 -q -c   "ALTER ROLE eve_trader_app WITH PASSWORD 'app_devpassword';" >/dev/null
+
 echo "start.sh: PostgreSQL ready (test DB: eve_trader, app DB: eve_trader_dev)"

@@ -41,6 +41,9 @@ def main():
     # once here rather than each command setting it individually. No
     # explicit reset needed - the process exits when the command finishes.
     storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
+    # An operator command, not a request: no statement timeout (rebuilds, SDE
+    # apply and similar legitimately run single statements for minutes).
+    storage.enable_long_running()
     # Also resolve DEFAULT_TENANT_ID's own TRADING_CONFIG/PRODUCTION_CONFIG
     # (config.yaml + any Settings-page overrides already saved to Postgres's
     # tenant_settings) - confirmed real gap: without this, every CLI command

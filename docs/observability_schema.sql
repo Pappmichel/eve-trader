@@ -35,4 +35,8 @@ CREATE INDEX IF NOT EXISTS error_log_tenant_created_idx ON error_log (tenant_id,
 -- error_log per tenant and overall) - SELECT/INSERT
 -- alone were sufficient before that existed.
 GRANT SELECT, INSERT, DELETE ON error_log TO eve_trader_app;
+-- The app never updates a row (entries are append-only, then pruned). Older
+-- installs got UPDATE from a blanket grant; take it back so every install
+-- ends in the same state. Idempotent.
+REVOKE UPDATE ON error_log FROM eve_trader_app;
 GRANT USAGE, SELECT ON SEQUENCE error_log_id_seq TO eve_trader_app;
