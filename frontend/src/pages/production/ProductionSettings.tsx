@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader, Switch, Tooltip } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useSolarSystemOptions, useStructureNameOptions } from '../../hooks/useStaticOptions'
@@ -48,7 +49,7 @@ export default function ProductionSettings() {
     }
   }, [systemSettings])
 
-  const save = useAction('Save Settings', async (updates: ProductionSettingsT) => {
+  const save = useAction('Save Settings', async (updates: Partial<ProductionSettingsT>) => {
     const result = await productionApi.updateSettings(updates)
     // Best-effort name resolution for the home structure (GitHub issue #21 -
     // this was never resolved at all, so the Logistics tab's Distribution
@@ -102,7 +103,7 @@ export default function ProductionSettings() {
           <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
             onChange={(v) => set('market_fees', Number(v) / 100)} />
           <ObservedSellFeeHint fees={observedFees} current={form.market_fees} applying={save.isPending}
-            onApply={(v) => { set('market_fees', v); save.mutate({ ...form, market_fees: v }) }} />
+            onApply={(v) => { set('market_fees', v); save.mutate(changedFields(data, { ...form, market_fees: v })) }} />
         </Stack>
         <Tooltip label="Fallback job-fee facility tax, on top of the system cost index and the fixed 4% SCC surcharge. Used only where no rate is known: the Logistics page's per-category override wins, then the rate seen on your own last jobs at that category's structure (a structure owner can change it at any time). NPC stations charge 0.25%." multiline w={300}>
           <NumberInput label="Facility tax (fallback)" suffix="%" decimalScale={2} value={form.facility_tax_rate * 100} min={0} max={100} step={0.05}
@@ -199,7 +200,7 @@ export default function ProductionSettings() {
 
       <ReactionCapacitySettingsSection form={form} set={set} />
 
-      <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={240} onClick={() => save.mutate(changedFields(data, form))} loading={save.isPending}>
         Save Settings
       </Button>
 

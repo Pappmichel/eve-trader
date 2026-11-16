@@ -68,13 +68,11 @@ describe('ProductionSettings observed sell fees', () => {
     expect(productionApi.updateSettings).not.toHaveBeenCalled()
   })
 
-  it('"Use this value" saves the whole form through the normal settings save', async () => {
+  it('"Use this value" saves only the changed field through the normal settings save', async () => {
     setup(FEES)
     await userEvent.click(await screen.findByRole('button', { name: 'Use this value' }))
     await waitFor(() => expect(productionApi.updateSettings).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(productionApi.updateSettings).mock.calls[0][0]).toMatchObject({
-      market_fees: 0.0537, facility_tax_rate: 0.0025, min_margin: 0.1,
-    })
+    expect(vi.mocked(productionApi.updateSettings).mock.calls[0][0]).toEqual({ market_fees: 0.0537 })
   })
 
   it('shows why there is no value and offers no button', async () => {

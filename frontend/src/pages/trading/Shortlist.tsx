@@ -302,7 +302,7 @@ ${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
               data={hubSelectData(settings.jita_region_id)}
               value={String(settings.jita_region_id)}
               onChange={(v) => v && Number(v) !== settings.jita_region_id
-                && setHub.mutate({ ...settings, jita_region_id: Number(v) })}
+                && setHub.mutate({ jita_region_id: Number(v) })}
               disabled={setHub.isPending}
               allowDeselect={false}
               w={240}
@@ -329,12 +329,12 @@ ${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
               label="Enforce active-item cap"
               checked={settings.enforce_shortlist_cap}
               disabled={toggleCap.isPending}
-              onChange={(e) => toggleCap.mutate({ ...settings, enforce_shortlist_cap: e.currentTarget.checked })}
+              onChange={(e) => toggleCap.mutate({ enforce_shortlist_cap: e.currentTarget.checked })}
             />
             <NumberInput
               value={capDraft}
               onChange={(v) => setCapDraft(v === '' ? '' : Number(v))}
-              onBlur={() => capDraft !== '' && toggleCap.mutate({ ...settings, max_active_shortlist_items: Number(capDraft) })}
+              onBlur={() => capDraft !== '' && toggleCap.mutate({ max_active_shortlist_items: Number(capDraft) })}
               min={1} step={10} w={100} size="xs"
               disabled={toggleCap.isPending || !settings.enforce_shortlist_cap}
               aria-label="Maximum active shortlist items"

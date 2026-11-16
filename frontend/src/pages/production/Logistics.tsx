@@ -85,7 +85,7 @@ export default function Logistics() {
     if (!settings) return
     const locationId = sourceDraft
     const result = await productionApi.updateSettings({
-      ...settings, distribution_source_location_id: locationId,
+      distribution_source_location_id: locationId,
     })
     // Same best-effort resolve-after-save pattern as saveLocation below
     // (GitHub issue #21 - this used to never be called at all for the
@@ -104,7 +104,7 @@ export default function Logistics() {
   const saveInventionLocation = useAction('Invention Station Saved', async () => {
     if (!settings) return
     const locationId = inventionDraft
-    const result = await productionApi.updateSettings({ ...settings, invention_location_id: locationId })
+    const result = await productionApi.updateSettings({ invention_location_id: locationId })
     if (locationId != null) {
       try {
         await productionApi.resolveStructureName(locationId)

@@ -909,6 +909,23 @@ def _invalidate_after_reserve_change() -> None:
     _mark_cached_production_plans_stale()
 
 
+_READY_TO_LIST_FIELDS = ("ready_to_list_owner_type", "ready_to_list_owner_id",
+                         "ready_to_list_location_id", "ready_to_list_hangar_flag")
+
+
+def _with_saved_hangar_fields(updates: dict, cfg: DoctrineConfig) -> dict:
+    """`updates` plus the saved values of every other member of a hangar group
+    the update touches (strategic reserve, ready to list). A group the update
+    does not touch is left out, so an old invalid value cannot block an
+    unrelated save."""
+    merged = dict(updates)
+    for group in (reserve.HANGAR_FIELDS, _READY_TO_LIST_FIELDS):
+        if any(key in updates for key in group):
+            for key in group:
+                merged.setdefault(key, getattr(cfg, key))
+    return merged
+
+
 def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     updates = dict(updates)
     # Saving a list moves the tenant off the legacy single id for good.
@@ -923,13 +940,16 @@ def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> 
         unknown = [c for c in updates["buyer_character_ids"] if c not in known]
         if unknown:
             raise ActionError(f"buyer_character_ids: {unknown} are not characters of this tenant.")
+    # A partial save may name only some members of a hangar group; the checks
+    # below judge the group as it will be stored: saved values plus this update.
+    checked = _with_saved_hangar_fields(updates, cfg)
     switch_changed = ("accept_equivalent_variants" in updates
                       and bool(updates["accept_equivalent_variants"]) != cfg.accept_equivalent_variants)
     reserve_changed = _reserve_changed(updates, cfg)
-    _reject_intake_hangar(updates)
-    _reject_foreign_container(updates, cfg)
+    _reject_intake_hangar(checked)
+    _reject_foreign_container(checked, cfg)
     try:
-        validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
+        validate_doctrine_overrides(checked)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e

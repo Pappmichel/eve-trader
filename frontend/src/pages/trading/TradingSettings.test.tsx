@@ -73,7 +73,7 @@ describe('TradingSettings observed sell fees', () => {
     expect(tradingApi.updateSettings).not.toHaveBeenCalled()
   })
 
-  it('"Use this value" saves the whole form with the new haircut through the settings save', async () => {
+  it('"Use this value" saves only the new haircut through the settings save', async () => {
     vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
     vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
@@ -82,9 +82,7 @@ describe('TradingSettings observed sell fees', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Use this value' }))
     await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toMatchObject({
-      structure_sell_haircut: 0.9463, import_cost_per_m3: 1500, min_profit_threshold: 100,
-    })
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ structure_sell_haircut: 0.9463 })
   })
 
   it('shows the reason and no button when the figure has no value', async () => {
@@ -98,5 +96,23 @@ describe('TradingSettings observed sell fees', () => {
 
     expect(await screen.findByText(/Rebuild the realized-profit ledger first/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('TradingSettings save payload', () => {
+  it('sends only the field the user changed', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(tradingApi.updateSettings).mockClear()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_ledger_run', message: 'x' } as any)
+    renderPage()
+
+    const field = await screen.findByLabelText(/Minimum profit\/unit/)
+    await userEvent.clear(field)
+    await userEvent.type(field, '250')
+    await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ min_profit_threshold: 250 })
   })
 })

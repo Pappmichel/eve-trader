@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
+from ..partial import partial_model
 from ...actions import ActionError
 from ...refining import actions
 from ...refining.config import REFINING_CONFIG
@@ -97,9 +98,12 @@ def activate_ore_shortlist_items(body: ShortlistItemIdsBody):
     return _wrap(actions.do_activate_ore_shortlist_items, item_ids=body.item_ids)
 
 
+RefiningSettingsUpdate = partial_model(schemas.RefiningSettings, "RefiningSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: schemas.RefiningSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: RefiningSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 class MineralRequirementsBody(BaseModel):

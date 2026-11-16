@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .. import schemas
+from ..partial import partial_model
 from ...doctrine import actions, parser
 from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
@@ -331,22 +332,12 @@ def get_settings():
     return _wrap(actions.do_get_settings)
 
 
+DoctrineSettingsUpdate = partial_model(DoctrineSettings, "DoctrineSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: DoctrineSettings):
-    body = updates.model_dump()
-    # A client that does not send the location lists (or the equivalents
-    # switch) must not reset them.
-    for key in ("doctrine_structure_ids", "stockpile_location_ids", "accept_equivalent_variants",
-                "strategic_reserve_owner_type", "strategic_reserve_owner_id", "strategic_reserve_location_id",
-                "strategic_reserve_hangar_flag", "strategic_reserve_container_id",
-                "strategic_reserve_include_hulls",
-                "ready_to_list_owner_type", "ready_to_list_owner_id", "ready_to_list_location_id",
-                "ready_to_list_hangar_flag",
-                "contract_market_system_id", "contract_market_include_public",
-                "contract_market_include_alliance"):
-        if key not in updates.model_fields_set:
-            body.pop(key)
-    return _wrap(actions.do_update_settings, updates=body)
+def update_settings(updates: DoctrineSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 @router.get("/settings/buyer-character-options")

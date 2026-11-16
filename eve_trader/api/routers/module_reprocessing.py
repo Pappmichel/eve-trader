@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
+from ..partial import partial_model
 from ...actions import ActionError
 from ...module_reprocessing import actions
 from ...module_reprocessing.config import MODULE_REPROCESSING_CONFIG
@@ -81,9 +82,12 @@ def activate_module_shortlist_items(body: ShortlistItemIdsBody):
     return _wrap(actions.do_activate_shortlist_items, item_ids=body.item_ids)
 
 
+ModuleReprocessingSettingsUpdate = partial_model(schemas.ModuleReprocessingSettings, "ModuleReprocessingSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: schemas.ModuleReprocessingSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: ModuleReprocessingSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 class MineralRequirementsBody(BaseModel):

@@ -4,6 +4,7 @@ import { Stack, Title, Text, SimpleGrid, NumberInput, Button, Center, Loader } f
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { stationTradingApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { StationTradingSettings as StationTradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { DataTable } from '../../components/DataTable'
@@ -98,7 +99,7 @@ export default function StationTradingSettings() {
         The cap itself is off by default - toggle it on the Shortlist page.
       </Text>
 
-      <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={240} onClick={() => save.mutate(changedFields(data, form))} loading={save.isPending}>
         Save Settings
       </Button>
 

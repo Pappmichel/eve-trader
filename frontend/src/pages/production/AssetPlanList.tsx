@@ -71,7 +71,7 @@ export default function AssetPlanList() {
     'Slot target saved',
     async (value: number | null) => {
       if (!settings) return
-      return productionApi.updateSettings({ ...settings, asset_plan_slot_days_target: value })
+      return productionApi.updateSettings({ asset_plan_slot_days_target: value })
     },
     [['production', 'settings']],
   )
@@ -79,7 +79,7 @@ export default function AssetPlanList() {
     'Ready-now location rule saved',
     async (value: boolean) => {
       if (!settings) return
-      return productionApi.updateSettings({ ...settings, asset_plan_ready_at_build_location: value })
+      return productionApi.updateSettings({ asset_plan_ready_at_build_location: value })
     },
     [['production', 'settings']],
   )

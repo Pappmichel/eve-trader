@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import schemas
+from ..partial import partial_model
 from ... import storage
 from ...actions import ConflictError
 from ...production import actions
@@ -487,9 +488,12 @@ def get_settings():
     return ProductionSettings(**{f: getattr(PRODUCTION_CONFIG, f) for f in ProductionSettings.model_fields})
 
 
+ProductionSettingsUpdate = partial_model(ProductionSettings, "ProductionSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: ProductionSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: ProductionSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 @router.get("/settings/reaction-capacity")
