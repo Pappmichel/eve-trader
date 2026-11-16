@@ -336,7 +336,10 @@ def _reference_miss_setup(monkeypatch, goon_points, esi_answers):
 
 
 def _misses(types):
-    return loader._cached_prices(set(types))[1]
+    """Cached misses (source "none") in ledger_reference_prices."""
+    cached = ledger_db.list_cached_reference_prices(sorted(types))
+    return {(int(t), loader._as_date(d)) for (t, d), (_p, src) in cached.items()
+            if src == loader._MISSING_SOURCE}
 
 
 def test_no_miss_is_cached_when_every_source_is_down(tenant, monkeypatch):

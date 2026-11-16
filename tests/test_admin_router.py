@@ -154,7 +154,7 @@ def test_preview_sde_action_error_maps_to_400(monkeypatch):
 
 
 def test_apply_sde_passes_through_action(monkeypatch):
-    monkeypatch.setattr(admin, "do_apply_sde", lambda: {"sde_types": 42})
+    monkeypatch.setattr(admin, "do_apply_sde", lambda confirm_shrink=False: {"sde_types": 42})
 
     resp = client.post("/api/admin/sde/apply")
 
@@ -162,8 +162,18 @@ def test_apply_sde_passes_through_action(monkeypatch):
     assert resp.json() == {"sde_types": 42}
 
 
+def test_apply_sde_passes_the_shrink_confirmation(monkeypatch):
+    seen = []
+    monkeypatch.setattr(admin, "do_apply_sde", lambda confirm_shrink=False: seen.append(confirm_shrink) or {})
+
+    client.post("/api/admin/sde/apply")
+    client.post("/api/admin/sde/apply", json={"confirm_shrink": True})
+
+    assert seen == [False, True]
+
+
 def test_apply_sde_without_preview_maps_to_400(monkeypatch):
-    def _raise():
+    def _raise(confirm_shrink=False):
         raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
     monkeypatch.setattr(admin, "do_apply_sde", _raise)
 
