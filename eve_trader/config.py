@@ -444,32 +444,18 @@ class TradingConfig:
     # hub without an entry uses that tool's own single freight value.
     hub_freight_cost_per_m3: dict[str, float] = field(default_factory=dict)
     # Multiplier applied to the C-J structure sell price (shortlist and
-    # backtest margins, Ore & Minerals pricing). Confirmed against the in-game sell-order breakdown: Broker's
-    # fee 1.5% + Sales tax 3.37% = 4.87% total -> 1 - 0.0487 = 0.9513... -
-    # historically derived as 0.9463 (including an extra "SCC surcharge
-    # 0.5%" term) before T1-01 (2026-09-25) confirmed with the user that SCC
-    # surcharge applies only to industry jobs, never to a market sell - kept
-    # at its original 0.9463 default rather than silently reinterpreted,
-    # since this is a live-configurable value a tenant may already have
-    # tuned to their own real skills/standing; revisit only with the user.
+    # backtest margins, Ore & Minerals pricing). A structure sell pays the
+    # broker's fee 1.5% + SCC surcharge 0.5% + sales tax 3.375% = 5.375%,
+    # so the retention is 0.9463 (rounded; 0.0537 as a fee). The wallet
+    # journal carries a separate SCC surcharge entry on market orders, so an
+    # earlier reading that SCC applies only to industry jobs (which gave
+    # 0.9513) is wrong. The value is unchanged and tenants may override it.
     #
-    # "Sales tax 3.37%" (and the near-identical 3.375% T1-01 (2026-09-25)
-    # live-verified directly from 2396 real ESI wallet-journal entries) is
-    # not EVE's base
-    # sales tax rate - base is 8% (0.08) at Accounting level 0. The
-    # reduction to ~3.37-3.375% assumes the selling character has the
-    # Accounting skill trained to (or near) level 5 ("Accounting V", the
-    # skill's max), which is what actually lowers the sales-tax percentage
-    # a character pays on a sell order; it is not affected by standings or
-    # by Broker Relations (those only affect the broker's-fee side, i.e.
-    # jita_buy_broker_fee below, not this figure). A
-    # tenant whose selling character has a lower Accounting level would see
-    # a real tax rate closer to 8% and should override structure_sell_
-    # haircut (and, if configured, station_trading's own sales_tax_rate,
-    # which documents this same base-rate-vs-skill-reduced split
-    # separately) to match - this default does not re-derive or verify
-    # CCP's exact per-level Accounting reduction formula, it only records
-    # the one rate this tenant's own live data already confirmed.
+    # The base sales tax is 7.5% at Accounting 0; each Accounting level
+    # lowers it by 11% of that (7.5% x (1 - 0.11 x 5) = 3.375% at level 5).
+    # Standings and Broker Relations only affect the broker's fee side. A
+    # tenant with a lower Accounting level pays more and should override
+    # this value (and station_trading's own sales_tax_rate).
     structure_sell_haircut: float = 0.9463
     # Broker's fee when buying (placing/filling a buy order) in Jita, confirmed
     # against the in-game buy screen (1.47%) - applied to landed_cost, since

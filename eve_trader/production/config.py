@@ -21,20 +21,14 @@ class ProductionConfig:
     component_overbuild: float = 0.7      # extra buffer kept for build-chain components
     bpc_inventory: float = 4.0            # multiplier: 4.0 = 400% BPC stockpile buffer (keep 4x needed BPC runs)
     market_fees: float = 0.0537           # sell-side broker fee + sales tax, subtracted from margins
-                                            # (see engine.py _build_margin) - originally derived (like
-                                            # TradingConfig.structure_sell_haircut, see that field's own
-                                            # T1-01 comment) as SCC surcharge 0.5% + Broker's fee 1.5% +
-                                            # Sales tax 3.37% + Safety Tax 0.00% = 5.37%. T1-01
-                                            # (2026-09-25) confirmed with the user that SCC surcharge
-                                            # applies only to industry jobs, never to a market sell - the
-                                            # same mistake T1-01 fixed for structure_sell_haircut applies
-                                            # here too (this field IS specifically a market-sell fee, per
-                                            # its own docstring and every call site in engine.py). Kept at
-                                            # its original 0.0537 default rather than silently
-                                            # reinterpreted, same reasoning as structure_sell_haircut - a
-                                            # live-configurable value a tenant may already have tuned;
-                                            # the corrected value would be 1.5%+3.37% = 0.0487 (0.9513
-                                            # retention) - revisit only with the user.
+                                            # (see engine.py _build_margin). A structure sell pays the
+                                            # broker's fee 1.5% + SCC surcharge 0.5% + sales tax 3.375%
+                                            # (7.5% base x (1 - 0.11 x Accounting 5)) = 5.375%, i.e.
+                                            # 0.0537 rounded (0.9463 retention, same as
+                                            # TradingConfig.structure_sell_haircut). The wallet journal
+                                            # shows the SCC surcharge on market orders, so an earlier
+                                            # derivation without SCC (0.0487) is wrong. Tenants may
+                                            # override it.
     # jita_buy_broker_fee removed 2026-09-26 (T3-04, business-logic audit
     # follow-up, user-confirmed merge): this used to be its own field here,
     # duplicating TradingConfig's own jita_buy_broker_fee - both were always

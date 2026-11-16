@@ -91,10 +91,10 @@ ORE_FAMILY_SKILL_BONUS_PER_LEVEL = 0.02               # e.g. "Veldspar Processin
 
 # -- Scrapmetal path (non-ore/ice loot: modules/ammo/drones) --
 SCRAPMETAL_BASE_YIELD = 0.50
-# "Scrapmetal Processing", +1%/level, max +5% (L5) - 50% + 5% = the confirmed
-# 55% ceiling. Note: the +2%/level figure floating around some guides is
-# wrong/inconsistent with that same confirmed 55% max (50% + 5x2% = 60%, not
-# 55%) - 1%/level is the value that actually reconciles with it.
+# "Scrapmetal Processing": the game formula is 50% x (1 + 0.02 x level)
+# (SDE type 12196, refiningYieldMutator = 2), which is 50% + 1 point per
+# level, max 55% at L5. Expressed as an absolute 0.01 per level on the 50%
+# base it gives the same result.
 SCRAPMETAL_SKILL_BONUS_PER_LEVEL = 0.01
 
 # -- Compression (GitHub issue #90's scope decision, apply to the whole
