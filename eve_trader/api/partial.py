@@ -22,7 +22,7 @@ from pydantic import BaseModel, create_model
 
 from .schemas import ShortText, bounded_json
 
-_MAX_LIST = 10_000  # id lists; text lists use the tighter bound below
+_MAX_LIST = 50_000  # id lists; text lists use the tighter bound below
 _MAX_TEXT_LIST = 1_000
 _MAX_DICT = 200
 

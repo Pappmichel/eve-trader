@@ -29,7 +29,9 @@ NameText = Annotated[str, StringConstraints(max_length=100)]
 ShortText = Annotated[str, StringConstraints(max_length=200)]
 LongText = Annotated[str, StringConstraints(max_length=10_000)]
 PasteText = Annotated[str, StringConstraints(max_length=500_000)]
-IdList = Annotated[list[int], Field(max_length=10_000)]
+# 50,000: the largest bulk action sends a whole shortlist (thousands of ids)
+# and must keep room to grow; 50,000 ids are well under the 1 MiB body limit.
+IdList = Annotated[list[int], Field(max_length=50_000)]
 ShortTextList = Annotated[list[ShortText], Field(max_length=1_000)]
 # A skill level is 0-5 and there are far fewer than 50 ore families/skills.
 SkillLevels = Annotated[dict[NameText, Annotated[int, Field(ge=0, le=5)]], Field(max_length=50)]

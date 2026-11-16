@@ -1036,7 +1036,7 @@ Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
 Every **request** model is bounded; response models never are (a long stored
 value would turn a read into a 500). `api/schemas.py` holds the shared
 `Annotated` types: `NameText` (100), `ShortText` (200), `LongText` (10,000),
-`PasteText` (500,000), `IdList` (10,000 ids), `ShortTextList` (1,000 x
+`PasteText` (500,000), `IdList` (50,000 ids), `ShortTextList` (1,000 x
 `ShortText`), `SkillLevels` (0-5, at most 50) and `bounded_json(max_bytes,
 max_depth=12)` for free-form `Any`/dict bodies (`BoundedTemplate` 256 KiB,
 `BoundedDesign`/`BoundedPlan` 64 KiB, `BoundedViewQuery` 16 KiB and 30 keys,
@@ -1046,7 +1046,7 @@ route's body models and fails on an unbounded str, list, dict or `Any`.
 
 Settings models double as response models, so they carry no limits themselves:
 `api/partial.py` `partial_model()` adds them to the derived update model
-(`bound_annotation`: str -> `ShortText`, id lists 10,000, text lists and
+(`bound_annotation`: str -> `ShortText`, id lists 50,000, text lists and
 dicts bounded) and re-attaches a top-level `Annotated` constraint that
 pydantic lifts into `FieldInfo.metadata`. Pass `overrides={field: annotation}`
 for a field that needs a tighter shape. `api/body_limit.py` is a pure ASGI

@@ -45,9 +45,9 @@ def test_text_types_reject_one_character_too_many(tp, limit):
 
 def test_list_types_reject_one_entry_too_many():
     ids = TypeAdapter(schemas.IdList)
-    assert len(ids.validate_python(list(range(10_000)))) == 10_000
+    assert len(ids.validate_python(list(range(50_000)))) == 50_000
     with pytest.raises(ValidationError):
-        ids.validate_python(list(range(10_001)))
+        ids.validate_python(list(range(50_001)))
     texts = TypeAdapter(schemas.ShortTextList)
     assert len(texts.validate_python(["a"] * 1_000)) == 1_000
     with pytest.raises(ValidationError):
@@ -162,9 +162,9 @@ def test_partial_settings_models_keep_the_limits():
     with pytest.raises(ValidationError):
         trading_router.TradingSettingsUpdate(buyer_character_name="a" * 201)
     with pytest.raises(ValidationError):
-        production_router.ProductionSettingsUpdate(excluded_system_ids=list(range(10_001)))
+        production_router.ProductionSettingsUpdate(excluded_system_ids=list(range(50_001)))
     with pytest.raises(ValidationError):
-        doctrine_router.DoctrineSettingsUpdate(stockpile_location_ids=list(range(10_001)))
+        doctrine_router.DoctrineSettingsUpdate(stockpile_location_ids=list(range(50_001)))
 
 
 def test_partial_model_carries_a_top_level_annotated_limit():
@@ -174,7 +174,7 @@ def test_partial_model_carries_a_top_level_annotated_limit():
 
     update = partial_model(Base, "Upd")
     with pytest.raises(ValidationError):
-        update(ids=list(range(10_001)))
+        update(ids=list(range(50_001)))
     with pytest.raises(ValidationError):
         update(name="toolong")
     assert update().model_dump(exclude_unset=True) == {}
@@ -200,7 +200,7 @@ def test_settings_save_with_a_too_long_value_is_422_over_http():
 def test_request_models_are_bounded_over_http():
     assert client.post("/api/portfolio/manual-prices", json={"item_name": "x" * 101, "price": 1}).status_code == 422
     assert client.post("/api/refining/reprocessing/quote", json={"paste": "x" * 500_001}).status_code in (413, 422)
-    assert client.post("/api/refining/shortlist/activate", json={"item_ids": list(range(10_001))}).status_code == 422
+    assert client.post("/api/refining/shortlist/activate", json={"item_ids": list(range(50_001))}).status_code == 422
 
 
 def test_response_models_carry_no_length_limits():
