@@ -1,6 +1,6 @@
 [project]
 name = "eve-trader"
-version = "0.2.0rc1"
+version = "0.3.0"
 description = "C-J import trading and Tech I/II production planning toolkit for EVE Online"
 readme = "README.md"
 license = { file = "LICENSE" }
