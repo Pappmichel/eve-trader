@@ -2760,3 +2760,45 @@ def get_reprocess_events(refs: list[str]) -> list[tuple]:
             "FROM prod_reprocess_events WHERE ref = ANY(?)",
             (list(refs),),
         ).fetchall()
+
+
+def unreported_results(
+    scopes: list[tuple],
+    start: Optional[datetime],
+    end: datetime,
+) -> tuple[int, float, float]:
+    """(sales, revenue, profit) of results no tool's report shows.
+
+    `scopes` holds one `(channel, wallet_owners, contract_owners)` per tool
+    that has a card. A result of that channel is counted when its owner is not
+    in the owner lists that tool's report filters by (the negation of
+    `_result_scope_sql`: a row with no owner is always in scope). A channel
+    without a card contributes nothing. `start` None means no lower bound.
+    """
+    sales, revenue, profit = 0, 0.0, 0.0
+    for channel, wallet_owners, contract_owners in scopes:
+        in_scope = ["owner_id IS NULL"]
+        params: list = []
+        if wallet_owners:
+            match, match_params = _owner_match_sql(wallet_owners, "")
+            in_scope.append(f"(source = 'market' AND {match})")
+            params.extend(match_params)
+        if contract_owners:
+            match, match_params = _owner_match_sql(contract_owners, "")
+            in_scope.append(f"(source IS DISTINCT FROM 'market' AND {match})")
+            params.extend(match_params)
+        sql = (
+            "SELECT COUNT(*), COALESCE(SUM(revenue), 0), COALESCE(SUM(profit), 0) "
+            "FROM prod_realized_results WHERE channel = ? AND sale_date < ? "
+            "AND NOT (" + " OR ".join(in_scope) + ")"
+        )
+        args: list = [channel, end]
+        if start is not None:
+            sql += " AND sale_date >= ?"
+            args.append(start)
+        with storage.connect() as conn:
+            row = conn.execute(sql, args[:2] + params + args[2:]).fetchone()
+        sales += int(row[0] or 0)
+        revenue += float(row[1] or 0.0)
+        profit += float(row[2] or 0.0)
+    return sales, revenue, profit

@@ -671,6 +671,12 @@ export default function Portfolio() {
               hint="Tools this session holds" />
           )}
         </SimpleGrid>
+        {(cards.data?.unreported_sales ?? 0) > 0 && (
+          <Text size="sm" c="dimmed">
+            {qty(cards.data?.unreported_sales ?? 0)} sales ({isk(cards.data?.unreported_profit ?? 0)} profit) are in no tool:
+            their wallet is not shared with the matching tool.
+          </Text>
+        )}
         {cards.data?.freight && (
           <Text size="sm">
             Freight from couriers {isk(cards.data.freight.courier)} · configured rate {isk(cards.data.freight.configured)}

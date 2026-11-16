@@ -138,6 +138,37 @@ def _card_readers(tool_keys):
     return readers
 
 
+def _card_scopes(tool_keys) -> list[tuple]:
+    """(channel, wallet_owners, contract_owners) of each granted tool's own
+    report scope, the same owner filters its `summary` reads by."""
+    keys = {str(key) for key in (tool_keys or ())}
+    scopes = []
+    if "production" in keys:
+        from .production.realized.report import production_scope
+        scopes.append(production_scope())
+    if "trading" in keys:
+        from .trade_realized import report as trading_report
+        scopes.append(trading_report._scope())
+    if "doctrine" in keys:
+        from .doctrine import realized as doctrine_realized
+        scopes.append(doctrine_realized._scope())
+    if "station_trading" in keys:
+        from .station_trading import realized as station_realized
+        scopes.append(station_realized._scope())
+    return [(s["channel"], s["wallet_owners"], s["contract_owners"]) for s in scopes]
+
+
+def _unreported_sales(tool_keys, window: dict) -> tuple[int, float, float]:
+    """Sales in the period that belong to a granted channel but sit outside
+    that channel's own report scope (for example a Trading sale of a wallet
+    that is only shared with Production), so no card shows them."""
+    from .realized import db as realized_db
+
+    return realized_db.unreported_results(
+        _card_scopes(tool_keys), window["start"], window["end"],
+    )
+
+
 def _sales_count(data: dict):
     if "sale_count" in data:
         return data["sale_count"]
@@ -184,8 +215,10 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
     courier = 0.0
     configured = 0.0
     saw_figure = False
+    needs_rebuild = False
     for tool, reader in _card_readers(tool_keys):
         data = reader(**window)
+        needs_rebuild = needs_rebuild or bool(data["status"]["needs_rebuild"])
         empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
         if not empty:
             saw_figure = True
@@ -208,8 +241,14 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
         })
     rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
     ready = [row["profit"] for row in rows if row["profit"] is not None]
+    unreported = None
+    if saw_figure and not needs_rebuild:
+        unreported = _unreported_sales(tool_keys, window)
     return {
         "rows": rows,
+        "unreported_sales": None if unreported is None else unreported[0],
+        "unreported_revenue": None if unreported is None else unreported[1],
+        "unreported_profit": None if unreported is None else unreported[2],
         "total": sum(ready) if ready else None,
         "fees_missing_sales": sum(row["fees_missing_sales"] for row in rows),
         "fees_missing_revenue": sum(row["fees_missing_revenue"] for row in rows),

@@ -3680,6 +3680,9 @@ export interface RealizedToolCards {
   total: number | null
   fees_missing_sales?: number
   fees_missing_revenue?: number
+  unreported_sales?: number | null
+  unreported_revenue?: number | null
+  unreported_profit?: number | null
   period: string
   freight: RealizedFreight | null
 }

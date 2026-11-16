@@ -1,6 +1,15 @@
 """Portfolio realized-profit cards sum the granted tools' summary figures."""
+import pytest
+
 from eve_trader import portfolio
 from eve_trader.actions import ActionError
+
+
+@pytest.fixture(autouse=True)
+def _no_unreported_lookup(monkeypatch):
+    """These tests stub each tool's summary; the cross-channel lookup needs the
+    database and has its own tests (test_realized_unreported_sales.py)."""
+    monkeypatch.setattr(portfolio, "_unreported_sales", lambda _keys, _window: (0, 0.0, 0.0))
 
 
 def _summary(**overrides):
@@ -170,3 +179,28 @@ def test_realized_cards_rejects_an_unknown_period():
         assert "period" in str(exc)
     else:
         raise AssertionError("expected ActionError")
+
+
+def test_realized_cards_carry_the_unreported_sales(monkeypatch):
+    monkeypatch.setattr(
+        "eve_trader.production.realized.report.summary", lambda **_kw: _summary(realized_profit=10.0),
+    )
+    monkeypatch.setattr(portfolio, "_unreported_sales", lambda _keys, _window: (5, 700.0, -6.08))
+    cards = portfolio.realized_cards(["production"])
+    assert cards["unreported_sales"] == 5
+    assert cards["unreported_revenue"] == 700.0
+    assert cards["unreported_profit"] == -6.08
+
+
+def test_realized_cards_skip_the_unreported_line_while_a_recompute_is_pending(monkeypatch):
+    monkeypatch.setattr(
+        "eve_trader.production.realized.report.summary", lambda **_kw: _summary(realized_profit=10.0),
+    )
+    monkeypatch.setattr(
+        "eve_trader.trade_realized.report.summary",
+        lambda **_kw: _summary(status={"empty": True, "needs_rebuild": True}),
+    )
+    monkeypatch.setattr(portfolio, "_unreported_sales", lambda _keys, _window: (5, 700.0, -6.08))
+    cards = portfolio.realized_cards(["production", "trading"])
+    assert cards["unreported_sales"] is None
+    assert cards["unreported_profit"] is None
