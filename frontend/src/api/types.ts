@@ -924,10 +924,19 @@ export interface WealthDelta {
   pct: number | null
 }
 
+export interface PriceJump {
+  type_id: number
+  type_name: string | null
+  previous_price: number
+  price: number
+  value_change: number
+}
+
 export interface WealthChange {
   d1: WealthDelta | null
   d7: WealthDelta | null
   d30: WealthDelta | null
+  price_jumps?: PriceJump[]
 }
 
 export interface PortfolioOverview {

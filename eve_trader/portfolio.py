@@ -17,7 +17,7 @@ from typing import Optional
 from . import storage, timeutil, wealth_cache
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
-from .portfolio_wealth import assemble
+from .portfolio_wealth import assemble, top_types
 
 log = logging.getLogger(__name__)
 
@@ -468,7 +468,51 @@ def wealth_change(today: Optional[date] = None) -> dict:
         isk = current - earlier
         return {"isk": isk, "pct": None if earlier == 0 else isk / earlier}
 
-    return {"d1": point(1), "d7": point(7), "d30": point(30)}
+    return {
+        "d1": point(1), "d7": point(7), "d30": point(30),
+        "price_jumps": _price_jumps(by_date.get(today), by_date.get(today - timedelta(days=1))),
+    }
+
+
+PRICE_JUMP_RATIO = 2.0
+PRICE_JUMP_MIN_SHARE = 0.01
+
+
+def _price_jumps(current: Optional[dict], previous: Optional[dict]) -> list[dict]:
+    """Types in both days' top lists whose unit price doubled or halved and
+    whose value moved by at least 1 % of today's total. A change of quantity
+    alone is not a jump. Empty when either snapshot has no top list (rows from
+    before it was stored) or today has no total."""
+    if not current or not previous:
+        return []
+    now_rows, before_rows = current.get("top_positions"), previous.get("top_positions")
+    total = current.get("total_wealth")
+    if not isinstance(now_rows, list) or not isinstance(before_rows, list) or not total:
+        return []
+    before = {int(row["type_id"]): row for row in before_rows}
+    jumps = []
+    for row in now_rows:
+        old = before.get(int(row["type_id"]))
+        if old is None or not old.get("unit_price") or row.get("unit_price") is None:
+            continue
+        ratio = float(row["unit_price"]) / float(old["unit_price"])
+        if not (ratio >= PRICE_JUMP_RATIO or ratio <= 1.0 / PRICE_JUMP_RATIO):
+            continue
+        change = float(row["value"]) - float(old["value"])
+        if abs(change) < PRICE_JUMP_MIN_SHARE * abs(float(total)):
+            continue
+        jumps.append({
+            "type_id": int(row["type_id"]),
+            "previous_price": float(old["unit_price"]),
+            "price": float(row["unit_price"]),
+            "value_change": change,
+        })
+    if jumps:
+        names = storage.sde_type_names([jump["type_id"] for jump in jumps])
+        for jump in jumps:
+            jump["type_name"] = names.get(jump["type_id"])
+    jumps.sort(key=lambda jump: (-abs(jump["value_change"]), jump["type_id"]))
+    return jumps
 
 
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -813,6 +857,7 @@ _EMPTY_WEALTH = {
     "wealth_unpriced_items": 0,
     "characters_missing_wallet_scope": [],
     "sync": dict(_EMPTY_SYNC),
+    "top_positions": None,
 }
 _EMPTY_BREAKDOWN = {
     "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [],
@@ -1040,6 +1085,7 @@ def _wealth_from(collected: dict) -> dict:
         "wealth_unpriced_items": built["unpriced_items"],
         "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),
         "sync": _sync_times(collected["shares"], collected["escrow_known"]),
+        "top_positions": top_types(collected["items"]),
         "_built": built,
     }
 

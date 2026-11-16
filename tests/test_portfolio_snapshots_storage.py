@@ -13,6 +13,7 @@ from .pg_helpers import _apply_phase1_schema, _apply_portfolio_schema, tenant, t
 pytestmark = pg_helpers.postgres_required()
 
 _VALUES = {
+    "top_positions": [{"type_id": 34, "quantity": 1.0, "unit_price": 5.0, "value": 5.0, "component": "assets"}],
     "trading_realized_profit": 1000.0,
     "trading_average_margin": 0.2,
     "trading_daily_profit_volatility": None,
@@ -77,3 +78,12 @@ def test_snapshots_isolated_between_tenants(tenant_pair):
     with storage.tenant_context(tenant_b):
         assert storage.load_portfolio_snapshots() == []
         assert storage.latest_portfolio_snapshot_date() is None
+
+
+def test_top_positions_round_trip_as_json_and_may_be_null(tenant):
+    storage.upsert_portfolio_snapshot(date(2026, 9, 1), _VALUES)
+    storage.upsert_portfolio_snapshot(date(2026, 9, 2), {**_VALUES, "top_positions": None})
+    first, second = storage.load_portfolio_snapshots()
+    index = 1 + storage.PORTFOLIO_SNAPSHOT_COLUMNS.index("top_positions")
+    assert first[index] == _VALUES["top_positions"]
+    assert second[index] is None

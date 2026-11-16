@@ -19,6 +19,7 @@ from eve_trader.station_trading import realized as station_realized
 from eve_trader.trade_realized import actions as trade_realized_actions
 from eve_trader.production.models import BuildCandidate, ShipMarginRow
 from eve_trader.sorting import actions as sorting_actions
+from eve_trader.timeutil import utc_today
 
 client = TestClient(create_app())
 
@@ -1732,7 +1733,7 @@ def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkey
     from datetime import date
 
     from eve_trader import portfolio
-    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: utc_today())
     monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg=None: {
         "trading_realized_profit": 1000.0, "trading_average_margin": 0.2,
@@ -1763,7 +1764,7 @@ def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypa
 
     assert resp.status_code == 200
     assert resp.json()["combined_value"] == 600.0
-    assert resp.json()["wealth_change"] == {"d1": None, "d7": None, "d30": None}
+    assert resp.json()["wealth_change"] == {"d1": None, "d7": None, "d30": None, "price_jumps": []}
     assert calls == [1]
 
 
@@ -1775,7 +1776,7 @@ def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypat
     calls = []
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: latest[0])
     monkeypatch.setattr(portfolio, "take_portfolio_snapshot",
-                        lambda cfg=None: (calls.append(1), latest.__setitem__(0, date.today()))[1])
+                        lambda cfg=None: (calls.append(1), latest.__setitem__(0, utc_today()))[1])
     monkeypatch.setattr(portfolio, "wealth_change",
                         lambda today=None: {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None})
 
@@ -1788,7 +1789,7 @@ def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypat
     second = client.get("/api/portfolio/wealth-change")
 
     assert first.status_code == 200
-    assert first.json() == {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None}
+    assert first.json() == {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None, "price_jumps": []}
     assert second.json() == first.json()
     assert calls == [1]
 
@@ -2317,7 +2318,7 @@ def test_history_sparklines_shape_and_calendar_cutoff(monkeypatch):
     body = resp.json()
     assert body["5"] == {"hub": [["2026-10-01", float(hub)]], "ref": [["2026-10-01", float(ref)]]}
     assert body["6"] == {"hub": [], "ref": []}
-    since = (date.today() - timedelta(days=30)).isoformat()
+    since = (utc_today() - timedelta(days=30)).isoformat()
     assert calls == [(hub, [5, 6], since), (ref, [5, 6], since)]
 
 

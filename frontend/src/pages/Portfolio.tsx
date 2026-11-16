@@ -82,6 +82,12 @@ function WealthChanges({ change }: { change: WealthChange | undefined }) {
           {row.label}: {row.point ? `${isk(row.point.isk)} (${pct(row.point.pct)})` : '–'}
         </Text>
       ))}
+      {(change?.price_jumps ?? []).slice(0, 3).map((jump) => (
+        <Text key={jump.type_id} size="xs" c="warn">
+          Price jump since yesterday: {jump.type_name ?? `type ${jump.type_id}`}{' '}
+          {isk(jump.previous_price)} to {isk(jump.price)} ({isk(jump.value_change)} of value)
+        </Text>
+      ))}
     </Stack>
   )
 }

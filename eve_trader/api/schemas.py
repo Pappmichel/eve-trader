@@ -899,10 +899,20 @@ class WealthDelta(_Base):
     pct: Optional[float] = None
 
 
+class PriceJump(_Base):
+    type_id: int
+    type_name: Optional[str] = None
+    previous_price: float
+    price: float
+    value_change: float
+
+
 class WealthChange(_Base):
     d1: Optional[WealthDelta] = None
     d7: Optional[WealthDelta] = None
     d30: Optional[WealthDelta] = None
+    # Top types whose unit price doubled or halved since yesterday's snapshot.
+    price_jumps: list[PriceJump] = []
 
 
 class PortfolioOverview(_Base):

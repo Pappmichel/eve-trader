@@ -9145,7 +9145,7 @@ PORTFOLIO_SNAPSHOT_COLUMNS = (
     "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
     "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
     "wealth_listed_value", "wealth_contract_value", "wealth_escrow",
-    "wealth_in_production_value",
+    "wealth_in_production_value", "top_positions",
 )
 
 
@@ -9157,7 +9157,10 @@ def upsert_portfolio_snapshot(snapshot_date: date, values: dict) -> None:
     safe. `values` is expected to carry every column in
     PORTFOLIO_SNAPSHOT_COLUMNS - a missing key raises KeyError rather than
     silently writing NULL/0 for a figure the caller forgot."""
-    row = tuple(values[col] for col in PORTFOLIO_SNAPSHOT_COLUMNS)
+    row = tuple(
+        Jsonb(values[col]) if col == "top_positions" and values[col] is not None else values[col]
+        for col in PORTFOLIO_SNAPSHOT_COLUMNS
+    )
     with connect() as conn:
         conn.execute(
             "INSERT INTO portfolio_snapshots (snapshot_date, " + ", ".join(PORTFOLIO_SNAPSHOT_COLUMNS) + ", taken_at) "

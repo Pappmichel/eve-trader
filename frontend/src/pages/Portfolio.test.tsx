@@ -173,6 +173,15 @@ describe('Portfolio overview', () => {
     expect(await screen.findByText(/fees missing \(3 sales, 150 ISK\)/)).toBeInTheDocument()
   })
 
+  it('hints at a price jump of a top type since yesterday', async () => {
+    vi.mocked(portfolioApi.wealthChange).mockResolvedValue({
+      ...overview.wealth_change,
+      price_jumps: [{ type_id: 34, type_name: 'Tritanium', previous_price: 5, price: 12, value_change: 7000 }],
+    })
+    renderPortfolio()
+    expect(await screen.findByText(/Price jump since yesterday: Tritanium/)).toBeInTheDocument()
+  })
+
   it('says how many sales are in no tool', async () => {
     vi.mocked(portfolioApi.realizedCards).mockResolvedValue({
       ...cards([

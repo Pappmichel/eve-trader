@@ -51,6 +51,39 @@ def location_label(component: str, location_id: Optional[int], structure_id: Opt
     return names.get(int(location_id)) or str(int(location_id))
 
 
+TOP_TYPES_LIMIT = 20
+
+
+def top_types(items: list[dict], limit: int = TOP_TYPES_LIMIT) -> list[dict]:
+    """The `limit` largest priced types by value, summed over every row of a
+    type (owners, places, components): {type_id, quantity, unit_price, value,
+    component}. `component` is the one holding most of the type's value.
+    Built from the same priced rows as `assemble`; unpriced rows are skipped.
+    Ties break by type id so the list is stable."""
+    types: dict[int, dict] = {}
+    for item in items:
+        if item.get("price") is None:
+            continue
+        quantity = float(item["quantity"])
+        value = quantity * float(item["price"])
+        slot = types.setdefault(int(item["type_id"]), {"quantity": 0.0, "value": 0.0, "components": {}})
+        slot["quantity"] += quantity
+        slot["value"] += value
+        slot["components"][item["component"]] = slot["components"].get(item["component"], 0.0) + value
+    rows = []
+    for type_id, slot in types.items():
+        component = max(sorted(slot["components"]), key=lambda name: slot["components"][name])
+        rows.append({
+            "type_id": type_id,
+            "quantity": slot["quantity"],
+            "unit_price": slot["value"] / slot["quantity"] if slot["quantity"] else None,
+            "value": slot["value"],
+            "component": component,
+        })
+    rows.sort(key=lambda row: (-row["value"], row["type_id"]))
+    return rows[:limit]
+
+
 def assemble(
     items: list[dict],
     wallets: list[dict],
