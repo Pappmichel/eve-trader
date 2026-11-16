@@ -178,9 +178,13 @@ def sde_preview_status():
     return _wrap(admin.do_sde_preview_status)
 
 
+class ApplySdeRequest(BaseModel):
+    confirm_shrink: bool = False
+
+
 @router.post("/sde/apply")
-def apply_sde():
-    return _wrap(admin.do_apply_sde)
+def apply_sde(req: Optional[ApplySdeRequest] = None):
+    return _wrap(admin.do_apply_sde, confirm_shrink=bool(req and req.confirm_shrink))
 
 
 # Same "cross-tenant-impacting cache, not a per-tenant Production button"

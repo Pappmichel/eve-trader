@@ -759,6 +759,8 @@ class SchedulerOperatorConfig:
     - backup_job_enabled / jita_price_cache_job_enabled: the two global jobs.
       Defaults keep today's behaviour (both run whenever the scheduler
       thread runs).
+    - sde_check_job_enabled: the daily SDE freshness check (one HEAD request,
+      scheduler job sde_freshness_check).
     - alerts_job_enabled: the Discord alerts job (CLAUDE.md "Discord alerts"),
       runs independently of every tenant's scheduler_enabled.
     - alerts_mail_poll_minutes: how often an opted-in character's mail headers
@@ -769,6 +771,7 @@ class SchedulerOperatorConfig:
     inactive_tenant_days: float = 14.0
     backup_job_enabled: bool = True
     jita_price_cache_job_enabled: bool = True
+    sde_check_job_enabled: bool = True
     alerts_job_enabled: bool = False
     alerts_mail_poll_minutes: float = 10.0
     alerts_contract_poll_minutes: float = 15.0
