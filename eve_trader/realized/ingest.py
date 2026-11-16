@@ -31,6 +31,10 @@ _COURIER = "courier"
 # How far back each ESI list reaches, and the row caps Phase 0 found
 # (plan section 13a). A gap can only exist where one of these was exceeded.
 JOURNAL_ENTRY_CAP = 10_000        # proven: newest 10,000 entries only
+# Wallet transactions are paged by from_id, 2,500 per page (the fetchers'
+# WALLET_TRANSACTIONS_PAGE_SIZE). Whether ESI caps the total is not known;
+# a full page whose oldest row is newer than the archive is treated as a gap.
+WALLET_TRANSACTIONS_PAGE_SIZE = 2_500
 INDUSTRY_JOBS_ROW_CAP = 2_000     # assumed hard cap (user decision 2026-10-17)
 WALLET_WINDOW_DAYS = 30
 CONTRACTS_WINDOW_DAYS = 30
@@ -272,6 +276,19 @@ def _archive_journal(owner_type: str, owner_id: int, division: int,
     return len(rows)
 
 
+def _check_txn_gap(owner_type: str, owner_id: int, division: int,
+                   txn_rows: list[tuple], now: datetime) -> None:
+    """Window and cap check for one wallet's transactions, before they are
+    written. `txn_rows` are this wallet's (one division's) rows."""
+    dates = [d for d in (_parse_esi_time(r[2]) for r in txn_rows) if d is not None]
+    _check_gap(
+        owner_type=owner_type, owner_id=owner_id, data_kind="wallet_transactions",
+        now=now, division=division, window_days=WALLET_WINDOW_DAYS,
+        cap=WALLET_TRANSACTIONS_PAGE_SIZE, row_count=len(txn_rows), sync_dates=dates,
+        table="ledger_wallet_transactions", date_column="date",
+    )
+
+
 def archive_wallet(
     *,
     owner_type: str,
@@ -292,10 +309,7 @@ def archive_wallet(
     """
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     now = _now(now)
-    _check_gap(
-        owner_type=owner_type, owner_id=owner_id, data_kind="wallet_transactions",
-        now=now, division=journal_division, window_days=WALLET_WINDOW_DAYS,
-    )
+    _check_txn_gap(owner_type, owner_id, journal_division, txn_rows, now)
     inserted = _archive_txn_rows(owner_type, owner_id, txn_rows, _TxnEnricher(cfg))
     _stamp(owner_type, owner_id, "wallet_transactions", now, journal_division)
     journal = _archive_journal(owner_type, owner_id, journal_division, journal_raw, now)
@@ -315,9 +329,9 @@ def archive_corp_wallet(
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     now = _now(now)
     for division in sorted(journal_entries_by_division):
-        _check_gap(
-            owner_type="corporation", owner_id=owner_id, data_kind="wallet_transactions",
-            now=now, division=division, window_days=WALLET_WINDOW_DAYS,
+        _check_txn_gap(
+            "corporation", owner_id, division,
+            [r for r in txn_rows if int(r[0]) == int(division)], now,
         )
     inserted = _archive_txn_rows("corporation", owner_id, txn_rows, _TxnEnricher(cfg))
     for division in sorted(journal_entries_by_division):
