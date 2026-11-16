@@ -6,9 +6,8 @@
 --   2. Composite-PK bucket - tenant_id added, PK widened to (tenant_id, ...).
 --   3. Column-only + no-PK bucket - tenant_id added, PK (if any) unchanged.
 --
--- Supersedes docs/phase0_setup.sql for schema purposes (that file stays as
--- the historical Phase-0 record - stock_targets here is byte-for-byte the
--- same shape it created). Idempotent - every statement is safe to re-run
+-- Supersedes the retired Phase-0 setup file (stock_targets here is
+-- byte-for-byte the same shape it created). Idempotent - every statement is safe to re-run
 -- against an already-provisioned dev DB (CREATE TABLE/INDEX IF NOT EXISTS,
 -- role creation guarded against duplicate_object, policies dropped and
 -- recreated rather than assumed absent).
@@ -20,9 +19,13 @@
 -- non-superuser eve_trader_app role - RLS is silently skipped for a table's
 -- owner/superuser otherwise.
 
+-- The role is created without a password on purpose; a password lives in no
+-- schema file. Set one with ALTER ROLE eve_trader_app PASSWORD '...' and put
+-- it in EVE_TRADER_PG_DSN (README.md / deploy/README.md). An existing role
+-- keeps whatever password it has.
 DO $$
 BEGIN
-    CREATE ROLE eve_trader_app WITH LOGIN PASSWORD 'app_devpassword' NOSUPERUSER NOBYPASSRLS;
+    CREATE ROLE eve_trader_app WITH LOGIN NOSUPERUSER NOBYPASSRLS;
 EXCEPTION WHEN duplicate_object THEN
     NULL;
 END
@@ -993,8 +996,57 @@ CREATE POLICY tenant_isolation ON realized_trades
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 -- ===================================================================== grants
--- One blanket grant covers shared tables too - production/sde.py's
--- refresh_sde() writes SDE tables through the same app connection today,
--- there is no separate owner-only write path.
+-- An explicit list of the tables this file creates. It used to be one
+-- GRANT ... ON ALL TABLES, which ran again on every deploy and silently
+-- re-widened any table a later file had deliberately narrowed (error_log
+-- keeps no UPDATE, for example). Every later schema file grants on its own
+-- tables; a test checks that no table in public is left without a grant.
+-- Shared tables are included: production/sde.py's refresh_sde() writes SDE
+-- tables through the same app connection, there is no owner-only write path.
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO eve_trader_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    sde_types,
+    type_packaged_volume,
+    sde_groups,
+    sde_categories,
+    sde_market_groups,
+    sde_blueprint_time,
+    sde_blueprint_materials,
+    sde_blueprint_products,
+    sde_blueprint_skills,
+    sde_invention_probability,
+    sde_solar_systems,
+    sde_regions,
+    sde_stations,
+    sde_refresh_state,
+    goonmetrics_history,
+    stock_targets,
+    manual_stock,
+    manual_build_buy,
+    selected_decryptors,
+    manual_blueprint_copy_costs,
+    manual_blueprint_me_te_overrides,
+    shortlist,
+    shortlist_skip_streak,
+    job_category_locations,
+    esi_sync_state,
+    candidate_search_cursor,
+    manual_location_names,
+    manual_owned_blueprints,
+    manual_industry_jobs,
+    manual_listed_stock,
+    category_location_options,
+    character_assets,
+    corp_assets,
+    character_industry_jobs,
+    corp_industry_jobs,
+    character_slots,
+    character_blueprints,
+    corp_blueprints,
+    character_sell_orders,
+    shortlist_snapshot,
+    candidate_universe,
+    focused_candidates,
+    new_candidates,
+    realized_trades
+    TO eve_trader_app;

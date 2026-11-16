@@ -170,7 +170,10 @@ def do_apply_sde(confirm_shrink: bool = False) -> dict:
             f"The staged SDE would shrink tables by more than {sde_diff.SHRINK_LIMIT_PERCENT:.0f}%: "
             f"{tables}. Nothing was written; confirm the shrink to apply it anyway.")
     equivalents_before = storage.get_sde_equivalence_class_map()
-    result = sde.apply_sde(_staged_sde)
+    # Synchronous HTTP route that rewrites whole tables: one statement can
+    # outlast the request-time statement timeout, so it is lifted here.
+    with storage.long_running():
+        result = sde.apply_sde(_staged_sde)
     if storage.get_sde_equivalence_class_map() != equivalents_before:
         result = {**result, "doctrine_contracts_revalidated": _revalidate_doctrine_contracts()}
     # all_tenants=True: the SDE cache is global (this function's own

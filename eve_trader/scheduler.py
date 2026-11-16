@@ -254,7 +254,8 @@ def _run_job(tenant_id: Optional[str], name: str, fn, *, wait: bool = True) -> N
 
     def _worker() -> None:
         try:
-            fn()
+            with storage.long_running():
+                fn()
         except Exception as e:  # noqa: BLE001 - a job's own failure must never kill the scheduler thread
             log.warning("Scheduled job %r (tenant=%s) failed: %s", name, tenant_id, e)
             outcome["error"] = str(e)

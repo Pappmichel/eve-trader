@@ -50,8 +50,9 @@ cp config.example.yaml config.yaml   # adjust structure_id, character names, thr
 ### Postgres (required before the app will start)
 
 Local dev runs Postgres in Docker (`docs/MULTI_TENANT_PLAN.md`'s "Phase 0"
-setup) - the default `EVE_TRADER_PG_DSN` in `.env.example` already matches
-this exactly, so no `.env` edit is needed for local dev:
+setup). `EVE_TRADER_PG_DSN` has no built-in default: `cp .env.example .env`
+brings a local-dev line that matches the `ALTER ROLE` step below. The app
+refuses to start without the variable:
 
 ```bash
 docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
@@ -96,9 +97,14 @@ Get-Content docs\asset_manager_schema.sql | docker exec -i eve-trader-pg psql -U
 Get-Content docs\location_registry_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
-(`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in
-dev password `app_devpassword` - fine for local dev, never for a real
-deployment, see `deploy/README.md`.)
+`phase1_schema.sql` creates the `eve_trader_app` role **without a password**.
+After applying the schema, give it the password your `EVE_TRADER_PG_DSN` uses
+(for local dev, the value in `.env.example`; a real deployment needs a real
+generated one, see `deploy/README.md`):
+
+```bash
+docker exec -i eve-trader-pg psql -U postgres -d eve_trader   -c "ALTER ROLE eve_trader_app WITH PASSWORD 'app_devpassword';"
+```
 
 ### Registering an EVE SSO application
 

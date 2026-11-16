@@ -438,10 +438,17 @@ async def _lifespan(app: FastAPI):
     # Price the Asset Manager rows in the background so the first page open is
     # not a 20 s wait. Daemon thread: it must neither block start nor shutdown.
     if "PYTEST_CURRENT_TEST" not in os.environ:  # tests start the app against a shared test database
-        threading.Thread(target=asset_manager_actions.warm_all_tenants, name="asset-manager-warmup",
+        threading.Thread(target=_warm_asset_manager, name="asset-manager-warmup",
                          daemon=True).start()
     yield
     scheduler.stop()
+
+
+def _warm_asset_manager() -> None:
+    """Thread target for the Asset Manager warm-up; a background job, so the
+    request-time statement timeout does not apply."""
+    with storage.long_running():
+        asset_manager_actions.warm_all_tenants()
 
 
 def _warm_sde_caches() -> None:
@@ -449,7 +456,8 @@ def _warm_sde_caches() -> None:
     raises: a failed warm-up only means the caches fill lazily, as before."""
     started = time.monotonic()
     try:
-        summary = storage.warm_sde_caches()
+        with storage.long_running():
+            summary = storage.warm_sde_caches()
         log.info("SDE caches warmed in %.1fs: %s", time.monotonic() - started, summary)
     except Exception:  # noqa: BLE001 - never affect the running app
         log.exception("SDE cache warm-up failed")

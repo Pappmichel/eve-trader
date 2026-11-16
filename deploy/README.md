@@ -243,9 +243,10 @@ history/Total Wealth snapshots, `docs/PORTFOLIO_REWORK_PLAN.md`) - skipping
 it leaves `/api/portfolio/overview`/`/api/portfolio/history` 500ing with
 `relation "portfolio_snapshots" does not exist`.
 
-`phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
-dev password** (`app_devpassword`) - fine for local dev, not for a real
-deployment. Overwrite it with a real generated secret immediately after:
+`phase1_schema.sql` creates the `eve_trader_app` role **without a password**
+(an existing role keeps its own). Setting one is required - the app has no
+default DSN and will not start without `EVE_TRADER_PG_DSN`. Generate a real
+secret and set it right after the schema run:
 ```bash
 APP_PASSWORD=$(openssl rand -hex 24)
 sudo -u postgres psql -c "ALTER ROLE eve_trader_app WITH PASSWORD '$APP_PASSWORD';"
