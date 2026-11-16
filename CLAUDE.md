@@ -546,7 +546,10 @@ function or table after that migration (all 5 of its phases are done).
   every call in its own `ctx.copy()` (one Context cannot be entered by two
   threads), so the tenant id *and* the per-tenant `TRADING_CONFIG` /
   `PRODUCTION_CONFIG` values travel into worker threads. The snapshot is
-  taken at wrap time: wrap after `enter_tenant`, not before.
+  taken at wrap time: wrap after `enter_tenant`, not before. Per-thread state
+  (`production/engine._planner_reads_var`, `esi_client._last_modified_seen`) is
+  registered with `storage.register_thread_local_contextvar` and starts at its
+  default in the worker; register any new per-run memo or collector the same way.
 - **Refresh tokens before a batch, not inside it.** `orchestrator.
   _run_character_owner` / `_run_corporation_kinds_for_members` call
   `TokenManager.ensure_fresh(role)` (refreshes below 300 s of validity) for

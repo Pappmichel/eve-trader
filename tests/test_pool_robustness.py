@@ -445,3 +445,24 @@ def test_the_slot_is_released_after_a_timeout_or_start_failure(monkeypatch, exc)
     assert mineral_supply_lp._solve_mip_in_child({}) is None
     assert mineral_supply_lp._mip_slot.acquire(timeout=0.1)
     mineral_supply_lp._mip_slot.release()
+
+
+def test_thread_local_vars_do_not_travel_into_wrapped_workers(tenant):
+    from eve_trader.esi_client import _last_modified_seen, collect_last_modified
+    from eve_trader.production import engine
+    from eve_trader.config import TradingConfig
+    cfg = TradingConfig()
+    cfg.chunk_size = 7
+    token = config._trading_config_var.set(cfg)
+    try:
+        with engine.planner_reads(), collect_last_modified():
+            assert engine._planner_reads_var.get() is not None
+            fn = storage.with_current_tenant(lambda: (
+                engine._planner_reads_var.get(), _last_modified_seen.get(),
+                TRADING_CONFIG.chunk_size, storage.get_current_tenant()))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                reads, seen, chunk, tid = pool.submit(fn).result()
+    finally:
+        config._trading_config_var.reset(token)
+    assert reads is None and seen is None
+    assert chunk == 7 and tid == tenant

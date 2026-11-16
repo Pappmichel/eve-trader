@@ -44,6 +44,7 @@ METALEVEL_ATTRIBUTE_ID = 633  # EVE SDE dogma attribute "metaLevel" (0=Tech I, 5
 _last_modified_seen: ContextVar[Optional[list[datetime]]] = ContextVar(
     "esi_last_modified_seen", default=None,
 )
+storage.register_thread_local_contextvar(_last_modified_seen, None)
 
 
 @contextmanager

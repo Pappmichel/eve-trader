@@ -133,6 +133,17 @@ def get_current_tenant() -> Optional[str]:
     return _tenant_id_var.get()
 
 
+_thread_local_contextvars: list[tuple[contextvars.ContextVar, object]] = []
+
+
+def register_thread_local_contextvar(var: contextvars.ContextVar, default=None) -> None:
+    """Mark `var` as per-thread state: `with_current_tenant` workers start with
+    `default` instead of the caller's value (e.g. a per-run memo or a response
+    collector that two threads must never share)."""
+    if all(v is not var for v, _d in _thread_local_contextvars):
+        _thread_local_contextvars.append((var, default))
+
+
 def with_current_tenant(fn):
     """Wraps fn so that, no matter which thread later executes it, it runs
     with the tenant_id ambient on the *calling* thread right now -
@@ -148,12 +159,19 @@ def with_current_tenant(fn):
     sync_esi."""
     # Snapshot the whole context (tenant id plus the per-tenant config
     # ContextVars) on the calling thread. Each call runs in its own copy:
-    # one Context cannot be entered by two threads at once.
+    # one Context cannot be entered by two threads at once. Variables
+    # registered with register_thread_local_contextvar are reset to their
+    # default inside that copy - they belong to the calling thread only.
     ctx = contextvars.copy_context()
+
+    def _run_in_copy(*args, **kwargs):
+        for var, default in _thread_local_contextvars:
+            var.set(default)
+        return fn(*args, **kwargs)
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        return ctx.copy().run(fn, *args, **kwargs)
+        return ctx.copy().run(_run_in_copy, *args, **kwargs)
     return wrapper
 
 
