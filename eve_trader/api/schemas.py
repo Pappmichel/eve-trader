@@ -235,6 +235,13 @@ class BuildJobEntry(_Base):
     # C-J sell quote and profit per unit after market fees.
     home_sell_price: Optional[float] = None
     profit_per_unit: Optional[float] = None
+    # Material multiplier the plan applied to this job's direct materials.
+    material_mult: Optional[float] = None
+
+
+class PullFromStop(_Base):
+    location_id: int
+    quantity: float
 
 
 class LogisticsRow(_Base):
@@ -245,8 +252,7 @@ class LogisticsRow(_Base):
     needed: float
     available: float
     missing: float
-    pull_from_location_id: Optional[int] = None
-    pull_from_available: Optional[float] = None
+    pull_from: list[PullFromStop] = []
     volume_m3: float = 0.0
 
 
@@ -352,6 +358,7 @@ class AssetPlanJob(_Base):
     # C-J sell quote and profit per unit after market fees.
     home_sell_price: Optional[float] = None
     profit_per_unit: Optional[float] = None
+    material_mult: Optional[float] = None
 
 
 class InventionNeedRow(_Base):

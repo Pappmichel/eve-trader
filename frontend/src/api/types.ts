@@ -426,6 +426,8 @@ export interface BuildJobEntry {
   reaction_runs_per_job?: number | null
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** Material multiplier the plan applied to this job's direct materials. */
+  material_mult?: number | null
   /** C-J sell quote and profit per unit after market fees. */
   home_sell_price?: number | null
   profit_per_unit?: number | null
@@ -518,6 +520,11 @@ export interface ReactionCapacityStatus {
 // only the ready-now runs of the Asset-Optimized plan.
 export type LogisticsScope = 'build_list' | 'asset_ready'
 
+export interface PullFromStop {
+  location_id: number
+  quantity: number
+}
+
 export interface LogisticsRow {
   category: string
   location_id: number
@@ -526,8 +533,7 @@ export interface LogisticsRow {
   needed: number
   available: number
   missing: number
-  pull_from_location_id: number | null
-  pull_from_available: number | null
+  pull_from: PullFromStop[]
   volume_m3: number
 }
 
@@ -632,6 +638,8 @@ export interface AssetPlanJob {
   doctrine_ready_runs?: number
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** Material multiplier the plan applied to this job's direct materials. */
+  material_mult?: number | null
   /** C-J sell quote and profit per unit after market fees. */
   home_sell_price?: number | null
   profit_per_unit?: number | null

@@ -155,7 +155,7 @@ from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .jobs import character_slot_overview
 from .models import (
     AlchemyComparison, AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow,
-    InventionResult, InventoryRow, LogisticsRow, MarketRestockRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow,
+    InventionResult, InventoryRow, LogisticsRow, MarketRestockRow, MarketStatusRow, PullFromStop, SpecialOrderLineItem, StockOverlapWarningRow,
     T1BpcInventionNeedRow,
 )
 
@@ -3296,11 +3296,12 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         product_activity = classify_activity(product_type_id)[0]
         invention_per_unit = None
         if product_activity == "Tech II" and product_type_id in t2_memo:
-            _, time_mult, decryptor_name, chosen = t2_memo[product_type_id]
+            material_mult, time_mult, decryptor_name, chosen = t2_memo[product_type_id]
             job_cost_rate = _job_cost_rate("Tech II", product_type_id, cfg, cost_indices)
             invention_per_unit = _invention_cost_per_unit(product_type_id, product_qty, chosen)
         else:
-            _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
+            material_mult, time_mult, job_cost_rate = _activity_mods(
+                product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
         job_time = base_time * time_mult * runs
         alchemy_entry = alchemy_keys.get((blueprint_id, activity_id, product_type_id))
@@ -3342,6 +3343,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             margin=margin_home(product_type_id, unit_cost, home, cfg),
             home_sell_price=home_sell,
             profit_per_unit=profit_per_unit,
+            material_mult=material_mult,
         ))
     build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
     return build_list
@@ -4965,7 +4967,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     decryptor_name = None
                 activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
                 job_meta[type_id] = (job_key, blueprint_id, activity_id, product_qty, activity_label,
-                                      decryptor_name, time_mult)
+                                      decryptor_name, time_mult, material_mult)
 
                 parent_base_runs = _parent_base_runs_for_buffer(type_id, pass_base_runs, buffered_parents)
                 for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
@@ -5050,7 +5052,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             # needing the same target still merge into that one row.
             for type_id, runs in runs_this_round.items():
                 (job_key, blueprint_id, activity_id, product_qty, activity_label,
-                 decryptor_name, time_mult) = job_meta[type_id]
+                 decryptor_name, time_mult, material_mult) = job_meta[type_id]
                 sde_type = storage.get_sde_type(job_key)
                 name = sde_type[2] if sde_type else str(job_key)
                 base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
@@ -5075,6 +5077,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         margin=margin_home(type_id, cost_memo.get(type_id), home, cfg),
                         recipe_source="alchemy" if job_key != type_id else None,
                         blockers=round_blockers,
+                        material_mult=material_mult,
                     )
                     (jobs[job_key].home_sell_price,
                      jobs[job_key].profit_per_unit) = home_sell_and_profit(
@@ -5309,7 +5312,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             sde_type = storage.get_sde_type(job_key)
             name = sde_type[2] if sde_type else str(job_key)
             base_time = storage.get_blueprint_time(recipe.blueprint_type_id, ACTIVITY_REACTION) or 0
-            _, time_mult, _ = _activity_mods(
+            material_mult, time_mult, _ = _activity_mods(
                 "Reaction", job_key, cfg, cost_indices, recipe.blueprint_type_id)
             job_time = base_time * time_mult * runs
             ready, blockers = reaction_ready[index]
@@ -5338,6 +5341,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     blockers=blockers,
                     formulas_owned=recipe.owned_formulas,
                     formulas_needed=alloc.jobs,
+                    material_mult=material_mult,
                     recommended_slots=_ready_slots(ready),
                     runs_per_slot=runs_per_job if ready > 0 else None,
                     days_to_complete_at_recommended_slots=(
@@ -6306,9 +6310,12 @@ def _category_material_demand(build_list: list[BuildJobEntry] | list[AssetPlanJo
     of each *direct* material (one level only, not the full recursive chain
     _expand_all walks) is needed for every currently-planned job in each
     category that has an assigned location. Accepts Build List entries or
-    asset-plan jobs (asset_plan_ready_jobs) - only type_id, job_category,
-    decryptor and job_runs are read. Categories with no assigned
-    location are skipped entirely (nothing to net against either way)."""
+    asset-plan jobs (asset_plan_ready_jobs). A job that carries
+    material_mult (the factor the plan already applied, manual ME/TE
+    override included) is costed with that factor. A job without one is
+    recomputed via _direct_material_mult, which cannot see the override
+    and falls back to ME 10. Categories with no assigned location are
+    skipped entirely (nothing to net against either way)."""
     demand: dict[tuple[str, int], float] = {}
     for entry in build_list:
         category = entry.job_category
@@ -6318,13 +6325,92 @@ def _category_material_demand(build_list: list[BuildJobEntry] | list[AssetPlanJo
         if bp is None:
             continue
         blueprint_id, activity_id, _ = bp
-        material_mult = _direct_material_mult(entry.type_id, activity, entry.decryptor, cfg, blueprint_id)
+        if entry.material_mult is not None:
+            material_mult = entry.material_mult
+        else:
+            material_mult = _direct_material_mult(entry.type_id, activity, entry.decryptor, cfg, blueprint_id)
         for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
             qty = _material_qty(base_qty, material_mult, entry.job_runs)
             if qty > 0:
                 key = (category, material_id)
                 demand[key] = demand.get(key, 0.0) + qty
     return demand
+
+
+def _pull_from_chains(demand: dict[tuple[str, int], float],
+                      missing_of: dict[tuple[str, int], float],
+                      category_locations: dict[str, int],
+                      stock_of,
+                      warehouse_location_id: Optional[int],
+                      orphaned_locations_by_category: dict[str, list[int]],
+                      ) -> dict[tuple[str, int], list[PullFromStop]]:
+    """For each short (category, material), the places to take it from.
+
+    Order per row: warehouse stock, then other category stations' surplus
+    (largest remaining first), then that category's former stations. Each
+    stop's quantity is the amount to move. The largest shortfall of a
+    material is filled first, and what it takes is gone for the next row."""
+    by_material: dict[int, list[tuple[str, float]]] = {}
+    for (category, material_id), missing in missing_of.items():
+        if missing > 0:
+            by_material.setdefault(material_id, []).append((category, missing))
+
+    warehouse_left: dict[int, float] = {}
+    surplus_left: dict[tuple[int, int], float] = {}
+    orphan_left: dict[tuple[int, int], float] = {}
+    chains: dict[tuple[str, int], list[PullFromStop]] = {}
+
+    def category_at(location_id: int) -> str:
+        return next(category for category, loc in category_locations.items() if loc == location_id)
+
+    for material_id, shortfalls in by_material.items():
+        if warehouse_location_id is not None:
+            warehouse_left[material_id] = stock_of(material_id, warehouse_location_id)
+        for category, missing in sorted(shortfalls, key=lambda item: (-item[1], item[0])):
+            own = category_locations[category]
+            need = missing
+            stops: list[PullFromStop] = []
+
+            def take(location_id: int, available: float) -> float:
+                nonlocal need
+                qty = min(need, available)
+                if qty <= 0:
+                    return available
+                stops.append(PullFromStop(location_id=location_id, quantity=qty))
+                need -= qty
+                return available - qty
+
+            if warehouse_location_id is not None and warehouse_location_id != own:
+                warehouse_left[material_id] = take(warehouse_location_id, warehouse_left[material_id])
+
+            if need > 0:
+                candidates: list[int] = []
+                for other_location_id in {loc for cat, loc in category_locations.items() if cat != category}:
+                    if other_location_id == warehouse_location_id:
+                        continue
+                    key = (material_id, other_location_id)
+                    if key not in surplus_left:
+                        other_demand = demand.get((category_at(other_location_id), material_id), 0.0)
+                        surplus_left[key] = max(0.0, stock_of(material_id, other_location_id) - other_demand)
+                    candidates.append(other_location_id)
+                for loc_id in sorted(candidates, key=lambda loc: -surplus_left[(material_id, loc)]):
+                    if need <= 0:
+                        break
+                    surplus_left[(material_id, loc_id)] = take(loc_id, surplus_left[(material_id, loc_id)])
+
+            if need > 0:
+                orphans = orphaned_locations_by_category.get(category, [])
+                for loc_id in orphans:
+                    key = (material_id, loc_id)
+                    if key not in orphan_left:
+                        orphan_left[key] = stock_of(material_id, loc_id)
+                for loc_id in sorted(orphans, key=lambda loc: -orphan_left[(material_id, loc)]):
+                    if need <= 0:
+                        break
+                    orphan_left[(material_id, loc_id)] = take(loc_id, orphan_left[(material_id, loc_id)])
+
+            chains[(category, material_id)] = stops
+    return chains
 
 
 def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
@@ -6339,23 +6425,17 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
     (storage.esi_stock_at_location, a plain DB read) against whatever
     Bauliste is already on screen.
 
-    A row with missing > 0 also gets a "pull from" hint (GitHub issue #4) -
-    the configured warehouse (cfg.distribution_source_location_id, falling
-    back to home_location_id - "the home market acts as the central
-    warehouse" by default) if it has any stock, else whichever *other*
-    configured category location currently has surplus (stock beyond its
-    own demand), largest surplus first, else a category's own now-orphaned
-    *former* station (Structure per Category above was reassigned away from
-    it, e.g. a Reactions station move) - production rotates between a
-    handful of stations over time, and a former station isn't tracked
-    against anyone's demand anymore, so its whole remaining stock counts as
-    pullable (via `category_location_options` history, minus whatever's
-    still actively assigned to some category or configured as the
-    warehouse). Purely informational/independent per row - unlike
-    distribution_recommendations below, this doesn't need to track stock
-    already "claimed" by an earlier row, since it's just a hint for the user
-    to read, not a set of recommendations that must sum to no more than
-    what's actually there.
+    A row with missing > 0 gets a pull chain (GitHub issue #4). Stops, in
+    order, are the warehouse (cfg.distribution_source_location_id, falling
+    back to home_location_id), then other category stations' surplus
+    (stock beyond that station's own demand, largest first), then the
+    category's former stations (category_location_options, minus locations
+    still assigned to a category or used as the warehouse). Each stop's
+    quantity is what to take there, and the chain stops once missing is
+    covered. Several rows short of the same material share one pile: the
+    largest shortfall is filled first, same as distribution_recommendations.
+    A former station's whole stock counts, because nobody's demand is
+    netted against it.
 
     Each row's volume_m3 (packaged for ships/capital modules, same
     engine._haul_volume the Build List's own haul-cost math uses) is the
@@ -6368,10 +6448,6 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
     stock_of = _stock_lookup({material_id for _, material_id in demand}, cfg.home_location_id)
     warehouse_location_id = cfg.distribution_source_location_id or cfg.home_location_id
     active_locations = set(category_locations.values())
-    other_locations_by_category = {
-        category: sorted({loc for cat, loc in category_locations.items() if cat != category})
-        for category in category_locations
-    }
     orphaned_locations_by_category = {
         category: sorted({
             loc for loc in category_options.get(category, [])
@@ -6379,42 +6455,29 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
         })
         for category, location_id in category_locations.items()
     }
+    available_of = {
+        (category, material_id): stock_of(material_id, category_locations[category])
+        for (category, material_id) in demand
+    }
+    missing_of = {
+        key: max(0.0, needed - available_of[key]) for key, needed in demand.items()
+    }
+    pull_of = _pull_from_chains(
+        demand, missing_of, category_locations, stock_of,
+        warehouse_location_id, orphaned_locations_by_category,
+    )
 
     rows = []
     for (category, material_id), needed in demand.items():
-        location_id = category_locations[category]
-        available = stock_of(material_id, location_id)
-        missing = max(0.0, needed - available)
+        missing = missing_of[(category, material_id)]
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
         unit_volume = _haul_volume(material_id, cfg) or 0.0
-
-        pull_from_location_id = None
-        pull_from_available = None
-        if missing > 0:
-            if warehouse_location_id is not None and warehouse_location_id != location_id:
-                warehouse_stock = stock_of(material_id, warehouse_location_id)
-                if warehouse_stock > 0:
-                    pull_from_location_id, pull_from_available = warehouse_location_id, warehouse_stock
-            if pull_from_location_id is None:
-                for other_location_id in other_locations_by_category[category]:
-                    if other_location_id == warehouse_location_id:
-                        continue
-                    other_category = next(c for c, loc in category_locations.items() if loc == other_location_id)
-                    other_demand = demand.get((other_category, material_id), 0.0)
-                    stock = stock_of(material_id, other_location_id)
-                    surplus = max(0.0, stock - other_demand)
-                    if surplus > 0 and (pull_from_available is None or surplus > pull_from_available):
-                        pull_from_location_id, pull_from_available = other_location_id, surplus
-                for orphaned_location_id in orphaned_locations_by_category[category]:
-                    stock = stock_of(material_id, orphaned_location_id)
-                    if stock > 0 and (pull_from_available is None or stock > pull_from_available):
-                        pull_from_location_id, pull_from_available = orphaned_location_id, stock
-
         rows.append(LogisticsRow(
-            category=category, location_id=location_id, type_id=material_id, type_name=name,
-            needed=needed, available=available, missing=missing,
-            pull_from_location_id=pull_from_location_id, pull_from_available=pull_from_available,
+            category=category, location_id=category_locations[category],
+            type_id=material_id, type_name=name,
+            needed=needed, available=available_of[(category, material_id)], missing=missing,
+            pull_from=pull_of.get((category, material_id), []),
             volume_m3=missing * unit_volume,
         ))
     rows.sort(key=lambda r: (r.category, -r.missing))
@@ -6434,15 +6497,14 @@ def distribution_recommendations(build_list: list[BuildJobEntry] | list[AssetPla
     Whatever the warehouse still can't cover after that is filled from other
     category locations' surplus (stock beyond their own demand), largest
     surplus first, same "warehouse first, then surplus" priority as
-    logistics_status' own pull-from hint. Unlike that hint (informational,
-    independent per row), the recommendations here are a commitment - two
-    categories short of the same material can't both be recommended to pull
-    more than a shared surplus location actually has, so surplus_remaining
-    tracks what's already been committed to an earlier category in this same
-    material's loop and decrements as it's consumed (confirmed real bug in
-    an earlier attempt at this: recomputing each category's candidate
-    surplus independently, straight off the unmodified DB stock figure,
-    let two categories each get recommended the same units).
+    logistics_status' pull chain. Both surfaces share one pile across rows:
+    two categories short of the same material cannot each be handed the
+    same units. surplus_remaining tracks what an earlier category in this
+    material's loop already took (confirmed real bug in an earlier attempt
+    at this: recomputing each category's candidate surplus independently,
+    straight off the unmodified DB stock figure, let two categories each
+    get recommended the same units). The pull chain also walks a category's
+    former stations; these recommendations stay warehouse then surplus.
 
     Returns [] if no distribution source is configured at all."""
     source_location_id = cfg.distribution_source_location_id or cfg.home_location_id
