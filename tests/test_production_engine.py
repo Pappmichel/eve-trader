@@ -6818,3 +6818,51 @@ def test_logistics_actions_take_exactly_one_job_source():
         production_actions.do_get_logistics_status()
     with pytest.raises(production_actions.ActionError):
         production_actions.do_get_distribution_recommendations(build_list=[], asset_jobs=[])
+
+
+def _plan_context_with_adjusted_prices(monkeypatch, adjusted):
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(100, "Widget", 0, 1, 0)])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(storage, "get_blueprint_for_product",
+                        lambda tid: (900, 1, 1.0) if tid == 100 else None)
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                        lambda bp, act: [(34, 10.0), (35, 5.0), (36, 1.0)])
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda ids: [100, 34, 35, 36])
+    monkeypatch.setattr(engine, "_prefetch_planner_reads", lambda ids, cfg: None)
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: adjusted)
+    return engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+
+
+def test_plan_context_lists_recipe_materials_without_an_adjusted_price(monkeypatch):
+    adjusted = {34: 5.0, 35: 7.0, 100: 1000.0}
+    ctx = _plan_context_with_adjusted_prices(monkeypatch, adjusted)
+    assert ctx.adjusted_prices_missing == [36]
+    assert engine._reliability_fields(ctx)["adjusted_prices_missing"] == [36]
+    # Informational only: nothing about the reliability verdict or the prices moves.
+    assert ctx.job_costs_reliable
+    assert ctx.adjusted_prices == adjusted
+
+
+def test_plan_context_missing_list_is_empty_when_adjusted_prices_are_unavailable(monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+
+    def boom(self):
+        raise esi_client_module.ESIError("down")
+
+    ctx = _plan_context_with_adjusted_prices(monkeypatch, {})
+    assert ctx.adjusted_prices_missing == [34, 35, 36]   # available but empty list
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", boom)
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+    assert ctx.adjusted_prices_available is False
+    assert ctx.adjusted_prices_missing == []

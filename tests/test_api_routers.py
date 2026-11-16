@@ -905,7 +905,8 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
         "jobs": [], "order_progress": [], "stale": False, "reaction_capacity": None,
         "ready_at_build_location": False,
         "adjusted_prices_available": True, "cost_indices_available": True,
-        "prices_available": True, "price_data_stale_hours": None}
+        "prices_available": True, "price_data_stale_hours": None,
+        "adjusted_prices_missing": []}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
@@ -1213,6 +1214,7 @@ def test_compute_special_order_success(monkeypatch):
         "line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": [],
         "adjusted_prices_available": True, "cost_indices_available": True,
         "prices_available": True, "price_data_stale_hours": None,
+        "adjusted_prices_missing": [],
     }
 
 

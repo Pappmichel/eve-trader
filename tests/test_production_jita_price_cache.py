@@ -171,7 +171,10 @@ def test_refresh_keeps_previous_snapshot_when_esi_returns_no_quotes(monkeypatch)
     # a cached 0 as a hit and never falls through to Goonmetrics).
     previous = CurrentPrice(type_id=34, updated="", buy=5.0, sell=5.5)
     jita_price_cache._cache[34] = previous
-    jita_price_cache._updated_at = "2026-09-01T00:00:00+00:00"
+    # Recent enough to be served (a snapshot older than 24 h is dropped).
+    import datetime as dt
+    stamp = dt.datetime.now(dt.timezone.utc).isoformat()
+    jita_price_cache._updated_at = stamp
     monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 10, 0, 0)])
     monkeypatch.setattr(tenant_scope, "enter_tenant", _fake_enter_tenant())
@@ -184,7 +187,7 @@ def test_refresh_keeps_previous_snapshot_when_esi_returns_no_quotes(monkeypatch)
 
     assert count == 1
     assert jita_price_cache.get_cached_prices([34])[34].sell == 5.5
-    assert jita_price_cache.last_updated_at() == "2026-09-01T00:00:00+00:00"
+    assert jita_price_cache.last_updated_at() == stamp
 
 
 # ------------------------------------------------ scheduler rework: who gets priced
@@ -461,3 +464,28 @@ def test_refresh_skips_doctrine_extra_above_cap(monkeypatch):
     assert seen["type_ids"] == [587]
     assert jita_price_cache.last_doctrine_extra_skipped()
     assert jita_price_cache.last_doctrine_extra_count() > jita_price_cache._MAX_DOCTRINE_EXTRA_TYPES
+
+
+def _age_cache(hours: float, interval_hours: float = 3.0, monkeypatch=None):
+    import datetime as dt
+    jita_price_cache._cache[34] = CurrentPrice(type_id=34, updated="", buy=5.0, sell=5.5)
+    jita_price_cache._updated_at = (
+        dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)).isoformat()
+    monkeypatch.setattr(jita_price_cache, "_refresh_interval_seconds", lambda: interval_hours * 3600.0)
+
+
+def test_cache_older_than_twice_the_interval_is_served_and_flagged(monkeypatch):
+    _age_cache(7, monkeypatch=monkeypatch)
+    assert set(jita_price_cache.get_cached_prices([34])) == {34}
+    assert jita_price_cache.stale_age_seconds() >= 7 * 3600 - 5
+
+
+def test_fresh_cache_is_not_flagged(monkeypatch):
+    _age_cache(4, monkeypatch=monkeypatch)
+    assert set(jita_price_cache.get_cached_prices([34])) == {34}
+    assert jita_price_cache.stale_age_seconds() is None
+
+
+def test_cache_older_than_24_hours_is_not_served(monkeypatch):
+    _age_cache(25, monkeypatch=monkeypatch)
+    assert jita_price_cache.get_cached_prices([34]) == {}

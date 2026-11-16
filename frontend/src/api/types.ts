@@ -660,6 +660,8 @@ export interface AssetPlan {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -710,6 +712,8 @@ export interface SpecialOrderComputeResult {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
 }
 
 export interface SpecialOrderDetail {
@@ -1085,6 +1089,8 @@ export interface ProductionPlan {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
   order_progress?: OrderProgressRow[]
   // See AssetPlan.stale.
   stale?: boolean

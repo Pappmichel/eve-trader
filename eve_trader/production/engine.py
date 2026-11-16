@@ -140,6 +140,7 @@ from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
 from . import dynamic_targets, facility_tax, invention, pricing, reaction_capacity
+from . import jita_price_cache
 from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -3172,6 +3173,12 @@ class _PlanContext:
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
             self.adjusted_prices_available = False
+        # Informational only: materials of the recipes in this plan that ESI's
+        # list lacks (their EIV share reads 0). Never changes a number.
+        self.adjusted_prices_missing = (
+            _missing_adjusted_prices(priced_type_ids, self.adjusted_prices)
+            if self.adjusted_prices_available else []
+        )
         # Cost-index age only matters when a system is configured; otherwise
         # the plan never reads the class-wide catalog and a leftover stale
         # cache must not show "ESI is not reachable".
@@ -3183,6 +3190,13 @@ class _PlanContext:
             ci_age = getattr(ESIClient, "cost_indices_stale_seconds", lambda: None)()
             if ci_age is not None:
                 ages.append(ci_age)
+        # The shared Jita quote cache counts as price data too once it is
+        # older than twice its refresh interval.
+        hub = hub_region_id if hub_region_id is not None else cfg.hub_region_id
+        jita_age = (jita_price_cache.stale_age_seconds()
+                    if hub in (JITA_REGION_ID, hubs.ALL_HUBS) else None)
+        if jita_age is not None:
+            ages.append(jita_age)
         self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
         # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
         self._reaction_solve_cache = None
@@ -3199,6 +3213,26 @@ class _PlanContext:
         return self.adjusted_prices_available and self.cost_indices_available
 
 
+def _missing_adjusted_prices(type_ids: Iterable[int], adjusted_prices: dict) -> list[int]:
+    """Sorted material type ids of the Manufacturing/Reaction recipes of
+    `type_ids` that have no adjusted price. Recipe lookups come from the
+    cached recipe index (no per-type query for ids the closure already
+    prefetched)."""
+    missing: set[int] = set()
+    try:
+        for type_id in type_ids:
+            recipe = storage.get_blueprint_for_product(type_id)
+            if recipe is None:
+                continue
+            for material_id, _qty in storage.get_blueprint_materials(recipe[0], recipe[1]):
+                if material_id not in adjusted_prices:
+                    missing.add(int(material_id))
+    except Exception:  # noqa: BLE001 - an informational hint must never fail a plan
+        log.warning("Could not check recipe materials against adjusted prices", exc_info=True)
+        return []
+    return sorted(missing)
+
+
 def _reliability_fields(ctx) -> dict:
     """Shared keys every plan_* return dict exposes for the UI warnings.
     getattr defaults keep test doubles that only set adjusted_prices_available
@@ -3208,6 +3242,7 @@ def _reliability_fields(ctx) -> dict:
         "cost_indices_available": getattr(ctx, "cost_indices_available", True),
         "prices_available": getattr(ctx, "prices_available", True),
         "price_data_stale_hours": getattr(ctx, "price_data_stale_hours", None),
+        "adjusted_prices_missing": list(getattr(ctx, "adjusted_prices_missing", None) or []),
     }
 
 

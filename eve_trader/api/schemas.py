@@ -10,7 +10,7 @@ from datetime import date
 from typing import Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Base(BaseModel):
@@ -1131,6 +1131,9 @@ class ProductionPlan(BaseModel):
     # Hours since the oldest ESI adjusted-price / cost-index refresh that
     # was still served after a failed refresh; None when fresh.
     price_data_stale_hours: Optional[float] = None
+    # Material type ids of this plan's recipes that ESI has no adjusted price
+    # for: their share of Job Cost reads 0 (informational, numbers unchanged).
+    adjusted_prices_missing: list[int] = Field(default_factory=list)
     # Per integrated special-order line item: units claimed from stock and
     # what is left to plan (SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D16).
     order_progress: list[OrderProgressRow] = []
@@ -1159,6 +1162,9 @@ class AssetPlan(BaseModel):
     cost_indices_available: bool = True
     prices_available: bool = True
     price_data_stale_hours: Optional[float] = None
+    # Material type ids of this plan's recipes that ESI has no adjusted price
+    # for: their share of Job Cost reads 0 (informational, numbers unchanged).
+    adjusted_prices_missing: list[int] = Field(default_factory=list)
     # True once integrated special-order demand changed after this plan was
     # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
     # recompute hint.
@@ -1200,6 +1206,9 @@ class SpecialOrderComputeResult(BaseModel):
     cost_indices_available: bool = True
     prices_available: bool = True
     price_data_stale_hours: Optional[float] = None
+    # Material type ids of this plan's recipes that ESI has no adjusted price
+    # for: their share of Job Cost reads 0 (informational, numbers unchanged).
+    adjusted_prices_missing: list[int] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- sorting
