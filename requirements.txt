@@ -54,7 +54,7 @@ psycopg-pool==3.3.3
 pydantic==2.14.2
 pydantic_core==2.50.2
 pycparser==3.12
-PyJWT==2.12.1
+PyJWT==2.15.1
 python-dateutil==3.0.0
 python-dotenv==1.2.4
 pytz==2026.6
