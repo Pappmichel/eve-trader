@@ -451,8 +451,8 @@ def _warm_sde_caches() -> None:
 
 def _load_default_tenant_config() -> None:
     """One-time, at-boot load of DEFAULT_TENANT_ID's own saved Settings-page
-    overrides into TRADING_CONFIG/PRODUCTION_CONFIG/DOCTRINE_CONFIG's
-    *shared default* instance (mutated directly via apply_config_overrides,
+    overrides of all seven config scopes into their
+    *shared default* instances (mutated directly via apply_config_overrides,
     not via a ContextVar.set() - the gate-disabled request path above never
     sets a per-request value at all, it always falls through to this same
     default object, so mutating it once here is enough for every future
@@ -463,19 +463,26 @@ def _load_default_tenant_config() -> None:
     live instance in place) but is silently lost across a restart - only
     config.yaml is read at TRADING_CONFIG/PRODUCTION_CONFIG/DOCTRINE_CONFIG's
     own import time, never tenant_settings."""
+    from ..module_reprocessing.config import MODULE_REPROCESSING_CONFIG
+    from ..refining.config import REFINING_CONFIG
+    from ..station_trading.config import STATION_TRADING_CONFIG
+
+    # (tenant_settings.scope, shared default instance) - every scope the
+    # Settings saves write to.
+    scopes = (
+        ("trading", TRADING_CONFIG),
+        ("production", PRODUCTION_CONFIG),
+        ("doctrine", DOCTRINE_CONFIG),
+        ("pi", PI_CONFIG),
+        ("refining", REFINING_CONFIG),
+        ("station_trading", STATION_TRADING_CONFIG),
+        ("module_reprocessing", MODULE_REPROCESSING_CONFIG),
+    )
     with storage.tenant_context(storage.DEFAULT_TENANT_ID):
-        trading_overrides = storage.load_tenant_settings("trading")
-        production_overrides = storage.load_tenant_settings("production")
-        doctrine_overrides = storage.load_tenant_settings("doctrine")
-        pi_overrides = storage.load_tenant_settings("pi")
-    if trading_overrides:
-        apply_config_overrides(TRADING_CONFIG, trading_overrides)
-    if production_overrides:
-        apply_config_overrides(PRODUCTION_CONFIG, production_overrides)
-    if doctrine_overrides:
-        apply_config_overrides(DOCTRINE_CONFIG, doctrine_overrides)
-    if pi_overrides:
-        apply_config_overrides(PI_CONFIG, pi_overrides)
+        loaded = [(cfg, storage.load_tenant_settings(scope)) for scope, cfg in scopes]
+    for cfg, overrides in loaded:
+        if overrides:
+            apply_config_overrides(cfg, overrides)
 
 
 def create_app() -> FastAPI:
