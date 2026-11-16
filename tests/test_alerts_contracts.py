@@ -158,7 +158,19 @@ def env(tenant, monkeypatch):  # noqa: F811
     pg_helpers.wipe_tables(*_TABLES)
 
 
+_CLOCK = [NOW]
+
+
+@pytest.fixture(autouse=True)
+def _simulated_failure_clock(monkeypatch):
+    """Failed attempts are stamped with the time of the failure; these tests
+    simulate the clock through `now`, so the failure time follows it."""
+    _CLOCK[0] = NOW
+    monkeypatch.setattr(runner, "_failure_time", lambda: _CLOCK[0])
+
+
 def _run(client, now=NOW):
+    _CLOCK[0] = now
     return runner.run_for_tenant(now=now, client=client, poll_minutes=10)
 
 

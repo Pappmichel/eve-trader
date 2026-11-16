@@ -73,6 +73,34 @@ def _end_tenant(tenant_id: str) -> None:
         _in_flight.discard(tenant_id)
 
 
+MAX_CONSECUTIVE_ESI_FAILURES = 3
+
+
+class _RunHealth:
+    """ESI failures in a row during one tenant run. Three in a row means ESI
+    is down for us: the run stops instead of timing out on every remaining
+    subscription (they stay unstamped and are due again next tick)."""
+
+    def __init__(self) -> None:
+        self.consecutive_esi_failures = 0
+
+    def ok(self) -> None:
+        self.consecutive_esi_failures = 0
+
+    def fail(self) -> None:
+        self.consecutive_esi_failures += 1
+
+    @property
+    def tripped(self) -> bool:
+        return self.consecutive_esi_failures >= MAX_CONSECUTIVE_ESI_FAILURES
+
+
+def _failure_time() -> datetime:
+    """Stamp for a failed attempt: the time of the failure, not the run's
+    start, so the cooldown still holds when the run itself was slow."""
+    return datetime.now(timezone.utc)
+
+
 def _aware(value) -> Optional[datetime]:
     if value is None:
         return None
@@ -132,7 +160,7 @@ def _live_finish_dates(client: ESIClient, cid: int, tokens: TokenManager) -> Opt
 
 
 def _run_skillqueue(cid: int, lead_hours: int, name: str, now: datetime, client: ESIClient,
-                    tokens: TokenManager, freshness: dict) -> None:
+                    tokens: TokenManager, freshness: dict, health: Optional[_RunHealth] = None) -> None:
     if fields.gate("skillqueue", TOOL_KEY, cid, tokens):
         return
     if not (freshness.get(cid, {}).get("skillqueue") or {}).get("last_success_at"):
@@ -148,9 +176,13 @@ def _run_skillqueue(cid: int, lead_hours: int, name: str, now: datetime, client:
     except ESIError as e:
         log.warning("Skill queue re-check for character %s failed: %s", cid, e)
         live = None
+        if health is not None:
+            health.fail()
     if live is None:
-        storage.save_alert_state(cid, logic.SKILLQUEUE_EMPTY, at=now)      # unverified: never alarm on stale data
+        storage.save_alert_state(cid, logic.SKILLQUEUE_EMPTY, at=_failure_time())      # unverified: never alarm on stale data
         return
+    if health is not None:
+        health.ok()
     decision = logic.skillqueue_decision(live, now, lead_hours, state[1] if state else None, name)
     if decision is None:                                    # the queue was extended meanwhile
         storage.save_alert_state(cid, logic.SKILLQUEUE_EMPTY, at=now)
@@ -199,7 +231,8 @@ def _pi_colonies(rows: list[dict], now: datetime) -> list[dict]:
 
 
 def _run_pi(cid: int, alert_type: str, lead_hours: int, name: str, now: datetime, client: ESIClient,
-            tokens: TokenManager, freshness: dict, tenant_id: str) -> None:
+            tokens: TokenManager, freshness: dict, tenant_id: str,
+            health: Optional[_RunHealth] = None) -> None:
     if fields.gate("planets", TOOL_KEY, cid, tokens):
         return
     if not (freshness.get(cid, {}).get("planets") or {}).get("last_success_at"):
@@ -220,10 +253,15 @@ def _run_pi(cid: int, alert_type: str, lead_hours: int, name: str, now: datetime
     except ESIError as e:
         log.warning("PI re-check for character %s failed: %s", cid, e)
         live = None
+        if health is not None:
+            health.fail()
     if live is None:
+        failed_at = _failure_time()
         for d in decisions:
-            _pi_attempts[(tenant_id, cid, d.planet_id, alert_type)] = now
+            _pi_attempts[(tenant_id, cid, d.planet_id, alert_type)] = failed_at
         return
+    if health is not None:
+        health.ok()
     decisions = logic.pi_decisions(alert_type, _pi_colonies(live, now), now, lead_hours, last_keys, name)
     for d in decisions:
         attempt_key = (tenant_id, cid, d.planet_id, alert_type)
@@ -257,7 +295,7 @@ def _sender_names(client: ESIClient, ids: list[int]) -> dict[int, str]:
 
 
 def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_minutes: float,
-              client: ESIClient, tokens: TokenManager) -> None:
+              client: ESIClient, tokens: TokenManager, health: Optional[_RunHealth] = None) -> None:
     state = storage.get_alert_state(cid, logic.MAIL_NEW)
     if _recently_attempted(state, now, poll_minutes):
         return
@@ -271,8 +309,12 @@ def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_mi
         headers = client.character_mail_headers(cid, role, cache=False)
     except ESIError as e:
         log.warning("Mail poll for character %s failed: %s", cid, e)
-        storage.save_alert_state(cid, logic.MAIL_NEW, at=now)
+        storage.save_alert_state(cid, logic.MAIL_NEW, at=_failure_time())
+        if health is not None:
+            health.fail()
         return
+    if health is not None:
+        health.ok()
     bodies: dict[int, str] = {}
     senders: dict[int, str] = {}
     if last_seen is not None:
@@ -393,7 +435,8 @@ def _contract_filters(cid: int) -> logic.ContractFilters:
 
 
 def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, client: ESIClient,
-                   tokens: TokenManager, tenant_id: Optional[str] = None) -> None:
+                   tokens: TokenManager, tenant_id: Optional[str] = None,
+                   health: Optional[_RunHealth] = None) -> None:
     """Contracts the character issued that finished or expired since the
     opt-in, each announced once. Polled live like mail: the contracts snapshot
     refreshes only every few hours. The first poll stores a baseline.
@@ -413,8 +456,12 @@ def _run_contracts(cid: int, name: str, now: datetime, poll_minutes: float, clie
         contracts = client.character_contracts(cid, role)
     except ESIError as e:
         log.warning("Contract poll for character %s failed: %s", cid, e)
-        storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=now)
+        storage.save_alert_state(cid, logic.CONTRACT_STATUS, at=_failure_time())
+        if health is not None:
+            health.fail()
         return
+    if health is not None:
+        health.ok()
     events = logic.contract_events(contracts, cid, now)
     storage.prune_contract_alerts(cid, now - timedelta(days=CONTRACT_STATE_KEEP_DAYS))
     if state is None or state[1] is None:              # first poll after the opt-in: nothing old is announced
@@ -491,18 +538,23 @@ def run_for_tenant(
                 log.warning("Alert on-demand sync failed: %s", e)
         names = _names()
         freshness = {cid: fields.freshness_by_kind(cid) for cid in {s[0] for s in subs}}
+        health = _RunHealth()
         for cid, alert_type, include_content, lead_hours in subs:
+            if health.tripped:
+                log.warning("Alerts run for tenant %s aborted after %d ESI failures in a row",
+                            tenant_id, health.consecutive_esi_failures)
+                return {"subscriptions": len(subs), "ran": True, "aborted": "esi_failures"}
             name = names.get(cid, f"#{cid}")
             try:
                 if alert_type == logic.SKILLQUEUE_EMPTY:
-                    _run_skillqueue(cid, lead_hours, name, now, client, tokens, freshness)
+                    _run_skillqueue(cid, lead_hours, name, now, client, tokens, freshness, health)
                 elif alert_type == logic.MAIL_NEW:
-                    _run_mail(cid, include_content, name, now, poll, client, tokens)
+                    _run_mail(cid, include_content, name, now, poll, client, tokens, health)
                 elif alert_type in logic.PI_ALERT_TYPES:
-                    _run_pi(cid, alert_type, lead_hours, name, now, client, tokens, freshness, tenant_id)
+                    _run_pi(cid, alert_type, lead_hours, name, now, client, tokens, freshness, tenant_id, health)
                 elif alert_type == logic.CONTRACT_STATUS:
                     _run_contracts(cid, name, now, SCHEDULER_OPERATOR_CONFIG.alerts_contract_poll_minutes,
-                                   client, tokens, tenant_id)
+                                   client, tokens, tenant_id, health)
             except Exception as e:  # noqa: BLE001 - one character's failure must not skip the others
                 log.warning("Alert %s for character %s failed: %s", alert_type, cid, e)
         return {"subscriptions": len(subs), "ran": True}

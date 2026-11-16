@@ -320,6 +320,12 @@ def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> di
         save_tenant_config_overrides("trading", updates, cfg, cfg_type=TradingConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
+    if "scheduler_enabled" in updates and storage.get_current_tenant() == storage.DEFAULT_TENANT_ID:
+        # The master switch is read once at boot; start() is idempotent and
+        # re-reads it from the database, which now holds the saved value.
+        # Switching off needs no stop: every tick checks the switch again.
+        from . import scheduler  # lazy: scheduler imports this module
+        scheduler.start()
     return updates
 
 

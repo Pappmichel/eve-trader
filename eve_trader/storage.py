@@ -133,6 +133,17 @@ def get_current_tenant() -> Optional[str]:
     return _tenant_id_var.get()
 
 
+_thread_local_contextvars: list[tuple[contextvars.ContextVar, object]] = []
+
+
+def register_thread_local_contextvar(var: contextvars.ContextVar, default=None) -> None:
+    """Mark `var` as per-thread state: `with_current_tenant` workers start with
+    `default` instead of the caller's value (e.g. a per-run memo or a response
+    collector that two threads must never share)."""
+    if all(v is not var for v, _d in _thread_local_contextvars):
+        _thread_local_contextvars.append((var, default))
+
+
 def with_current_tenant(fn):
     """Wraps fn so that, no matter which thread later executes it, it runs
     with the tenant_id ambient on the *calling* thread right now -
@@ -146,12 +157,21 @@ def with_current_tenant(fn):
     an expired token mid-fetch) gets parallelized via ThreadPoolExecutor -
     see esi_client.py's _get_all_pages and production/esi_sync.py's
     sync_esi."""
-    tenant_id = _tenant_id_var.get()
+    # Snapshot the whole context (tenant id plus the per-tenant config
+    # ContextVars) on the calling thread. Each call runs in its own copy:
+    # one Context cannot be entered by two threads at once. Variables
+    # registered with register_thread_local_contextvar are reset to their
+    # default inside that copy - they belong to the calling thread only.
+    ctx = contextvars.copy_context()
+
+    def _run_in_copy(*args, **kwargs):
+        for var, default in _thread_local_contextvars:
+            var.set(default)
+        return fn(*args, **kwargs)
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with tenant_context(tenant_id):
-            return fn(*args, **kwargs)
+        return ctx.copy().run(_run_in_copy, *args, **kwargs)
     return wrapper
 
 
@@ -3779,6 +3799,17 @@ def list_esi_freshness() -> list[tuple]:
     ]
 
 
+def list_esi_failure_counts() -> dict[tuple[str, int, str], int]:
+    """`{(owner_type, owner_id, data_kind): consecutive_failures}` for rows with
+    at least one transient failure in a row."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, consecutive_failures "
+            "FROM esi_freshness WHERE consecutive_failures > 0"
+        ).fetchall()
+    return {(r[0], int(r[1]), r[2]): int(r[3]) for r in rows}
+
+
 def list_esi_character_capabilities() -> list[tuple[int, str]]:
     with connect() as conn:
         rows = conn.execute(
@@ -3835,8 +3866,11 @@ def upsert_esi_freshness(
     error: Optional[str] = None,
     now: Optional[str] = None,
     data_as_of: Optional[datetime] = None,
+    transient: bool = False,
 ) -> None:
-    """Per-(owner, kind) freshness (decision 5). Success advances
+    """Per-(owner, kind) freshness (decision 5). `transient` marks a failure
+    as a short-lived ESI problem: it adds one to `consecutive_failures`; any
+    other outcome resets that count to 0. Success advances
     `last_success_at` and clears `last_error`. Failure records `last_error`
     and leaves `last_success_at` unchanged so the age-limit clear still
     measures time since the last good fetch (decision 6).
@@ -3854,14 +3888,19 @@ def upsert_esi_freshness(
     with connect() as conn:
         conn.execute(
             "INSERT INTO esi_freshness "
-            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, data_as_of) "
-            "VALUES (?,?,?,?,?,?,?) "
+            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, "
+            "data_as_of, consecutive_failures) "
+            "VALUES (?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
             "last_attempt_at = excluded.last_attempt_at, "
             "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
             "last_error = excluded.last_error, "
-            "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of)",
-            (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of),
+            "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of), "
+            "consecutive_failures = CASE WHEN ? THEN esi_freshness.consecutive_failures + 1 "
+            "ELSE 0 END",
+            (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of,
+             1 if (transient and not success) else 0,
+             bool(transient and not success)),
         )
 
 
@@ -3881,7 +3920,7 @@ def record_esi_attempt(
             "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error) "
             "VALUES (?,?,?,NULL,?,NULL) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
-            "last_attempt_at = excluded.last_attempt_at",
+            "last_attempt_at = excluded.last_attempt_at, consecutive_failures = 0",
             (owner_type, owner_id, data_kind, ts),
         )
 

@@ -805,3 +805,50 @@ def test_sync_due_then_match_survives_a_matching_failure(monkeypatch):
     from eve_trader.doctrine import esi_sync as doctrine_esi_sync
     monkeypatch.setattr(doctrine_esi_sync, "backfill_history_from_archive", boom)
     assert scheduler._sync_due_then_match(None) == "ok"
+
+
+# ------------------------------------------------- start after save, BaseException
+def test_saving_scheduler_enabled_under_the_default_tenant_starts_the_thread(monkeypatch):
+    started = []
+    monkeypatch.setattr(scheduler, "start", lambda: started.append(1))
+    monkeypatch.setattr(actions, "validate_trading_overrides", lambda u: None)
+    monkeypatch.setattr(actions, "save_tenant_config_overrides", lambda *a, **k: None)
+    with storage.tenant_context(storage.DEFAULT_TENANT_ID):
+        actions.do_update_settings({"scheduler_enabled": True})
+        actions.do_update_settings({"min_margin_threshold": 0.2})
+    assert started == [1]
+    with storage.tenant_context("11111111-1111-1111-1111-111111111111"):
+        actions.do_update_settings({"scheduler_enabled": True})
+    assert started == [1]
+
+
+def test_run_job_records_system_exit_and_frees_the_guard():
+    scheduler.last_run_status.clear()
+
+    def quit_():
+        raise SystemExit(3)
+
+    scheduler._run_job("test-tenant", "fake_job", quit_)
+    status = scheduler.last_run_status["test-tenant"]["fake_job"]
+    assert "SystemExit" in status["error"]
+    with scheduler._job_mu:
+        assert ("test-tenant", "fake_job") not in scheduler._running_jobs
+
+
+def test_loop_that_dies_resets_the_thread_so_start_can_restart(monkeypatch):
+    def die():
+        raise SystemExit
+
+    monkeypatch.setattr(scheduler, "_check_and_run_due_jobs", die)
+    scheduler._stop_event.clear()
+    t = threading.Thread(target=scheduler._loop)
+    scheduler._thread = t
+    t.start()
+    t.join(5)
+    assert scheduler._thread is None
+    monkeypatch.setattr(scheduler, "_master_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_loop", lambda: None)
+    scheduler.start()
+    assert scheduler._thread is not None
+    scheduler._thread.join(5)
+    scheduler._thread = None

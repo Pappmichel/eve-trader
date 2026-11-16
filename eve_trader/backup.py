@@ -134,6 +134,9 @@ def _create_backup_locked(prefix: str = BACKUP_NAME_PREFIX) -> dict:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
     unique = uuid.uuid4().hex[:8]
     backup_path = BACKUP_DIR / f"{prefix}{ts}_{unique}.zip"
+    # Written under a name that matches no "*.zip" glob, so list_backups() and
+    # the prune never see a half-written file; renamed only once verified.
+    partial_path = backup_path.with_suffix(".zip.partial")
     tmp_dump_path = BACKUP_DIR / f".tmp_{ts}_{unique}.dump"
 
     if PG_CONTAINER:
@@ -182,18 +185,27 @@ def _create_backup_locked(prefix: str = BACKUP_NAME_PREFIX) -> dict:
             log.error("pg_dump failed (exit %s): %s", result.returncode, stderr_text)
             raise BackupError("Database backup failed.")
 
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            os.chmod(backup_path, 0o600)
+        with zipfile.ZipFile(partial_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            os.chmod(partial_path, 0o600)
             zf.write(tmp_dump_path, arcname="eve_trader.dump")
             if DEFAULT_CONFIG_PATH.exists():
                 zf.write(DEFAULT_CONFIG_PATH, arcname="config.yaml")
-    except Exception:
+        with zipfile.ZipFile(partial_path) as check:
+            bad_member = check.testzip()
+        if bad_member is not None:
+            log.error("backup archive failed verification at member %s", bad_member)
+            raise BackupError("Database backup failed.")
+        with open(partial_path, "r+b") as fh:
+            os.fsync(fh.fileno())
+        os.replace(partial_path, backup_path)
+    except BaseException:
         # A failure partway through (pg_dump not reachable, a full disk, ...)
         # used to leave a partial/corrupt .zip behind - it matches
         # BACKUP_NAME_PREFIX, so _prune_old_backups counts it against the
         # rotation and list_backups() (Portfolio page, scheduler) shows it
         # looking like a normal, complete backup. Clean it up before
         # re-raising instead.
+        partial_path.unlink(missing_ok=True)
         backup_path.unlink(missing_ok=True)
         raise
     finally:
@@ -228,6 +240,28 @@ def _prune_old_backups(prefix: str = BACKUP_NAME_PREFIX) -> None:
     backups = sorted(BACKUP_DIR.glob(f"{prefix}*.zip"), key=lambda p: p.name)
     for old in backups[:-keep]:
         old.unlink()
+
+
+PARTIAL_MAX_AGE_SECONDS = 600   # pg_dump times out at 300 s; a CLI backup in another process may be running
+
+
+def cleanup_partial_files(max_age_seconds: float = PARTIAL_MAX_AGE_SECONDS) -> int:
+    """Delete leftover `.tmp_*` dumps and `*.partial` archives of a backup that
+    was killed mid-write. Only files older than `max_age_seconds` go, so a
+    backup running in another process is never touched. Returns the count."""
+    if not BACKUP_DIR.exists():
+        return 0
+    cutoff = datetime.now(timezone.utc).timestamp() - max_age_seconds
+    removed = 0
+    for pattern in (".tmp_*", "*.partial"):
+        for path in BACKUP_DIR.glob(pattern):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                log.warning("could not remove leftover backup file %s", path.name)
+    return removed
 
 
 def _backup_info(path: Path) -> dict:

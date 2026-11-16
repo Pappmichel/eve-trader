@@ -2177,6 +2177,7 @@ def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> N
 # _ReadinessLedger) - only the raw DB figure.
 _planner_reads_var: contextvars.ContextVar[Optional["_PlannerReads"]] = contextvars.ContextVar(
     "planner_reads", default=None)
+storage.register_thread_local_contextvar(_planner_reads_var, None)
 
 
 class _PlannerReads:
