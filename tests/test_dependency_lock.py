@@ -31,8 +31,12 @@ def test_lock_entry_point_only_includes_the_pinned_file():
 
 
 def test_ci_installs_from_the_lockfile_not_open_ranges():
+    # Structure change on purpose: runtime pins (requirements.txt) and test
+    # pins (requirements-dev.txt) are separate files now; CI installs the dev
+    # file, which includes the runtime one, instead of the runtime-only
+    # requirements.lock production uses.
     text = (_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "pip install -r requirements.lock" in text
+    assert "pip install -r requirements-dev.txt" in text
     assert "pip install -e . --no-deps" in text
     assert "pip install -e .[test]" not in text
     assert "pip_audit -r requirements.txt" in text
@@ -103,19 +107,33 @@ def test_ci_python_is_inside_the_declared_matrix():
     assert "python-version: ${{ matrix.python-version }}" in text
 
 
-def test_lockfile_pins_python310_conditional_runtime_and_test_deps():
-    """exceptiongroup is a runtime dep of anyio on 3.10; tomli is pytest's."""
-    lines = [
+def _pin_lines(filename):
+    return [
         line.strip()
-        for line in (_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        for line in (_ROOT / filename).read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     ]
+
+
+def test_lockfile_pins_python310_conditional_runtime_and_test_deps():
+    """exceptiongroup is a runtime dep of anyio on 3.10 (requirements.txt);
+    tomli is pytest's, so it moved to requirements-dev.txt with the split."""
     # Only the marker is the contract; Dependabot moves the versions.
-    for name in ("exceptiongroup", "tomli"):
+    for name, filename in (("exceptiongroup", "requirements.txt"), ("tomli", "requirements-dev.txt")):
         assert any(
             line.startswith(f"{name}==") and line.endswith('; python_version < "3.11"')
-            for line in lines
+            for line in _pin_lines(filename)
         ), name
+
+
+def test_runtime_file_has_no_test_packages_and_dev_file_includes_it():
+    runtime = {line.split("==")[0].split(";")[0].lower() for line in _pin_lines("requirements.txt")}
+    for test_only in ("pytest", "pytest-xdist", "execnet", "iniconfig", "pluggy", "httpx", "httpcore", "tomli"):
+        assert test_only not in runtime, test_only
+    dev = _pin_lines("requirements-dev.txt")
+    assert "-r requirements.txt" in dev
+    assert any(line.startswith("pytest==") for line in dev)
+    assert any(line.startswith("httpx==") for line in dev)
 
 
 def test_python310_lock_install_gets_the_conditional_pins():
@@ -130,7 +148,8 @@ def test_python310_lock_install_gets_the_conditional_pins():
         return
     pins = dict(
         line.split(";", 1)[0].strip().split("==", 1)
-        for line in (_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        for filename in ("requirements.txt", "requirements-dev.txt")
+        for line in (_ROOT / filename).read_text(encoding="utf-8").splitlines()
         if line.startswith(("exceptiongroup==", "tomli=="))
     )
     assert metadata.version("exceptiongroup") == pins["exceptiongroup"]

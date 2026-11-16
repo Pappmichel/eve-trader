@@ -349,9 +349,9 @@ migration (data in `data/eve_trader.db`, `config.yaml`'s old
 
 1. **Back up first** - copy `data/eve_trader.db`, `data/tokens.json`,
    `config.yaml`, and `.env` off the VM before touching anything. There is
-   no automated rollback path once you start - a plain file copy is the
-   whole safety net (`git checkout <old-commit>` gets the *code* back, it
-   doesn't restore data).
+   no automated data rollback once you start - a plain file copy is the
+   whole safety net (`./deploy/deploy.sh rollback` gets the *code* back, it
+   doesn't restore data; see `docs/RUNBOOK.md` for restoring a backup).
 2. `sudo systemctl stop eve-trader`.
 3. Follow steps 1-2b above (pull the new code, install/tune Postgres, apply
    the schema).
@@ -398,15 +398,61 @@ for that part.
 cd eve-trader
 ./deploy/deploy.sh
 ```
-Bundles the sequence below into one idempotent script (git pull, every
-schema file, backend deps, frontend build, restart, then a verification
-check) - safe to re-run even when a given update didn't touch the schema or
-the frontend. It deliberately does **not** run one-time data migrations;
-the ESI access cutover needs one, see the section right below.
-Equivalent to running by hand:
+Bundles the sequence below into one idempotent script and ends with a
+real health check (it polls `GET /api/health` and checks the service is
+still active) - safe to re-run even when a given update didn't touch the
+schema or the frontend. It deliberately does **not** run one-time data
+migrations; the ESI access cutover needs one, see the section right below.
+
+What a run does, in order:
+
+1. `git fetch --tags origin`, then abort if a *tracked* file has local
+   changes. It moves the checkout to `DEPLOY_REF` (default
+   `origin/$DEPLOY_BRANCH`, branch default: the currently checked-out branch, or the one recorded in `data/deploy-state/branch` when detached after a rollback, else `main`) with `git merge
+   --ff-only` only - a diverged clone stops the deploy, nothing is merged.
+   After a rollback the checkout is detached; the next deploy checks the
+   branch out again first.
+2. Records the previous and the new commit under `data/deploy-state/`
+   (untracked, directory mode 0700) and prints both at the end.
+3. If a `docs/*.sql` file changed between the two commits (or
+   `DEPLOY_BACKUP=1`), takes a **pre-deploy backup** with
+   `eve-trader backup create --pre-deploy` (the same `create_backup()` the
+   Admin tool uses; zip under `data/backups/`, mode 0600, own retention of
+   the last 5, not shown in the Admin list). If the backup fails the deploy
+   stops *before* the first migration. It needs the same `.env` the service
+   uses and works under the deploy user.
+4. Applies every schema file in **one transaction** (`psql -1`), so a
+   failing file leaves the database as it was.
+5. Installs backend dependencies (a failure stops here, before the frontend
+   is touched), builds the frontend into `frontend/dist.new` and swaps it
+   in (`dist` becomes `dist.prev`); a failed build leaves `dist` untouched.
+6. Restarts the service and polls `http://127.0.0.1:8000/api/health` (up to
+   about 30 s), then re-checks `systemctl is-active`.
+7. Tags the deployed commit `deploy-<UTC timestamp>` in this clone
+   (`DEPLOY_NO_TAG=1` skips it). The tag is local only and is **not
+   pushed**: the deploy key is read-only.
+
+There is no automatic rollback. If the health check fails the script prints
+the last journal lines and the exact command.
+
+### Rollback
+
+```bash
+./deploy/deploy.sh rollback          # back to the previous deploy
+./deploy/deploy.sh rollback <sha>    # or any commit
+```
+Detached checkout of that commit, backend dependencies of that version,
+`frontend/dist.prev` swapped back in (rebuilt when it does not belong to that
+commit), restart, health check. **A rollback does not undo database
+changes.** Schema files are additive, so an older version runs against the
+newer schema; if data itself must go back, restore the pre-deploy backup
+(`docs/RUNBOOK.md`). The rollback prints the command that returns to the
+newer commit. See `docs/RUNBOOK.md` for backups, restore and secret rotation.
+
+Equivalent to running by hand (without the safety steps above):
 ```bash
 cd eve-trader
-git pull                      # or re-rsync
+git fetch --tags origin && git merge --ff-only origin/main
 sudo -u postgres psql -d eve_trader -f docs/phase1_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase3_schema.sql
@@ -433,6 +479,7 @@ sudo -u postgres psql -d eve_trader -f docs/location_registry_schema.sql
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..
 sudo systemctl restart eve-trader
+curl -fsS http://127.0.0.1:8000/api/health
 ```
 **Always re-run every schema file on every update, not just ones that look
 "new"** - confirmed real 2026-08-22: `docs/phase1_schema.sql` (an

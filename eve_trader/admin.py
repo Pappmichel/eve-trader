@@ -707,3 +707,36 @@ def do_list_backups() -> dict:
     Portfolio, since a backups list with no admin nearby to act on it isn't
     useful to a non-admin tenant."""
     return {"rows": backup.list_backups()}
+
+
+def do_get_health_detail() -> dict:
+    """Operator health detail behind the `admin` grant: package version, age
+    of the newest backup, newest successful ESI sync of the default tenant
+    and whether the scheduler thread is alive. The public /api/health only
+    answers ok/degraded; none of this belongs on an open endpoint."""
+    from datetime import datetime, timezone
+    from importlib import metadata
+
+    from . import scheduler, tenant_scope
+
+    try:
+        version = metadata.version("eve-trader")
+    except metadata.PackageNotFoundError:
+        from . import __version__ as version
+
+    backups = backup.list_backups()
+    backup_age_seconds = None
+    if backups:
+        created = datetime.fromisoformat(backups[0]["created_at"])
+        backup_age_seconds = max(0, int((datetime.now(timezone.utc) - created).total_seconds()))
+
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        last_sync = storage.newest_esi_freshness_success_at()
+
+    return {
+        "version": version,
+        "newest_backup_at": backups[0]["created_at"] if backups else None,
+        "newest_backup_age_seconds": backup_age_seconds,
+        "newest_esi_sync_at": last_sync,
+        "scheduler_running": bool(scheduler._thread is not None and scheduler._thread.is_alive()),
+    }

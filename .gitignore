@@ -33,3 +33,7 @@ frontend/dist/
 # open vulnerability findings (e.g. F-01's session-cookie gap) that must not
 # be published to this public repo before they're fixed. Kept locally only.
 AUDIT.md
+
+# Frontend build staging/rollback directories written by deploy/deploy.sh
+frontend/dist.prev/
+frontend/dist.new/

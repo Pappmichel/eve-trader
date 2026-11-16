@@ -52,13 +52,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       # Install the locked graph first so CI and production resolve the same
-      # versions (including itsdangerous==2.2.0). Then the editable package
-      # itself, without letting pip re-resolve pyproject ranges.
-      - run: python -m pip install -r requirements.lock
+      # runtime versions (including itsdangerous==2.2.0) plus the pinned test
+      # packages (requirements-dev.txt includes requirements.txt). Then the
+      # editable package itself, without letting pip re-resolve pyproject
+      # ranges.
+      - run: python -m pip install -r requirements-dev.txt
       - run: python -m pip install -e . --no-deps
       - run: python -m pip install pip-audit
-      # requirements.txt, not the lock file: the lock file is only a -r include,
-      # which pip-audit would otherwise check as zero packages.
+      # requirements.txt (runtime pins), not the lock file: the lock file is
+      # only a -r include, which pip-audit would otherwise check as zero
+      # packages.
       - run: python -m pip_audit -r requirements.txt
       - run: python -m pytest -n auto
 

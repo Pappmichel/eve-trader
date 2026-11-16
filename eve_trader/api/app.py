@@ -34,8 +34,9 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..pi.config import PI_CONFIG
 from ..production.config import PRODUCTION_CONFIG
+from .request_id import RequestIdMiddleware
 from .routers import (
-    admin, asset_manager, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
+    admin, asset_manager, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, health, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
     station_trading, trading,
 )
 
@@ -113,6 +114,9 @@ _GATE_EXEMPT_PATHS = {
     "/api/auth/callback",
     "/api/gate/status",
     "/api/gate/logout",
+    # Liveness probe for the deploy script / proxy: no session, no tenant.
+    # Returns only a status; details are in GET /api/admin/health.
+    "/api/health",
 }
 
 # /api routes that require a valid session when the gate is on, but no
@@ -500,9 +504,13 @@ def create_app() -> FastAPI:
     # chunks, and GZip only honors minimum_size for a body it sees whole.
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.add_middleware(AccessGateMiddleware)
+    # Added last = outermost: every response, including the gate's own 401/403
+    # and CORS preflights, carries X-Request-ID and its log lines the id.
+    app.add_middleware(RequestIdMiddleware)
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(gate.router, prefix="/api/gate", tags=["gate"])
+    app.include_router(health.router, prefix="/api", tags=["health"])
     app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
     app.include_router(production.router, prefix="/api/production", tags=["production"])
     app.include_router(production_realized.router, prefix="/api/production", tags=["production"])

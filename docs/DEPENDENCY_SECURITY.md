@@ -1,9 +1,11 @@
 # Dependency security
 
-Runtime and test installs are reproducible. CI and deploy install
-`requirements.lock`, then the editable package with `--no-deps`, so
-pyproject.toml ranges cannot silently pull a newer itsdangerous (or
-anything else that session signing depends on).
+Runtime and test installs are reproducible. Deploy and the start scripts
+install `requirements.lock` (runtime pins only); CI and development install
+`requirements-dev.txt` (runtime pins plus test packages). Both are followed by
+the editable package with `--no-deps`, so pyproject.toml ranges cannot
+silently pull a newer itsdangerous (or anything else that session signing
+depends on).
 
 ## Python support matrix
 
@@ -19,29 +21,42 @@ Python 3.12 cannot pin wheels that refuse 3.10/3.11 (P5-01: `numpy==2.5.3`,
 `websockets==17.1` requires Python >=3.11).
 
 Python 3.10 needs two extra packages that 3.11+ ships in the stdlib (or
-does not need). They are pinned in `requirements.txt` with environment
-markers so 3.11/3.12 installs do not pull them:
+does not need). They are pinned with environment markers so 3.11/3.12 installs do not
+pull them:
 
-- `exceptiongroup==<version>; python_version < "3.11"` — runtime: `anyio`
-  (Starlette → FastAPI) requires it below 3.11.
-- `tomli==<version>; python_version < "3.11"` — pytest's TOML reader below 3.11.
+- `exceptiongroup==<version>; python_version < "3.11"` (`requirements.txt`)
+  — runtime: `anyio` (Starlette → FastAPI) requires it below 3.11.
+- `tomli==<version>; python_version < "3.11"` (`requirements-dev.txt`) —
+  pytest's TOML reader below 3.11.
 
 A lockfile regenerated with `pip freeze` on 3.11 will omit both; copy the
-marker lines back from the previous lock before committing.
+marker lines back from the previous files before committing.
 
 ## Pins
 
 - `pyproject.toml` declares compatible ranges plus an **exact** pin for
   `itsdangerous==2.2.0` (session cookies:
   `URLSafeTimedSerializer.loads(..., return_timestamp=True)`).
-- `requirements.txt` pins every runtime and test package to the versions
-  last reviewed together. Production and CI install it through
-  `requirements.lock`.
+- `requirements.txt` pins every **runtime** package to the versions last
+  reviewed together. Production installs it through `requirements.lock`.
+- `requirements-dev.txt` is `-r requirements.txt` plus the test packages
+  (pytest, pytest-xdist, httpx and their dependencies). CI and development
+  install it.
+- The files carry **no hashes yet**. A hashed file must cover every wheel of
+  every platform (Linux x86_64 and aarch64, CPython 3.11 and 3.12) and has to
+  be generated on a Linux host with `pip-compile --generate-hashes`; a file
+  generated elsewhere would break installs. Until that exists, installs do not
+  use `--require-hashes`.
 
-## Install (dev, CI, deploy, Windows `start.bat`)
+## Install
 
 ```bash
+# deploy, start scripts, Windows start.bat (runtime only)
 pip install -r requirements.lock
+pip install -e . --no-deps
+
+# development and CI (runtime + test packages)
+pip install -r requirements-dev.txt
 pip install -e . --no-deps
 ```
 
@@ -60,8 +75,8 @@ and restores the `exceptiongroup` / `tomli` marker pins.
 
 ## Vulnerability scanning
 
-CI runs `pip-audit -r requirements.lock` (which includes the pins) on every
-push/PR (backend job). A
+CI runs `pip-audit -r requirements.txt` (the runtime pins; the lock file is
+only an include) on every push/PR (backend job). A
 finding is a failed check, not a silent log line. The frontend job mirrors
 this with `npm audit --omit dev` against `frontend/package-lock.json` (F-06,
 business-logic audit follow-up, 2026-09-26) - `--omit dev` matches

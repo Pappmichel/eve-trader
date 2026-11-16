@@ -1187,6 +1187,47 @@ scheduler's own global backup job (opt-in via `DEFAULT_TENANT_ID`'s
 Filenames include microseconds and a uuid so two backups cannot collide;
 `pg_dump` stderr stays in the process log, not in the HTTP 400.
 
+`create_backup(prefix=...)` has a second file-name family,
+`eve_trader_predeploy_*` (`PREDEPLOY_BACKUP_PREFIX`, `eve-trader backup create
+--pre-deploy`), with its own retention (`MAX_PREDEPLOY_BACKUPS` = 5) so several
+deploys in one day cannot push the daily backups out of `MAX_BACKUPS`; the
+Admin list (`list_backups`) deliberately does not show them. `deploy/deploy.sh`
+calls it before the schema step whenever a `docs/*.sql` file changed since the
+previous deploy (or `DEPLOY_BACKUP=1`) and aborts the deploy if it fails.
+
+## Deploy, health and rollback
+
+`deploy/deploy.sh` (steps and rollback semantics are in its header comment and
+`deploy/README.md`; recovery procedures in `docs/RUNBOOK.md`). Settled rules:
+- It updates by `git merge --ff-only` to `DEPLOY_REF` (default
+  `origin/$DEPLOY_BRANCH`), never `git pull`, and refuses on modified tracked
+  files. The code update and the state record (`data/deploy-state/`,
+  untracked) come *before* the re-exec guard, as `git pull` did.
+- The schema files run in one `psql -1` transaction (checked: no `CONCURRENTLY`,
+  `ADD VALUE` or own `BEGIN`/`COMMIT`). tests/pg_helpers.py parses the
+  `for f in phase1_schema.sql ...; do` loop - keep its shape.
+- `frontend/dist` is replaced atomically from `dist.new`; `dist.prev` serves
+  `deploy.sh rollback`. Rollback never undoes database changes (schema is
+  additive). Deploy tags `deploy-<UTC>` are local only, the deploy key is
+  read-only.
+- The script never `chmod`s, `chown`s or `sed -i`s `config.yaml`, `.env` or
+  `data/` (ACL-managed on a server); only `docs/*.sql` is `chmod 644`.
+- `GET /api/health` is public (in `_GATE_EXEMPT_PATHS`) and answers only
+  `{"status": "ok"}` or 503 `{"status": "degraded"}` from a `SELECT 1` with a
+  2 s pool timeout; version, backup age, last ESI sync and scheduler state are
+  behind the `admin` grant at `GET /api/admin/health`
+  (`admin.do_get_health_detail`). Do not add such details to the public one.
+- Every HTTP response carries `X-Request-ID` (`api/request_id.py`, outermost
+  middleware; a client value is accepted only if it matches
+  `^[A-Za-z0-9-]{8,64}$`, else a uuid4 hex). It lives in
+  `request_context.request_id_var` (inherited by `copy_context` threads) and
+  logging_setup's filter prints it as `[%(request_id)s]` (`-` outside a
+  request).
+- Dependencies: `requirements.txt` is runtime only, `requirements-dev.txt` adds
+  the test packages (CI and `.cursor/install.sh` install it); deploy and the
+  start scripts install `requirements.lock` (= `-r requirements.txt`). No hash
+  pins yet (they need a Linux-generated file covering x86_64 and aarch64).
+
 **Update (2026-10-02): the scheduler is now fully on in production**
 (`config.yaml` `scheduler_enabled: true` and the Default tenant's
 `tenant_settings` override set to true), so `trading_pipeline`/

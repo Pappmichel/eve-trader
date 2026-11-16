@@ -41,6 +41,7 @@ python3 -m venv .venv && source .venv/bin/activate     # or .venv\Scripts\activa
 # Python 3.10, 3.11 (CI), or 3.12. Install the lockfile, not open ranges:
 pip install -r requirements.lock
 pip install -e . --no-deps                             # installs the `eve-trader` command
+# To run the tests: pip install -r requirements-dev.txt (runtime pins + pytest, httpx)
 
 cp .env.example .env          # fill in EVE_SSO_CLIENT_ID (register at developers.eveonline.com)
 cp config.example.yaml config.yaml   # adjust structure_id, character names, thresholds

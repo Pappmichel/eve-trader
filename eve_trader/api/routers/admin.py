@@ -39,6 +39,11 @@ def _actor_character_id(
     return None if session is None else session.character_id
 
 
+@router.get("/health")
+def get_health_detail():
+    return _wrap(admin.do_get_health_detail)
+
+
 @router.get("/tenants", response_model=list[schemas.AdminTenant])
 def list_tenants():
     # Registry read (connect_unscoped) - no live ESI/Goonmetrics.
