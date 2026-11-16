@@ -12,7 +12,9 @@
 #   ./deploy/deploy.sh rollback [sha]  back to the previous deploy (or <sha>)
 #
 # Environment:
-#   DEPLOY_BRANCH     branch to deploy (default: main)
+#   DEPLOY_BRANCH     branch to deploy (default: the checked-out branch; when
+#                     detached after a rollback, the one in data/deploy-state/branch;
+#                     else main)
 #   DEPLOY_REF        exact commit-ish to deploy (default: origin/$DEPLOY_BRANCH)
 #   DEPLOY_BACKUP=1   take a pre-deploy backup even when no schema file changed
 #   DEPLOY_NO_TAG=1   do not create the local deploy tag
@@ -77,8 +79,16 @@ deploy_state_read() {
 # detached; checking the branch out again first lets the next deploy go
 # forward from there.
 deploy_update_code() {
-    local branch="${DEPLOY_BRANCH:-main}"
+    local branch="${DEPLOY_BRANCH:-}"
+    if [ -z "$branch" ]; then
+        branch="$(git symbolic-ref --short -q HEAD || true)"
+    fi
+    if [ -z "$branch" ]; then
+        branch="$(deploy_state_read branch)"
+    fi
+    branch="${branch:-main}"
     local ref="${DEPLOY_REF:-origin/$branch}"
+    echo "    Deploying branch '$branch' to ref '$ref'"
 
     git fetch --tags origin
     deploy_require_clean_tree
@@ -105,6 +115,7 @@ deploy_update_code() {
         deploy_state_write previous_sha "$DEPLOY_PREV_SHA"
     fi
     deploy_state_write current_sha "$DEPLOY_NEW_SHA"
+    deploy_state_write branch "$branch"
     export DEPLOY_PREV_SHA DEPLOY_NEW_SHA
 }
 

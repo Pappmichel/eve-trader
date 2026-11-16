@@ -408,7 +408,7 @@ What a run does, in order:
 
 1. `git fetch --tags origin`, then abort if a *tracked* file has local
    changes. It moves the checkout to `DEPLOY_REF` (default
-   `origin/$DEPLOY_BRANCH`, branch default `main`) with `git merge
+   `origin/$DEPLOY_BRANCH`, branch default: the currently checked-out branch, or the one recorded in `data/deploy-state/branch` when detached after a rollback, else `main`) with `git merge
    --ff-only` only - a diverged clone stops the deploy, nothing is merged.
    After a rollback the checkout is detached; the next deploy checks the
    branch out again first.

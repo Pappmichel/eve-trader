@@ -351,3 +351,58 @@ def test_dist_prev_is_trusted_only_for_the_commit_it_was_built_from(repos):
 
     assert _run(work, "deploy_dist_prev_matches abc123").returncode == 0
     assert _run(work, "deploy_dist_prev_matches other").returncode == 1
+
+
+@needs_bash
+def test_deploy_stays_on_the_checked_out_branch(repos):
+    work = repos["work"]
+    _git(repos["seed"], "checkout", "-b", "dev")
+    new = _publish_branch(repos, "dev", "docs/d_schema.sql", "-- dev\n")
+    _git(work, "fetch", "origin")
+    _git(work, "checkout", "-b", "dev", repos["first"])
+
+    res = _run(work, "deploy_update_code")
+
+    assert res.returncode == 0, res.stderr
+    assert _git(work, "branch", "--show-current") == "dev"
+    assert _git(work, "rev-parse", "HEAD") == new
+    assert (work / "data" / "deploy-state" / "branch").read_text().strip() == "dev"
+
+
+def _publish_branch(repos, branch, name, content) -> str:
+    sha = _commit(repos["seed"], name, content)
+    _git(repos["seed"], "push", str(repos["origin"]), branch)
+    return sha
+
+
+@needs_bash
+def test_deploy_after_rollback_returns_to_the_recorded_branch(repos):
+    work = repos["work"]
+    _git(repos["seed"], "checkout", "-b", "dev")
+    _publish_branch(repos, "dev", "docs/d_schema.sql", "-- dev\n")
+    _git(work, "fetch", "origin")
+    _git(work, "checkout", "-b", "dev", "origin/dev")
+    assert _run(work, "deploy_update_code").returncode == 0
+    assert _run(work, "deploy_rollback_checkout").returncode == 0
+    assert _git(work, "branch", "--show-current") == ""
+    newer = _publish_branch(repos, "dev", "docs/e_schema.sql", "-- more\n")
+
+    res = _run(work, "deploy_update_code")
+
+    assert res.returncode == 0, res.stderr
+    assert _git(work, "branch", "--show-current") == "dev"
+    assert _git(work, "rev-parse", "HEAD") == newer
+
+
+@needs_bash
+def test_explicit_deploy_branch_wins_over_the_checked_out_one(repos):
+    work = repos["work"]
+    _git(repos["seed"], "checkout", "-b", "dev")
+    _publish_branch(repos, "dev", "docs/d_schema.sql", "-- dev\n")
+    _git(work, "fetch", "origin")
+    _git(work, "checkout", "-b", "dev", "origin/dev")
+
+    res = _run(work, "deploy_update_code", DEPLOY_BRANCH="main")
+
+    assert res.returncode == 0, res.stderr
+    assert _git(work, "branch", "--show-current") == "main"
