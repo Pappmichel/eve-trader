@@ -38,7 +38,7 @@ from ..esi_data import read_esi, select_auth_role
 from ..esi_data import orchestrator as esi_orchestrator
 from ..character_management import fields
 from . import discord_client, logic
-from .actions import KIND_BY_ALERT, TOOL_KEY, deliver
+from .actions import KIND_BY_ALERT, TOOL_KEY, content_paused, deliver
 
 log = logging.getLogger(__name__)
 
@@ -139,10 +139,10 @@ def _names() -> dict[int, str]:
 
 
 def _send(cid: int, alert_type: str, decision: logic.Decision, now: datetime, *, mail_cursor: Optional[int] = None,
-          tokens: Optional[TokenManager] = None) -> bool:
+          tokens: Optional[TokenManager] = None, has_content: bool = False) -> bool:
     """Deliver and record. True = sent."""
     try:
-        sent = deliver(cid, alert_type, decision.message, tokens=tokens)
+        sent = deliver(cid, alert_type, decision.message, tokens=tokens, has_content=has_content)
     except discord_client.DiscordError as e:
         log.warning("Discord alert %s for character %s not delivered: %s", alert_type, cid, e)
         storage.save_alert_state(cid, alert_type, at=now)   # attempt only: cursor stays, backoff applies
@@ -305,6 +305,8 @@ def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_mi
     if role is None:
         return
     last_seen = state[0] if state else None
+    if include_content and content_paused():
+        include_content = False                             # sender and subject still go out
     try:
         headers = client.character_mail_headers(cid, role, cache=False)
     except ESIError as e:
@@ -334,7 +336,8 @@ def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_mi
     if result.baseline or result.decision is None:
         storage.save_alert_state(cid, logic.MAIL_NEW, last_seen_mail_id=cursor, at=now)
         return
-    _send(cid, logic.MAIL_NEW, result.decision, now, mail_cursor=cursor, tokens=tokens)
+    _send(cid, logic.MAIL_NEW, result.decision, now, mail_cursor=cursor, tokens=tokens,
+          has_content=include_content and bool(bodies))
 
 
 CONTRACT_STATE_KEEP_DAYS = 45                      # ESI lists finished contracts for 30 days

@@ -217,12 +217,12 @@ def test_router_converts_action_errors_to_400(monkeypatch):
 
 
 def test_callback_redirects_with_the_outcome(monkeypatch):
-    monkeypatch.setattr(aa, "do_finish_discord_link", lambda code, state: {"linked": True})
+    monkeypatch.setattr(aa, "do_finish_discord_link", lambda code, state, **kw: {"linked": True})
     r = _client.get("/api/char-alerts/discord/callback?code=c&state=s", follow_redirects=False)
     assert r.status_code in (302, 307) and r.headers["location"].endswith("/character-management/alerts?discord=linked")
     r = _client.get("/api/char-alerts/discord/callback?error=access_denied", follow_redirects=False)
     assert r.headers["location"].endswith("discord=cancelled")
-    monkeypatch.setattr(aa, "do_finish_discord_link", lambda code, state: (_ for _ in ()).throw(ActionError("x")))
+    monkeypatch.setattr(aa, "do_finish_discord_link", lambda code, state, **kw: (_ for _ in ()).throw(ActionError("x")))
     r = _client.get("/api/char-alerts/discord/callback?code=c&state=s", follow_redirects=False)
     assert r.headers["location"].endswith("discord=error")
 
@@ -239,3 +239,76 @@ def test_subscription_route_passes_contract_filters(monkeypatch):
         "doctrine_only": True, "sold_out_only": False}
     _client.post("/api/char-alerts/subscriptions", json={"character_id": 1, "alert_type": "mail_new", "enabled": False})
     assert calls[-1]["contract_filters"] is None
+
+
+# ------------------------------------------------ fresh login for the link
+def _ago(minutes):
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+
+def test_link_needs_a_fresh_login_when_the_gate_is_on(tenant, monkeypatch):
+    from eve_trader.config import ACCESS_CONFIG
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
+    with pytest.raises(ActionError, match="^fresh_login_required$"):
+        aa.do_start_discord_link(session_issued_at=_ago(11))
+    with pytest.raises(ActionError, match="^fresh_login_required$"):
+        aa.do_start_discord_link(session_issued_at=None)
+    url = aa.do_start_discord_link(session_issued_at=_ago(1))["url"]
+    state = url.split("state=")[1].split("&")[0]
+    monkeypatch.setattr(discord_client, "exchange_code_for_user_id", lambda code: UID)
+    with pytest.raises(ActionError, match="^fresh_login_required$"):          # stale again at the callback
+        aa.do_finish_discord_link("c", state, session_issued_at=_ago(11))
+    assert storage.get_alert_destination() is None
+    assert aa.do_finish_discord_link("c", state, session_issued_at=_ago(2)) == {"linked": True}
+
+
+def test_link_without_the_gate_skips_the_check(tenant, monkeypatch):
+    from eve_trader.config import ACCESS_CONFIG
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+    assert "url" in aa.do_start_discord_link(session_issued_at=None)
+
+
+def test_callback_redirects_with_fresh_login_required(monkeypatch):
+    def stale(code, state, **kw):
+        raise ActionError(aa.FRESH_LOGIN_REQUIRED)
+    monkeypatch.setattr(aa, "do_finish_discord_link", stale)
+    r = _client.get("/api/char-alerts/discord/callback?code=c&state=s", follow_redirects=False)
+    assert r.headers["location"].endswith("discord=fresh_login_required")
+
+
+def test_moving_the_link_notifies_the_old_account_once(tenant, monkeypatch):
+    sent = []
+    monkeypatch.setattr(discord_client, "send_dm", lambda uid, text: sent.append((uid, text)))
+    monkeypatch.setattr(discord_client, "exchange_code_for_user_id", lambda code: "999999999999999999")
+    storage.set_alert_destination(UID)
+    state = aa.do_start_discord_link()["url"].split("state=")[1].split("&")[0]
+    aa.do_finish_discord_link("c", state, character_name="Alice [Evil](x)")
+    assert [uid for uid, _t in sent] == [UID]
+    assert sent[0][1].startswith("Your EVE Trader alerts were moved to another Discord account by Alice \\[Evil\\]")
+    assert storage.get_alert_destination() == "999999999999999999"
+    # linking the same account again, or a first link, sends nothing
+    state = aa.do_start_discord_link()["url"].split("state=")[1].split("&")[0]
+    aa.do_finish_discord_link("c", state)
+    assert len(sent) == 1
+
+
+def test_a_failed_notice_does_not_stop_the_link(tenant, monkeypatch):
+    def boom(uid, text):
+        raise discord_client.DiscordError("down")
+    monkeypatch.setattr(discord_client, "send_dm", boom)
+    monkeypatch.setattr(discord_client, "exchange_code_for_user_id", lambda code: "999999999999999999")
+    storage.set_alert_destination(UID)
+    state = aa.do_start_discord_link()["url"].split("state=")[1].split("&")[0]
+    assert aa.do_finish_discord_link("c", state) == {"linked": True}
+    assert storage.get_alert_destination() == "999999999999999999"
+
+
+def test_start_route_reads_the_login_age_from_the_gate(monkeypatch, _gate_tables, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    _provision(tools=("characters", "char_alerts"))
+    ok = _client.get("/api/char-alerts/discord/start", cookies=_cookie())
+    assert ok.status_code == 200 and "url" in ok.json()
+    monkeypatch.setattr(aa, "DISCORD_LINK_FRESH_LOGIN_SECONDS", -1)      # every login is now too old
+    stale = _client.get("/api/char-alerts/discord/start", cookies=_cookie())
+    assert stale.status_code == 400 and stale.json()["detail"] == "fresh_login_required"

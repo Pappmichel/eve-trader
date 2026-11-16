@@ -373,6 +373,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         # two tools' data, e.g. Skills x Doctrine) check this - fail closed when
         # it is absent - instead of the middleware growing multi-tool paths.
         request.state.tool_keys = tuple(session.tool_keys)
+        # Who is calling and when this login happened: handlers that need a
+        # fresh login (linking a Discord account) read these, never the cookie.
+        request.state.character_id = session.character_id
+        request.state.character_name = session.character_name
+        request.state.session_issued_at = session.issued_at
 
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be

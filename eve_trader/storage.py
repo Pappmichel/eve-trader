@@ -769,6 +769,21 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[Session
     )
 
 
+def latest_session_revocation(tenant_id: str) -> Optional[datetime]:
+    """The newest logout/revocation of any character registered to the tenant
+    (largest `sessions_valid_after` of the registry rows and the persistent
+    revocation watermarks), or None when nobody ever logged out."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT GREATEST(MAX(e.sessions_valid_after), MAX(r.sessions_valid_after)) "
+            "FROM tenant_registry_entries e "
+            "LEFT JOIN character_session_revocations r ON r.character_id = e.entry_id "
+            "WHERE e.entry_type = 'character' AND e.tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def revoke_sessions_for_character(character_id: int) -> None:
     """Invalidates every still-unexpired session cookie for this character
     by advancing sessions_valid_after on the registry row *and* on the
@@ -9329,6 +9344,13 @@ def get_alert_destination() -> Optional[str]:
     with connect() as conn:
         row = conn.execute("SELECT discord_user_id FROM alert_destinations").fetchone()
     return str(row[0]) if row else None
+
+
+def get_alert_destination_linked_at() -> Optional[datetime]:
+    """When this tenant's Discord destination was (last) linked, or None."""
+    with connect() as conn:
+        row = conn.execute("SELECT linked_at FROM alert_destinations").fetchone()
+    return row[0] if row else None
 
 
 def set_alert_destination(discord_user_id: str) -> None:

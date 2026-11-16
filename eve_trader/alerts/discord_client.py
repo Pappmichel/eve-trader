@@ -88,6 +88,9 @@ def exchange_code_for_user_id(code: str, cfg: Optional[DiscordConfig] = None) ->
     return user_id
 
 
+SUPPRESS_EMBEDS = 4          # link previews of third-party text stay off
+
+
 def send_dm(user_id: str, content: str, cfg: Optional[DiscordConfig] = None) -> None:
     cfg = cfg or load_config()
     if not cfg.can_send:
@@ -104,7 +107,8 @@ def send_dm(user_id: str, content: str, cfg: Optional[DiscordConfig] = None) -> 
             raise DiscordError("Discord returned no DM channel.")
         _check(requests.post(
             f"{API_BASE}/channels/{channel}/messages",
-            json={"content": content[:MAX_CONTENT_CHARS], "allowed_mentions": {"parse": []}},
+            json={"content": content[:MAX_CONTENT_CHARS], "allowed_mentions": {"parse": []},
+                  "flags": SUPPRESS_EMBEDS},
             headers=headers, timeout=TIMEOUT_SECONDS,
         ), "send message")
     except requests.RequestException as e:
