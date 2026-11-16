@@ -28,6 +28,7 @@ from xml.etree import ElementTree as ET
 import requests
 
 from .config import TRADING_CONFIG, TradingConfig
+from .esi_client import USER_AGENT
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,6 @@ HISTORY_WINDOW_DAYS = 28
 _region_covered: dict[int, bool] = {}
 _region_covered_lock = threading.Lock()
 
-USER_AGENT = "eve-trader-python"
 
 APPRAISE_BASE = "https://appraise.gnf.lt"
 

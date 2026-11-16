@@ -24,7 +24,7 @@ import requests
 
 from . import storage
 from .auth import TokenManager
-from .config import TRADING_CONFIG, TradingConfig
+from .config import ESI_COMPATIBILITY_DATE, TRADING_CONFIG, TradingConfig
 
 log = logging.getLogger(__name__)
 
@@ -417,6 +417,8 @@ class ESIClient:
         self.tokens = tokens or TokenManager()
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
+        if ESI_COMPATIBILITY_DATE:
+            self.session.headers["X-Compatibility-Date"] = ESI_COMPATIBILITY_DATE
 
     @classmethod
     def clear_price_caches(cls) -> None:
