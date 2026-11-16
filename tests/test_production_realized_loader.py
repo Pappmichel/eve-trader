@@ -58,7 +58,7 @@ def _wipe(_apply_production_ledger_schema):
         "prod_cost_draws", "prod_job_records", "prod_fee_lines", "prod_job_losses",
         "prod_capital_bpos", "prod_inventory_drift", "prod_opening_frozen",
         "prod_opening_lines", "prod_ledger_runs", "esi_sharing", "character_assets", "corp_assets",
-        "stock_targets",
+        "stock_targets", "esi_character_capabilities", "esi_removed_characters",
     )
     yield
 
@@ -252,7 +252,7 @@ def test_rebuild_keeps_sales_before_a_truncated_journal_and_flags_only_those(ten
     bob_early = next(r for r in rows if int(r[0]) == BOB and r[1] == early)
     assert "fees_missing" in bob_early[3]
     run = ledger_db.latest_ledger_run()
-    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 6
+    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 7
     totals = ledger_db.realized_totals(T0, T1 + (T1 - T0))
     assert int(totals[16]) == 1                      # one flagged sale
     assert float(totals[17]) == pytest.approx(150.0)  # its stored (gross) revenue
@@ -415,7 +415,7 @@ def test_snapshot_reads_are_batched_but_contract_load_is_not(tenant, monkeypatch
         seen["types"] = _batch_open()
         return real_types(job_rows)
 
-    def _contracts():
+    def _contracts(*_args, **_kwargs):
         seen["contracts"] = _batch_open()
         return ()
 
@@ -495,6 +495,36 @@ def test_tenant_characters_include_every_token_character(tenant, monkeypatch):
         SimpleNamespace(character_id=910003, role="buyer:910003"),
     ])
     assert loader._tenant_character_ids() == frozenset({ALICE, 910002, 910003})
+
+
+def test_tenant_characters_include_sharing_and_capability_characters(tenant, monkeypatch):
+    """A character without a token still counts while it has sharing rows or
+    an Access capability. A character removed on the Characters page does
+    not, unless it holds a token again. Corporation sharing rows are not
+    characters."""
+    from types import SimpleNamespace
+
+    from eve_trader import auth
+
+    monkeypatch.setattr(storage, "list_tenant_registry_entries",
+                        lambda tenant_id: [("character", ALICE)])
+    tokens = [
+        SimpleNamespace(character_id=ALICE, role=f"producer:{ALICE}"),
+        SimpleNamespace(character_id=910002, role="producer:910002"),
+    ]
+    monkeypatch.setattr(auth.TokenManager, "list_records", lambda self: list(tokens))
+    storage.upsert_esi_sharing("character", 910004, "wallet", "trading")
+    storage.upsert_esi_sharing("corporation", 98000001, "wallet", "production")
+    storage.upsert_esi_character_capability(910005, "structure_name_resolution")
+    storage.upsert_esi_sharing("character", 910006, "contracts", "doctrine")
+    storage.mark_esi_character_removed(910006)
+    # Removed but holding a token again: the token wins.
+    storage.mark_esi_character_removed(910002)
+
+    assert loader._tenant_character_ids() == frozenset({ALICE, 910002, 910004, 910005})
+
+    tokens.append(SimpleNamespace(character_id=910006, role="esi:910006"))
+    assert 910006 in loader._tenant_character_ids()
 
 
 def test_planner_valuation_wins_and_forge_is_only_the_fallback(tenant, monkeypatch):
@@ -603,3 +633,16 @@ def test_courier_rate_follows_the_contracts_share(tenant, monkeypatch):
         ).fetchone()[0]
     assert float(freight) == pytest.approx(9000.0)
     assert ledger_db.latest_ledger_run()[4] == after
+
+
+def test_snapshot_carries_the_archived_client_id(tenant, monkeypatch):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 1.0, 1, True, 1, None, None, None),
+        ("character", ALICE, 0, 2, T1, TYPE_A, LOC, 1.0, 1, False, 2, None, None, None, 910002),
+    ])
+    monkeypatch.setattr(loader, "_opening_stock", lambda type_ids: {})
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    monkeypatch.setattr(loader, "_relic_type_ids", lambda: frozenset())
+    snap = loader.load_ledger_snapshot()
+    assert {tx.transaction_id: tx.client_id for tx in snap.wallet_transactions} == {1: None, 2: 910002}

@@ -24,9 +24,11 @@ WALLET_SCOPE = "esi-wallet.read_character_wallet.v1"
 
 @pytest.fixture(autouse=True)
 def _wipe():
-    pg_helpers.wipe_tables("esi_sharing", "esi_character_capabilities", "tenant_tokens")
+    pg_helpers.wipe_tables("esi_sharing", "esi_character_capabilities", "tenant_tokens",
+                           "esi_removed_characters")
     yield
-    pg_helpers.wipe_tables("esi_sharing", "esi_character_capabilities", "tenant_tokens")
+    pg_helpers.wipe_tables("esi_sharing", "esi_character_capabilities", "tenant_tokens",
+                           "esi_removed_characters")
 
 
 def _save_token(character_id, role, scopes, name="Alice"):
@@ -283,6 +285,9 @@ def test_remove_token_character_deletes_only_that_characters_tokens(tenant):
     caps = {(r["character_id"], r["capability_key"]) for r in esi_actions.do_list_capabilities()}
     assert (ALICE, "structure_market_book") in caps
     assert (BOB, "structure_name_resolution") in caps
+    # The removal itself is remembered, so the kept rows do not keep Alice
+    # one of the tenant's own characters in the realized-profit ledger.
+    assert set(storage.list_esi_removed_characters()) == {ALICE}
 
 
 def test_remove_token_character_unknown_raises(tenant):

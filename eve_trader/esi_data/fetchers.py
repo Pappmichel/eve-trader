@@ -144,6 +144,15 @@ def _wallet_txn_rows(txns: list[dict], division: int) -> list[tuple]:
     ]
 
 
+def _wallet_txn_archive_rows(txns: list[dict], division: int) -> list[tuple]:
+    """The snapshot row plus ESI's `client_id` (the counterparty), for the
+    realized-profit archive only; the snapshot table keeps nine fields."""
+    return [
+        row + (t.get("client_id"),)
+        for row, t in zip(_wallet_txn_rows(txns, division), txns)
+    ]
+
+
 def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
     """Snapshot rows including journal context fields (production ledger
     plan Phase 1)."""
@@ -649,7 +658,8 @@ def fetch_character_wallet(
     storage.replace_wallet_journal(
         _wallet_journal_rows(journal, 0), owner_type="character", owner_id=owner_id,
     )
-    _archive_wallet("character", owner_id, txn_rows, journal, journal_division=0)
+    _archive_wallet("character", owner_id, _wallet_txn_archive_rows(txns, 0), journal,
+                    journal_division=0)
     return {"written": len(txns), "journal": len(journal)}
 
 
@@ -670,6 +680,7 @@ def fetch_corporation_wallet(
         roles = [auth_role]
     unread = list(WALLET_DIVISION_IDS)
     txn_rows: list[tuple] = []
+    archive_txn_rows: list[tuple] = []
     journal_rows: list[tuple] = []
     journal_by_division: dict[int, list[dict]] = {}
     readable: list[int] = []
@@ -694,6 +705,7 @@ def fetch_corporation_wallet(
                 continue
             readable.append(division)
             txn_rows.extend(_wallet_txn_rows(txns, division))
+            archive_txn_rows.extend(_wallet_txn_archive_rows(txns, division))
             journal_rows.extend(_wallet_journal_rows(journal, division))
             journal_by_division[division] = journal
         unread = still_unread
@@ -710,7 +722,7 @@ def fetch_corporation_wallet(
         divisions=readable,
     )
     _archive_wallet(
-        "corporation", owner_id, txn_rows, [],
+        "corporation", owner_id, archive_txn_rows, [],
         journal_by_division=journal_by_division,
     )
     return {"written": len(txn_rows), "journal": len(journal_rows), "divisions": readable}

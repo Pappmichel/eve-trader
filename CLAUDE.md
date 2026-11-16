@@ -193,13 +193,28 @@ before the series began is still detected.
 Ledger stock (opening and inventory drift) counts items waiting in
 Deliveries / CorpDeliveries, unlike the planners: a contract buy is booked
 on completion and the reprocessing observations count them too.
-The tenant's characters are the registry entry plus every character
-holding a token in the tenant (the registry alone has one character per
-tenant). Opening quantities are frozen per type
+The tenant's own characters (`loader._tenant_character_ids`, read once per
+rebuild) are the registry entry, every character holding a token in the
+tenant, and every character with an `esi_sharing` row or an Access
+capability, except one removed on the Characters page
+(`esi_removed_characters`, written by `do_remove_token_character`, which
+keeps the sharing rows) that holds no token; a token always wins
+(confirmed with the user 2026-11-15/16). Corporation sharing rows are not
+characters. A character that owns archive rows in a rebuild but is not own
+gets the run warning `foreign_character_with_archive` (contracts with it
+count as sales). A market fill between two own owners (ESI `client_id`,
+archived on `ledger_wallet_transactions`) is a transfer, not a result: the
+sale draws its layers, the buyer's archived purchase of the same fill gets
+layers with that cost plus the fill's tax and broker fees (`source =
+'transfer'`) and is not booked or freighted again; without that purchase
+the sale stays a result warned `internal_trade_unmatched`. Rows archived
+without `client_id` are booked as before. Wallet transactions get the
+journal's gap rule too: a full 2,500-row page newer than the archive is an
+archive gap. Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 6). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 7). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
 

@@ -52,6 +52,10 @@ CREATE POLICY tenant_isolation ON ledger_wallet_transactions
 CREATE INDEX IF NOT EXISTS idx_ledger_wallet_tx_owner_date
     ON ledger_wallet_transactions (owner_type, owner_id, date);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_wallet_transactions TO eve_trader_app;
+-- ESI's counterparty of the fill. A sale to one of the tenant's own owners
+-- is a transfer in costing, not a result. NULL on rows archived before the
+-- column existed until a sync still sees them in ESI's 30-day window.
+ALTER TABLE ledger_wallet_transactions ADD COLUMN IF NOT EXISTS client_id BIGINT;
 
 -- ====================================================== archive: wallet journal
 CREATE TABLE IF NOT EXISTS ledger_wallet_journal (

@@ -31,19 +31,21 @@ def region_id_for_location(location_id: int) -> Optional[int]:
 def upsert_ledger_wallet_transactions(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, division, transaction_id, date, type_id,
     location_id, unit_price, quantity, is_buy, journal_ref_id, region_id,
-    freight_rate_per_m3, freight_m3). Insert-only on conflict (frozen freight)."""
+    freight_rate_per_m3, freight_m3[, client_id]). Insert-only on conflict
+    (frozen freight). A 14-field tuple leaves client_id NULL."""
     if not rows:
         return 0
+    padded = [tuple(row) + (None,) * (15 - len(row)) for row in rows]
     with storage.connect() as conn:
         conn.executemany(
             "INSERT INTO ledger_wallet_transactions ("
             "owner_type, owner_id, division, transaction_id, date, type_id, "
             "location_id, unit_price, quantity, is_buy, journal_ref_id, "
-            "region_id, freight_rate_per_m3, freight_m3) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "region_id, freight_rate_per_m3, freight_m3, client_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, division, transaction_id) "
             "DO NOTHING",
-            rows,
+            padded,
         )
     return len(rows)
 
@@ -352,6 +354,39 @@ def set_transaction_region(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def transactions_missing_client(
+    owner_type: str, owner_id: int, transaction_ids: Iterable[int],
+) -> set[tuple[int, int]]:
+    """(division, transaction_id) of archived rows among `transaction_ids`
+    whose client_id is still NULL (archived before the column existed)."""
+    ids = sorted({int(t) for t in transaction_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT division, transaction_id FROM ledger_wallet_transactions "
+            "WHERE owner_type = ? AND owner_id = ? AND transaction_id = ANY(?) "
+            "AND client_id IS NULL",
+            (owner_type, int(owner_id), ids),
+        ).fetchall()
+    return {(int(r[0]), int(r[1])) for r in rows}
+
+
+def set_transaction_client(rows: list[tuple]) -> int:
+    """`rows`: (client_id, owner_type, owner_id, division, transaction_id).
+    Only fills rows whose client_id is still NULL."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "UPDATE ledger_wallet_transactions SET client_id = ? "
+            "WHERE owner_type = ? AND owner_id = ? AND division = ? "
+            "AND transaction_id = ? AND client_id IS NULL",
+            rows,
+        )
+    return len(rows)
+
+
 def job_ids_with_inputs(
     owner_type: str, owner_id: int, job_ids: Iterable[int],
 ) -> set[int]:
@@ -533,13 +568,14 @@ def _owner_in_clause(owners: list[tuple[str, int]]) -> tuple[str, list]:
 def list_wallet_transactions_for_owners(
     owners: list[tuple[str, int]],
 ) -> list[tuple]:
-    """All archived wallet txs for the given owners (one query)."""
+    """All archived wallet txs for the given owners (one query). Column 14
+    is client_id (NULL on rows archived before it existed)."""
     where, params = _owner_in_clause(owners)
     with storage.connect() as conn:
         return conn.execute(
             "SELECT owner_type, owner_id, division, transaction_id, date, type_id, "
             "location_id, unit_price, quantity, is_buy, journal_ref_id, region_id, "
-            "freight_rate_per_m3, freight_m3 "
+            "freight_rate_per_m3, freight_m3, client_id "
             "FROM ledger_wallet_transactions "
             f"WHERE {where} ORDER BY date, transaction_id",
             tuple(params),

@@ -225,7 +225,10 @@ def do_remove_token_character(character_id: int, delete_mail_archive: bool = Fal
     without re-ticking. Snapshot tables and `esi_freshness` are also left
     intact (decision 4: sharing filters reads, it does not erase last
     week's snapshots). Corporation sharing rows are not this character's
-    and are never touched.
+    and are never touched. The removal itself is recorded in
+    `esi_removed_characters`: while the character holds no token, its kept
+    sharing rows no longer make it one of the tenant's own characters in
+    the realized-profit ledger (`realized.loader._tenant_character_ids`).
 
     Listings that resolve a token (`do_list_token_characters`,
     `list_shared_*_characters`) omit the character immediately.
@@ -260,6 +263,9 @@ def do_remove_token_character(character_id: int, delete_mail_archive: bool = Fal
 
     for role in roles:
         tm.remove_token(role)
+    # The kept sharing rows must not keep the character "own" for the
+    # realized-profit ledger; a token added later wins over this row.
+    storage.mark_esi_character_removed(character_id)
 
     mail_deleted = None
     if delete_mail_archive:
