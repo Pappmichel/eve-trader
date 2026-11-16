@@ -200,11 +200,17 @@ def refresh_jita_price_cache():
 # portfolio.py/admin.py's own docstring on cross-cutting concerns), not
 # folded into admin.py, since /api/errors' *report* endpoint (api/routers/
 # errors.py) needs to stay reachable by every tenant's frontend, unlike
-# every other route in this admin-gated router.
+# every other route in this admin-gated router (it needs a session, no grant).
 @router.get("/errors", response_model=list[schemas.ErrorLogRow])
 def list_errors(limit: int = 200):
     # In-process error_log ring buffer - no live ESI/Goonmetrics.
     return error_log.do_list_errors(limit=limit)
+
+
+@router.get("/errors/groups", response_model=list[schemas.ErrorLogGroup])
+def list_error_groups(limit: int = 1000):
+    # Same rows as /errors, grouped by source and normalized message.
+    return error_log.do_list_error_groups(limit=limit)
 
 
 # Moved from api/routers/portfolio.py (confirmed real misplacement

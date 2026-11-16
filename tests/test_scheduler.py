@@ -25,6 +25,7 @@ def _scheduler_isolation(monkeypatch):
     scheduler.last_run_status.clear()
     scheduler._backup_status.clear()
     scheduler._jita_price_cache_status.clear()
+    scheduler._goonmetrics_retention_status.clear()
     with scheduler._job_mu:
         scheduler._running_jobs.clear()
     # Portfolio snapshots refuse without quotes; most scheduler tests stub
@@ -37,6 +38,10 @@ def _scheduler_isolation(monkeypatch):
     # do not seed it (its own test lives in test_asset_manager.py).
     from eve_trader.asset_manager import actions as asset_manager_actions
     monkeypatch.setattr(asset_manager_actions, "history_snapshot_due", lambda: False)
+    # The retention prunes touch the database; their own tests are in
+    # test_data_retention.py.
+    monkeypatch.setattr(scheduler, "_prune_shortlist_snapshot_job", lambda: None)
+    monkeypatch.setattr(scheduler, "_prune_goonmetrics_history_job", lambda: None)
 
 
 def _fake_enter_tenant(cfg: TradingConfig):

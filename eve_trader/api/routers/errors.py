@@ -1,10 +1,10 @@
 """Frontend error reporting (GitHub issue #88) - deliberately its own
 router/prefix, not folded into admin.py's router: this POST endpoint must
 stay reachable by every tenant's frontend (an ErrorBoundary crash or an
-unhandled exception can happen on any page, for any tenant), unlike every
-route under /api/admin/* which is gated to the "admin" tool grant only -
-see api/app.py's _TOOL_PATH_PREFIXES, which has no entry for "/api/errors/"
-at all, so no tool grant is required here."""
+unhandled exception can happen on any page), unlike every route under
+/api/admin/* which is gated to the "admin" tool grant. It needs a valid
+session (api/app.py's _SESSION_ONLY_API_PREFIXES) but no tool grant, so it
+is not reachable anonymously."""
 from __future__ import annotations
 
 import threading
@@ -18,17 +18,13 @@ from ... import error_log
 
 router = APIRouter()
 
-# Security audit 2026-08-23, ahead of opening this deployment to more than
-# one invited operator: this endpoint has no tool-grant/gate check at all
-# (by design, see the module docstring above), so once the app sits on a
-# public IP it's reachable by anyone on the internet, not just registered
-# tenants. Two independent bounds, both stdlib-only (no external rate-limit
-# library, matching this codebase's own time.time()-based caching
-# convention - see CLAUDE.md's "Caching pattern" section): field-length
-# caps below stop one oversized payload, and this per-source-IP sliding
-# window stops unbounded repeated calls. `error_log`'s own MAX_ERROR_LOG_ROWS
-# pruning already bounds total storage - this bounds request/write churn,
-# a distinct concern.
+# Two independent bounds, both stdlib-only (no external rate-limit library,
+# matching this codebase's own time.time()-based caching convention - see
+# CLAUDE.md's "Caching pattern" section): field-length caps below stop one
+# oversized payload, and this per-source-IP sliding window stops unbounded
+# repeated calls from one client. Total storage is bounded separately by
+# storage.log_error's per-tenant retention - this bounds request/write
+# churn, a distinct concern.
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _RATE_LIMIT_MAX_REQUESTS = 20
 _rate_limit_lock = threading.Lock()

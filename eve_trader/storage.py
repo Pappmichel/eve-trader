@@ -1154,11 +1154,16 @@ def update_registry_affiliation(character_id: int, corporation_id: Optional[int]
 
 
 # --------------------------------------------------------------- error log
-# Caps unbounded growth (nothing else ever deletes from error_log - see
-# test_storage_error_log.py's own comment) - same "prune down to a fixed
-# count" shape as backup.py's MAX_BACKUPS, just row-count-based here since
-# there's no natural per-item identity to dedupe on beyond raw volume.
+# Caps unbounded growth - same "prune down to a fixed count" shape as
+# backup.py's MAX_BACKUPS, just row-count-based here since there's no
+# natural per-item identity to dedupe on beyond raw volume. The cap is per
+# tenant (rows without a tenant form their own group) so one noisy tenant
+# cannot push out everyone else's reports; the global cap is the backstop.
 MAX_ERROR_LOG_ROWS = 5000
+MAX_ERROR_LOG_ROWS_PER_TENANT = 500
+# A tenant is pruned only once it is this far over its cap, so most inserts
+# cost one small COUNT and no DELETE.
+ERROR_LOG_PRUNE_SLACK = 50
 
 
 def log_error(source: str, message: str, detail: Optional[str], path: Optional[str]) -> None:
@@ -1170,17 +1175,35 @@ def log_error(source: str, message: str, detail: Optional[str], path: Optional[s
     tenant's request this happened during) as a plain informational column,
     not an RLS-scoping one - get_current_tenant() returns None outside any
     request context (shouldn't happen in practice, but never raise over a
-    missing tenant while trying to log an unrelated error)."""
+    missing tenant while trying to log an unrelated error).
+
+    Retention: keeps the newest MAX_ERROR_LOG_ROWS_PER_TENANT rows of this
+    tenant (NULL tenant = its own group), then the newest MAX_ERROR_LOG_ROWS
+    overall."""
+    tenant_id = get_current_tenant()
     with connect_unscoped() as conn:
         conn.execute(
             "INSERT INTO error_log (tenant_id, source, message, detail, path) VALUES (?, ?, ?, ?, ?)",
-            (get_current_tenant(), source, message, detail, path),
+            (tenant_id, source, message, detail, path),
         )
-        conn.execute(
-            "DELETE FROM error_log WHERE id NOT IN "
-            "(SELECT id FROM error_log ORDER BY created_at DESC LIMIT ?)",
-            (MAX_ERROR_LOG_ROWS,),
-        )
+        (tenant_count,) = conn.execute(
+            "SELECT count(*) FROM error_log WHERE tenant_id IS NOT DISTINCT FROM ?::uuid",
+            (tenant_id,),
+        ).fetchone()
+        if tenant_count > MAX_ERROR_LOG_ROWS_PER_TENANT + ERROR_LOG_PRUNE_SLACK:
+            conn.execute(
+                "DELETE FROM error_log WHERE tenant_id IS NOT DISTINCT FROM ?::uuid AND id NOT IN "
+                "(SELECT id FROM error_log WHERE tenant_id IS NOT DISTINCT FROM ?::uuid "
+                "ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (tenant_id, tenant_id, MAX_ERROR_LOG_ROWS_PER_TENANT),
+            )
+        (total,) = conn.execute("SELECT count(*) FROM error_log").fetchone()
+        if total > MAX_ERROR_LOG_ROWS:
+            conn.execute(
+                "DELETE FROM error_log WHERE id NOT IN "
+                "(SELECT id FROM error_log ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (MAX_ERROR_LOG_ROWS,),
+            )
 
 
 def list_errors(limit: int = 200) -> list[dict]:
@@ -7131,6 +7154,48 @@ def latest_snapshot() -> pd.DataFrame:
         cur = conn.execute("SELECT * FROM shortlist_snapshot WHERE run_ts = ?", (run_ts,))
         columns = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+PRUNE_CHUNK_ROWS = 20_000
+
+
+def prune_shortlist_snapshot(before_run_ts: str, chunk_rows: int = PRUNE_CHUNK_ROWS) -> int:
+    """Deletes the current tenant's shortlist_snapshot rows with
+    `run_ts < before_run_ts` (ISO text, same format as the column), but
+    never the newest run - the pages read only that one. Deletes in chunks,
+    one transaction each, so the first run on a large table does not hold
+    locks for minutes. Returns the rows deleted."""
+    total = 0
+    while True:
+        with connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM shortlist_snapshot WHERE ctid IN ("
+                "SELECT ctid FROM shortlist_snapshot WHERE run_ts < ? "
+                "AND run_ts < (SELECT MAX(run_ts) FROM shortlist_snapshot) LIMIT ?)",
+                (before_run_ts, chunk_rows),
+            )
+            deleted = cur.rowcount
+        total += deleted
+        if deleted < chunk_rows:
+            return total
+
+
+def prune_goonmetrics_history(before_date: str, chunk_rows: int = PRUNE_CHUNK_ROWS) -> int:
+    """Global table (no tenant_id): deletes rows with `date < before_date`
+    (ISO YYYY-MM-DD text, the format the Goonmetrics client stores), in
+    chunks. Needs an ambient tenant only for the connection."""
+    total = 0
+    while True:
+        with connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM goonmetrics_history WHERE ctid IN ("
+                "SELECT ctid FROM goonmetrics_history WHERE date < ? LIMIT ?)",
+                (before_date, chunk_rows),
+            )
+            deleted = cur.rowcount
+        total += deleted
+        if deleted < chunk_rows:
+            return total
 
 
 # --------------------------------------------------- Ore & Minerals: Ore Shortlist

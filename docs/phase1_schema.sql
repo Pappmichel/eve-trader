@@ -879,6 +879,9 @@ ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS breakeven_buy_price DOUB
 -- avg_daily_volume valued in ISK (shortlist.average_market_daily_isk_volume).
 ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS avg_daily_isk_volume DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_shortlist_snapshot_tenant ON shortlist_snapshot (tenant_id);
+-- MAX(run_ts) / WHERE run_ts = ? (latest_snapshot, replace_shortlist_snapshot_run,
+-- the retention prune) seek instead of scanning every tenant row.
+CREATE INDEX IF NOT EXISTS idx_shortlist_snapshot_tenant_run ON shortlist_snapshot (tenant_id, run_ts);
 ALTER TABLE shortlist_snapshot ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON shortlist_snapshot;
 CREATE POLICY tenant_isolation ON shortlist_snapshot

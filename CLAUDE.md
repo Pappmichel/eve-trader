@@ -1393,6 +1393,27 @@ template (`setup.sh` picks the HTTPS one when a certificate exists); both have
 a 1 MiB body cap, the `eve_trader_timing` log with the request id and proposal
 `limit_req` zones (general `/api/`, strict for solver/rebuild POSTs).
 
+## Error log and data retention
+
+`error_log` (unscoped, `docs/observability_schema.sql`) keeps the newest
+`MAX_ERROR_LOG_ROWS_PER_TENANT` (500) rows per tenant (NULL tenant is its own
+group) plus a global backstop of 5000; `storage.log_error` counts the tenant
+on every insert and prunes only once it is 50 over. The Admin "Recent Errors"
+view is grouped by source and normalized message (UUIDs and digit runs
+ignored; `GET /api/admin/errors/groups`), the raw list stays under a toggle.
+`POST /api/errors` needs a session but no tool grant.
+
+`shortlist_snapshot` (per tenant) and `goonmetrics_history` (global) are
+pruned once a day by scheduler jobs `shortlist_retention` and
+`goonmetrics_retention` (master switch on; the per-tenant one also needs the
+`trading` grant and an active tenant), keeping `TradingConfig.
+history_retention_days` (90, floor 30) of shortlist runs and `TradingConfig.
+price_history_retention_days` (365, floor 90) of Goonmetrics history (the
+Trading price chart shows it all). Both are operator values, not on the
+Settings page; the global job reads the Default tenant's. `storage.prune_*` delete in
+chunks of 20,000 rows, one transaction each; `prune_shortlist_snapshot` never
+deletes a tenant's newest run. Only the newest shortlist run is read.
+
 ## Backup
 
 `eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/
