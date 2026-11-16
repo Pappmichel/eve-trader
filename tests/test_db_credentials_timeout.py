@@ -19,6 +19,15 @@ from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _flag_off():
+    """Other tests drive cli.main(), which turns long_running on for the rest
+    of its context; these tests start from the request-time default."""
+    token = storage._long_running_var.set(False)
+    yield
+    storage._long_running_var.reset(token)
+
+
 # ----------------------------------------------------------------- no default DSN
 def test_pool_without_dsn_raises_clear_error(monkeypatch):
     monkeypatch.setattr(storage, "PG_DSN", "")
