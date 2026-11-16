@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from ...actions import ActionError, ConflictError
 from ...asset_manager import actions
+from ..schemas import BoundedViewQuery, NameText
 
 router = APIRouter()
 
@@ -84,7 +85,7 @@ def location_tree(location_id: int, params: dict = Depends(_params)):
 
 
 class LocationNameRequest(BaseModel):
-    name: str
+    name: NameText
 
 
 @router.put("/locations/{location_id}/name")
@@ -108,8 +109,8 @@ def ship(owner_type: str, owner_id: int, item_id: int):
 
 
 class SaveViewRequest(BaseModel):
-    name: str
-    query: dict
+    name: NameText
+    query: BoundedViewQuery
 
 
 @router.get("/views")

@@ -15,6 +15,7 @@ from ...doctrine import actions, parser
 from ...doctrine import realized as doctrine_realized
 from ...doctrine.actions import ActionError
 from ...actions import ConflictError
+from ..schemas import LongText, NameText
 
 router = APIRouter()
 
@@ -35,8 +36,8 @@ def list_doctrines_with_status():
 
 
 class CreateDoctrineRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
+    name: NameText
+    description: Optional[LongText] = None
 
 
 @router.post("/doctrines", response_model=schemas.Doctrine)
@@ -45,8 +46,8 @@ def create_doctrine(req: CreateDoctrineRequest):
 
 
 class UpdateDoctrineRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: Optional[NameText] = None
+    description: Optional[LongText] = None
     active: Optional[bool] = None
 
 
@@ -76,8 +77,8 @@ def parse_fitting(req: ParseFittingRequest):
 
 class AddFittingRequest(BaseModel):
     raw_eft: str = _FITTING_TEXT
-    name: Optional[str] = None
-    variant_label: Optional[str] = None
+    name: Optional[NameText] = None
+    variant_label: Optional[NameText] = None
     contract_target: int = 0
     stockpile_target: int = 0
     cargo_tolerance_pct: Optional[float] = None
@@ -92,8 +93,8 @@ def add_fitting(doctrine_id: str, req: AddFittingRequest):
 
 class UpdateFittingRequest(BaseModel):
     raw_eft: Optional[str] = _OPTIONAL_FITTING_TEXT
-    name: Optional[str] = None
-    variant_label: Optional[str] = None
+    name: Optional[NameText] = None
+    variant_label: Optional[NameText] = None
     contract_target: Optional[int] = None
     stockpile_target: Optional[int] = None
     cargo_tolerance_pct: Optional[float] = None

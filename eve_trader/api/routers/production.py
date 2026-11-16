@@ -16,7 +16,7 @@ already isolates every other piece of tenant state in this app.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -28,6 +28,7 @@ from ...actions import ConflictError
 from ...production import actions
 from ...production.actions import ActionError
 from ...production.config import PRODUCTION_CONFIG
+from ..schemas import LongText, NameText, ShortTextList
 
 router = APIRouter()
 
@@ -127,7 +128,7 @@ def get_manual_stock_entries():
 
 
 class AddManualStockEntryRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     count: float
     location_id: int = 0
 
@@ -149,7 +150,7 @@ class AssetPasteRequest(BaseModel):
     # lines at most, this is generous headroom, not a real-world limit.
     text: str = Field(max_length=500_000)
     location_id: int = 0
-    mode: str = "merge"
+    mode: NameText = "merge"
 
 
 @router.post("/manual-stock/paste/preview")
@@ -238,11 +239,11 @@ def get_current_jobs():
 
 
 class AddManualIndustryJobRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     quantity: Optional[float] = None
     runs: Optional[int] = None
     location_id: int = 0
-    ready_at: Optional[str] = None
+    ready_at: Optional[NameText] = None
 
 
 @router.post("/manual-jobs")
@@ -255,7 +256,7 @@ class UpdateManualIndustryJobRequest(BaseModel):
     quantity: Optional[float] = None
     runs: Optional[int] = None
     location_id: Optional[int] = None
-    ready_at: Optional[str] = None
+    ready_at: Optional[NameText] = None
 
 
 @router.patch("/manual-jobs/{manual_id}")
@@ -289,7 +290,7 @@ def get_manual_listed_stock():
 
 class SetManualListedStockRequest(BaseModel):
     type_id: int
-    market: str
+    market: NameText
     quantity: float
 
 
@@ -327,7 +328,7 @@ def get_owned_blueprints():
 
 
 class AddManualOwnedBlueprintRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     is_original: bool
     material_efficiency: int
     time_efficiency: int
@@ -369,7 +370,7 @@ def get_manual_blueprint_copy_costs():
 
 
 class AddManualBlueprintCopyCostRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     purchase_cost: float
     runs: int
 
@@ -403,7 +404,7 @@ def get_manual_blueprint_me_te_overrides():
 
 
 class AddManualBlueprintMeTeOverrideRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     material_efficiency: int
     time_efficiency: int
 
@@ -579,9 +580,9 @@ def get_all_solar_systems():
 
 
 class SetSystemRequest(BaseModel):
-    profile: str
+    profile: NameText
     system_id: int
-    system_name: str
+    system_name: NameText
 
 
 @router.post("/settings/systems")
@@ -717,7 +718,7 @@ def search_locations(q: str = ""):
 
 class SetManualLocationNameRequest(BaseModel):
     location_id: int
-    name: str
+    name: NameText
 
 
 @router.post("/locations/manual-names")
@@ -794,7 +795,7 @@ def get_ship_margins():
 
 
 class ItemMarginSearchRequest(BaseModel):
-    item_name: str
+    item_name: NameText
 
 
 @router.post("/margins/search", response_model=schemas.ShipMarginRow)
@@ -803,7 +804,7 @@ def search_item_margin(req: ItemMarginSearchRequest):
 
 
 class AddStockTargetRequest(BaseModel):
-    type_name: str
+    type_name: NameText
     backup_stock: float = 0
     home_market_stock: Optional[float] = None
     jita_market_stock: Optional[float] = None
@@ -882,7 +883,7 @@ def set_manual_stock(req: ManualStockRequest):
 
 class ManualBuildBuyRequest(BaseModel):
     type_id: int
-    decision: str
+    decision: NameText
 
 
 @router.post("/manual-build-buy")
@@ -897,7 +898,7 @@ def clear_manual_build_buy(type_id: int):
 
 class SelectedDecryptorRequest(BaseModel):
     type_id: int
-    decryptor: str
+    decryptor: NameText
 
 
 @router.post("/selected-decryptors")
@@ -911,7 +912,7 @@ def clear_selected_decryptor(type_id: int):
 
 
 class CategoryLocationRequest(BaseModel):
-    category: str
+    category: NameText
     location_id: int
 
 
@@ -931,10 +932,10 @@ def get_category_facilities():
 
 
 class CategoryFacilityRequest(BaseModel):
-    category: str
-    structure_type: Optional[str] = None
-    rig_tier_basic: Optional[str] = None
-    rig_tier_advanced: Optional[str] = None
+    category: NameText
+    structure_type: Optional[NameText] = None
+    rig_tier_basic: Optional[NameText] = None
+    rig_tier_advanced: Optional[NameText] = None
     facility_tax_rate: Optional[float] = None  # fraction; None = observed rate, then Settings
 
 
@@ -951,7 +952,7 @@ def clear_category_facility(category: str):
 
 
 class CategoryCostIndexOverrideRequest(BaseModel):
-    category: str
+    category: NameText
     value: float
 
 
@@ -981,8 +982,8 @@ def remove_category_location_option(category: str, location_id: int):
 
 
 class InventionEstimateRequest(BaseModel):
-    product_name: str
-    decryptor_name: Optional[str] = None
+    product_name: NameText
+    decryptor_name: Optional[NameText] = None
 
 
 @router.post("/invention/estimate", response_model=list[schemas.InventionResult])
@@ -993,7 +994,7 @@ def estimate_invention(req: InventionEstimateRequest):
 
 
 class MaterialTreeRequest(BaseModel):
-    type_name: str
+    type_name: NameText
     quantity: float = 1.0
 
 
@@ -1039,13 +1040,13 @@ def refresh_asset_plan():
 # --------------------------------------------------------- special orders
 class SpecialOrderItemInput(BaseModel):
     type_id: Optional[int] = None
-    name: Optional[str] = None
+    name: Optional[NameText] = None
     quantity: float
 
 
 class CreateSpecialOrderRequest(BaseModel):
-    items: list[SpecialOrderItemInput]
-    note: Optional[str] = None
+    items: Annotated[list[SpecialOrderItemInput], Field(max_length=1_000)]
+    note: Optional[LongText] = None
     net_against_stock: bool = False
     include_in_production: bool = False
 
@@ -1063,7 +1064,7 @@ def list_special_orders(status: Optional[str] = None):
 
 
 class CombineSpecialOrdersRequest(BaseModel):
-    order_ids: list[str]
+    order_ids: ShortTextList
     net_against_stock: bool = False
 
 
@@ -1080,7 +1081,7 @@ def compute_combined_special_orders(req: CombineSpecialOrdersRequest):
 
 
 class MaxBuildableRequest(BaseModel):
-    item: str
+    item: NameText
     mode: Literal["full", "direct"] = "full"
     target_quantity: Optional[int] = Field(default=None, ge=1)
 
@@ -1107,8 +1108,8 @@ def get_special_order(order_id: str):
 
 
 class UpdateSpecialOrderRequest(BaseModel):
-    status: Optional[str] = None
-    note: Optional[str] = None
+    status: Optional[NameText] = None
+    note: Optional[LongText] = None
     net_against_stock: Optional[bool] = None
     include_in_production: Optional[bool] = None
 
@@ -1130,7 +1131,7 @@ def list_one_special_order_events(order_id: str):
 
 class SetSpecialOrderItemRequest(BaseModel):
     type_id: Optional[int] = None
-    name: Optional[str] = None
+    name: Optional[NameText] = None
     quantity: float
 
 

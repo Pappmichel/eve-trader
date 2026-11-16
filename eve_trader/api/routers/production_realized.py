@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ...actions import ConflictError
 from ...production import actions
 from ...production.actions import ActionError
+from ..schemas import NameText
 
 router = APIRouter()
 
@@ -410,9 +411,9 @@ class RebuildStarted(BaseModel):
 
 
 class LedgerEntryRequest(BaseModel):
-    entry_kind: str
+    entry_kind: NameText
     amount: float
-    entry_date: str
+    entry_date: NameText
     type_id: Optional[int] = None
     quantity: Optional[float] = None
     note: Optional[str] = Field(default=None, max_length=500)
@@ -421,7 +422,7 @@ class LedgerEntryRequest(BaseModel):
 class OpeningCostRequest(BaseModel):
     type_id: int
     unit_cost: float
-    entry_date: Optional[str] = None
+    entry_date: Optional[NameText] = None
 
 
 @router.post("/realized/rebuild", response_model=RebuildStarted)

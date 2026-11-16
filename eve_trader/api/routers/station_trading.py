@@ -16,6 +16,7 @@ from ...station_trading import actions
 from ...station_trading import realized as station_realized
 from ...station_trading.config import STATION_TRADING_CONFIG
 from ... import storage
+from ..schemas import IdList
 
 router = APIRouter()
 
@@ -65,7 +66,7 @@ def refresh_shortlist():
 
 
 class ShortlistTypeIdsBody(BaseModel):
-    type_ids: list[int]
+    type_ids: IdList
 
 
 @router.post("/shortlist/deactivate")

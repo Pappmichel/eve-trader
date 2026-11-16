@@ -3,7 +3,7 @@ character_management/skill_plan_actions.py. Gated on tool_key
 `char_skill_plans` via `_TOOL_PATH_PREFIXES` (api/app.py)."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -26,7 +26,7 @@ class StepBody(BaseModel):
 
 
 class OrderBody(BaseModel):
-    order: list[StepBody]
+    order: Annotated[list[StepBody], Field(max_length=10_000)]
 
 
 def _wrap(fn, **kwargs):

@@ -6,15 +6,75 @@ so actions.py/storage.py/engine.py need zero changes for this migration.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
-from typing import Optional
+from typing import Annotated, Any, Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 
 class _Base(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="ignore")
+
+
+# ------------------------------------------------- request length limits
+# Shared bounds for REQUEST models only. Response models never carry them:
+# a stored value longer than a limit would otherwise turn a read into a 500.
+# The limits are generous on purpose (no real input comes near them); they
+# exist so one request cannot hand the server an arbitrarily large value.
+# A constraint declared inside ``Annotated`` travels with the field's type,
+# which is what ``partial.partial_model`` copies into the update models.
+NameText = Annotated[str, StringConstraints(max_length=100)]
+ShortText = Annotated[str, StringConstraints(max_length=200)]
+LongText = Annotated[str, StringConstraints(max_length=10_000)]
+PasteText = Annotated[str, StringConstraints(max_length=500_000)]
+IdList = Annotated[list[int], Field(max_length=10_000)]
+ShortTextList = Annotated[list[ShortText], Field(max_length=1_000)]
+# A skill level is 0-5 and there are far fewer than 50 ore families/skills.
+SkillLevels = Annotated[dict[NameText, Annotated[int, Field(ge=0, le=5)]], Field(max_length=50)]
+
+TEMPLATE_MAX_BYTES = 256 * 1024  # same as pi.layout.template_io.MAX_TEMPLATE_BYTES
+JSON_MAX_DEPTH = 12
+
+
+def check_bounded_json(value: Any, max_bytes: int, max_depth: int = JSON_MAX_DEPTH) -> Any:
+    """Reject a JSON-like value that nests deeper than ``max_depth`` or whose
+    compact encoding exceeds ``max_bytes``. The depth walk is iterative (a
+    hostile ``[[[[...`` must not reach the recursion limit) and runs before
+    the encoder sees the value."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, dict):
+            children = item.values()
+        elif isinstance(item, (list, tuple)):
+            children = item
+        else:
+            continue
+        if depth > max_depth:
+            raise ValueError(f"nested deeper than {max_depth} levels")
+        stack.extend((child, depth + 1) for child in children)
+    try:
+        size = len(json.dumps(value, separators=(",", ":"), default=str))
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("not valid JSON data")
+    if size > max_bytes:
+        raise ValueError(f"larger than {max_bytes} bytes")
+    return value
+
+
+def bounded_json(max_bytes: int, max_depth: int = JSON_MAX_DEPTH) -> AfterValidator:
+    """Validator for an ``Any``/``dict[str, Any]`` request field."""
+    return AfterValidator(lambda v: check_bounded_json(v, max_bytes, max_depth))
+
+
+# Free-form PI/template payloads. The action layer keeps its own validation.
+BoundedTemplate = Annotated[Any, bounded_json(TEMPLATE_MAX_BYTES)]
+BoundedDesign = Annotated[dict[str, Any], bounded_json(64 * 1024)]
+BoundedPlan = Annotated[dict[str, Any], Field(max_length=100), bounded_json(64 * 1024)]
+BoundedPiSettings = Annotated[dict[str, Any], Field(max_length=100), bounded_json(64 * 1024)]
+BoundedViewQuery = Annotated[dict[str, Any], Field(max_length=30), bounded_json(16 * 1024)]
 
 
 def records(df: pd.DataFrame) -> list[dict]:
@@ -577,7 +637,7 @@ class ReprocessingQuoteResult(_Base):
 
 class MineralRequirement(_Base):
     type_id: int
-    name: Optional[str] = None
+    name: Optional[NameText] = None
     required_qty: float
 
 

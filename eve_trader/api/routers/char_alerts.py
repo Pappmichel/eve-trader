@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from ...actions import ActionError
 from ...alerts import actions as alert_actions
 from ...config import OAUTH_CONFIG
+from ..schemas import NameText
 
 router = APIRouter()
 
@@ -30,7 +31,7 @@ class ContractFiltersRequest(BaseModel):
 
 class SubscriptionRequest(BaseModel):
     character_id: int
-    alert_type: str
+    alert_type: NameText
     enabled: bool
     include_content: bool = False
     lead_hours: Optional[int] = None
