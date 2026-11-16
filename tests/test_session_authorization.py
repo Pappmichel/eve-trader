@@ -408,3 +408,57 @@ def test_revocation_survives_pool_reconnect(monkeypatch, _apply_admin_schema,
     pool.close()
     storage._pool = None
     assert client.get("/api/trading/settings", cookies=cookies).status_code == 401
+
+
+def _legacy_cookie(character_id, tenant_id, name="Pilot"):
+    """A cookie from before `iat_ms` existed: same signer, no millisecond key."""
+    token = access_gate._serializer(OAUTH_CONFIG).dumps(
+        {"character_id": character_id, "character_name": name, "tenant_id": tenant_id}
+    )
+    return {access_gate.SESSION_COOKIE_NAME: token}
+
+
+def test_cookie_revoked_in_the_same_second_it_was_issued_is_rejected(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    cookies = _cookie(11, tenant_id)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
+    time.sleep(0.01)
+
+    storage.revoke_sessions_for_character(11)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 401
+
+
+def test_cookie_issued_after_the_revocation_is_valid(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    storage.revoke_sessions_for_character(11)
+    time.sleep(0.01)
+    cookies = _cookie(11, tenant_id)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
+
+
+def test_cookie_without_iat_ms_keeps_the_whole_second_rule(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    cookies = _legacy_cookie(11, tenant_id)
+    time.sleep(0.01)
+    storage.revoke_sessions_for_character(11)
+    # Old cookies only have second resolution: the revocation second still counts as valid.
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
+
+
+def test_authorized_session_carries_the_issue_time(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    before = time.time()
+    authz = access_gate.authorize_session_cookie(_cookie(11, tenant_id)[access_gate.SESSION_COOKIE_NAME])
+    assert authz is not None
+    assert before - 0.01 <= authz.issued_at.timestamp() <= time.time() + 0.01
