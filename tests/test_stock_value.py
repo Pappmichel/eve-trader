@@ -5,6 +5,54 @@ from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
 
 
+def _mock_quotes(monkeypatch, home, jita, volumes=None, manual=None):
+    """Goonmetrics quotes behind portfolio._priced, no network."""
+    from eve_trader import portfolio
+    from eve_trader.production import pricing
+
+    def fake_prices(market, ids):
+        book = jita if market == pricing.JITA_MARKET else home
+        return {t: CurrentPrice(type_id=t, updated="", buy=0.0, sell=book[t]) for t in ids if t in book}
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "TestMarket")
+    monkeypatch.setattr(pricing, "_goonmetrics_prices", fake_prices)
+    monkeypatch.setattr(portfolio, "_haul_volumes", lambda ids: {t: (volumes or {}).get(t, 0.0) for t in ids})
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: dict(manual or {}))
+
+
+def _cfg_with_stock(monkeypatch, stock):
+    cfg = ProductionConfig(home_market="TestMarket", haul_cost_per_m3=800.0)
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", 800.0)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(t, "x", 0, None, None) for t in stock])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: dict(stock))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, manual_stock, cfg, bp: manual_stock.get(type_id, 0))
+    return cfg
+
+
+def test_stock_value_follows_the_portfolio_rule_cheaper_of_home_and_jita_plus_freight(monkeypatch):
+    # Home 1000, Jita 100, 0.01 m3, freight 800/m3: Jita lands at 108.
+    cfg = _cfg_with_stock(monkeypatch, {1: 1})
+    _mock_quotes(monkeypatch, home={1: 1000.0}, jita={1: 100.0}, volumes={1: 0.01})
+    result = engine.stock_value(cfg)
+    assert result["total_value"] == 108.0
+    assert result["priced_items"] == 1
+
+
+def test_stock_value_manual_price_wins(monkeypatch):
+    cfg = _cfg_with_stock(monkeypatch, {1: 2})
+    _mock_quotes(monkeypatch, home={1: 1000.0}, jita={1: 100.0}, volumes={1: 0.01}, manual={1: 7.0})
+    assert engine.stock_value(cfg)["total_value"] == 14.0
+
+
+def test_stock_value_without_any_quote_is_unpriced(monkeypatch):
+    cfg = _cfg_with_stock(monkeypatch, {1: 2})
+    _mock_quotes(monkeypatch, home={}, jita={})
+    result = engine.stock_value(cfg)
+    assert result == {"total_value": 0.0, "priced_items": 0, "unpriced_items": 1}
+
+
 def test_stock_value_prices_at_home_sell_falling_back_to_jita(monkeypatch):
     cfg = ProductionConfig(home_market="TestMarket")
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
@@ -17,19 +65,7 @@ def test_stock_value_prices_at_home_sell_falling_back_to_jita(monkeypatch):
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(engine, "_current_stock", lambda type_id, manual_stock, cfg, bp: manual_stock.get(type_id, 0))
 
-    # cfg.home_location_id is unset, so pricing.home_prices already skips
-    # ESI entirely - only Jita's ESI-first attempt needs to be forced to
-    # fail here so it falls through to the Goonmetrics mock below, matching
-    # this test's pre-ESI-first pricing scenario.
-    def _fail(self, region_id, type_ids):
-        raise ESIError("no ESI in this test")
-    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fail)
-
-    def fake_current_prices(self, market):
-        if market == cfg.home_market:
-            return [CurrentPrice(type_id=1, updated="", buy=0.0, sell=100.0)]
-        return [CurrentPrice(type_id=2, updated="", buy=0.0, sell=50.0)]
-    monkeypatch.setattr(GoonmetricsClient, "current_prices", fake_current_prices)
+    _mock_quotes(monkeypatch, home={1: 100.0}, jita={2: 50.0})
 
     result = engine.stock_value(cfg)
 
