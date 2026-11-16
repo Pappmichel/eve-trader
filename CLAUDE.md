@@ -492,6 +492,30 @@ function or table after that migration (all 5 of its phases are done).
   bypasses RLS - see "Backup" above). Never give the app role `BYPASSRLS`
   or run app queries as the owner "to make something easier" - that defeats
   the entire isolation guarantee this migration exists for.
+- **No database credentials in code.** `storage.PG_DSN` is
+  `EVE_TRADER_PG_DSN` (read after `load_dotenv()`) with no default: the
+  module imports without it (CLI `--help`, tests that never touch the
+  database), but `_get_pool()` raises `RuntimeError`. `phase1_schema.sql`
+  creates `eve_trader_app` with no password; every install sets one with
+  `ALTER ROLE`. `tests/conftest.py` sets a local-dev DSN with `setdefault`
+  before any `eve_trader` import and `tests/pg_helpers.py` sets the role's
+  password to match, so tests need no manual setup. `phase1_schema.sql`
+  grants on an explicit table list (no `ON ALL TABLES`, which re-widened
+  narrowed tables on every deploy); each later schema file grants on its own
+  tables, and `tests/test_db_credentials_timeout.py` fails when a table in
+  `public` is not selectable by the app role. `error_log` has no `UPDATE`
+  (`observability_schema.sql` revokes it).
+- **Statement timeout.** App connections carry `statement_timeout` 60 s
+  (`EVE_TRADER_STATEMENT_TIMEOUT_MS`, `0` = off; skipped when the DSN has its
+  own `options`). `storage.long_running()` (a plain `ContextVar`, inherited by
+  `with_current_tenant` workers and `copy_context` threads) makes
+  `connect()`, `connect_own_transaction()`, `batch_session()` (after its
+  isolation statement, which must stay first) and `connect_unscoped()` run
+  `set_config('statement_timeout', '0', true)`. It is enabled in
+  `pipeline_runner._execute`, the scheduler's job worker, the mail archive
+  thread, the startup warm-up threads, `admin.do_apply_sde` and the CLI
+  (`storage.enable_long_running()`). A new background entry point or a
+  synchronous route that runs a long single statement must enable it too.
 - **Every real query goes through `storage.connect()`/`storage.
   batch_session()`.** These are the only two places that check out a pooled
   connection and set `app.tenant_id` (via `SELECT set_config(...)`, the
