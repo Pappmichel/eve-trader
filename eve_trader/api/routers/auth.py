@@ -15,6 +15,7 @@ TokenManager persistence, since a gate login is never stored there.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import secrets
 import threading
@@ -130,9 +131,20 @@ def _prune_pending() -> None:
 
 
 def _client_ip(request: Request) -> str:
-    if request.client is None:
+    """Rate-limit key for the caller. IPv6 callers are grouped by their /64
+    network (one subscriber usually owns a whole /64, so per-address keys
+    would give them unlimited slots); IPv4-mapped IPv6 counts as IPv4."""
+    if request.client is None or not request.client.host:
         return "unknown"
-    return request.client.host or "unknown"
+    try:
+        addr = ipaddress.ip_address(request.client.host)
+    except ValueError:
+        return "unknown"
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
 
 
 def begin_oauth(
@@ -154,7 +166,7 @@ def begin_oauth(
     if not OAUTH_CONFIG.client_id:
         raise HTTPException(500, "EVE_SSO_CLIENT_ID is not set (.env).")
     verifier, challenge = _make_pkce_pair()
-    state = urllib.parse.quote(f"{role_prefix}-{time.time_ns()}")
+    state = secrets.token_urlsafe(32)
     browser_nonce = secrets.token_urlsafe(32)
     client_ip = _client_ip(request)
     entry = {
@@ -271,53 +283,80 @@ def _return_url(role_prefix: str | None, query: str) -> str:
     return f"{OAUTH_CONFIG.frontend_origin}{path}?{query}"
 
 
+def _log_detail(value) -> str:
+    """Untrusted or internal detail for the log only, never for a redirect."""
+    return repr(str(value)[:200])
+
+
+def _error_redirect(code: str, role_prefix: str | None = None):
+    """Redirect back to the frontend with one fixed error code. Provider text
+    and exception messages never reach the URL."""
+    if role_prefix == "reauth":
+        url = _return_url(role_prefix, f"auth=error&message={code}")
+    else:
+        url = f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={code}"
+    resp = RedirectResponse(url)
+    resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+    return resp
+
+
 @router.get("/callback")
-def callback(code: str | None = None, state: str | None = None, error_description: str | None = None,
+def callback(code: str | None = None, state: str | None = None, error: str | None = None,
+             error_description: str | None = None,
              oauth_nonce: str | None = Cookie(default=None, alias=_OAUTH_NONCE_COOKIE)):
     """This route's full URL must be set as OAUTH_CONFIG.redirect_uri
     (EVE_SSO_CALLBACK_HOST/PORT env vars) and match the EVE dev-portal app's
     registered callback URL exactly."""
-    if error_description or not code or not state:
-        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(error_description or 'missing code/state')}")
-        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-        return resp
+    if error or error_description:
+        log.warning("SSO callback reported an error: error=%s description=%s",
+                    _log_detail(error), _log_detail(error_description))
+        return _error_redirect("sso_error")
+    if not code or not state:
+        return _error_redirect("missing_code_state")
 
+    # The entry is consumed only when the browser nonce matches, so a foreign
+    # request carrying a valid `state` cannot burn the user's pending login.
     pending = None
+    nonce_ok = False
     with _pending_lock:
-        pending = _pending.pop(state, None)
+        candidate = _pending.get(state)
+        if candidate is not None and time.time() - candidate["created_at"] > _PENDING_TTL:
+            _pending.pop(state, None)
+            candidate = None
+        if candidate is not None and oauth_nonce and secrets.compare_digest(
+            oauth_nonce, candidate.get("browser_nonce") or ""
+        ):
+            nonce_ok = True
+            _pending.pop(state, None)
+        pending = candidate
     if pending is None:
-        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=state_expired_or_unknown")
-        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-        return resp
+        return _error_redirect("state_expired_or_unknown")
 
     # See _OAUTH_NONCE_COOKIE's own comment above - `oauth_nonce` must match
     # what /start stashed for this exact `state`, proving this /callback
     # request is arriving in the same browser that initiated the login,
     # not one an attacker handed a completed code+state pair to.
-    if not oauth_nonce or not secrets.compare_digest(oauth_nonce, pending.get("browser_nonce") or ""):
-        resp = RedirectResponse(_return_url(pending.get("role_prefix"), "auth=error&message=nonce_mismatch"))
-        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-        return resp
+    if not nonce_ok:
+        return _error_redirect("nonce_mismatch", pending.get("role_prefix"))
+
+    role_prefix = pending.get("role_prefix")
+    if role_prefix not in ("gate", "reauth"):
+        log.warning("SSO callback with unknown flow %s", _log_detail(role_prefix))
+        return _error_redirect("unknown_flow")
 
     tm = TokenManager(OAUTH_CONFIG)
     try:
         token_json = tm._exchange_code(code, pending["verifier"])
+    except (requests.RequestException, KeyError, ValueError) as e:
+        log.warning("SSO token exchange failed: %s", _log_detail(e))
+        return _error_redirect("token_exchange_failed", role_prefix)
+    try:
         character_id, character_name = tm._verify(token_json["access_token"])
     except (requests.RequestException, KeyError, ValueError) as e:
-        # Confirmed real gap: this used to only catch requests.HTTPError
-        # (raise_for_status' 4xx/5xx case) - a network-level failure
-        # (ConnectionError/Timeout - siblings of HTTPError under
-        # RequestException, not subclasses of it) or a malformed response
-        # (KeyError on token_json["access_token"]/data["CharacterID"], or a
-        # ValueError from a non-JSON body) escaped this try entirely,
-        # defeating the whole point of this route (always redirect back to
-        # the frontend, even on failure) with a raw FastAPI 500 in the
-        # middle of the SSO redirect instead.
-        resp = RedirectResponse(_return_url(pending.get("role_prefix"), f"auth=error&message={urllib.parse.quote(str(e))}"))
-        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-        return resp
-
-    role_prefix = pending["role_prefix"]
+        # A network-level failure or a malformed response must still end in a
+        # redirect back to the frontend, never a raw 500 mid-SSO.
+        log.warning("SSO identity lookup failed: %s", _log_detail(e))
+        return _error_redirect("identity_failed", role_prefix)
 
     if role_prefix == "gate":
         # Identity-only login (see access_gate.py) - never persisted to
@@ -334,68 +373,49 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
     # character being added, identity-only, no scopes). Both write through
     # reauth_write_role, which reuses an existing key for that character
     # and otherwise mints `esi:<id>` (decision 2: no re-keying).
-    if role_prefix == "reauth":
-        expected_reauth = pending.get("reauth_character_id")
-        is_add = expected_reauth is None
-        if not is_add and int(character_id) != int(expected_reauth):
-            resp = RedirectResponse(_return_url(role_prefix, "auth=error&message=character_mismatch"))
+    expected_reauth = pending.get("reauth_character_id")
+    is_add = expected_reauth is None
+    if not is_add and int(character_id) != int(expected_reauth):
+        return _error_redirect("character_mismatch", role_prefix)
+    tenant_id = pending.get("tenant_id")
+    if not tenant_id:
+        # /callback is gate-exempt and has no ambient tenant; /start captured
+        # one. Without it nothing may be written, least of all into a
+        # fallback tenant.
+        log.warning("SSO callback without a captured tenant")
+        return _error_redirect("session_lost", role_prefix)
+    with storage.tenant_context(tenant_id):
+        # The add round carries no scopes, so writing it over a token
+        # this character already holds would silently strip every
+        # scope they had - reauth_write_role reuses that same key.
+        # Adding an already-registered character is therefore a no-op,
+        # not a write: the Characters page already lists them, and
+        # Re-authorize is the way to change their scopes.
+        if is_add and any(
+            r.character_id == int(character_id) for r in tm.list_records()
+        ):
+            resp = RedirectResponse(_return_url(
+                role_prefix,
+                f"auth=success&added=existing&character={urllib.parse.quote(character_name)}",
+            ))
             resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
             return resp
-        tenant_id = pending.get("tenant_id") or storage.DEFAULT_TENANT_ID
-        with storage.tenant_context(tenant_id):
-            # The add round carries no scopes, so writing it over a token
-            # this character already holds would silently strip every
-            # scope they had - reauth_write_role reuses that same key.
-            # Adding an already-registered character is therefore a no-op,
-            # not a write: the Characters page already lists them, and
-            # Re-authorize is the way to change their scopes.
-            if is_add and any(
-                r.character_id == int(character_id) for r in tm.list_records()
-            ):
-                resp = RedirectResponse(_return_url(
-                    role_prefix,
-                    f"auth=success&added=existing&character={urllib.parse.quote(character_name)}",
-                ))
-                resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-                return resp
-            final_role = reauth_write_role(character_id)
-            record = tm._to_record(
-                final_role, token_json, " ".join(pending["scopes"]),
-                character_id=character_id, character_name=character_name,
-            )
-            tm._tokens[final_role] = record
-            tm._save_record(final_role)
-            delete_strict_subset_tokens(character_id, tokens=tm)
-            if is_add:
-                for capability_key in DEFAULT_CAPABILITIES_FOR_NEW_CHARACTERS:
-                    storage.upsert_esi_character_capability(int(character_id), capability_key)
-        resp = RedirectResponse(_return_url(
-            role_prefix,
-            f"auth=success&role={urllib.parse.quote(final_role)}"
-            f"&character={urllib.parse.quote(character_name)}",
-        ))
-        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-        return resp
-
-    # GitHub issue #46: buyer/seller used to be stored under a single fixed
-    # role key (a second login for the same role silently overwrote the
-    # first) - now every role_prefix (including buyer/seller) resolves to
-    # f"{role_prefix}:{character_id}", same multi-character scheme "producer"
-    # already used, so multiple buyer/seller characters can be registered
-    # independently.
-    final_role = f"{role_prefix}:{character_id}"
-    # /callback is AccessGateMiddleware-exempt, so no ambient tenant is set
-    # automatically here - use the one /start captured before redirecting to
-    # EVE SSO (falling back to DEFAULT_TENANT_ID for a hand-constructed
-    # _pending entry with no tenant_id key, e.g. in tests).
-    with storage.tenant_context(pending.get("tenant_id") or storage.DEFAULT_TENANT_ID):
-        record = tm._to_record(final_role, token_json, " ".join(pending["scopes"]),
-                                character_id=character_id, character_name=character_name)
+        final_role = reauth_write_role(character_id)
+        record = tm._to_record(
+            final_role, token_json, " ".join(pending["scopes"]),
+            character_id=character_id, character_name=character_name,
+        )
         tm._tokens[final_role] = record
         tm._save_record(final_role)
-
-    resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
-                             f"&character={urllib.parse.quote(character_name)}")
+        delete_strict_subset_tokens(character_id, tokens=tm)
+        if is_add:
+            for capability_key in DEFAULT_CAPABILITIES_FOR_NEW_CHARACTERS:
+                storage.upsert_esi_character_capability(int(character_id), capability_key)
+    resp = RedirectResponse(_return_url(
+        role_prefix,
+        f"auth=success&role={urllib.parse.quote(final_role)}"
+        f"&character={urllib.parse.quote(character_name)}",
+    ))
     resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
     return resp
 

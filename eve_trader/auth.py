@@ -32,7 +32,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Optional
 
@@ -176,6 +176,26 @@ def validate_role_key_for_tool(role_key: str, tool_key: str) -> str:
     return role_key
 
 
+class RefreshTokenRejected(requests.HTTPError):
+    """SSO rejected the stored refresh token (`invalid_grant`), now or on an
+    earlier attempt. Still a `requests.RequestException`, so the broad
+    handlers that already catch refresh failures keep catching it; the ESI
+    client maps it to a 400 "Token refresh failed" status error, which the
+    sync orchestrator treats as a dead owner."""
+
+    status_code = 400
+
+    def __init__(self, message: str = "refresh token rejected (invalid_grant)", response=None):
+        super().__init__(message, response=response)
+
+
+def _record_from_stored(rec: dict) -> "TokenRecord":
+    """Build a record from a stored dict, dropping keys this version does not
+    know (a row written by a newer version must not break a rollback)."""
+    known = {f.name for f in fields(TokenRecord)}
+    return TokenRecord(**{k: v for k, v in rec.items() if k in known})
+
+
 @dataclass
 class TokenRecord:
     role: str                 # arbitrary label, e.g. "buyer" / "seller"
@@ -185,6 +205,9 @@ class TokenRecord:
     refresh_token: str
     expires_at: float          # unix timestamp
     scopes: str
+    # Set when SSO answered `invalid_grant` to a refresh: the refresh token is
+    # dead until the user authorizes again, which writes a fresh record.
+    refresh_rejected_at: Optional[float] = None
 
     def is_expired(self, skew_seconds: int = 60) -> bool:
         return time.time() >= (self.expires_at - skew_seconds)
@@ -285,7 +308,7 @@ class TokenManager:
         to this instance's in-memory dict, or a later remove_token(new_role)
         call on a different instance would target a storage row that still
         doesn't exist under that key."""
-        self._tokens = {role: TokenRecord(**rec) for role, rec in storage.load_all_tenant_tokens().items()}
+        self._tokens = {role: _record_from_stored(rec) for role, rec in storage.load_all_tenant_tokens().items()}
         self._tokens, changes = _rekey_legacy_bare_roles(self._tokens)
         if changes:
             with storage.batch_session():
@@ -408,16 +431,30 @@ class TokenManager:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=30,
         )
+        if resp.status_code == 400 and self._is_invalid_grant(resp):
+            # Remember the rejection so later syncs do not ask SSO again.
+            self._tokens[record.role] = replace(record, refresh_rejected_at=time.time())
+            self._save_record_with_retry(record.role)
+            raise RefreshTokenRejected(response=resp)
         resp.raise_for_status()
         token_json = resp.json()
         new_record = self._to_record(record.role, token_json, record.scopes,
                                       character_id=record.character_id,
-                                      character_name=record.character_name)
+                                      character_name=record.character_name,
+                                      previous_refresh_token=record.refresh_token)
         # Keep the record in memory first: SSO may already have rotated the
         # refresh token, so it must survive a failing save for this run.
         self._tokens[record.role] = new_record
         self._save_record_with_retry(record.role)
         return new_record
+
+    @staticmethod
+    def _is_invalid_grant(resp) -> bool:
+        try:
+            body = resp.json()
+        except ValueError:
+            return False
+        return isinstance(body, dict) and body.get("error") == "invalid_grant"
 
     _SAVE_ATTEMPTS = 3
     _SAVE_RETRY_WAIT_SECONDS = 0.5
@@ -442,9 +479,11 @@ class TokenManager:
 
     def _to_record(self, role: str, token_json: dict, scopes: str,
                     character_id: Optional[int] = None,
-                    character_name: Optional[str] = None) -> TokenRecord:
+                    character_name: Optional[str] = None,
+                    previous_refresh_token: Optional[str] = None) -> TokenRecord:
         access_token = token_json["access_token"]
-        refresh_token = token_json.get("refresh_token", "")
+        # A refresh response without a new refresh token keeps the old one.
+        refresh_token = token_json.get("refresh_token") or previous_refresh_token or ""
         expires_at = time.time() + token_json.get("expires_in", 1200)
         if character_id is None or character_name is None:
             character_id, character_name = self._verify(access_token)
@@ -467,6 +506,13 @@ class TokenManager:
         return int(data["CharacterID"]), data["CharacterName"]
 
     # ------------------------------------------------------------- public API
+    @staticmethod
+    def _raise_if_rejected(record: TokenRecord) -> None:
+        if record.refresh_rejected_at is not None:
+            raise RefreshTokenRejected(
+                "refresh token was rejected earlier (invalid_grant); authorize this character again"
+            )
+
     def get_token(self, role: str) -> TokenRecord:
         self._ensure_loaded()
         record = self._tokens.get(role)
@@ -476,6 +522,7 @@ class TokenManager:
                 f"e.g.: `eve-trader auth --role {role}`."
             )
         if record.is_expired():
+            self._raise_if_rejected(record)
             with self._refresh_lock_for(role):
                 # Re-load + re-check after acquiring the lock - a concurrent
                 # request may have already refreshed (and saved) this exact
@@ -484,6 +531,7 @@ class TokenManager:
                 self._load()
                 record = self._tokens.get(role, record)
                 if record.is_expired():
+                    self._raise_if_rejected(record)
                     record = self._refresh(record)
         return record
 
@@ -500,6 +548,11 @@ class TokenManager:
                 self._load()
                 record = self._tokens.get(role, record)
                 if record.is_expired(skew_seconds=min_valid_seconds):
+                    if record.refresh_rejected_at is not None and not record.is_expired():
+                        # Dead refresh token, but the access token still
+                        # works for now: nothing to refresh, nothing to raise.
+                        return record
+                    self._raise_if_rejected(record)
                     record = self._refresh(record)
         return record
 
@@ -577,7 +630,7 @@ def import_tokens_file(tenant_id: str, path: Optional[Path] = None) -> int:
     imported."""
     path = path or OAUTH_CONFIG.token_store_path
     raw = json.loads(path.read_text(encoding="utf-8"))
-    tokens = {role: TokenRecord(**rec) for role, rec in raw.items()}
+    tokens = {role: _record_from_stored(rec) for role, rec in raw.items()}
     tokens, _changes = _rekey_legacy_bare_roles(tokens)
     with storage.tenant_context(tenant_id):
         for role, record in tokens.items():

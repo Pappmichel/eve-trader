@@ -1,7 +1,8 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { Routes, Route, Navigate, useSearchParams, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { notify } from './notify'
+import { AuthRedirectHandler } from './AuthRedirectHandler'
 import { Center, Loader } from '@mantine/core'
 
 import Landing from './pages/Landing'
@@ -127,69 +128,6 @@ function RouteFallback() {
       <Loader color="accent" />
     </Center>
   )
-}
-
-function AuthRedirectHandler() {
-  const [params, setParams] = useSearchParams()
-  const navigate = useNavigate()
-
-  useEffect(() => {
-    const auth = params.get('auth')
-    const gate = params.get('gate')
-    if (auth === 'success') {
-      const role = params.get('role')
-      const character = params.get('character')
-      notify({ title: 'Login successful', message: `${role}: ${character}`, color: 'accent' })
-    } else if (auth === 'error') {
-      notify({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
-    } else if (gate === 'success') {
-      notify({
-        title: 'Access granted', message: `Logged in as ${params.get('character')}`, color: 'accent',
-      })
-    } else if (gate === 'pending') {
-      notify({
-        title: 'Request submitted',
-        message: 'An admin will review it.',
-        color: 'warn', autoClose: false,
-      })
-    } else if (gate === 'rejected') {
-      notify({
-        title: 'Access rejected',
-        message: 'An admin rejected this request. It stays closed until they delete the rejection.',
-        color: 'danger', autoClose: false,
-      })
-    } else if (gate === 'suspended') {
-      notify({
-        title: 'Access suspended',
-        message: 'Your corporation or alliance is no longer allowlisted.',
-        color: 'danger', autoClose: false,
-      })
-    } else if (gate === 'denied') {
-      notify({
-        title: 'Access denied',
-        message: 'Your corporation or alliance is not allowlisted.',
-        color: 'danger', autoClose: false,
-      })
-    } else if (gate === 'error') {
-      const raw = params.get('message')
-      const message = raw === 'affiliation_unavailable'
-        ? "Couldn't verify your corporation, try again later."
-        : (raw ?? 'unknown error')
-      notify({ title: 'Login failed', message, color: 'danger' })
-    } else {
-      return
-    }
-    params.delete('auth')
-    params.delete('role')
-    params.delete('character')
-    params.delete('message')
-    params.delete('gate')
-    setParams(params, { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  void navigate
-  return null
 }
 
 // Fires once per app load (staleTime: Infinity - a page reload is the

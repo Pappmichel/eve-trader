@@ -158,3 +158,61 @@ def test_same_ip_at_global_cap_does_not_evict_others(monkeypatch):
     assert codes.count(429) == 2
     with auth_router._pending_lock:
         assert len(auth_router._pending) == 3
+
+
+# ----------------------------------------------------- state / nonce / ip
+def _entry(**kw):
+    e = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(),
+         "browser_nonce": "n", "client_ip": "t", "tenant_id": None}
+    e.update(kw)
+    return e
+
+
+def test_state_is_random_and_not_derived_from_the_role(monkeypatch):
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    monkeypatch.setattr(auth_router, "_PENDING_MAX_PER_IP", 100)
+    urls = [client.get("/api/auth/gate/start").json()["url"] for _ in range(2)]
+    states = [u.split("state=")[1].split("&")[0] for u in urls]
+    assert states[0] != states[1]
+    assert all(len(s) >= 40 and not s.startswith("gate") for s in states)
+
+
+def test_wrong_nonce_keeps_the_entry_so_the_real_callback_still_works(monkeypatch):
+    from eve_trader.auth import TokenManager
+    auth_router._pending["s1"] = _entry()
+    resp = client.get("/api/auth/callback", params={"code": "c", "state": "s1"},
+                      cookies={auth_router._OAUTH_NONCE_COOKIE: "wrong"}, follow_redirects=False)
+    assert "message=nonce_mismatch" in resp.headers["location"]
+    assert "s1" in auth_router._pending
+
+    def _boom(self, code, verifier):
+        raise ValueError("stop here")
+    monkeypatch.setattr(TokenManager, "_exchange_code", _boom)
+    resp = client.get("/api/auth/callback", params={"code": "c", "state": "s1"},
+                      cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False)
+    assert "message=token_exchange_failed" in resp.headers["location"]
+    assert "s1" not in auth_router._pending
+
+
+def test_expired_unpruned_entry_is_rejected():
+    auth_router._pending["old"] = _entry(created_at=time.time() - auth_router._PENDING_TTL - 5)
+    resp = client.get("/api/auth/callback", params={"code": "c", "state": "old"},
+                      cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False)
+    assert "message=state_expired_or_unknown" in resp.headers["location"]
+    assert "old" not in auth_router._pending
+
+
+class _Req:
+    def __init__(self, host):
+        from types import SimpleNamespace
+        self.client = SimpleNamespace(host=host) if host is not None else None
+
+
+def test_client_ip_groups_ipv6_by_64_and_leaves_ipv4():
+    f = auth_router._client_ip
+    assert f(_Req("2001:db8:1:2::1")) == f(_Req("2001:db8:1:2:ffff::9"))
+    assert f(_Req("2001:db8:1:2::1")) != f(_Req("2001:db8:1:3::1"))
+    assert f(_Req("::ffff:203.0.113.5")) == "203.0.113.5"
+    assert f(_Req("203.0.113.5")) == "203.0.113.5"
+    assert f(_Req("not-an-ip")) == "unknown"
+    assert f(_Req(None)) == "unknown"

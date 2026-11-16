@@ -396,12 +396,11 @@ def test_gate_start_captures_the_ambient_tenant_into_pending(monkeypatch):
 
 
 @pg_helpers.postgres_required()
-def test_callback_prefix_branch_persists_the_token_under_the_captured_tenant(
+def test_callback_reauth_branch_persists_the_token_under_the_captured_tenant(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema, tenant_pair
 ):
-    # Prefix HTTP /start is gone; /callback still honors a pending entry's
-    # tenant_id so a Characters re-auth (or a leftover prefix-shaped pending
-    # from tests) cannot land in the wrong tenant.
+    # /callback honors a pending entry's tenant_id so a Characters re-auth
+    # cannot land in another tenant.
     tenant_a, tenant_b = tenant_pair
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
@@ -409,9 +408,9 @@ def test_callback_prefix_branch_persists_the_token_under_the_captured_tenant(
     storage.set_tool_grant(1, "characters", tenant_a)
     storage.add_tenant_registry_entry(tenant_a, 1, character_name="Some Character")
 
-    state = "test-prefix-tenant"
+    state = "test-reauth-tenant"
     auth_router._pending[state] = {
-        "verifier": "v", "role_prefix": "buyer", "scopes": ["esi-wallet.read_character_wallet.v1"],
+        "verifier": "v", "role_prefix": "reauth", "scopes": ["esi-wallet.read_character_wallet.v1"],
         "created_at": time.time(), "browser_nonce": "n", "client_ip": "t",
         "tenant_id": tenant_a,
     }
@@ -425,10 +424,52 @@ def test_callback_prefix_branch_persists_the_token_under_the_captured_tenant(
 
     assert "auth=success" in resp.headers["location"]
     with storage.tenant_context(tenant_a):
-        record = TokenManager().get_record("buyer:42")
+        record = TokenManager().get_record("esi:42")
         assert record is not None and record.character_id == 42
     with storage.tenant_context(tenant_b):
-        assert TokenManager().get_record("buyer:42") is None
+        assert TokenManager().get_record("esi:42") is None
+
+
+@pg_helpers.postgres_required()
+def test_callback_reauth_without_tenant_writes_nothing_and_reports_session_lost(
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema, tenant_pair
+):
+    tenant_a, tenant_b = tenant_pair
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    state = "test-reauth-no-tenant"
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "reauth", "scopes": [],
+        "created_at": time.time(), "browser_nonce": "n", "client_ip": "t",
+    }
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (42, "Some Char")))
+
+    resp = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
+
+    assert "message=session_lost" in resp.headers["location"]
+    for tenant in (tenant_a, tenant_b, storage.DEFAULT_TENANT_ID):
+        with storage.tenant_context(tenant):
+            assert TokenManager().list_records() == []
+
+
+def test_callback_unknown_flow_is_rejected(monkeypatch):
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    state = "test-unknown-flow"
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "buyer", "scopes": [],
+        "created_at": time.time(), "browser_nonce": "n", "client_ip": "t",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+    }
+
+    resp = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
+
+    assert "message=unknown_flow" in resp.headers["location"]
 
 
 @pg_helpers.postgres_required()

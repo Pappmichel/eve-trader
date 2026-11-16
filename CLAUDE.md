@@ -583,7 +583,23 @@ an old cookie). The
 character must still belong to the cookie's tenant, the itsdangerous issue
 timestamp must not precede `sessions_valid_after`, and the required
 `tool_key` must be in that tenant-scoped grant list. Missing registry row
-→ 401; registered but missing grant → 403. `/api/gate/status`'s own
+→ 401; registered but missing grant → 403. The session cookie payload also
+carries `iat_ms` (issue time in milliseconds): with it a cookie is revoked
+when `iat_ms` is before `sessions_valid_after` (floored to ms, the same ms
+stays valid); cookies without it keep the old whole-second rule.
+`AuthorizedSession.issued_at` exposes the issue time. `/docs`, `/redoc` and
+`/openapi.json` need a valid session **and** the `admin` grant while the gate
+is on. SSO callback redirects carry only fixed error codes in `?message=`
+(`sso_error`, `state_expired_or_unknown`, `nonce_mismatch`, ...); details go
+to the log, never the URL. The pending-login `state` is random, an entry is
+consumed only when the browser nonce matches, and the per-IP limit groups
+IPv6 by /64. A Characters SSO round without a captured tenant fails with
+`session_lost`; only the `gate` and `reauth` flows exist. A refresh rejected
+by SSO (`invalid_grant`) is stored as `TokenRecord.refresh_rejected_at`; the
+token manager then raises `RefreshTokenRejected` without calling SSO again,
+the ESI client maps it to the 400 "Token refresh failed" status error (dead
+owner, stale clear unchanged), and the Characters list reports
+`refresh_rejected`. `/api/gate/status`'s own
 `tools` field uses the same `authorize_session_cookie` chokepoint so the
 Landing cards and the middleware cannot disagree. Both layers are no-ops
 while `AccessConfig.access_gate_enabled` is `False` (trusted local

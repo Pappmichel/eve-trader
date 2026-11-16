@@ -183,8 +183,10 @@ def do_list_token_characters() -> list[dict]:
             "character_id": rec.character_id,
             "character_name": rec.character_name,
             "roles": [],
+            "rejected": [],
         })
         slot["roles"].append(rec.role)
+        slot["rejected"].append(rec.refresh_rejected_at is not None)
         if rec.character_name:
             slot["character_name"] = rec.character_name
     out = []
@@ -196,6 +198,9 @@ def do_list_token_characters() -> list[dict]:
             "write_role": reauth_write_role(cid),
             "character_has_token_pool": character_has_token_pool(cid),
             "roles": sorted(slot["roles"]),
+            # SSO rejected every stored refresh token of this character
+            # (`invalid_grant`): only a new authorization helps.
+            "refresh_rejected": bool(slot["rejected"]) and all(slot["rejected"]),
             # Known gap 2's "access via" column - the corporation this
             # character belongs to, cached (ESIClient.character_public_info),
             # public data, best-effort (None if the lookup fails).

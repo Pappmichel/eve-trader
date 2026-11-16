@@ -1267,6 +1267,8 @@ export interface EsiTokenCharacter {
   character_name: string
   write_role: string
   character_has_token_pool: boolean
+  /** SSO rejected the stored refresh token(s); the character must be re-authorized. Optional for older payloads. */
+  refresh_rejected?: boolean
   roles: string[]
   /** Known gap 2 (docs/ESI_ACCESS_PLAN.md) - null if the live lookup failed. */
   corporation_id: number | null

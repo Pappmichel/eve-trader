@@ -23,7 +23,7 @@ from typing import Any, Iterator, Optional
 import requests
 
 from . import storage
-from .auth import TokenManager
+from .auth import RefreshTokenRejected, TokenManager
 from .config import ESI_COMPATIBILITY_DATE, TRADING_CONFIG, TradingConfig
 
 log = logging.getLogger(__name__)
@@ -561,6 +561,15 @@ class ESIClient:
         if auth_role:
             try:
                 headers.update(self.tokens.auth_header(auth_role))
+            except RefreshTokenRejected as e:
+                # Dead refresh token: surfaces as the same 400 status error a
+                # live rejection always did, so the sync orchestrator treats
+                # the owner as dead and clears stale data.
+                raise ESIStatusError(
+                    400,
+                    f"Token refresh failed for role '{auth_role}': refresh token rejected. "
+                    f"Re-authorize this character.",
+                ) from e
             except requests.RequestException as e:
                 # Confirmed real bug: TokenManager._refresh calls
                 # resp.raise_for_status(), so a revoked/expired refresh token
@@ -1344,6 +1353,12 @@ class ESIClient:
         url = f"{self.cfg.esi_base}{path}"
         try:
             headers = dict(self.tokens.auth_header(auth_role))
+        except RefreshTokenRejected as e:
+            raise ESIStatusError(
+                400,
+                f"Token refresh failed for role '{auth_role}': refresh token rejected. "
+                f"Re-authorize this character.",
+            ) from e
         except requests.RequestException as e:
             raise ESIError(
                 f"Token refresh failed for role '{auth_role}': {e}. Re-authorize this character."

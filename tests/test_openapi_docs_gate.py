@@ -30,7 +30,7 @@ def test_docs_are_401_when_gate_on_and_unauthenticated(monkeypatch):
 
 
 @pg_helpers.postgres_required()
-def test_docs_are_reachable_when_authenticated(
+def test_docs_need_the_admin_grant_when_authenticated(
     monkeypatch, _apply_phase1_schema, _apply_phase3_schema, _apply_admin_schema,
 ):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
@@ -40,6 +40,15 @@ def test_docs_are_reachable_when_authenticated(
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="Docs")
     token = access_gate.create_session_token(11, "Docs", tenant_id)
     cookies = {access_gate.SESSION_COOKIE_NAME: token}
+    for path in _DOCS:
+        resp = client.get(path, cookies=cookies)
+        assert resp.status_code == 403
+        assert resp.json() == {"detail": "Forbidden - missing tool grant"}
+
+    storage.set_tool_grant(11, "trading", tenant_id)
+    assert client.get("/docs", cookies=cookies).status_code == 403
+
+    storage.set_tool_grant(11, "admin", tenant_id)
     for path in _DOCS:
         assert client.get(path, cookies=cookies).status_code == 200
 
@@ -53,8 +62,10 @@ def test_openapi_schema_has_no_secrets(
     pg_helpers.wipe_tables("access_allowlist", "access_requests")
     tenant_id = storage.create_tenant("Docs")
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="Docs")
+    storage.set_tool_grant(11, "admin", tenant_id)
     token = access_gate.create_session_token(11, "Docs", tenant_id)
     body = client.get("/openapi.json", cookies={access_gate.SESSION_COOKIE_NAME: token}).json()
+    assert "paths" in body
     dumped = str(body).lower()
     assert "session_secret" not in dumped
     assert "password" not in dumped

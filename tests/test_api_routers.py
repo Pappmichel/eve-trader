@@ -2078,12 +2078,13 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
 
     state = "test-state-network-failure"
     auth_router._pending[state] = {
-        "verifier": "v", "role_prefix": "producer", "scopes": ["esi-assets.read_assets.v1"],
+        "verifier": "v", "role_prefix": "reauth", "scopes": ["esi-assets.read_assets.v1"],
         "created_at": time.time(), "browser_nonce": "n",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
     }
 
     def _raise(self, code, verifier):
-        raise requests.ConnectionError("network blip")
+        raise requests.ConnectionError("network blip to login.example.test")
     monkeypatch.setattr(TokenManager, "_exchange_code", _raise)
 
     resp = client.get(
@@ -2093,6 +2094,19 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
 
     assert resp.status_code in (302, 307)
     assert "auth=error" in resp.headers["location"]
+    assert resp.headers["location"].endswith("message=token_exchange_failed")
+    assert "blip" not in resp.headers["location"]
+
+
+def test_auth_callback_provider_error_text_is_never_reflected():
+    resp = client.get(
+        "/api/auth/callback",
+        params={"error": "access_denied", "error_description": "<script>alert(1)</script>"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code in (302, 307)
+    assert resp.headers["location"].endswith("/?auth=error&message=sso_error")
 
 
 # --------------------------------------------------- locations (phase 2)
