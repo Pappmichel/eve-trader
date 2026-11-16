@@ -222,17 +222,27 @@ export default function Logistics() {
     },
     { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },
     {
-      // Can point at another category's currently-configured station (a
-      // surplus beyond its own demand) or a category's own former station
-      // (Structure per Category above was reassigned away from it) - either
-      // way, its whole stock counts once nobody else's demand claims it.
-      header: 'Pull From', accessorKey: 'pull_from_location_id', size: 200,
+      // One or more stops, in the order to move them: the warehouse, then
+      // other category stations' surplus (largest first), then this
+      // category's former stations. Each line is the quantity to take
+      // there, and later rows of the same item already see what earlier
+      // rows claimed.
+      header: 'Pull From', id: 'pull_from', size: 240,
+      accessorFn: (row) => (row.pull_from ?? []).map((stop) => {
+        const name = structureNames?.[String(stop.location_id)] ?? stop.location_id
+        return `${name} (${qty(stop.quantity)})`
+      }).join(', '),
       cell: (i) => {
-        const locationId = i.getValue() as number | null
-        if (locationId == null) return '–'
-        const name = structureNames?.[String(locationId)]
-        const available = i.row.original.pull_from_available
-        return `${name ?? locationId} (${qty(available)})`
+        const stops = i.row.original.pull_from ?? []
+        if (stops.length === 0) return '–'
+        return (
+          <Stack gap={0}>
+            {stops.map((stop) => {
+              const name = structureNames?.[String(stop.location_id)] ?? stop.location_id
+              return <Text key={stop.location_id} size="sm">{name} ({qty(stop.quantity)})</Text>
+            })}
+          </Stack>
+        )
       },
     },
   ], [structureNames])

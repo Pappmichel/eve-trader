@@ -4444,6 +4444,10 @@ def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeyp
 
 
 # ---------------------------------------------------------------- logistics_status
+def _pulls(row):
+    return [(stop.location_id, stop.quantity) for stop in row.pull_from]
+
+
 def _build_job(type_id=1, category="Advanced Components", job_runs=1, decryptor=None):
     from eve_trader.production.models import BuildJobEntry
     return BuildJobEntry(type_id=type_id, type_name=f"Item{type_id}", blueprint_type_id=type_id + 100,
@@ -4528,8 +4532,8 @@ def test_logistics_status_pull_from_hint_picks_richest_surplus_when_no_warehouse
 
     row = rows[0]
     assert row.missing == 7.0
-    assert row.pull_from_location_id == 1002  # 20 > 5, richest surplus (neither has its own demand here)
-    assert row.pull_from_available == 20.0
+    # 20 covers the shortfall, so the chain stops there and does not also list the 5.
+    assert _pulls(row) == [(1002, 7.0)]
 
 
 def test_logistics_status_prefers_warehouse_over_surplus(monkeypatch):
@@ -4547,10 +4551,8 @@ def test_logistics_status_prefers_warehouse_over_surplus(monkeypatch):
 
     row = rows[0]
     assert row.missing == 7.0
-    # Warehouse (9000) only has 6, less than Capital Components' surplus of 20,
-    # but it's still preferred - GitHub issue #4's explicit ask.
-    assert row.pull_from_location_id == 9000
-    assert row.pull_from_available == 6.0
+    # Warehouse first, then the surplus station for the one unit it cannot cover.
+    assert _pulls(row) == [(9000, 6.0), (1002, 1.0)]
 
 
 def test_logistics_status_falls_back_to_surplus_when_warehouse_empty(monkeypatch):
@@ -4567,8 +4569,7 @@ def test_logistics_status_falls_back_to_surplus_when_warehouse_empty(monkeypatch
     rows = engine.logistics_status([_build_job()], cfg)
 
     row = rows[0]
-    assert row.pull_from_location_id == 1002
-    assert row.pull_from_available == 20.0
+    assert _pulls(row) == [(1002, 7.0)]
 
 
 def test_logistics_status_pull_from_hint_nets_other_locations_own_demand(monkeypatch):
@@ -4593,8 +4594,9 @@ def test_logistics_status_pull_from_hint_nets_other_locations_own_demand(monkeyp
         cfg)
 
     row = next(r for r in rows if r.category == "Advanced Components")
-    assert row.pull_from_location_id == 1003
-    assert row.pull_from_available == 5.0
+    # Equipment's surplus is 5; Capital Components has 2 left after its own demand.
+    # Together they cover the 7, largest surplus first.
+    assert _pulls(row) == [(1003, 5.0), (1002, 2.0)]
 
 
 def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
@@ -4608,7 +4610,62 @@ def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
     rows = engine.logistics_status([_build_job()], cfg)
 
     assert rows[0].missing == 0.0
-    assert rows[0].pull_from_location_id is None
+    assert rows[0].pull_from == []
+
+
+def test_logistics_status_pull_chain_does_not_hand_the_same_units_out_twice(monkeypatch):
+    # Both categories are short 10. Equipment has 12 spare and nothing else does.
+    # Equal shortfalls are filled in category-name order, so Advanced Components
+    # takes 10 and Capital Components the remaining 2.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
+    })
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: {
+        1001: 0.0, 1002: 0.0, 1003: 12.0,
+    }[location_id])
+
+    rows = engine.logistics_status(
+        [_build_job(category="Advanced Components"), _build_job(category="Capital Components")], cfg)
+
+    by_category = {row.category: row for row in rows}
+    assert _pulls(by_category["Advanced Components"]) == [(1003, 10.0)]
+    assert _pulls(by_category["Capital Components"]) == [(1003, 2.0)]
+
+
+def test_logistics_status_uses_the_material_multiplier_stored_on_the_job(monkeypatch):
+    # The plan froze ME 9 (0.91). Recomputing would assume ME 10 (0.90) and
+    # ask for 720 instead of 728 of a base-800 material.
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Super Capital Ship": 1001})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (23920, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 0.90)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(21017, 800.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda *a, **k: 0.0)
+    job = _build_job(type_id=23919, category="Super Capital Ship")
+    job.material_mult = 0.91
+
+    rows = engine.logistics_status([job])
+
+    assert rows[0].needed == 728.0
+
+
+def test_build_build_list_stores_the_material_multiplier(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Aeon", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda *a, **k: 100.0)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (23920, 1, 1.0))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (23920, 1, 1.0)))
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (0.91, 0.8, 0.05))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "job_category", lambda type_id: "Super Capital Ship")
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "home_sell_and_profit", lambda *a, **k: (None, None))
+
+    rows = engine._build_build_list({(23920, 1, 23919): 1}, {}, {}, ProductionConfig(), {}, {}, {})
+
+    assert len(rows) == 1
+    assert rows[0].material_mult == 0.91
 
 
 # ------------------------------------------------------- distribution_recommendations
@@ -4751,8 +4808,7 @@ def test_logistics_status_pull_from_hint_uses_orphaned_former_location(monkeypat
     assert len(rows) == 1
     row = rows[0]
     assert row.missing == 7.0  # 10 needed - 3 already at the new location
-    assert row.pull_from_location_id == 1001
-    assert row.pull_from_available == 20.0  # whole former-station stock, not netted against anyone
+    assert _pulls(row) == [(1001, 7.0)]
 
 
 def test_logistics_status_no_orphaned_hint_when_no_former_location(monkeypatch):
@@ -4764,7 +4820,7 @@ def test_logistics_status_no_orphaned_hint_when_no_former_location(monkeypatch):
 
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
-    assert rows[0].pull_from_location_id is None
+    assert rows[0].pull_from == []
 
 
 def test_logistics_status_ignores_orphaned_location_still_active_for_another_category(monkeypatch):
@@ -4783,8 +4839,8 @@ def test_logistics_status_ignores_orphaned_location_still_active_for_another_cat
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
     reactions_row = next(r for r in rows if r.category == "Reactions")
-    assert reactions_row.pull_from_location_id == 1001
-    assert reactions_row.pull_from_available == 20.0  # same result here, via the "other category" surplus path
+    # 1001 is Equipment's station, so this is surplus, and only the 10 that are missing move.
+    assert _pulls(reactions_row) == [(1001, 10.0)]
 
 
 def test_logistics_status_ignores_orphaned_location_configured_as_warehouse(monkeypatch):
@@ -4801,8 +4857,7 @@ def test_logistics_status_ignores_orphaned_location_configured_as_warehouse(monk
 
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
-    assert rows[0].pull_from_location_id == 1001
-    assert rows[0].pull_from_available == 20.0  # via the warehouse-first branch, not double-counted
+    assert _pulls(rows[0]) == [(1001, 10.0)]
 
 
 def test_logistics_status_picks_richest_orphaned_location_first(monkeypatch):
@@ -4817,8 +4872,8 @@ def test_logistics_status_picks_richest_orphaned_location_first(monkeypatch):
 
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
-    assert rows[0].pull_from_location_id == 1002
-    assert rows[0].pull_from_available == 9.0
+    # 9 at 1002, then 1 of the 4 at 1001, covers the 10 that are missing.
+    assert _pulls(rows[0]) == [(1002, 9.0), (1001, 1.0)]
 
 
 def test_logistics_status_volume_m3_is_missing_times_unit_volume(monkeypatch):
