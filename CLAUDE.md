@@ -102,6 +102,13 @@ total. The frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
 (`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
 price-setting change, manual price, or SDE apply drops it at once, nothing is
 cached while quotes are down, and the snapshot write always computes fresh).
+The snapshot also stores `portfolio_snapshots.top_positions` (JSONB): the 20
+largest priced types, one row per type (`type_id`, `quantity`, `unit_price`,
+`value`, `component`), taken from the same priced rows as the total
+(`portfolio_wealth.top_types`). `/wealth-change` returns `price_jumps` against
+yesterday's snapshot: a type in both top lists whose unit price doubled or
+halved and whose value moved by at least 1 % of today's total (a quantity
+change alone is no jump); the page shows a short hint.
 
 All tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
 one Postgres store (`eve_trader/storage.py`, multi-tenant - see
@@ -171,7 +178,12 @@ and Station Trading (`eve_trader/station_trading/realized.py`) read the
 same derived rows and keep their own channel. Portfolio shows one card per
 granted tool and a total from `GET /api/portfolio/realized-cards` when at
 least one of those tools has a figure. That response also carries the
-period's freight, courier and configured rate, summed over those tools.
+period's freight, courier and configured rate, summed over those tools, and
+`unreported_sales` / `unreported_revenue` / `unreported_profit`: results of a
+granted channel whose owner lies outside that tool's own report scope (for
+example a Trading sale from a wallet shared only with Production), counted by
+`realized.db.unreported_results` and shown as one "in no tool" line under the
+cards. They are null while any channel needs a recompute.
 The wallet / jobs /
 orders / contracts **archive** is the source of truth. Derived tables
 (`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
@@ -226,6 +238,15 @@ that fingerprint changes, on `--reset-opening`, or once when the latest run's
 (`prod_ledger_runs.costing_version`, currently 7). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
+
+**Fees are negative journal entries.** Broker fee, market tax, reprocessing tax
+and contract broker fee count a journal entry as cost only when its amount is
+negative (cost = -amount). A positive entry (income of a structure-owning
+corporation wallet) is ignored and reported once per run as
+`fee_income_ignored: <ref_type> <owner> <ISK>`. Days are UTC everywhere:
+`eve_trader/timeutil.py` (`utc_now`, `utc_today`, `utc_now_naive` for stored
+naive ISO strings) replaces `date.today()` and `datetime.utcnow()`, and aware
+timestamps are converted to UTC before they are bucketed by day.
 
 **T0 and fee coverage are separate (confirmed with the user 2026-11-07).**
 Cutover T0 is the oldest archived transaction of any shared wallet and stays
@@ -284,7 +305,12 @@ compressed surplus is a compression (`origin = compressed`, ratio from SDE
 materials). A surplus within 14 days undoes an earlier deficit and the other
 way round (couriers, moves between owners). Yields come from Ore & Minerals /
 Module Reprocessing settings, so outputs are estimates; a wrong yield shows as
-inventory drift. Detection is switched off (warning `reprocess_detection_off`)
+inventory drift. A reprocess candidate or pending surplus detected while a courier issued by an own
+character was in transit counts its 14-day undo window from that courier's
+completion (`CourierContract.date_completed`; warning
+`reprocess_undo_window_extended`). The archive keeps only finished and failed
+couriers, so a courier that is still open extends nothing until it completes
+and the next rebuild runs. Detection is switched off (warning `reprocess_detection_off`)
 while a wallet owner does not also share assets and market orders, or a
 contracts owner its assets. Opening is re-derived once when the first
 observation is used (`prod_ledger_runs.reprocess_baseline_at`). Other modules

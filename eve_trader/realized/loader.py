@@ -74,7 +74,8 @@ log = logging.getLogger(__name__)
 # wallet's journal start stay and are flagged fees_missing. 7: own characters
 # by token or sharing rows; internal market trades are transfers (also
 # re-derives the opening once after the reprocessing, gas decompression and
-# corp-accepted contract flow changes that shipped without a bump).
+# corp-accepted contract flow changes that shipped without a bump; goods in
+# a finished courier's transit are not reprocessing).
 # NULL counts as older.
 COSTING_VERSION = 7
 
@@ -100,7 +101,7 @@ _DECRYPTOR_RUN_BONUS = {d.type_id: d.run_bonus for d in DECRYPTORS.values() if d
 def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt.astimezone(timezone.utc)
 
 
 def _as_date(value) -> date:
@@ -319,6 +320,7 @@ def _load_couriers() -> tuple:
             reward=0.0 if row[6] is None else float(row[6]),
             collateral=0.0 if row[7] is None else float(row[7]),
             status=str(row[8] or ""),
+            date_completed=_as_utc(row[9]) if len(row) > 9 and row[9] is not None else None,
         ))
     return tuple(out)
 

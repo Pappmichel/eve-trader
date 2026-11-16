@@ -507,7 +507,8 @@ def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypat
     ledger_ingest.archive_contracts(
         owner_type="character", owner_id=ALICE,
         contracts=[
-            {"contract_id": 1, "type": "courier", "status": "finished", **common},
+            {"contract_id": 1, "type": "courier", "status": "finished",
+             "date_completed": "2026-10-31T06:58:00Z", **common},
             {"contract_id": 2, "type": "courier", "status": "failed", **common},
             {"contract_id": 3, "type": "courier", "status": "expired", **common},
             {"contract_id": 4, "type": "courier", "status": "deleted", **common},
@@ -521,6 +522,9 @@ def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypat
     failed = next(row for row in rows if int(row[0]) == 2)
     assert failed[7] == pytest.approx(1_500_000_000)
     assert failed[8] == "failed"
+    finished = next(row for row in rows if int(row[0]) == 1)
+    assert finished[9] == datetime(2026, 10, 31, 6, 58, tzinfo=timezone.utc)
+    assert failed[9] is None
 
 
 def test_buy_order_escrow_survives_a_later_history_row_without_it(tenant):

@@ -8,7 +8,7 @@ import datetime as dt
 
 import requests
 
-from .. import storage
+from .. import storage, timeutil
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import OAUTH_CONFIG, ConfigError, OAuthConfig, save_tenant_config_overrides
@@ -21,7 +21,7 @@ from .undercut import check_buy_undercut_pooled, check_undercut_pooled
 
 
 def now_ts() -> str:
-    return dt.datetime.utcnow().isoformat(timespec="seconds")
+    return timeutil.utc_now_naive().isoformat(timespec="seconds")
 
 
 def _item_name(type_id: int) -> str:

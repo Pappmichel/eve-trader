@@ -14,10 +14,10 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from . import storage, wealth_cache
+from . import storage, timeutil, wealth_cache
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
-from .portfolio_wealth import assemble
+from .portfolio_wealth import assemble, top_types
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +138,37 @@ def _card_readers(tool_keys):
     return readers
 
 
+def _card_scopes(tool_keys) -> list[tuple]:
+    """(channel, wallet_owners, contract_owners) of each granted tool's own
+    report scope, the same owner filters its `summary` reads by."""
+    keys = {str(key) for key in (tool_keys or ())}
+    scopes = []
+    if "production" in keys:
+        from .production.realized.report import production_scope
+        scopes.append(production_scope())
+    if "trading" in keys:
+        from .trade_realized import report as trading_report
+        scopes.append(trading_report._scope())
+    if "doctrine" in keys:
+        from .doctrine import realized as doctrine_realized
+        scopes.append(doctrine_realized._scope())
+    if "station_trading" in keys:
+        from .station_trading import realized as station_realized
+        scopes.append(station_realized._scope())
+    return [(s["channel"], s["wallet_owners"], s["contract_owners"]) for s in scopes]
+
+
+def _unreported_sales(tool_keys, window: dict) -> tuple[int, float, float]:
+    """Sales in the period that belong to a granted channel but sit outside
+    that channel's own report scope (for example a Trading sale of a wallet
+    that is only shared with Production), so no card shows them."""
+    from .realized import db as realized_db
+
+    return realized_db.unreported_results(
+        _card_scopes(tool_keys), window["start"], window["end"],
+    )
+
+
 def _sales_count(data: dict):
     if "sale_count" in data:
         return data["sale_count"]
@@ -184,8 +215,10 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
     courier = 0.0
     configured = 0.0
     saw_figure = False
+    needs_rebuild = False
     for tool, reader in _card_readers(tool_keys):
         data = reader(**window)
+        needs_rebuild = needs_rebuild or bool(data["status"]["needs_rebuild"])
         empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
         if not empty:
             saw_figure = True
@@ -208,8 +241,14 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
         })
     rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
     ready = [row["profit"] for row in rows if row["profit"] is not None]
+    unreported = None
+    if saw_figure and not needs_rebuild:
+        unreported = _unreported_sales(tool_keys, window)
     return {
         "rows": rows,
+        "unreported_sales": None if unreported is None else unreported[0],
+        "unreported_revenue": None if unreported is None else unreported[1],
+        "unreported_profit": None if unreported is None else unreported[2],
         "total": sum(ready) if ready else None,
         "fees_missing_sales": sum(row["fees_missing_sales"] for row in rows),
         "fees_missing_revenue": sum(row["fees_missing_revenue"] for row in rows),
@@ -242,7 +281,7 @@ def _history_bucket(period: str, bucket: Optional[str], summaries: list[dict]) -
             starts.append(_day(start))
     if not starts:
         return "day"
-    return "week" if (date.today() - min(starts)).days > 90 else "day"
+    return "week" if (timeutil.utc_today() - min(starts)).days > 90 else "day"
 
 
 def realized_history(tool_keys, period: str = "30", bucket: Optional[str] = None) -> dict:
@@ -415,7 +454,7 @@ def wealth_change(today: Optional[date] = None) -> dict:
     NULL, is None for that horizon. Percent is None when the earlier
     wealth is 0. The page shows these numbers as returned.
     """
-    today = today or date.today()
+    today = today or timeutil.utc_today()
     rows = storage.load_portfolio_snapshots(since=today - timedelta(days=30))
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     by_date = {row[0]: dict(zip(columns, row)) for row in rows}
@@ -429,7 +468,51 @@ def wealth_change(today: Optional[date] = None) -> dict:
         isk = current - earlier
         return {"isk": isk, "pct": None if earlier == 0 else isk / earlier}
 
-    return {"d1": point(1), "d7": point(7), "d30": point(30)}
+    return {
+        "d1": point(1), "d7": point(7), "d30": point(30),
+        "price_jumps": _price_jumps(by_date.get(today), by_date.get(today - timedelta(days=1))),
+    }
+
+
+PRICE_JUMP_RATIO = 2.0
+PRICE_JUMP_MIN_SHARE = 0.01
+
+
+def _price_jumps(current: Optional[dict], previous: Optional[dict]) -> list[dict]:
+    """Types in both days' top lists whose unit price doubled or halved and
+    whose value moved by at least 1 % of today's total. A change of quantity
+    alone is not a jump. Empty when either snapshot has no top list (rows from
+    before it was stored) or today has no total."""
+    if not current or not previous:
+        return []
+    now_rows, before_rows = current.get("top_positions"), previous.get("top_positions")
+    total = current.get("total_wealth")
+    if not isinstance(now_rows, list) or not isinstance(before_rows, list) or not total:
+        return []
+    before = {int(row["type_id"]): row for row in before_rows}
+    jumps = []
+    for row in now_rows:
+        old = before.get(int(row["type_id"]))
+        if old is None or not old.get("unit_price") or row.get("unit_price") is None:
+            continue
+        ratio = float(row["unit_price"]) / float(old["unit_price"])
+        if not (ratio >= PRICE_JUMP_RATIO or ratio <= 1.0 / PRICE_JUMP_RATIO):
+            continue
+        change = float(row["value"]) - float(old["value"])
+        if abs(change) < PRICE_JUMP_MIN_SHARE * abs(float(total)):
+            continue
+        jumps.append({
+            "type_id": int(row["type_id"]),
+            "previous_price": float(old["unit_price"]),
+            "price": float(row["unit_price"]),
+            "value_change": change,
+        })
+    if jumps:
+        names = storage.sde_type_names([jump["type_id"] for jump in jumps])
+        for jump in jumps:
+            jump["type_name"] = names.get(jump["type_id"])
+    jumps.sort(key=lambda jump: (-abs(jump["value_change"]), jump["type_id"]))
+    return jumps
 
 
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -774,6 +857,7 @@ _EMPTY_WEALTH = {
     "wealth_unpriced_items": 0,
     "characters_missing_wallet_scope": [],
     "sync": dict(_EMPTY_SYNC),
+    "top_positions": None,
 }
 _EMPTY_BREAKDOWN = {
     "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [],
@@ -1001,6 +1085,7 @@ def _wealth_from(collected: dict) -> dict:
         "wealth_unpriced_items": built["unpriced_items"],
         "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),
         "sync": _sync_times(collected["shares"], collected["escrow_known"]),
+        "top_positions": top_types(collected["items"]),
         "_built": built,
     }
 
@@ -1178,7 +1263,7 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     overview = portfolio_overview(cfg)
     with wealth_cache.bypassed():
         wealth = total_wealth(cfg)
-    storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
+    storage.upsert_portfolio_snapshot(timeutil.utc_today(), {**overview, **wealth})
     return {**overview, **wealth}
 
 
@@ -1195,7 +1280,7 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     If quotes are down, fall back to a live portfolio_overview so the page
     stays 200; a later call the same day can still write the snapshot.
     """
-    if storage.latest_portfolio_snapshot_date() != date.today():
+    if storage.latest_portfolio_snapshot_date() != timeutil.utc_today():
         try:
             overview = take_portfolio_snapshot(cfg)
         except MarketQuotesUnavailable:
@@ -1216,7 +1301,7 @@ def do_get_wealth_change(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     If quotes are down, return wealth_change() without writing a snapshot
     so the page stays 200.
     """
-    if storage.latest_portfolio_snapshot_date() != date.today():
+    if storage.latest_portfolio_snapshot_date() != timeutil.utc_today():
         try:
             take_portfolio_snapshot(cfg)
         except MarketQuotesUnavailable:
@@ -1232,7 +1317,7 @@ def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
     the *future* for a non-positive `days`, which filtered out every row
     including today's (confirmed real bug in review), rather than a
     reasonable "just today" reading."""
-    since = date.today() - timedelta(days=max(days, 1) - 1) if days is not None else None
+    since = timeutil.utc_today() - timedelta(days=max(days, 1) - 1) if days is not None else None
     rows = storage.load_portfolio_snapshots(since=since)
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     return [dict(zip(columns, row)) for row in rows]

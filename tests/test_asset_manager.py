@@ -11,6 +11,7 @@ from eve_trader.asset_manager import query, scope
 
 from . import pg_helpers
 from .pg_helpers import _apply_esi_access_schema, _apply_phase1_schema, tenant  # noqa: F401
+from eve_trader.timeutil import utc_today
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -578,7 +579,7 @@ def test_type_detail_with_price_history(tenant, gate_on, monkeypatch):
     from eve_trader.goonmetrics_client import HistoryPoint
     _seed_alice()
     _share("character", ALICE, "asset_manager", "assets", "blueprints")
-    today = __import__("datetime").date.today().isoformat()
+    today = utc_today().isoformat()
     monkeypatch.setattr(goonmetrics_client.GoonmetricsClient, "price_history", lambda self, region, ids, esi_for_missing=None: [
         HistoryPoint(region, TRIT, today, 4.0, 6.0, 5.0, 1000.0, 3),
         HistoryPoint(region, TRIT, "2000-01-01", 4.0, 6.0, 5.0, 1000.0, 3),
@@ -598,15 +599,15 @@ def test_history_snapshot_and_diff(tenant, gate_on):
     _share("character", ALICE, "asset_manager")
     storage.replace_assets("character_assets", [(1, TRIT, STATION, "Hangar", 100, 0, "Alice")],
                            owner_character_id=ALICE, owner_name="Alice")
-    yesterday = dt.date.today() - dt.timedelta(days=1)
+    yesterday = utc_today() - dt.timedelta(days=1)
     storage.write_asset_history(yesterday, [("character", ALICE, STATION, TRIT, 40.0), ("character", ALICE, STATION, SHIP, 1.0)])
-    storage.write_asset_history(dt.date.today() - dt.timedelta(days=400), [("character", ALICE, STATION, TRIT, 1.0)])
+    storage.write_asset_history(utc_today() - dt.timedelta(days=400), [("character", ALICE, STATION, TRIT, 1.0)])
 
     assert am_actions.history_snapshot_due() is True
     result = am_actions.do_history()
 
     assert result["from_date"] == yesterday.isoformat()
-    assert result["to_date"] == dt.date.today().isoformat()
+    assert result["to_date"] == utc_today().isoformat()
     by_type = {r["type_id"]: r for r in result["rows"]}
     assert (by_type[TRIT]["delta"], by_type[TRIT]["value_delta"]) == (60.0, 300.0)
     assert by_type[SHIP]["delta"] == -1.0
@@ -625,7 +626,7 @@ def test_history_and_insights_say_why_a_structure_has_no_name(tenant, gate_on):
     _share("character", ALICE, "asset_manager")
     storage.replace_assets("character_assets", [(5, WRAP, structure, "AssetSafety", 1, 0, "Alice", True)],
                            owner_character_id=ALICE, owner_name="Alice")
-    storage.write_asset_history(dt.date.today() - dt.timedelta(days=1), [("character", ALICE, structure, TRIT, 1.0)])
+    storage.write_asset_history(utc_today() - dt.timedelta(days=1), [("character", ALICE, structure, TRIT, 1.0)])
 
     changes = am_actions.do_history()["rows"]
     (safety,) = am_actions.do_insights()["asset_safety"]

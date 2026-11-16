@@ -44,7 +44,11 @@ a quantity-only pre-pass before costing. Per observation:
    seen in the other order); the rest, in whole portions, is reprocessed.
 
 Pending stock older than the window becomes ledger stock without a layer
-(mined, looted): a later consumption draws it as unknown origin.
+(mined, looted): a later consumption draws it as unknown origin. The window
+counts from the detection, except while a courier the tenant issued was in
+transit at that moment and has since finished: then it counts from that
+courier's completion (`reprocess_undo_window_extended` warns with the count).
+Couriers still open are not in the archive, so they extend nothing yet.
 
 A reprocess event is split over the FIFO lots it drew since the previous
 observation (the stock held then, then each inflow), in whole portions,
@@ -480,6 +484,10 @@ class CourierContract:
     reward: float
     collateral: float
     status: str
+    # Completion time of a finished courier (the archive keeps no acceptance
+    # time). Only used to bound reprocessing detection while goods are in
+    # transit.
+    date_completed: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -1347,6 +1355,8 @@ def rebuild_costing(ledger: LedgerSnapshot) -> CostingResult:
 
 
 def _day(ts: datetime) -> date:
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc)
     return ts.date()
 
 
@@ -1356,6 +1366,7 @@ class _Costing:
         self.t0 = ledger.t0
         self.warnings: list[str] = []
         self._warned: set[str] = set()
+        self._fee_income_ignored: dict[tuple, float] = defaultdict(float)
         self.all_layers: list[CostLayer] = []
         self.layers_by_key: dict[tuple, list[CostLayer]] = defaultdict(list)
         self.results: list[RealizedResult] = []
@@ -1385,6 +1396,18 @@ class _Costing:
         if msg not in self._warned:
             self._warned.add(msg)
             self.warnings.append(msg)
+
+    def _fee_cost(self, entry) -> float:
+        """A fee is a negative journal amount; its cost is `-amount`. A
+        positive entry is income (for example a structure-owning corporation
+        wallet receiving fees) and never a cost: it is ignored and reported
+        once per run in `fee_income_ignored`."""
+        amount = float(entry.amount)
+        if amount < 0:
+            return -amount
+        if amount > 0:
+            self._fee_income_ignored[(str(entry.ref_type), f"{entry.owner_type}:{int(entry.owner_id)}")] += amount
+        return 0.0
 
     def _job_included(self, job: IndustryJob) -> bool:
         if job.owner_type != "corporation":
@@ -1709,7 +1732,9 @@ class _Costing:
         pools: dict[tuple, float] = defaultdict(float)
         for j in self.ledger.journal_entries:
             if j.ref_type in FEE_REF_TYPES and j.date >= self.t0:
-                pools[(j.owner_type, int(j.owner_id), _day(j.date))] += abs(float(j.amount))
+                cost = self._fee_cost(j)
+                if cost:
+                    pools[(j.owner_type, int(j.owner_id), _day(j.date))] += cost
         own_orders = {
             (o.owner_type, int(o.owner_id), int(o.type_id), int(o.location_id), bool(o.is_buy_order))
             for o in self.ledger.market_orders
@@ -2321,7 +2346,20 @@ class _Costing:
             queue = lots.setdefault(type_id, [])
             queue.append([since, float(amount)])
             queue.sort(key=lambda lot: lot[0])
-        pending: dict[int, list[list]] = defaultdict(list)  # type -> [[observed_at, qty], ...]
+        pending: dict[int, list[list]] = defaultdict(list)  # type -> [[observed_at, qty, anchor], ...]
+        transits = self._courier_transits()
+        extended = 0
+
+        def anchor(moment: datetime) -> datetime:
+            """The time the undo window counts from. Goods that left while a
+            courier was in transit may come back only when it delivers, so the
+            window counts from that completion. Otherwise it counts from the
+            detection itself."""
+            release = None
+            for start, end in transits:
+                if start <= moment <= end:
+                    release = end if release is None else max(release, end)
+            return release if release is not None and release > moment else moment
         candidates: dict[int, list[dict]] = defaultdict(list)
         ordered: list[dict] = []
         timeline = [(ev[:2], 0, ev) for ev in events if ev[6] in (
@@ -2349,7 +2387,7 @@ class _Costing:
             for type_id, entries in pending.items():
                 keep = []
                 for entry in entries:
-                    if entry[0] < window_start:
+                    if entry[2] < window_start:
                         qty[type_id] += entry[1]
                         add_lot(type_id, entry[0], entry[1])
                     else:
@@ -2394,7 +2432,7 @@ class _Costing:
                 for cand in reversed(candidates[type_id]):
                     if s <= _EPS:
                         break
-                    if cand["detected_at"] < window_start or cand["qty"] <= _EPS:
+                    if cand["undo_at"] < window_start or cand["qty"] <= _EPS:
                         continue
                     back = min(s, cand["qty"])
                     cand["qty"] -= back
@@ -2402,7 +2440,7 @@ class _Costing:
                     add_lot(type_id, cand["when"], back)
                     s -= back
                 if s > _EPS:
-                    pending[type_id].append([now, s])
+                    pending[type_id].append([now, s, anchor(now)])
             # 3. Deficit: offset pending stock, reprocess the rest in whole portions.
             for type_id, d in sorted(deficit.items()):
                 if d <= _EPS:
@@ -2424,15 +2462,49 @@ class _Costing:
                     continue
                 for part, (when, part_qty) in enumerate(
                         self._place_reprocess(take_lots(type_id, whole), whole, recipe, place(type_id))):
+                    undo_at = anchor(now)
+                    if undo_at > now:
+                        extended += 1
                     cand = {"kind": KIND_REPROCESS, "type_id": type_id, "qty": part_qty, "when": when,
-                            "detected_at": now, "part": part}
+                            "detected_at": now, "part": part, "undo_at": undo_at}
                     candidates[type_id].append(cand)
                     ordered.append(cand)
                 qty[type_id] -= whole
             prev_obs = now
             # Whatever is left counts as held at this observation.
             lots = {t: ([[now, qty[t]]] if qty[t] > _EPS else []) for t in tracked}
+        if extended:
+            self.warn(
+                f"reprocess_undo_window_extended: {extended} reprocess candidates kept open "
+                f"while a courier was in transit"
+            )
         return self._reprocess_records(ordered, recipes, [o.observed_at for o in observations])
+
+    def _courier_transits(self) -> list[tuple[datetime, datetime]]:
+        """Time spans in which goods may be inside a courier this tenant
+        issued: from issue to completion of a finished courier. The archive
+        keeps only finished and failed couriers, so a courier that is still
+        open is not known here; the next rebuild after it completes extends
+        the window. Failed and other couriers are not spans. Only couriers
+        issued by an own character count. A finished courier without a
+        completion time is skipped, not guessed."""
+        spans: list[tuple[datetime, datetime]] = []
+        seen: set[int] = set()
+        for raw in self.ledger.couriers:
+            contract_id = int(raw.contract_id)
+            if contract_id in seen or raw.date_issued is None:
+                continue
+            if raw.issuer_id is None or int(raw.issuer_id) not in self.ledger.tenant_character_ids:
+                continue  # someone else's shipment, hauled by one of ours
+            seen.add(contract_id)
+            status = (raw.status or "").lower()
+            start = _as_utc(raw.date_issued)
+            if status == "finished" and raw.date_completed is not None:
+                end = _as_utc(raw.date_completed)
+                if end >= start:
+                    spans.append((start, end))
+        spans.sort()
+        return spans
 
     @staticmethod
     def _place_reprocess(parts: list, whole: float, recipe: ReprocessRecipe,
@@ -2506,7 +2578,9 @@ class _Costing:
             idx = bisect_left(obs_times, entry.date)
             if idx >= len(obs_times):
                 continue
-            pools[obs_times[idx]] += abs(float(entry.amount))
+            cost = self._fee_cost(entry)
+            if cost:
+                pools[obs_times[idx]] += cost
         unmatched = 0.0
         for at, amount in sorted(pools.items()):
             recs = by_obs.get(at, [])
@@ -2588,7 +2662,9 @@ class _Costing:
         for entry in self.ledger.journal_entries:
             if entry.ref_type != CONTRACT_BROKER_FEE_REF or entry.date < self.t0:
                 continue
-            amount = abs(float(entry.amount))
+            amount = self._fee_cost(entry)
+            if not amount:
+                continue
             if entry.context_id_type == "contract_id" and entry.context_id is not None:
                 contract = sales_by_id.get(int(entry.context_id))
                 if contract is not None:
@@ -2666,6 +2742,8 @@ class _Costing:
                 self._on_job_end(obj, when)
             elif kind in (KIND_REPROCESS, KIND_COMPRESS):
                 self._on_reprocess(obj)
+        for (ref_type, owner), amount in sorted(self._fee_income_ignored.items()):
+            self.warn(f"fee_income_ignored: {ref_type} {owner} {_isk_amount(amount)}")
         for type_id in sorted(self.bpc_runs_estimated):
             self.warn(
                 f"bpc_run_estimated: type {type_id} {self.bpc_runs_estimated[type_id]:g} runs "

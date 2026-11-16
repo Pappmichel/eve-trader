@@ -1895,3 +1895,58 @@ def test_free_blueprint_contract_has_no_unbooked_warning():
                     issuer=CHAR, acceptor=7001, price=0.0, start=HOME)
     result = rebuild_costing(snapshot(contracts=[gift]))
     assert not has_warning(result, "contract_blueprint_share_unbooked")
+
+
+# ---------------------------------------------------------------- UTC day / fee sign
+def test_day_uses_utc_for_aware_timestamps():
+    pst = timezone(timedelta(hours=-8))
+    assert c._day(datetime(2026, 10, 2, 20, 0, tzinfo=pst)) == datetime(2026, 10, 3).date()
+    assert c._day(datetime(2026, 10, 2, 20, 0)) == datetime(2026, 10, 2).date()  # naive: already UTC
+
+
+def _fee_share_ledger(tz):
+    def shift(when):
+        return when.astimezone(tz)
+    p_sale = sell(PRODUCT, 3, 100.0, shift(at(3, 2)), tx_id=7001)
+    return snapshot(
+        wallet_transactions=[p_sale],
+        market_orders=[MarketOrder("character", CHAR, 1, PRODUCT, HOME, False, 95.0)],
+        # 02:30 UTC on day 3 is the previous evening in -08:00.
+        journal_entries=[JournalEntry("character", CHAR, 1, shift(at(3, 2, 30)), "brokers_fee", -45.0)],
+        esi_stock_by_type={PRODUCT: 7},
+        reference_prices={(PRODUCT, T0.date()): 60.0},
+        production_type_ids={PRODUCT},
+    )
+
+
+def test_fee_share_is_the_same_in_any_timezone():
+    base = rebuild_costing(_fee_share_ledger(timezone.utc))
+    shifted = rebuild_costing(_fee_share_ledger(timezone(timedelta(hours=-8))))
+    [a] = base.realized_results
+    [b] = shifted.realized_results
+    assert a.broker_fee == pytest.approx(45.0)
+    assert b.broker_fee == pytest.approx(a.broker_fee)
+
+
+def test_positive_fee_entries_are_income_not_cost():
+    def run(amount):
+        p_sale = sell(PRODUCT, 3, 100.0, at(2, 12), tx_id=7001)
+        return rebuild_costing(snapshot(
+            wallet_transactions=[p_sale],
+            market_orders=[MarketOrder("character", CHAR, 1, PRODUCT, HOME, False, 95.0)],
+            journal_entries=[
+                JournalEntry("character", CHAR, 1, at(2, 9), "brokers_fee", -45.0),
+                JournalEntry("character", CHAR, 2, at(2, 9), "brokers_fee", amount),
+            ] if amount else [JournalEntry("character", CHAR, 1, at(2, 9), "brokers_fee", -45.0)],
+            esi_stock_by_type={PRODUCT: 7},
+            reference_prices={(PRODUCT, T0.date()): 60.0},
+            production_type_ids={PRODUCT},
+        ))
+
+    plain = run(0)
+    with_income = run(500.0)
+    assert with_income.realized_results[0].broker_fee == pytest.approx(45.0)
+    assert plain.realized_results[0].broker_fee == pytest.approx(45.0)
+    assert any(w.startswith("fee_income_ignored: brokers_fee character:9001 500")
+               for w in with_income.warnings)
+    assert not any(w.startswith("fee_income_ignored") for w in plain.warnings)

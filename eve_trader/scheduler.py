@@ -40,7 +40,7 @@ import logging
 import threading
 from typing import Optional
 
-from . import backup, portfolio, storage, tenant_eligibility, tenant_scope
+from . import backup, portfolio, storage, tenant_eligibility, tenant_scope, timeutil
 from .config import SCHEDULER_OPERATOR_CONFIG, TRADING_CONFIG, TradingConfig
 from .production import jita_price_cache
 
@@ -110,7 +110,7 @@ def _portfolio_snapshot_due(cfg: TradingConfig) -> bool:
     if latest is None:
         return True
     interval_days = max(1, round(cfg.portfolio_snapshot_interval_hours / 24))
-    return (dt.date.today() - latest).days >= interval_days
+    return (timeutil.utc_today() - latest).days >= interval_days
 
 
 def _job_due(success_ts: str | None, attempt_ts: str | None, interval_hours: float) -> bool:
