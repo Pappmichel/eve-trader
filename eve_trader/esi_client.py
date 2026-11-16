@@ -784,54 +784,110 @@ class ESIClient:
         chunked already uses for the equivalent "many independent chunks,
         latency-bound" situation. Results are reassembled in page order
         before returning, matching the old sequential call's ordering."""
+        collector = _last_modified_seen.get()
+        problem = ""
+        for attempt in (1, 2):
+            # The collector is bypassed while the pages are read: a rejected
+            # pass must not leave its (older cache state) stamps behind. The
+            # accepted pass reports its own stamps below.
+            token = _last_modified_seen.set(None)
+            try:
+                out, responses, problem = self._get_all_pages_once(
+                    path, params, auth_role, max_workers)
+            finally:
+                _last_modified_seen.reset(token)
+            if not problem:
+                if auth_role and collector is not None:
+                    for page_resp in responses:
+                        token = _last_modified_seen.set(collector)
+                        try:
+                            _note_last_modified(page_resp)
+                        finally:
+                            _last_modified_seen.reset(token)
+                return out
+            if attempt == 1:
+                log.warning("Inconsistent ESI pages for %s (%s); reloading once", path, problem)
+        raise ESIError(f"Inconsistent ESI pages for {path} after retry: {problem}")
+
+    # A last page as long as page 1 on a list this big may mean X-Pages was
+    # too small; one probe tells (a 404 counts against ESI's error budget,
+    # so a short last page is never probed).
+    _FULL_PAGE_PROBE_MIN = 1000
+
+    def _get_all_pages_once(self, path: str, params: Optional[dict], auth_role: Optional[str],
+                             max_workers: int) -> tuple[list, list, str]:
+        """One pass over every page. Returns (rows, responses, problem);
+        `problem` names the failed consistency check, empty when the pages
+        belong together."""
         base_params = dict(params or {})
         first_params = dict(base_params, page=1)
         resp = self._get_response(path, first_params, auth_role)
         first_chunk = resp.json()
         if not first_chunk:
-            return []
+            return [], [resp], ""
         total_pages = int(resp.headers.get("X-Pages", "1"))
-        if total_pages <= 1:
-            return first_chunk
 
         def _fetch_page(page: int) -> requests.Response:
             page_params = dict(base_params, page=page)
             return self._get_response(path, page_params, auth_role)
 
         pages: dict[int, list] = {1: first_chunk}
-        # storage.with_current_tenant: ThreadPoolExecutor workers don't
-        # inherit contextvars from the submitting thread - if auth_role's
-        # token happens to be expired right now, _fetch_page's auth_header()
-        # call would otherwise refresh it from inside a worker thread with no
-        # ambient tenant set, 500ing with "no current tenant set".
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(storage.with_current_tenant(_fetch_page), page): page
-                       for page in range(2, total_pages + 1)}
-            for future in as_completed(futures):
-                page_resp = future.result()
-                # Worker threads do not see this thread's contextvars, so
-                # their pages' Last-Modified is noted here.
-                if auth_role:
-                    _note_last_modified(page_resp)
-                pages[futures[future]] = page_resp.json()
+        responses: dict[int, requests.Response] = {1: resp}
+        if total_pages > 1:
+            # storage.with_current_tenant: ThreadPoolExecutor workers don't
+            # inherit contextvars from the submitting thread - if auth_role's
+            # token happens to be expired right now, _fetch_page's auth_header()
+            # call would otherwise refresh it from inside a worker thread with no
+            # ambient tenant set, 500ing with "no current tenant set".
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(storage.with_current_tenant(_fetch_page), page): page
+                           for page in range(2, total_pages + 1)}
+                for future in as_completed(futures):
+                    page_resp = future.result()
+                    responses[futures[future]] = page_resp
+                    pages[futures[future]] = page_resp.json()
 
         out: list = []
         for page in range(1, total_pages + 1):
             chunk = pages[page]
             # An empty follow-up page inside X-Pages used to silently shorten
             # the list (and replace a good snapshot). Retry once; still empty
-            # → fail closed. An empty first page still means [] above.
+            # -> fail closed. An empty first page still means [] above.
             if page > 1 and not chunk:
                 page_resp = _fetch_page(page)
-                if auth_role:
-                    _note_last_modified(page_resp)
+                responses[page] = page_resp
                 chunk = page_resp.json()
                 if not chunk:
                     raise ESIError(
                         f"Empty ESI page {page}/{total_pages} for {path} after retry"
                     )
             out.extend(chunk)
-        return out
+
+        ordered = [responses[p] for p in range(1, total_pages + 1)]
+        problem = self._page_header_problem(ordered, resp.headers.get("X-Pages", "1"))
+        if problem:
+            return out, ordered, problem
+        if (len(first_chunk) >= self._FULL_PAGE_PROBE_MIN
+                and len(pages[total_pages]) == len(first_chunk)):
+            try:
+                extra = _fetch_page(total_pages + 1).json()
+            except ESIStatusError as e:
+                if e.status not in (400, 404):
+                    raise
+                extra = []
+            if extra:
+                return out, ordered, f"data beyond the last page ({total_pages})"
+        return out, ordered, ""
+
+    @staticmethod
+    def _page_header_problem(responses: list, first_x_pages: str) -> str:
+        for number, page_resp in enumerate(responses, start=1):
+            if page_resp.headers.get("X-Pages", "1") != first_x_pages:
+                return f"X-Pages differs on page {number}"
+        stamps = [page_resp.headers.get("Last-Modified") for page_resp in responses]
+        if all(stamps) and len(set(stamps)) > 1:
+            return "Last-Modified differs between pages"
+        return ""
 
     # -------------------------------------------------- market groups / types
     def list_market_group_ids(self) -> list[int]:
