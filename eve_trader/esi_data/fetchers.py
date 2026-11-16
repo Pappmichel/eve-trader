@@ -461,6 +461,43 @@ def _nameable_item_ids(assets: list[dict]) -> list[int]:
     ]
 
 
+# An empty assets/blueprints list right after a large stock is more likely an
+# ESI hiccup than a real total loss. It is reloaded once, then rejected; the
+# next scheduled attempt (its last_error still carries the prefix) accepts it,
+# so a real clear-out is not held back forever.
+SUSPICIOUS_EMPTY_PREFIX = "suspicious_empty:"
+SUSPICIOUS_EMPTY_MIN_PREVIOUS_ROWS = 50
+
+
+def _previous_attempt_was_suspicious_empty(owner_type: str, owner_id: int, data_kind: str) -> bool:
+    for ot, oid, kind, _success, _attempt, err, _as_of in storage.list_esi_freshness():
+        if ot == owner_type and int(oid) == int(owner_id) and kind == data_kind:
+            return bool(err) and str(err).startswith(SUSPICIOUS_EMPTY_PREFIX)
+    return False
+
+
+def _guard_suspicious_empty(
+    rows: list[dict], *, data_kind: str, owner_type: str, owner_id: int, table: str,
+    reload: Callable[[], list[dict]],
+) -> list[dict]:
+    if rows:
+        return rows
+    previous = storage.count_owner_snapshot_rows(table, owner_id)
+    if previous < SUSPICIOUS_EMPTY_MIN_PREVIOUS_ROWS:
+        return rows
+    if _previous_attempt_was_suspicious_empty(owner_type, owner_id, data_kind):
+        log.warning("accepting empty %s for %s %s after %d stored rows (second attempt in a row)",
+                    data_kind, owner_type, owner_id, previous)
+        return rows
+    rows = reload()
+    if rows:
+        return rows
+    raise ESIError(
+        f"{SUSPICIOUS_EMPTY_PREFIX} ESI returned no {data_kind} for {owner_type} {owner_id} "
+        f"although {previous} rows are stored; keeping them"
+    )
+
+
 def _asset_item_names(
     fetch_names: Callable[[list[int]], list[dict]], table: str, owner_id: int, assets: list[dict],
 ) -> dict[int, str]:
@@ -503,6 +540,10 @@ def fetch_character_assets(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     assets = client.character_assets(owner_id, auth_role=auth_role)
+    assets = _guard_suspicious_empty(
+        assets, data_kind="assets", owner_type="character", owner_id=owner_id,
+        table="character_assets",
+        reload=lambda: client.character_assets(owner_id, auth_role=auth_role))
     names = _asset_item_names(
         lambda ids: client.character_asset_names(owner_id, ids, auth_role=auth_role),
         "character_assets", owner_id, assets,
@@ -519,6 +560,10 @@ def fetch_corporation_assets(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     assets = client.corporation_assets(owner_id, auth_role=auth_role)
+    assets = _guard_suspicious_empty(
+        assets, data_kind="assets", owner_type="corporation", owner_id=owner_id,
+        table="corp_assets",
+        reload=lambda: client.corporation_assets(owner_id, auth_role=auth_role))
     names = _asset_item_names(
         lambda ids: client.corporation_asset_names(owner_id, ids, auth_role=auth_role),
         "corp_assets", owner_id, assets,
@@ -583,6 +628,10 @@ def fetch_character_blueprints(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     bps = client.character_blueprints(owner_id, auth_role=auth_role)
+    bps = _guard_suspicious_empty(
+        bps, data_kind="blueprints", owner_type="character", owner_id=owner_id,
+        table="character_blueprints",
+        reload=lambda: client.character_blueprints(owner_id, auth_role=auth_role))
     storage.replace_blueprints(
         "character_blueprints", _blueprint_rows(bps),
         owner_character_id=owner_id,
@@ -595,6 +644,10 @@ def fetch_corporation_blueprints(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     bps = client.corporation_blueprints(owner_id, auth_role=auth_role)
+    bps = _guard_suspicious_empty(
+        bps, data_kind="blueprints", owner_type="corporation", owner_id=owner_id,
+        table="corp_blueprints",
+        reload=lambda: client.corporation_blueprints(owner_id, auth_role=auth_role))
     storage.replace_blueprints(
         "corp_blueprints", _blueprint_rows(bps),
         owner_corporation_id=owner_id,
