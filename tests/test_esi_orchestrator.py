@@ -93,7 +93,7 @@ def _tokens(*chars: tuple[int, str], scopes: str = PRODUCER_SCOPES):
 def _asset(item_id, owner_id):
     return {
         "item_id": item_id, "type_id": TYPE_ID, "location_id": LOCATION_ID,
-        "location_flag": "Hangar", "quantity": owner_id, "is_blueprint_copy": False,
+        "location_flag": "Hangar", "quantity": owner_id, "is_blueprint_copy": False, "is_singleton": False,
     }
 
 

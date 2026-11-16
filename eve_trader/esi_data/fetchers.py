@@ -105,7 +105,7 @@ def _asset_rows(assets: list[dict], owner_name: str,
     return [
         (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
          a["quantity"], int(bool(a.get("is_blueprint_copy"))), owner_name,
-         bool(a.get("is_singleton")), names.get(int(a["item_id"])))
+         bool(a["is_singleton"]), names.get(int(a["item_id"])))
         for a in assets
     ]
 
@@ -139,7 +139,7 @@ def _sell_order_rows(orders: list[dict], owner_name: str) -> list[tuple]:
 def _wallet_txn_rows(txns: list[dict], division: int) -> list[tuple]:
     return [
         (division, t["transaction_id"], t["date"], t["type_id"], t["location_id"],
-         t["unit_price"], t["quantity"], bool(t.get("is_buy")), t["journal_ref_id"])
+         t["unit_price"], t["quantity"], bool(t["is_buy"]), t["journal_ref_id"])
         for t in txns
     ]
 
@@ -155,7 +155,16 @@ def _wallet_txn_archive_rows(txns: list[dict], division: int) -> list[tuple]:
 
 def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
     """Snapshot rows including journal context fields (production ledger
-    plan Phase 1)."""
+    plan Phase 1). `amount` is optional in ESI's spec and the columns are
+    NOT NULL, so an entry without one stays 0; the sync logs how many and
+    of which ref types."""
+    missing = [e for e in entries if e.get("amount") is None]
+    if missing:
+        log.warning(
+            "wallet journal: %d of %d entries (division %s) have no amount, stored as 0; ref types: %s",
+            len(missing), len(entries), division,
+            ", ".join(sorted({str(e.get("ref_type") or "?") for e in missing})),
+        )
     return [
         (
             division, e["id"], e["date"], e.get("ref_type") or "", e.get("amount") or 0.0,

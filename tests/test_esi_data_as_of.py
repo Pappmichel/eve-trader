@@ -38,17 +38,15 @@ def _client_returning(monkeypatch, responses):
 def test_collects_last_modified_of_every_authenticated_page(monkeypatch):
     client = _client_returning(monkeypatch, {
         1: _Resp([1], "Mon, 19 Oct 2026 15:05:37 GMT", total_pages=2),
-        2: _Resp([2], "Mon, 19 Oct 2026 14:58:00 GMT", total_pages=2),
+        2: _Resp([2], "Mon, 19 Oct 2026 15:05:37 GMT", total_pages=2),
     })
 
     with collect_last_modified() as seen:
         rows = client._get_all_pages("/characters/1/assets/", auth_role="esi:1")
 
     assert rows == [1, 2]
-    assert sorted(seen) == [
-        datetime(2026, 10, 19, 14, 58, tzinfo=timezone.utc),
-        datetime(2026, 10, 19, 15, 5, 37, tzinfo=timezone.utc),
-    ]
+    # Pages of one list share one cache state, so both carry the same stamp.
+    assert seen == [datetime(2026, 10, 19, 15, 5, 37, tzinfo=timezone.utc)] * 2
 
 
 def test_public_reads_and_reads_outside_a_collector_are_not_collected(monkeypatch):
