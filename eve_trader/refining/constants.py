@@ -7,6 +7,7 @@ during planning (2026-08-22), not an oversight that they diverge so much:
 ore_ice_yield) - the real Upwell structure reprocessing formula, confirmed
 live against wiki.eveuniversity.org/Reprocessing (2026-08-23):
     Yield = (50 + Rig points) x (1 + Security modifier) x (1 + Structure modifier)
+    (the Security modifier is a rig attribute: 0 when no rig is fitted)
                                x (1 + Reprocessing skill)
                                x (1 + Reprocessing Efficiency skill)
                                x (1 + ore-or-ice-family skill)
@@ -91,10 +92,10 @@ ORE_FAMILY_SKILL_BONUS_PER_LEVEL = 0.02               # e.g. "Veldspar Processin
 
 # -- Scrapmetal path (non-ore/ice loot: modules/ammo/drones) --
 SCRAPMETAL_BASE_YIELD = 0.50
-# "Scrapmetal Processing", +1%/level, max +5% (L5) - 50% + 5% = the confirmed
-# 55% ceiling. Note: the +2%/level figure floating around some guides is
-# wrong/inconsistent with that same confirmed 55% max (50% + 5x2% = 60%, not
-# 55%) - 1%/level is the value that actually reconciles with it.
+# "Scrapmetal Processing": the game formula is 50% x (1 + 0.02 x level)
+# (SDE type 12196, refiningYieldMutator = 2), which is 50% + 1 point per
+# level, max 55% at L5. Expressed as an absolute 0.01 per level on the 50%
+# base it gives the same result.
 SCRAPMETAL_SKILL_BONUS_PER_LEVEL = 0.01
 
 # -- Compression (GitHub issue #90's scope decision, apply to the whole
@@ -130,7 +131,8 @@ def _rounded_security(security_status: float) -> float:
 
 def security_yield_modifier(security_status: Optional[float]) -> float:
     """Sec in the real reprocessing formula (see this module's own
-    docstring) - 0.00 highsec, 0.06 lowsec, 0.12 null-sec/wormhole,
+    docstring). It is a rig attribute: ore_ice_base_yield applies it only
+    when a rig is fitted and uses 0 for "No Rig". 0.00 highsec, 0.06 lowsec, 0.12 null-sec/wormhole,
     confirmed live against wiki.eveuniversity.org/Reprocessing (2026-08-23).
     A genuinely different mechanic from production/constants.py's
     rig_security_multiplier (that one scales only an Engineering Complex's

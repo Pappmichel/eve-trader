@@ -409,9 +409,10 @@ SUBSYSTEM_GROUP_IDS: frozenset = frozenset({958, 954, 956, 957})
 
 # Ship hull size tiers, by SDE invGroup - every *published* group under
 # category_id=6 (Ship) as of this writing. A handful of rare/vanity/
-# non-manufacturable groups (Capsule, Corvette, Shuttle, Special Edition
-# Yachts) are included with a best-guess size since they're harmless even if
-# never actually built; genuinely ambiguous groups (Orca/Industrial Command
+# non-manufacturable groups (Capsule, Corvette, Shuttle) are included with a
+# best-guess size since they're harmless even if never actually built. Special
+# Edition Yachts (group 5087) sit under Medium Ships, as in the SDE rig
+# filter for Medium T1 Ships; genuinely ambiguous groups (Orca/Industrial Command
 # Ship) were confirmed with the user.
 SHIP_SIZE_GROUP_IDS: dict[str, frozenset] = {
     "Small Ships": frozenset({
@@ -442,6 +443,7 @@ SHIP_SIZE_GROUP_IDS: dict[str, frozenset] = {
         380,   # Deep Space Transport
         543,   # Exhumer
         4902,  # Expedition Command Ship
+        5087,  # Special Edition Yachts
         1972,  # Flag Cruiser
         833,   # Force Recon Ship
         28,    # Hauler

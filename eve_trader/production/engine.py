@@ -5563,22 +5563,22 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
 
 def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Total ISK value of current stock (manual + ESI assets + incoming jobs,
-    same _current_stock every stock target uses), priced at each item's C-J
-    sell quote - its real opportunity-cost value even for stock that's
-    actually consumed internally rather than resold, same sourcing
-    _build_margin uses for a home-market target - falling back to the Jita
-    sell quote if there's no C-J listing. Returns {'total_value': ISK,
-    'priced_items': N, 'unpriced_items': N} - unpriced items (no sell quote
-    anywhere) are excluded from total_value rather than counted as 0, so a
-    temporary market-data gap doesn't silently understate the total."""
+    same _current_stock every stock target uses), priced by the Portfolio
+    rule (portfolio._priced, the one valuation shared with Total Wealth):
+    the manual item price if set, else the cheaper of the home sell quote and
+    the Jita sell quote plus freight (haul_cost_per_m3 x packaged m3), without
+    the buy broker fee. Returns {'total_value': ISK, 'priced_items': N,
+    'unpriced_items': N} - unpriced items (no quote anywhere) are excluded
+    from total_value rather than counted as 0, so a temporary market-data gap
+    doesn't silently understate the total."""
+    # Lazy import: portfolio imports this module.
+    from .. import portfolio
     manual_stock = storage.load_manual_stock()
     stock_targets = storage.load_stock_targets()
     # Only the stock targets' own type_ids need pricing here (this KPI never
-    # recurses into materials) - see pricing.home_prices/jita_prices' own
-    # docstrings for why callers must scope type_ids explicitly now.
+    # recurses into materials).
     type_ids = [t[0] for t in stock_targets]
-    home = pricing.home_prices(cfg, type_ids)
-    jita = pricing.jita_prices(type_ids)
+    prices = portfolio._priced(set(type_ids))
 
     total_value = 0.0
     priced_items = 0
@@ -5588,13 +5588,8 @@ def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         current = _current_stock(type_id, manual_stock, cfg, bp)
         if current <= 0:
             continue
-        home_quote = home.get(type_id)
-        jita_quote = pricing.reference_quote(jita.get(type_id))
-        if home_quote and home_quote.sell > 0:
-            price = home_quote.sell
-        elif jita_quote and jita_quote.sell > 0:
-            price = jita_quote.sell
-        else:
+        price = prices.get(type_id)
+        if not price or price <= 0:
             unpriced_items += 1
             continue
         total_value += current * price

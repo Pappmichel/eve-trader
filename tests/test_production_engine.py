@@ -1008,6 +1008,17 @@ def test_job_category_splits_titan_and_supercarrier_into_their_own_bucket(monkey
         assert engine.job_category(type_id) == "Super Capital Ship"
 
 
+def test_job_category_puts_special_edition_yachts_into_medium_ships(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
+    monkeypatch.setattr(
+        storage, "get_sde_type",
+        lambda type_id: (type_id, 5087, "Special Edition Yacht", 100.0, 1, 1884, None, None),
+    )
+
+    assert engine.job_category(77001) == "Medium Ships"
+
+
 def test_job_category_keeps_regular_capital_ships_as_capital_ship(monkeypatch):
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))
     monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
