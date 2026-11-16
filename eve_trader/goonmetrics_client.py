@@ -86,6 +86,13 @@ PRICE_DATA_MAX_TYPES_PER_CALL = 50
 _PRICES_CACHE_TTL = 60  # seconds
 _prices_cache: dict[str, list["CurrentPrice"]] = {}
 _prices_cache_at: dict[str, float] = {}
+# Negative cache per market: after a final failure the time and the error are
+# kept, and a caller arriving within _PRICES_FAILURE_TTL (also one that waited
+# for the market lock) gets an error of the same type at once, without network.
+# Without it every queued caller started its own three 60 s attempts against a
+# server that was already hanging.
+_PRICES_FAILURE_TTL = 45  # seconds
+_prices_failure: dict[str, tuple[float, requests.RequestException]] = {}
 _prices_locks: dict[str, threading.Lock] = {}
 _prices_locks_guard = threading.Lock()  # protects creation of a new per-market lock only, never held during a fetch
 
@@ -97,6 +104,17 @@ def _lock_for_market(market: str) -> threading.Lock:
         return _prices_locks[market]
 
 
+def _repeat_failure(exc: requests.RequestException) -> requests.RequestException:
+    """A fresh exception of the remembered one's type (re-raising the stored
+    object would pile up tracebacks)."""
+    try:
+        again = type(exc)(*exc.args)
+    except Exception:  # noqa: BLE001 - odd constructor signatures
+        again = requests.RequestException(str(exc))
+    again.__cause__ = exc
+    return again
+
+
 def clear_prices_cache() -> None:
     """Forces the next current_prices call (for every market) to re-fetch -
     exists for tests that hit the real cache path (none do yet - every
@@ -106,6 +124,7 @@ def clear_prices_cache() -> None:
     with _prices_locks_guard:
         _prices_cache.clear()
         _prices_cache_at.clear()
+        _prices_failure.clear()
 
 
 @dataclass(frozen=True)
@@ -159,32 +178,46 @@ class GoonmetricsClient:
             if market in _prices_cache and (time.time() - cached_at) < _PRICES_CACHE_TTL:
                 return list(_prices_cache[market])
 
+            failed = _prices_failure.get(market)
+            if failed is not None and (time.time() - failed[0]) < _PRICES_FAILURE_TTL:
+                raise _repeat_failure(failed[1])
+
             url = f"{APPRAISE_BASE}/market/{market}/prices.json"
             last_exc: Optional[requests.RequestException] = None
+            prices: Optional[list[CurrentPrice]] = None
             for attempt in range(1, 4):
                 try:
                     resp = self.session.get(url, timeout=60)
                     resp.raise_for_status()
+                    # Parsing is part of the attempt: an HTML error page with
+                    # status 200 is a failed try, not a crash.
+                    prices = [
+                        CurrentPrice(
+                            type_id=item["typeID"],
+                            updated=item["prices"]["updated"],
+                            buy=item["prices"]["buy"]["max"],
+                            sell=item["prices"]["sell"]["min"],
+                        )
+                        for item in resp.json()
+                    ]
                     break
                 except requests.RequestException as e:
                     last_exc = e
-                    if attempt < 3:
-                        time.sleep(attempt * 2)
-            else:
+                except (ValueError, KeyError, TypeError) as e:
+                    last_exc = requests.RequestException(
+                        f"Unreadable Goonmetrics price list for {market}: {type(e).__name__}")
+                    last_exc.__cause__ = e
+                if attempt < 3:
+                    time.sleep(attempt * 2)
+            if prices is None:
+                _prices_failure[market] = (time.time(), last_exc)
                 raise last_exc
-            results = resp.json()
-            prices = [
-                CurrentPrice(
-                    type_id=item["typeID"],
-                    updated=item["prices"]["updated"],
-                    buy=item["prices"]["buy"]["max"],
-                    sell=item["prices"]["sell"]["min"],
-                )
-                for item in results
-            ]
             prices.sort(key=lambda p: p.type_id)
-            _prices_cache[market] = prices
-            _prices_cache_at[market] = time.time()
+            # An empty list is neither cached nor remembered as a failure:
+            # callers treat it as an outage themselves and ask again.
+            if prices:
+                _prices_cache[market] = prices
+                _prices_cache_at[market] = time.time()
             return list(prices)
 
     def station_current_prices(self, station_id: int, type_ids: Iterable[int]) -> dict[int, CurrentPrice]:
