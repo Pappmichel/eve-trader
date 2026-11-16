@@ -1,6 +1,6 @@
 import pytest
 
-from eve_trader.esi_client import ESIClient, ESIError
+from eve_trader.esi_client import ESIClient, ESIError, ESIStatusError
 
 
 class _FakeResp:
@@ -117,3 +117,109 @@ def test_get_all_pages_empty_follow_up_page_after_retry_raises(monkeypatch):
     with pytest.raises(ESIError, match="Empty ESI page 2/2"):
         ESIClient()._get_all_pages("/some/path/")
     assert attempts[2] == 2
+
+
+class _HdrResp:
+    def __init__(self, payload, x_pages=2, last_modified=None):
+        self._payload = payload
+        self.headers = {"X-Pages": str(x_pages)}
+        if last_modified:
+            self.headers["Last-Modified"] = last_modified
+
+    def json(self):
+        return self._payload
+
+
+_LM1 = "Mon, 16 Nov 2026 10:00:00 GMT"
+_LM2 = "Mon, 16 Nov 2026 10:20:00 GMT"
+
+
+def _patch(monkeypatch, handler):
+    calls = []
+
+    def _fake(self, path, params=None, auth_role=None, retries=3):
+        page = params["page"]
+        calls.append(page)
+        return handler(page, calls.count(page))
+    monkeypatch.setattr(ESIClient, "_get_response", _fake)
+    return calls
+
+
+def test_x_pages_mismatch_once_then_consistent_succeeds(monkeypatch):
+    def handler(page, n):
+        if page == 1:
+            return _HdrResp([{"i": 1}])
+        return _HdrResp([{"i": 2}], x_pages=3 if n == 1 else 2)
+    calls = _patch(monkeypatch, handler)
+    assert ESIClient()._get_all_pages("/p/") == [{"i": 1}, {"i": 2}]
+    assert calls.count(1) == 2
+
+
+def test_last_modified_mismatch_twice_raises(monkeypatch):
+    def handler(page, n):
+        return _HdrResp([{"i": page}], last_modified=_LM1 if page == 1 else _LM2)
+    calls = _patch(monkeypatch, handler)
+    with pytest.raises(ESIError, match="Last-Modified"):
+        ESIClient()._get_all_pages("/p/")
+    assert calls.count(1) == 2
+
+
+def test_last_modified_missing_on_one_page_is_not_an_error(monkeypatch):
+    def handler(page, n):
+        return _HdrResp([{"i": page}], last_modified=_LM1 if page == 1 else None)
+    calls = _patch(monkeypatch, handler)
+    assert ESIClient()._get_all_pages("/p/") == [{"i": 1}, {"i": 2}]
+    assert calls.count(1) == 1
+
+
+def _full():
+    return [{"i": n} for n in range(1000)]
+
+
+def test_full_last_page_probe_404_is_end(monkeypatch):
+    def handler(page, n):
+        if page == 2:
+            raise ESIStatusError(404, "HTTP 404")
+        return _HdrResp(_full(), x_pages=1)
+    calls = _patch(monkeypatch, handler)
+    assert len(ESIClient()._get_all_pages("/p/")) == 1000
+    assert calls == [1, 2]
+
+
+def test_full_last_page_probe_empty_200_is_end(monkeypatch):
+    def handler(page, n):
+        return _HdrResp(_full() if page == 1 else [], x_pages=1)
+    _patch(monkeypatch, handler)
+    assert len(ESIClient()._get_all_pages("/p/")) == 1000
+
+
+def test_full_last_page_probe_with_data_raises_after_one_reload(monkeypatch):
+    def handler(page, n):
+        return _HdrResp(_full() if page == 1 else [{"i": "x"}], x_pages=1)
+    calls = _patch(monkeypatch, handler)
+    with pytest.raises(ESIError, match="beyond the last page"):
+        ESIClient()._get_all_pages("/p/")
+    assert calls == [1, 2, 1, 2]
+
+
+def test_short_last_page_is_never_probed(monkeypatch):
+    def handler(page, n):
+        return _HdrResp(_full() if page == 1 else [{"i": 1}], x_pages=2)
+    calls = _patch(monkeypatch, handler)
+    ESIClient()._get_all_pages("/p/")
+    assert calls == [1, 2]
+
+
+def test_collector_keeps_only_stamps_of_the_accepted_pass(monkeypatch):
+    from eve_trader.esi_client import collect_last_modified
+
+    def handler(page, n):
+        if n == 1 and page == 2:
+            return _HdrResp([{"i": 2}], x_pages=3, last_modified=_LM1)
+        return _HdrResp([{"i": page}], last_modified=_LM2)
+    _patch(monkeypatch, handler)
+    with collect_last_modified() as seen:
+        # first pass: page 1 carries LM2, page 2 LM1 and X-Pages 3 -> rejected
+        ESIClient()._get_all_pages("/p/", auth_role="producer:1")
+    assert len(seen) == 2
+    assert {s.minute for s in seen} == {20}

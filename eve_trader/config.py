@@ -389,6 +389,16 @@ DATA_DIR.mkdir(exist_ok=True)
 WALLET_DIVISION_IDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
 
 
+# ESI contract version sent as `X-Compatibility-Date`. None keeps today's
+# behaviour: the `/latest` base URL and no header. To pin a date, set it here
+# (only after diffing the public spec for that date against the paths
+# esi_client.py uses): the default base URL then drops `/latest` as well.
+ESI_COMPATIBILITY_DATE: Optional[str] = None
+ESI_BASE_DEFAULT = (
+    "https://esi.evetech.net" if ESI_COMPATIBILITY_DATE else "https://esi.evetech.net/latest"
+)
+
+
 @dataclass
 class TradingConfig:
     # -- Regions / structure --
@@ -579,7 +589,7 @@ class TradingConfig:
     lookback_days: int = 30
 
     # -- API endpoints --
-    esi_base: str = "https://esi.evetech.net/latest"
+    esi_base: str = ESI_BASE_DEFAULT
     goonmetrics_history_base: str = "https://goonmetrics.apps.gnf.lt/api/price_history/"
 
     # Market-group top-level path prefixes to hard-exclude from candidate

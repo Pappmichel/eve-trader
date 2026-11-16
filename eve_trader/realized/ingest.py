@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import hubs, storage
+from ..industry_activity import normalize_activity_id
 from ..production import config as production_config
 from ..production.engine import _haul_volume
 from . import db, inputs
@@ -377,10 +378,8 @@ def archive_industry_jobs(
         jid = j.get("job_id")
         if jid is None:
             continue
-        activity_id = int(j["activity_id"])
-        # Normalize live reaction id 9 -> SDE 11 (same as snapshot fetcher).
-        if activity_id == 9:
-            activity_id = 11
+        # Live reaction id 9 -> SDE 11 (same as the snapshot fetcher).
+        activity_id = normalize_activity_id(j["activity_id"])
         start = j.get("start_date")
         rows.append((
             owner_type, int(owner_id), int(jid), activity_id,

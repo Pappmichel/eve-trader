@@ -21,6 +21,7 @@ from typing import Optional
 import requests
 
 from .. import sde_equivalence, storage, wealth_cache
+from ..esi_client import USER_AGENT
 from ..pi import constants as pi_constants
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
@@ -34,7 +35,6 @@ log = logging.getLogger("eve_trader.production.sde")
 # (check_for_newer_sde) without downloading the ~19MB CSV body.
 _FRESHNESS_FILE = "invTypes.csv"
 
-USER_AGENT = "eve-trader-python"
 # Copying (5) has no material rows (confirmed via wiki.eveuniversity.org/
 # Blueprint_copying: "no materials are consumed", just time) - included here
 # only for the blueprint_time fetch below, not material_rows/product_rows.

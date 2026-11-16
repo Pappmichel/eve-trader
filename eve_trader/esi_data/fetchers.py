@@ -17,14 +17,9 @@ from typing import Callable, Collection, Optional
 from .. import storage
 from ..config import WALLET_DIVISION_IDS
 from ..esi_client import ESIClient, ESIError, ignore_last_modified
+from ..industry_activity import normalize_activity_id
 
 log = logging.getLogger(__name__)
-
-# Confirmed CCP live/SDE mismatch: ESI industry jobs report Reactions as
-# activity_id 9, the SDE files them under 11. Same normalization
-# production/esi_sync.py has always applied at ingestion.
-_LIVE_REACTION_ACTIVITY_ID = 9
-_SDE_REACTION_ACTIVITY_ID = 11
 
 # CCP type IDs for the three slot-skill pairs (duplicated from
 # production/constants.py so this package does not import a tool).
@@ -47,10 +42,6 @@ _VALIDATION_UNMATCHED = "unmatched"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _normalize_activity_id(activity_id: int) -> int:
-    return _SDE_REACTION_ACTIVITY_ID if activity_id == _LIVE_REACTION_ACTIVITY_ID else activity_id
 
 
 def _job_slots_from_skills(skill_levels: dict[int, int]) -> dict[str, int]:
@@ -105,14 +96,14 @@ def _asset_rows(assets: list[dict], owner_name: str,
     return [
         (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
          a["quantity"], int(bool(a.get("is_blueprint_copy"))), owner_name,
-         bool(a.get("is_singleton")), names.get(int(a["item_id"])))
+         bool(a["is_singleton"]), names.get(int(a["item_id"])))
         for a in assets
     ]
 
 
 def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> list[tuple]:
     return [
-        (j["job_id"], _normalize_activity_id(j["activity_id"]), j["blueprint_type_id"],
+        (j["job_id"], normalize_activity_id(j["activity_id"]), j["blueprint_type_id"],
          j.get("product_type_id"), j["runs"], j.get("output_location_id"), j["status"],
          j["end_date"], j.get("start_date"), j.get("installer_id"),
          installer_names.get(j.get("installer_id"), str(j.get("installer_id"))),
@@ -139,7 +130,7 @@ def _sell_order_rows(orders: list[dict], owner_name: str) -> list[tuple]:
 def _wallet_txn_rows(txns: list[dict], division: int) -> list[tuple]:
     return [
         (division, t["transaction_id"], t["date"], t["type_id"], t["location_id"],
-         t["unit_price"], t["quantity"], bool(t.get("is_buy")), t["journal_ref_id"])
+         t["unit_price"], t["quantity"], bool(t["is_buy"]), t["journal_ref_id"])
         for t in txns
     ]
 
@@ -155,7 +146,16 @@ def _wallet_txn_archive_rows(txns: list[dict], division: int) -> list[tuple]:
 
 def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
     """Snapshot rows including journal context fields (production ledger
-    plan Phase 1)."""
+    plan Phase 1). `amount` is optional in ESI's spec and the columns are
+    NOT NULL, so an entry without one stays 0; the sync logs how many and
+    of which ref types."""
+    missing = [e for e in entries if e.get("amount") is None]
+    if missing:
+        log.warning(
+            "wallet journal: %d of %d entries (division %s) have no amount, stored as 0; ref types: %s",
+            len(missing), len(entries), division,
+            ", ".join(sorted({str(e.get("ref_type") or "?") for e in missing})),
+        )
     return [
         (
             division, e["id"], e["date"], e.get("ref_type") or "", e.get("amount") or 0.0,
@@ -461,6 +461,43 @@ def _nameable_item_ids(assets: list[dict]) -> list[int]:
     ]
 
 
+# An empty assets/blueprints list right after a large stock is more likely an
+# ESI hiccup than a real total loss. It is reloaded once, then rejected; the
+# next scheduled attempt (its last_error still carries the prefix) accepts it,
+# so a real clear-out is not held back forever.
+SUSPICIOUS_EMPTY_PREFIX = "suspicious_empty:"
+SUSPICIOUS_EMPTY_MIN_PREVIOUS_ROWS = 50
+
+
+def _previous_attempt_was_suspicious_empty(owner_type: str, owner_id: int, data_kind: str) -> bool:
+    for ot, oid, kind, _success, _attempt, err, _as_of in storage.list_esi_freshness():
+        if ot == owner_type and int(oid) == int(owner_id) and kind == data_kind:
+            return bool(err) and str(err).startswith(SUSPICIOUS_EMPTY_PREFIX)
+    return False
+
+
+def _guard_suspicious_empty(
+    rows: list[dict], *, data_kind: str, owner_type: str, owner_id: int, table: str,
+    reload: Callable[[], list[dict]],
+) -> list[dict]:
+    if rows:
+        return rows
+    previous = storage.count_owner_snapshot_rows(table, owner_id)
+    if previous < SUSPICIOUS_EMPTY_MIN_PREVIOUS_ROWS:
+        return rows
+    if _previous_attempt_was_suspicious_empty(owner_type, owner_id, data_kind):
+        log.warning("accepting empty %s for %s %s after %d stored rows (second attempt in a row)",
+                    data_kind, owner_type, owner_id, previous)
+        return rows
+    rows = reload()
+    if rows:
+        return rows
+    raise ESIError(
+        f"{SUSPICIOUS_EMPTY_PREFIX} ESI returned no {data_kind} for {owner_type} {owner_id} "
+        f"although {previous} rows are stored; keeping them"
+    )
+
+
 def _asset_item_names(
     fetch_names: Callable[[list[int]], list[dict]], table: str, owner_id: int, assets: list[dict],
 ) -> dict[int, str]:
@@ -503,6 +540,10 @@ def fetch_character_assets(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     assets = client.character_assets(owner_id, auth_role=auth_role)
+    assets = _guard_suspicious_empty(
+        assets, data_kind="assets", owner_type="character", owner_id=owner_id,
+        table="character_assets",
+        reload=lambda: client.character_assets(owner_id, auth_role=auth_role))
     names = _asset_item_names(
         lambda ids: client.character_asset_names(owner_id, ids, auth_role=auth_role),
         "character_assets", owner_id, assets,
@@ -519,6 +560,10 @@ def fetch_corporation_assets(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     assets = client.corporation_assets(owner_id, auth_role=auth_role)
+    assets = _guard_suspicious_empty(
+        assets, data_kind="assets", owner_type="corporation", owner_id=owner_id,
+        table="corp_assets",
+        reload=lambda: client.corporation_assets(owner_id, auth_role=auth_role))
     names = _asset_item_names(
         lambda ids: client.corporation_asset_names(owner_id, ids, auth_role=auth_role),
         "corp_assets", owner_id, assets,
@@ -583,6 +628,10 @@ def fetch_character_blueprints(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     bps = client.character_blueprints(owner_id, auth_role=auth_role)
+    bps = _guard_suspicious_empty(
+        bps, data_kind="blueprints", owner_type="character", owner_id=owner_id,
+        table="character_blueprints",
+        reload=lambda: client.character_blueprints(owner_id, auth_role=auth_role))
     storage.replace_blueprints(
         "character_blueprints", _blueprint_rows(bps),
         owner_character_id=owner_id,
@@ -595,6 +644,10 @@ def fetch_corporation_blueprints(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     bps = client.corporation_blueprints(owner_id, auth_role=auth_role)
+    bps = _guard_suspicious_empty(
+        bps, data_kind="blueprints", owner_type="corporation", owner_id=owner_id,
+        table="corp_blueprints",
+        reload=lambda: client.corporation_blueprints(owner_id, auth_role=auth_role))
     storage.replace_blueprints(
         "corp_blueprints", _blueprint_rows(bps),
         owner_corporation_id=owner_id,

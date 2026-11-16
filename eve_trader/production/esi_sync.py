@@ -20,7 +20,7 @@ from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
-from .constants import ACTIVITY_REACTION
+from ..industry_activity import normalize_activity_id
 
 PRODUCTION_ROLE_PREFIX = "producer"
 
@@ -104,9 +104,6 @@ def list_capability_characters(capability_key: str, tm: TokenManager | None = No
     return access.list_capability_characters(capability_key, tm)
 
 
-_LIVE_REACTION_ACTIVITY_ID = 9  # see _normalize_activity_id
-
-
 def _normalize_activity_id(activity_id: int) -> int:
     """Confirmed real CCP data inconsistency: the live ESI industry-jobs
     endpoint (/characters/.../industry/jobs/, /corporations/.../industry/
@@ -123,7 +120,7 @@ def _normalize_activity_id(activity_id: int) -> int:
     raw '9' instead of 'Reaction'. Normalizing once here, at ingestion, means
     every other place in the codebase can keep treating 11 as the one and
     only Reaction activity_id."""
-    return ACTIVITY_REACTION if activity_id == _LIVE_REACTION_ACTIVITY_ID else activity_id
+    return normalize_activity_id(activity_id)
 
 
 def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> list[tuple]:

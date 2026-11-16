@@ -3377,6 +3377,19 @@ def replace_assets(
     )
 
 
+def count_owner_snapshot_rows(table: str, owner_id: int) -> int:
+    """Rows currently stored for one owner in an asset or blueprint snapshot
+    table (rows with the owner id only, legacy NULL-id rows are not counted)."""
+    assert table in _ASSET_TABLES or table in _BP_TABLES
+    is_character = table in _CHAR_ASSET_TABLES or table in _CHAR_BP_TABLES
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {id_column} = ?", (owner_id,),
+        ).fetchone()
+    return int(row[0])
+
+
 def _replace_assets_one(
     table: str,
     rows: list[tuple],
