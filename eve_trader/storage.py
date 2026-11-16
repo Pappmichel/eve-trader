@@ -3756,6 +3756,26 @@ def list_esi_character_capabilities() -> list[tuple[int, str]]:
     return [(int(r[0]), r[1]) for r in rows]
 
 
+def mark_esi_character_removed(character_id: int) -> None:
+    """Remember that `character_id` was removed on the Characters page (its
+    sharing rows stay). Removing it again moves `removed_at` forward."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_removed_characters (character_id, removed_at) VALUES (?, now()) "
+            "ON CONFLICT (tenant_id, character_id) DO UPDATE SET removed_at = EXCLUDED.removed_at",
+            (int(character_id),),
+        )
+
+
+def list_esi_removed_characters() -> dict[int, object]:
+    """character_id -> removed_at for the current tenant."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT character_id, removed_at FROM esi_removed_characters ORDER BY character_id"
+        ).fetchall()
+    return {int(r[0]): r[1] for r in rows}
+
+
 def upsert_esi_character_capability(character_id: int, capability_key: str) -> None:
     with connect() as conn:
         conn.execute(

@@ -117,11 +117,17 @@ def _production_type_ids(job_rows: list[tuple]) -> frozenset[int]:
 
 
 def _tenant_character_ids() -> frozenset[int]:
-    """The tenant's own characters: the registry entry (the login character)
-    plus every character that holds a token in this tenant. The registry
-    alone has one character per tenant, so a tenant's other characters
-    would read as outsiders (their corp jobs skipped, contracts between
-    them booked as sales)."""
+    """The tenant's own characters: the registry entry (the login character),
+    every character that holds a token in this tenant, and every character
+    with a sharing row (`esi_sharing`) or an Access capability
+    (`esi_character_capabilities`), unless it was removed on the Characters
+    page (`esi_removed_characters`) and holds no token. A token always wins.
+
+    The registry alone has one character per tenant, and a token can expire
+    or be missing on a copy of the data, so without the sharing rows a
+    tenant's other characters would read as outsiders (their corp jobs
+    skipped, contracts between them booked as sales). Corporation sharing
+    rows are not characters. Callers compute this once per rebuild."""
     tenant_id = storage.get_current_tenant()
     entries = storage.list_tenant_registry_entries(str(tenant_id))
     ids = {int(eid) for et, eid in entries if et == "character"}
@@ -129,7 +135,39 @@ def _tenant_character_ids() -> frozenset[int]:
     from ..config import OAUTH_CONFIG
     ids.update(int(rec.character_id) for rec in TokenManager(OAUTH_CONFIG).list_records()
                if rec.character_id is not None)
+    shared = {int(oid) for ot, oid, _kind, _tool in storage.list_esi_sharing() if ot == "character"}
+    shared.update(int(cid) for cid, _key in storage.list_esi_character_capabilities())
+    if shared - ids:
+        removed = storage.list_esi_removed_characters()
+        ids.update(cid for cid in shared if cid not in removed)
     return frozenset(ids)
+
+
+def _foreign_character_warnings(own: frozenset[int], *row_sets) -> list[str]:
+    """One warning per character that owns archive rows read for this
+    rebuild but is not one of the tenant's own characters (in practice: a
+    character removed on the Characters page whose sharing rows were kept).
+    Each row set holds archive rows whose first two columns are
+    (owner_type, owner_id)."""
+    foreign = sorted({
+        int(row[1]) for rows in row_sets for row in rows
+        if row[0] == "character" and int(row[1]) not in own
+    })
+    if not foreign:
+        return []
+    removed = storage.list_esi_removed_characters()
+    out = []
+    for cid in foreign:
+        when = removed.get(cid)
+        if when is None:
+            detail = "not removed"
+        else:
+            detail = f"removed {_as_date(when).isoformat()}"
+        out.append(
+            f"foreign_character_with_archive: character {cid} has archive rows but is not "
+            f"an own character ({detail}); contracts with it count as sales"
+        )
+    return out
 
 
 def _corp_wallet_owner_ids() -> frozenset[int]:
@@ -370,13 +408,15 @@ def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
     return snapshot, cutover
 
 
-def _load_contracts() -> tuple:
+def _load_contracts(tenant_chars: Optional[frozenset[int]] = None) -> tuple:
     """Finished item-exchange contracts shared with any realized tool, deduped
     by contract id. Freight is frozen onto item rows the first time the start
     location's region can be resolved. Courier rows are not returned.
     `is_doctrine` is U7: doctrine structure, issuer is a tenant character,
     archive owner shares contracts with Doctrine. Trading's contracts share
-    prices couriers only; it does not add item-exchange sales (F4)."""
+    prices couriers only; it does not add item-exchange sales (F4).
+    `tenant_chars` is the rebuild's own-character set (read once per
+    rebuild)."""
     owners = access.shared_item_exchange_owners()
     if not owners:
         return ()
@@ -405,7 +445,8 @@ def _load_contracts() -> tuple:
 
     doc_owners = set(access.shared_owners_for("contracts", "doctrine"))
     doc_structures = set(DOCTRINE_CONFIG.effective_structure_ids)
-    tenant_chars = _tenant_character_ids()
+    if tenant_chars is None:
+        tenant_chars = _tenant_character_ids()
     fittings = _doctrine_fitting_ids(list(grouped))
     titles = db.contract_titles(list(grouped))
     match_candidates = None
@@ -997,6 +1038,8 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         order_rows = access.list_all_market_orders_for_production()
         job_rows = access.list_all_industry_jobs_for_production()
         input_rows = access.list_all_job_inputs_for_production()
+        # Read once per rebuild and passed on (contracts, costing, warnings).
+        tenant_chars = _tenant_character_ids()
 
         inputs_by_job: dict[tuple, list[JobInput]] = defaultdict(list)
         for ot, oid, job_id, type_id, qty, source in input_rows:
@@ -1068,9 +1111,12 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 uses_bpc=_uses_bpc(r, bp_runs, invented),
             ))
 
-    contracts = _load_contracts()
+    contracts = _load_contracts(tenant_chars)
     with storage.batch_session():
-        tenant_chars = _tenant_character_ids()
+        foreign_warnings = _foreign_character_warnings(
+            tenant_chars, tx_rows, journal_rows, job_rows,
+            [(contract.owner_type, contract.owner_id) for contract in contracts],
+        )
         tenant_corps = _tenant_corporation_ids()
         corp_wallets = _corp_wallet_owner_ids()
         jobs = _resolve_symmetry(jobs)
@@ -1136,6 +1182,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 key: None if start is None else _as_utc(start)
                 for key, start in access.fee_coverage_starts_for_production().items()
             },
+            loader_warnings=tuple(foreign_warnings),
             **reprocess,
         )
 
@@ -1369,7 +1416,7 @@ def _persist(snapshot, result, scope_hash: str) -> tuple[int, list]:
     """Write derived tables. Returns (run_id, warnings). The run row is
     written only inside replace_derived_costing, after the rows succeed."""
     bonus = db.structure_bonus_applied_by_job(access.shared_owners("industry_jobs"))
-    extra = list(result.warnings)
+    extra = list(getattr(snapshot, "loader_warnings", ())) + list(result.warnings)
     for ref in result.jobs_before_t0:
         extra.append(f"job_before_t0: {ref} started before cutover and consumes nothing")
     for ref in result.skipped_corp_jobs:

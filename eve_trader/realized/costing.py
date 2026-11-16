@@ -598,6 +598,10 @@ class LedgerSnapshot:
     # has no archived sales tax or broker fee and is flagged `fees_missing`.
     # Absent wallets are fully covered. T0 stays shared and does not move.
     fee_coverage_starts: Mapping[tuple, Optional[datetime]] = field(default_factory=dict)
+    # Run warnings the loader found while assembling the snapshot (e.g. a
+    # character with archive rows that is not an own character). Costing
+    # does not read them; the loader stores them with the run's warnings.
+    loader_warnings: Sequence[str] = ()
 
 
 # ====================================================================== outputs
