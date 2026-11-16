@@ -1,6 +1,7 @@
 """Login callback, middleware re-check, and /api/gate/status for the allowlist."""
 from __future__ import annotations
 
+from eve_trader.auth import SsoIdentity
 import time
 import uuid
 
@@ -52,7 +53,7 @@ def _callback(monkeypatch, character_id, name, *, affiliation):
         "created_at": time.time(), "browser_nonce": "n",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (character_id, name)))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(character_id, name, "owner-hash", ())))
     monkeypatch.setattr(access_policy, "fetch_affiliation", lambda _cid: affiliation)
     monkeypatch.setattr(ESIClient, "resolve_names", lambda self, ids: {i: f"Name {i}" for i in ids})
     return client.get(
@@ -205,7 +206,7 @@ def test_admin_is_not_rechecked_at_login(monkeypatch, _apply_admin_schema, _appl
         return (2, None)
 
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (999, "Admin")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(999, "Admin", "owner-hash", ())))
     monkeypatch.setattr(access_policy, "fetch_affiliation", fetch)
     state = "admin-not-rechecked"
     auth_router._pending[state] = {

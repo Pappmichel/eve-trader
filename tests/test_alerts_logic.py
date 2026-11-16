@@ -123,7 +123,7 @@ def test_send_dm_disables_mentions_and_truncates(monkeypatch):
     assert calls[0][0].endswith("/users/@me/channels") and calls[0][1]["headers"]["Authorization"] == "Bot TOK"
     body = calls[1][1]["json"]
     assert calls[1][0].endswith("/channels/999/messages")
-    assert body["allowed_mentions"] == {"parse": []} and len(body["content"]) == dc.MAX_CONTENT_CHARS
+    assert body["flags"] == 4 and body["allowed_mentions"] == {"parse": []} and len(body["content"]) == dc.MAX_CONTENT_CHARS
 
 
 def test_send_dm_error_mapping(monkeypatch):

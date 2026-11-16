@@ -6,12 +6,13 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { charAlertsApi } from '../../../api/client'
+import { authApi, charAlertsApi } from '../../../api/client'
 import type { AlertSettings } from '../../../api/types'
 import AlertsPage from './AlertsPage'
 
 vi.mock('../../../api/client', () => ({
   charAlertsApi: { settings: vi.fn(), setSubscription: vi.fn(), linkStart: vi.fn(), unlink: vi.fn(), test: vi.fn() },
+  authApi: { start: vi.fn() },
   ApiError: class ApiError extends Error {},
 }))
 
@@ -98,6 +99,21 @@ describe('AlertsPage', () => {
     renderPage('/?discord=linked')
     expect(await screen.findByText('Discord linked')).toBeInTheDocument()
   })
+  it('asks for a fresh login after the redirect code and shows the login button', async () => {
+    vi.mocked(charAlertsApi.settings).mockResolvedValue(settings({ linked: false }))
+    vi.mocked(authApi.start).mockResolvedValue({ url: '/login-here' })
+    renderPage('/?discord=fresh_login_required')
+    expect(await screen.findByText('Log in again to link Discord')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /log in again/i }))
+    await waitFor(() => expect(authApi.start).toHaveBeenCalled())
+  })
+
+  it('says when mail text is paused after a logout', async () => {
+    vi.mocked(charAlertsApi.settings).mockResolvedValue(settings({ mail_content_paused: true }))
+    renderPage()
+    expect(await screen.findByText(/Mail text paused since your last logout/)).toBeInTheDocument()
+  })
+
   it('contract alert filters are sent with the subscription; doctrine ones need the grant', async () => {
     const on = { ...off, enabled: true }
     const filters = {

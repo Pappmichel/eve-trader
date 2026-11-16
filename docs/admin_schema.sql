@@ -13,6 +13,9 @@
 -- admin.do_add_user / auth.py's /callback gate branch) - avoids a live ESI
 -- call every time the Admin page's user list is rendered.
 ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS character_name TEXT;
+-- EVE character owner hash seen at the first gate login (changes when a character is
+-- transferred to another account). Only compared and logged, never a login gate.
+ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS owner_hash TEXT;
 
 -- AccessGate is character-only now (corp/alliance registry entries retired -
 -- see the Login/Admin architecture review; live-checked before this change

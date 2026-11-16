@@ -22,6 +22,7 @@ from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_character_management_schema, _apply_esi_access_schema,
     _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema, tenant,
 )
+from .pg_helpers import _apply_session_revocations_schema  # noqa: F401
 from .test_doctrine_storage import _apply_doctrine_schema  # noqa: F401
 from .test_storage_refining import _apply_refining_schema  # noqa: F401
 
@@ -437,3 +438,90 @@ def test_alerts_job_returns_at_once_and_the_guard_blocks_a_second_start(tenant, 
     while "alerts" not in scheduler.last_run_status.get(tenant, {}) and time.monotonic() < deadline:
         time.sleep(0.02)
     assert scheduler.last_run_status[tenant]["alerts"]["error"] is None
+
+
+# ------------------------------------- mail text after a logout / escaping
+def _gate_on_with_registry(monkeypatch, tenant):
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
+    pg_helpers.wipe_tables("tenant_registry_entries", "character_session_revocations")
+    storage.add_tenant_registry_entry(tenant, ALICE, character_name="Alice")
+
+
+def _mail_with_text(_env, include_content=True):
+    aa.do_set_subscription(ALICE, "mail_new", True, include_content=include_content)
+    fake = FakeClient(headers=[_h(1)], bodies={2: "the secret text"})
+    _run(fake)
+    fake.headers = [_h(2, subject="Hi"), _h(1)]
+    return fake
+
+
+def test_mail_text_pauses_after_a_logout_until_discord_is_linked_again(
+        tenant, _env, monkeypatch, _apply_admin_schema, _apply_session_revocations_schema):
+    _setup()
+    _gate_on_with_registry(monkeypatch, tenant)
+    try:
+        fake = _mail_with_text(_env)
+        storage.revoke_sessions_for_character(ALICE)                  # logout
+        assert aa.content_paused() is True
+        assert aa.do_get_alert_settings()["mail_content_paused"] is True
+        _run(fake, now=NOW + timedelta(minutes=11))
+        assert "Hi" in _env[0] and "secret text" not in _env[0]       # sender and subject still go out
+        assert "body2" not in fake.calls                              # the text is not even fetched
+
+        storage.set_alert_destination(UID)                            # linked again
+        assert aa.content_paused() is False
+        fake.headers = [_h(3, subject="Again"), _h(2), _h(1)]
+        fake.bodies[3] = "more text"
+        _run(fake, now=NOW + timedelta(minutes=22))
+        assert "more text" in _env[1]
+    finally:
+        pg_helpers.wipe_tables("tenant_registry_entries", "character_session_revocations")
+
+
+def test_deliver_refuses_content_while_paused_but_sends_plain_alerts(
+        tenant, _env, monkeypatch, _apply_admin_schema, _apply_session_revocations_schema):
+    _setup()
+    _gate_on_with_registry(monkeypatch, tenant)
+    try:
+        aa.do_set_subscription(ALICE, "mail_new", True, include_content=True)
+        storage.revoke_sessions_for_character(ALICE)
+        assert aa.deliver(ALICE, "mail_new", "with text", has_content=True) is False
+        assert aa.deliver(ALICE, "mail_new", "subject only") is True
+        assert _env == ["subject only"]
+    finally:
+        pg_helpers.wipe_tables("tenant_registry_entries", "character_session_revocations")
+
+
+def test_gate_off_never_pauses(tenant, _env, monkeypatch):
+    _setup()
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+    assert aa.content_paused() is False
+
+
+def test_mail_subject_and_sender_arrive_escaped(tenant, _env):
+    _setup()
+    aa.do_set_subscription(ALICE, "mail_new", True)
+    fake = FakeClient(headers=[_h(1)])
+    fake.senders = {7: "[Bob](https://evil.example)"}
+    _run(fake)
+    fake.headers = [{**_h(2, subject="[click](https://evil.example) @everyone"), "from": 7}, _h(1)]
+    _run(fake, now=NOW + timedelta(minutes=11))
+    assert "[click](" not in _env[0] and "\\[click\\]\\(https://evil.example\\)" in _env[0]
+    assert "\\[Bob\\]" in _env[0]
+
+
+def test_md_escape_and_message_builders():
+    BS = chr(92)
+    from eve_trader.alerts import logic
+    assert logic.md_escape("[x](https://a)") == "\\[x\\]\\(https://a\\)"
+    assert logic.md_escape("**b** _i_ ~s~ `c` |p| #h >q") == "\\*\\*b\\*\\* \\_i\\_ \\~s\\~ \\`c\\` \\|p\\| \\#h \\>q"
+    assert logic.md_escape("a\n- item\n  - nested") == "a\n" + BS + "- item\n  " + BS + "- nested"
+    assert logic.md_escape("@everyone") == "@everyone"                # mentions are switched off at send time
+    assert logic.md_escape("back" + BS + "slash") == "back" + BS + BS + "slash"
+    text = logic.contract_message(
+        [(1, "finished", {"type": "item_exchange", "title": "[Free ISK](https://evil.example)", "price": 1,
+                          "start_location_id": 5, "acceptor_id": 9})],
+        "Al[ice]", places={5: "Home *Base*"}, acceptors={9: "[Eve](x)"}, sold_out=["Fit [1](y)"])
+    assert "](" not in text and "\\[Free ISK\\]\\(https://evil.example\\)" in text
+    assert "Home \\*Base\\*" in text and "\\[Eve\\]" in text and "Fit \\[1\\]" in text and text.startswith("Al\\[ice\\]")
+

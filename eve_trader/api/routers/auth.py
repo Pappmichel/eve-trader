@@ -234,9 +234,14 @@ def _affiliation_display_names(corporation_id: int, alliance_id: int | None) -> 
     return names.get(corporation_id), (names.get(alliance_id) if alliance_id is not None else None)
 
 
-def _complete_gate_login(character_id: int, character_name: str):
+def _complete_gate_login(character_id: int, character_name: str, owner_hash: str = ""):
     tenant_id = storage.resolve_tenant_id(character_id)
     if tenant_id is not None:
+        # A changed hash is only logged: whether a character transfer really
+        # changes it is not verified, so it must not lock anyone out.
+        previous = storage.record_owner_hash(character_id, owner_hash)
+        if previous and owner_hash and previous != owner_hash:
+            log.warning("owner hash changed for character %s", character_id)
         # Name refresh does not touch affiliation columns (ON CONFLICT only
         # sets the name). Done even when the verdict later withholds the cookie
         # so the Admin user list stays current.
@@ -351,7 +356,8 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
         log.warning("SSO token exchange failed: %s", _log_detail(e))
         return _error_redirect("token_exchange_failed", role_prefix)
     try:
-        character_id, character_name = tm._verify(token_json["access_token"])
+        identity = tm._identity(token_json["access_token"])
+        character_id, character_name = identity.character_id, identity.character_name
     except (requests.RequestException, KeyError, ValueError) as e:
         # A network-level failure or a malformed response must still end in a
         # redirect back to the frontend, never a raw 500 mid-SSO.
@@ -365,7 +371,7 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
         # an access request; everyone else is denied, rejected, or
         # suspended. Registered characters are re-checked (force=True, so
         # the 6h window does not apply at login).
-        return _complete_gate_login(character_id, character_name)
+        return _complete_gate_login(character_id, character_name, identity.owner_hash)
 
     # Both Characters SSO rounds land here: re-authorize (an existing
     # character, `reauth_character_id` set - the returned character must
@@ -401,9 +407,23 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
             resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
             return resp
         final_role = reauth_write_role(character_id)
+        # Store what SSO granted, not what was asked for.
+        granted = list(identity.scopes)
+        missing = sorted(set(pending["scopes"]) - set(granted))
+        if missing:
+            log.warning("SSO granted fewer scopes than requested for character %s: missing %s",
+                        character_id, missing)
+        owner_hash = identity.owner_hash
+        for existing in tm.list_records():
+            if (existing.character_id == int(character_id) and existing.owner_hash
+                    and owner_hash and existing.owner_hash != owner_hash):
+                log.warning("owner hash changed for character %s", character_id)
+                owner_hash = existing.owner_hash
+                break
         record = tm._to_record(
-            final_role, token_json, " ".join(pending["scopes"]),
+            final_role, token_json, " ".join(granted),
             character_id=character_id, character_name=character_name,
+            owner_hash=owner_hash,
         )
         tm._tokens[final_role] = record
         tm._save_record(final_role)

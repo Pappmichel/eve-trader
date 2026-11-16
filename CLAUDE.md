@@ -661,6 +661,16 @@ there, since the scope-less write would clobber the key
 uses prefix keys (`producer:<id>`, …); `ROLE_PREFIX_TOOL` /
 `validate_role_key_for_tool` still own those namespaces for DELETE.
 
+**SSO identity.** The login identity is the access token's JWT, verified locally
+(`TokenManager._identity`: RS256 against the JWKS cached class-wide for 1 h,
+one reload on an unknown `kid`, issuer, both audiences, 60 s leeway). A key
+endpoint outage fails the login as `identity_failed`; token refresh never
+verifies a JWT. Stored scopes are the granted `scp`, not the requested ones.
+The character owner hash is stored on `tenant_registry_entries.owner_hash`
+(first gate login) and on token records; a changed hash is only logged
+(`storage.record_owner_hash`), it never blocks a login or overwrites the stored
+value (a lock-out waits for confirmation that transfers change the hash).
+
 `AccessGate` is character-only (`tenant_registry_entries.entry_type`
 CHECK-constrained to `'character'`, `docs/admin_schema.sql`) - corp/alliance
 registry entries were retired once tool-level permissions made "any
@@ -814,6 +824,19 @@ guard holds until the thread ends.
 mid-flight when the next 5-minute tick started a second one for the same
 tenant, and both would read `alert_state` before either wrote it - a real
 double-DM risk, not just a wasted ESI call.
+
+Link, logout and text safety. Linking a Discord account needs a login younger
+than 10 minutes (`DISCORD_LINK_FRESH_LOGIN_SECONDS`, gate on only; the gate puts
+`session_issued_at`, `character_id` and `character_name` on `request.state`);
+otherwise `fresh_login_required` (start 400, callback redirect
+`?discord=fresh_login_required`). Moving the link to another Discord account
+first DMs the old one (failure only logged). After a logout/revocation newer
+than `alert_destinations.linked_at` (`storage.latest_session_revocation`) mail
+text is left out of DMs - sender and subject still go out - until Discord is
+linked again; `deliver(..., has_content=True)` refuses content while paused and
+the settings carry `mail_content_paused`. Every third-party string (names,
+subjects, titles, places, mail text) goes through `logic.md_escape` after
+shortening and before composing; `send_dm` sets `flags: 4` (no embeds).
 
 Operator setup: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`
 and optionally `DISCORD_REDIRECT_URI` (see `.env.example`); the redirect URI

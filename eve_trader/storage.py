@@ -485,6 +485,31 @@ def _upsert_character_session_revocation(conn, character_id: int) -> None:
     )
 
 
+def record_owner_hash(character_id: int, owner_hash: str) -> Optional[str]:
+    """Stores the SSO owner hash of a registered character when none is stored
+    yet; an existing value is never overwritten. Returns the value stored before
+    this call (None or empty when it was unset), so the caller can tell a changed
+    hash from a first one. Unscoped: the registry is tenant-independent."""
+    if not owner_hash:
+        return None
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT owner_hash FROM tenant_registry_entries "
+            "WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        previous = row[0]
+        if not previous:
+            conn.execute(
+                "UPDATE tenant_registry_entries SET owner_hash = ? "
+                "WHERE entry_type = 'character' AND entry_id = ? AND (owner_hash IS NULL OR owner_hash = '')",
+                (owner_hash, character_id),
+            )
+        return previous
+
+
 def add_tenant_registry_entry(tenant_id: str, character_id: int, character_name: Optional[str] = None) -> None:
     """Registers `character_id` as belonging to `tenant_id` - upsert, since
     re-registering an id to a different tenant is a legitimate
@@ -765,6 +790,21 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[Session
         access_suspended=bool(first[5]),
         allowlist_active=bool(first[6]),
     )
+
+
+def latest_session_revocation(tenant_id: str) -> Optional[datetime]:
+    """The newest logout/revocation of any character registered to the tenant
+    (largest `sessions_valid_after` of the registry rows and the persistent
+    revocation watermarks), or None when nobody ever logged out."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT GREATEST(MAX(e.sessions_valid_after), MAX(r.sessions_valid_after)) "
+            "FROM tenant_registry_entries e "
+            "LEFT JOIN character_session_revocations r ON r.character_id = e.entry_id "
+            "WHERE e.entry_type = 'character' AND e.tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+    return row[0] if row else None
 
 
 def revoke_sessions_for_character(character_id: int) -> None:
@@ -9327,6 +9367,13 @@ def get_alert_destination() -> Optional[str]:
     with connect() as conn:
         row = conn.execute("SELECT discord_user_id FROM alert_destinations").fetchone()
     return str(row[0]) if row else None
+
+
+def get_alert_destination_linked_at() -> Optional[datetime]:
+    """When this tenant's Discord destination was (last) linked, or None."""
+    with connect() as conn:
+        row = conn.execute("SELECT linked_at FROM alert_destinations").fetchone()
+    return row[0] if row else None
 
 
 def set_alert_destination(discord_user_id: str) -> None:

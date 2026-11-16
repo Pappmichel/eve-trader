@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -17,7 +18,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from .. import storage, tenant_eligibility
 from ..actions import ActionError
 from ..auth import TokenManager
-from ..config import OAUTH_CONFIG
+from ..config import ACCESS_CONFIG, OAUTH_CONFIG
 from ..esi_data import shared_owner_ids
 from ..character_management import fields
 from . import discord_client, logic
@@ -27,6 +28,10 @@ log = logging.getLogger(__name__)
 
 TOOL_KEY = "char_alerts"
 LINK_STATE_MAX_AGE_SECONDS = 600
+# Linking a Discord account needs a login younger than this (gate on only):
+# a stolen session cookie must not be enough to point alerts at a stranger.
+DISCORD_LINK_FRESH_LOGIN_SECONDS = 600
+FRESH_LOGIN_REQUIRED = "fresh_login_required"
 # alert type -> the ESI data kind that must be shared with `char_alerts`
 KIND_BY_ALERT = {
     logic.SKILLQUEUE_EMPTY: "skillqueue", logic.MAIL_NEW: "mail",
@@ -123,6 +128,7 @@ def do_get_alert_settings() -> dict:
         "bot_configured": cfg.can_send,
         "link_configured": cfg.can_link,
         "linked": storage.get_alert_destination() is not None,
+        "mail_content_paused": content_paused(),
         "doctrine_granted": _doctrine_granted(),
         "characters": characters,
     }
@@ -176,14 +182,44 @@ def do_set_subscription(
 
 
 # ------------------------------------------------------------- account link
-def do_start_discord_link() -> dict:
+def _require_fresh_login(session_issued_at: Optional[datetime]) -> None:
+    """Gate on: the login must be younger than DISCORD_LINK_FRESH_LOGIN_SECONDS.
+    A missing timestamp counts as stale. Gate off: nothing to check."""
+    if not ACCESS_CONFIG.access_gate_enabled:
+        return
+    if session_issued_at is None:
+        raise ActionError(FRESH_LOGIN_REQUIRED)
+    if session_issued_at.tzinfo is None:
+        session_issued_at = session_issued_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - session_issued_at
+    if age > timedelta(seconds=DISCORD_LINK_FRESH_LOGIN_SECONDS):
+        raise ActionError(FRESH_LOGIN_REQUIRED)
+
+
+def content_paused() -> bool:
+    """True when the tenant logged out (or had its sessions revoked) after the
+    Discord account was linked: mail text stays out of DMs until the account is
+    linked again. Sender and subject keep going out. Gate off: never paused."""
+    if not ACCESS_CONFIG.access_gate_enabled:
+        return False
+    linked_at = storage.get_alert_destination_linked_at()
+    if linked_at is None:
+        return False
+    revoked_at = storage.latest_session_revocation(_tenant())
+    return revoked_at is not None and linked_at < revoked_at
+
+
+def do_start_discord_link(session_issued_at: Optional[datetime] = None,
+                          character_name: Optional[str] = None) -> dict:
     if not load_config().can_link:
         raise ActionError("Discord linking is not configured on this server.")
+    _require_fresh_login(session_issued_at)
     state = _serializer().dumps({"tenant_id": _tenant(), "nonce": secrets.token_hex(8)})
     return {"url": discord_client.authorize_url(state)}
 
 
-def do_finish_discord_link(code: str, state: str) -> dict:
+def do_finish_discord_link(code: str, state: str, session_issued_at: Optional[datetime] = None,
+                           character_name: Optional[str] = None) -> dict:
     """Callback half of the link. `state` must have been issued by
     `do_start_discord_link` for THIS tenant, so a link can not be planted into
     another tenant's session."""
@@ -193,12 +229,26 @@ def do_finish_discord_link(code: str, state: str) -> dict:
         raise ActionError("The Discord link request expired or is invalid. Start again.") from e
     if payload.get("tenant_id") != _tenant():
         raise ActionError("The Discord link request belongs to a different session. Start again.")
+    _require_fresh_login(session_issued_at)
     if not code:
         raise ActionError("Discord did not return an authorization code.")
     try:
         user_id = discord_client.exchange_code_for_user_id(code)
     except discord_client.DiscordError as e:
         raise ActionError(str(e)) from e
+    previous = storage.get_alert_destination()
+    if previous is not None and previous != user_id:
+        # The old account learns that alerts moved away from it. A failure here
+        # is only logged: the new link must not depend on the old account.
+        who = logic.md_escape(character_name or "a character of this tenant")
+        try:
+            discord_client.send_dm(
+                previous,
+                f"Your EVE Trader alerts were moved to another Discord account by {who}. "
+                "If this was not you, log in and unlink.",
+            )
+        except discord_client.DiscordError as e:
+            log.warning("Could not notify the previous Discord account of a changed link: %s", e)
     storage.set_alert_destination(user_id)
     return {"linked": True}
 
@@ -220,12 +270,15 @@ def do_send_test_message() -> dict:
 
 
 # ---------------------------------------------------------------- delivery
-def deliver(character_id: int, alert_type: str, message: str, tokens: Optional[TokenManager] = None) -> bool:
+def deliver(character_id: int, alert_type: str, message: str, tokens: Optional[TokenManager] = None,
+            has_content: bool = False) -> bool:
     """Send one alert DM, re-checking at send time that the opt-in is still on,
     the destination exists, the kind is still shared with `char_alerts` and a
     token still holds its scope. False = deliberately not sent (revoked);
     raises `DiscordError` on a delivery failure so the caller can keep its
-    dedupe cursor where it is and back off."""
+    dedupe cursor where it is and back off. `has_content` marks a message that
+    carries mail text: it is refused while the content is paused (a logout since
+    the account was linked)."""
     alert_type = _alert_type(alert_type)
     sub = storage.get_alert_subscription(character_id, alert_type)
     if not sub or not sub[0]:
@@ -234,6 +287,8 @@ def deliver(character_id: int, alert_type: str, message: str, tokens: Optional[T
     if user_id is None:
         return False
     if fields.gate(KIND_BY_ALERT[alert_type], TOOL_KEY, character_id, tokens or TokenManager(OAUTH_CONFIG)):
+        return False
+    if has_content and content_paused():
         return False
     discord_client.send_dm(user_id, message)
     return True
