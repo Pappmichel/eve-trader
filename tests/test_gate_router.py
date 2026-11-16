@@ -14,6 +14,7 @@ test_callback_gate_branch_*/test_start_login_*/test_callback_buyer_branch_*
 tests touch real Postgres (that's the thing being tested in each case), so
 only those are marked postgres_required.
 """
+from eve_trader.auth import SsoIdentity
 import http.cookies
 import time
 import urllib.parse
@@ -287,7 +288,7 @@ def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_succes
         "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "Allowed Character")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(2112625428, "Allowed Character", "owner-hash", ())))
 
     resp = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},
@@ -310,7 +311,7 @@ def test_callback_gate_branch_refreshes_the_cached_character_name(
     # character_name is cached on tenant_registry_entries (docs/admin_
     # schema.sql) for the Admin UI's user list - a gate login should keep it
     # current (e.g. after an in-game character rename) at no extra ESI cost,
-    # since EVE SSO's own _verify() already returns the current name.
+    # since EVE SSO's own identity lookup already returns the current name.
     _enable_gate(monkeypatch)
     tenant_id = storage.create_tenant(f"Test Tenant {uuid.uuid4()}")
     storage.add_tenant_registry_entry(tenant_id, 2112625428, character_name="Old Name")
@@ -319,7 +320,7 @@ def test_callback_gate_branch_refreshes_the_cached_character_name(
         "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "New Name")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(2112625428, "New Name", "owner-hash", ())))
 
     client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},
@@ -340,7 +341,7 @@ def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
         "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (999, "Denied Character")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(999, "Denied Character", "owner-hash", ())))
     # Unregistered characters are checked against the allowlist before a
     # denial. An affiliation ESI misses would be ?gate=error, not denied.
     monkeypatch.setattr("eve_trader.access_policy.fetch_affiliation", lambda _character_id: (12345, None))
@@ -415,7 +416,7 @@ def test_callback_reauth_branch_persists_the_token_under_the_captured_tenant(
         "tenant_id": tenant_a,
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (42, "Buyer Char")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(42, "Buyer Char", "owner-hash", ())))
 
     resp = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},
@@ -442,7 +443,7 @@ def test_callback_reauth_without_tenant_writes_nothing_and_reports_session_lost(
         "created_at": time.time(), "browser_nonce": "n", "client_ip": "t",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (42, "Some Char")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(42, "Some Char", "owner-hash", ())))
 
     resp = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},
@@ -486,3 +487,50 @@ def test_auth_isolation_starts_with_empty_revocations_and_no_session_cookie(
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         n = conn.execute("SELECT count(*) FROM character_session_revocations").fetchone()[0]
     assert n == 0
+
+
+def _gate_login(monkeypatch, character_id, owner_hash):
+    state = f"test-owner-{uuid.uuid4().hex}"
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
+    }
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(
+        lambda token: SsoIdentity(character_id, "Pilot", owner_hash, ())))
+    return client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
+
+
+def _stored_owner_hash(character_id):
+    with storage.connect_unscoped() as conn:
+        return conn.execute(
+            "SELECT owner_hash FROM tenant_registry_entries WHERE entry_id = ?", (character_id,),
+        ).fetchone()[0]
+
+
+@pg_helpers.postgres_required()
+def test_gate_login_stores_owner_hash_and_logs_only_a_change(
+    monkeypatch, caplog, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema, _apply_admin_schema
+):
+    _enable_gate(monkeypatch)
+    storage.add_tenant_registry_entry(str(uuid.uuid4()), 777)
+    assert _stored_owner_hash(777) is None
+
+    first = _gate_login(monkeypatch, 777, "hash-a")
+    assert "gate=success" in first.headers["location"]
+    assert _stored_owner_hash(777) == "hash-a"
+
+    with caplog.at_level("WARNING"):
+        same = _gate_login(monkeypatch, 777, "hash-a")
+    assert "gate=success" in same.headers["location"]
+    assert "owner hash changed" not in caplog.text
+
+    with caplog.at_level("WARNING"):
+        changed = _gate_login(monkeypatch, 777, "hash-b")
+    assert "gate=success" in changed.headers["location"]
+    assert access_gate.SESSION_COOKIE_NAME in changed.headers.get("set-cookie", "")
+    assert "owner hash changed for character 777" in caplog.text
+    assert "hash-a" not in caplog.text and "hash-b" not in caplog.text
+    assert _stored_owner_hash(777) == "hash-a"

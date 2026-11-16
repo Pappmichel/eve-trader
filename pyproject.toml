@@ -37,6 +37,8 @@ dependencies = [
     "itsdangerous==2.2.0",
     "psycopg[binary]>=3.2,<4",
     "psycopg_pool>=3.2,<4",
+    # SSO identity: the access token is verified locally against the JWKS.
+    "PyJWT[crypto]>=2.12,<3",
 ]
 
 [project.optional-dependencies]

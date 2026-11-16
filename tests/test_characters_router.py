@@ -7,6 +7,7 @@ and fetch a confirm-dialog payload. Prefix /start is gone.
 from __future__ import annotations
 
 from dataclasses import asdict
+from eve_trader.auth import SsoIdentity
 import urllib.parse
 
 import pytest
@@ -178,7 +179,7 @@ def test_reauth_callback_writes_via_reauth_write_role_and_rejects_mismatch(
     assert auth_router._pending[state]["reauth_character_id"] == ALICE
 
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (9999, "Wrong Char")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(9999, "Wrong Char", "owner-hash", ())))
     mismatch = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
@@ -190,7 +191,8 @@ def test_reauth_callback_writes_via_reauth_write_role_and_rejects_mismatch(
         cookies=_session_cookie(),
     )
     state = urllib.parse.parse_qs(urllib.parse.urlparse(start.json()["url"]).query)["state"][0]
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (ALICE, "Alice")))
+    requested = tuple(auth_router._pending[state]["scopes"])
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(ALICE, "Alice", "owner-hash", requested)))
     ok = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
@@ -234,7 +236,7 @@ def test_add_start_registers_a_character_that_holds_no_token_yet(
     assert auth_router._pending[state]["scopes"] == []
 
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (ALICE, "Alice")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(ALICE, "Alice", "owner-hash", ())))
     ok = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
@@ -270,7 +272,7 @@ def test_add_round_does_not_strip_the_scopes_of_an_already_registered_character(
 
     state = _add_start_state(_session_cookie())
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (ALICE, "Alice")))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(ALICE, "Alice", "owner-hash", ())))
     ok = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
     )
@@ -343,3 +345,39 @@ def test_delete_owner_unknown_character_is_400(monkeypatch, _apply_admin_schema,
     resp = client.delete(f"/api/characters/owners/{ALICE}", cookies=_session_cookie())
     assert resp.status_code == 400
     assert "No ESI token stored" in resp.json()["detail"]
+
+
+def test_reauth_stores_the_granted_scopes_and_keeps_the_stored_owner_hash(
+    monkeypatch, caplog, _apply_admin_schema,
+):
+    _enable_gate(monkeypatch)
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    _provision(tools=("characters",))
+    with storage.tenant_context(_TENANT):
+        storage.save_tenant_token(f"producer:{ALICE}", asdict(TokenRecord(
+            role=f"producer:{ALICE}", character_id=ALICE, character_name="Alice",
+            access_token="a", refresh_token="r", expires_at=9999999999.0,
+            scopes="esi-assets.read_assets.v1", owner_hash="hash-old",
+        )))
+    start = client.get(
+        f"/api/characters/reauth/start?character_id={ALICE}&extra_kinds=wallet",
+        cookies=_session_cookie(),
+    )
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(start.json()["url"]).query)["state"][0]
+    assert len(auth_router._pending[state]["scopes"]) > 1
+    granted = ("esi-assets.read_assets.v1",)
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(
+        lambda token: SsoIdentity(ALICE, "Alice", "hash-new", granted)))
+    with caplog.at_level("WARNING"):
+        ok = client.get(
+            "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
+        )
+    assert "auth=success" in ok.headers["location"]
+    assert "owner hash changed for character" in caplog.text
+    assert "hash-old" not in caplog.text and "hash-new" not in caplog.text
+    with storage.tenant_context(_TENANT):
+        records = [r for r in TokenManager().list_records() if r.character_id == ALICE]
+        assert len(records) == 1
+        assert records[0].scopes == "esi-assets.read_assets.v1"
+        assert records[0].owner_hash == "hash-old"

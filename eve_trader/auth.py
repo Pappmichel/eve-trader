@@ -208,9 +208,33 @@ class TokenRecord:
     # Set when SSO answered `invalid_grant` to a refresh: the refresh token is
     # dead until the user authorizes again, which writes a fresh record.
     refresh_rejected_at: Optional[float] = None
+    # EVE's character owner hash from the verified SSO token; changes when the
+    # character is transferred to another account. Empty until a login saw it.
+    owner_hash: str = ""
 
     def is_expired(self, skew_seconds: int = 60) -> bool:
         return time.time() >= (self.expires_at - skew_seconds)
+
+
+@dataclass(frozen=True)
+class SsoIdentity:
+    """What a locally verified SSO access token says about its character."""
+    character_id: int
+    character_name: str
+    owner_hash: str
+    scopes: tuple[str, ...]
+
+
+class IdentityError(ValueError):
+    """The SSO access token could not be verified (bad signature, claims, or
+    the signing keys could not be fetched)."""
+
+
+_SSO_ISSUERS = ("login.eveonline.com", "https://login.eveonline.com")
+_SSO_AUDIENCE = "EVE Online"
+_JWKS_TTL_SECONDS = 3600
+_JWKS_TIMEOUT_SECONDS = 10
+_JWT_LEEWAY_SECONDS = 60
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -270,6 +294,13 @@ class TokenManager:
     # held for the dict lookup/insert, never across a refresh itself.
     _refresh_locks_guard = threading.Lock()
     _refresh_locks: dict[str, threading.Lock] = {}
+
+    # SSO signing keys, cached class-wide (a TokenManager is built per
+    # request) as {kid: public key}; one lock covers the whole fetch.
+    _jwks_lock = threading.Lock()
+    _jwks_keys: dict = {}
+    _jwks_fetched_at: float = 0.0
+    _jwks_url: str = ""
 
     def __init__(self, cfg: OAuthConfig = OAUTH_CONFIG):
         self.cfg = cfg
@@ -339,10 +370,13 @@ class TokenManager:
         (e.g. several "producer" alts for ESI asset/industry tracking) without
         one login overwriting another's stored token."""
         token_json = self._authorize_browser_flow(role_prefix, scopes)
-        character_id, character_name = self._verify(token_json["access_token"])
+        identity = self._identity(token_json["access_token"])
+        character_id, character_name = identity.character_id, identity.character_name
         final_role = f"{role_prefix}:{character_id}"
-        record = self._to_record(final_role, token_json, " ".join(scopes),
-                                  character_id=character_id, character_name=character_name)
+        record = self._to_record(final_role, token_json,
+                                  " ".join(identity.scopes) or " ".join(scopes),
+                                  character_id=character_id, character_name=character_name,
+                                  owner_hash=identity.owner_hash)
         self._tokens[final_role] = record
         self._save_record(final_role)
         return record
@@ -441,7 +475,8 @@ class TokenManager:
         new_record = self._to_record(record.role, token_json, record.scopes,
                                       character_id=record.character_id,
                                       character_name=record.character_name,
-                                      previous_refresh_token=record.refresh_token)
+                                      previous_refresh_token=record.refresh_token,
+                                      owner_hash=record.owner_hash)
         # Keep the record in memory first: SSO may already have rotated the
         # refresh token, so it must survive a failing save for this run.
         self._tokens[record.role] = new_record
@@ -480,30 +515,105 @@ class TokenManager:
     def _to_record(self, role: str, token_json: dict, scopes: str,
                     character_id: Optional[int] = None,
                     character_name: Optional[str] = None,
-                    previous_refresh_token: Optional[str] = None) -> TokenRecord:
+                    previous_refresh_token: Optional[str] = None,
+                    owner_hash: str = "") -> TokenRecord:
         access_token = token_json["access_token"]
         # A refresh response without a new refresh token keeps the old one.
         refresh_token = token_json.get("refresh_token") or previous_refresh_token or ""
         expires_at = time.time() + token_json.get("expires_in", 1200)
         if character_id is None or character_name is None:
-            character_id, character_name = self._verify(access_token)
+            identity = self._identity(access_token)
+            character_id, character_name = identity.character_id, identity.character_name
+            owner_hash = owner_hash or identity.owner_hash
         return TokenRecord(
             role=role, character_id=character_id, character_name=character_name,
             access_token=access_token, refresh_token=refresh_token,
-            expires_at=expires_at, scopes=scopes,
+            expires_at=expires_at, scopes=scopes, owner_hash=owner_hash,
         )
 
-    @staticmethod
-    def _verify(access_token: str) -> tuple[int, str]:
-        """Resolves character id/name from an access token via /oauth/verify."""
-        resp = requests.get(
-            "https://login.eveonline.com/oauth/verify",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=30,
+    @classmethod
+    def _signing_key(cls, kid: Optional[str], jwks_url: str):
+        """Public key for `kid`. Reloads the key set once for an unknown kid
+        (key rotation) and when the cache is older than an hour."""
+        import jwt  # PyJWT
+
+        def _load_keys() -> None:
+            try:
+                resp = requests.get(jwks_url, timeout=_JWKS_TIMEOUT_SECONDS)
+                resp.raise_for_status()
+                keys = resp.json().get("keys", [])
+            except (requests.RequestException, ValueError, AttributeError) as exc:
+                raise IdentityError("signing keys unavailable") from exc
+            loaded = {}
+            for jwk in keys:
+                if jwk.get("kty") != "RSA" or not jwk.get("kid"):
+                    continue
+                try:
+                    loaded[jwk["kid"]] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
+                except (jwt.PyJWTError, ValueError, TypeError):
+                    continue
+            if not loaded:
+                raise IdentityError("signing keys unavailable")
+            cls._jwks_keys = loaded
+            cls._jwks_fetched_at = time.time()
+            cls._jwks_url = jwks_url
+
+        with cls._jwks_lock:
+            stale = (
+                cls._jwks_url != jwks_url
+                or time.time() - cls._jwks_fetched_at > _JWKS_TTL_SECONDS
+            )
+            if stale or kid not in cls._jwks_keys:
+                _load_keys()
+            key = cls._jwks_keys.get(kid)
+        if key is None:
+            raise IdentityError("unknown signing key")
+        return key
+
+    def _identity(self, access_token: str) -> SsoIdentity:
+        """Verifies an SSO access token locally (RS256 signature against the
+        JWKS, issuer, audience, expiry) and returns who it belongs to and the
+        scopes SSO actually granted. Never called on refresh: an outage of the
+        key endpoint must not stop syncs."""
+        import jwt  # PyJWT
+
+        try:
+            header = jwt.get_unverified_header(access_token)
+            if header.get("alg") != "RS256":
+                raise IdentityError("unexpected signing algorithm")
+            key = self._signing_key(header.get("kid"), self.cfg.jwks_url)
+            claims = jwt.decode(
+                access_token, key, algorithms=["RS256"],
+                issuer=list(_SSO_ISSUERS),
+                leeway=_JWT_LEEWAY_SECONDS,
+                # PyJWT accepts any one listed audience; both are required
+                # here, so the audience is checked below.
+                options={"require": ["exp", "iss", "aud", "sub"], "verify_aud": False},
+            )
+            aud = claims.get("aud")
+            aud = [aud] if isinstance(aud, str) else list(aud or [])
+            if self.cfg.client_id not in aud or _SSO_AUDIENCE not in aud:
+                raise IdentityError("token audience mismatch")
+        except IdentityError:
+            raise
+        except jwt.PyJWTError as exc:
+            raise IdentityError(f"token rejected: {type(exc).__name__}") from exc
+        match = re.fullmatch(r"CHARACTER:EVE:(\d+)", str(claims.get("sub", "")))
+        if not match or not claims.get("name"):
+            raise IdentityError("token carries no character")
+        scp = claims.get("scp") or []
+        scopes = tuple(scp.split()) if isinstance(scp, str) else tuple(str(x) for x in scp)
+        return SsoIdentity(
+            character_id=int(match.group(1)),
+            character_name=str(claims["name"]),
+            owner_hash=str(claims.get("owner") or ""),
+            scopes=scopes,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        return int(data["CharacterID"]), data["CharacterName"]
+
+    def _verify(self, access_token: str) -> tuple[int, str]:
+        """Character id and name of a verified access token (CLI paths)."""
+        identity = self._identity(access_token)
+        return identity.character_id, identity.character_name
 
     # ------------------------------------------------------------- public API
     @staticmethod
