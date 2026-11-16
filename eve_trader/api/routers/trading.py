@@ -3,14 +3,14 @@ eve_trader/storage.py (reads the old Streamlit page did directly). No business
 logic here - see actions.py/storage.py for that."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
-from ... import actions, storage
+from ... import actions, storage, timeutil
 from ...actions import ActionError
 from ...config import TRADING_CONFIG
 from ...trade_realized import actions as trade_realized_actions
@@ -107,7 +107,7 @@ def get_history_sparklines(type_ids: str = ""):
         raise HTTPException(status_code=400, detail="type_ids must be a comma-separated list of integers.")
     if len(ids) > SPARKLINE_MAX_IDS:
         raise HTTPException(status_code=400, detail=f"At most {SPARKLINE_MAX_IDS} type_ids per request.")
-    since = (date.today() - timedelta(days=SPARKLINE_DAYS)).isoformat()
+    since = (timeutil.utc_today() - timedelta(days=SPARKLINE_DAYS)).isoformat()
     hub = storage.read_goonmetrics_avg_prices_since(TRADING_CONFIG.jita_region_id, ids, since)
     ref = storage.read_goonmetrics_avg_prices_since(TRADING_CONFIG.reference_region_id, ids, since)
     return {

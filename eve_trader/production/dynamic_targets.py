@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Iterable, Optional
 
-from .. import storage
+from .. import storage, timeutil
 from .config import PRODUCTION_CONFIG, ProductionConfig
 
 log = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ _UNSET = object()
 
 # ----------------------------------------------------------------- time helpers
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timeutil.utc_now()
 
 
 def _today() -> date:

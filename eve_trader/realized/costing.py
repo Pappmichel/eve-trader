@@ -1347,6 +1347,8 @@ def rebuild_costing(ledger: LedgerSnapshot) -> CostingResult:
 
 
 def _day(ts: datetime) -> date:
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc)
     return ts.date()
 
 
@@ -1356,6 +1358,7 @@ class _Costing:
         self.t0 = ledger.t0
         self.warnings: list[str] = []
         self._warned: set[str] = set()
+        self._fee_income_ignored: dict[tuple, float] = defaultdict(float)
         self.all_layers: list[CostLayer] = []
         self.layers_by_key: dict[tuple, list[CostLayer]] = defaultdict(list)
         self.results: list[RealizedResult] = []
@@ -1385,6 +1388,18 @@ class _Costing:
         if msg not in self._warned:
             self._warned.add(msg)
             self.warnings.append(msg)
+
+    def _fee_cost(self, entry) -> float:
+        """A fee is a negative journal amount; its cost is `-amount`. A
+        positive entry is income (for example a structure-owning corporation
+        wallet receiving fees) and never a cost: it is ignored and reported
+        once per run in `fee_income_ignored`."""
+        amount = float(entry.amount)
+        if amount < 0:
+            return -amount
+        if amount > 0:
+            self._fee_income_ignored[(str(entry.ref_type), f"{entry.owner_type}:{int(entry.owner_id)}")] += amount
+        return 0.0
 
     def _job_included(self, job: IndustryJob) -> bool:
         if job.owner_type != "corporation":
@@ -1709,7 +1724,9 @@ class _Costing:
         pools: dict[tuple, float] = defaultdict(float)
         for j in self.ledger.journal_entries:
             if j.ref_type in FEE_REF_TYPES and j.date >= self.t0:
-                pools[(j.owner_type, int(j.owner_id), _day(j.date))] += abs(float(j.amount))
+                cost = self._fee_cost(j)
+                if cost:
+                    pools[(j.owner_type, int(j.owner_id), _day(j.date))] += cost
         own_orders = {
             (o.owner_type, int(o.owner_id), int(o.type_id), int(o.location_id), bool(o.is_buy_order))
             for o in self.ledger.market_orders
@@ -2506,7 +2523,9 @@ class _Costing:
             idx = bisect_left(obs_times, entry.date)
             if idx >= len(obs_times):
                 continue
-            pools[obs_times[idx]] += abs(float(entry.amount))
+            cost = self._fee_cost(entry)
+            if cost:
+                pools[obs_times[idx]] += cost
         unmatched = 0.0
         for at, amount in sorted(pools.items()):
             recs = by_obs.get(at, [])
@@ -2588,7 +2607,9 @@ class _Costing:
         for entry in self.ledger.journal_entries:
             if entry.ref_type != CONTRACT_BROKER_FEE_REF or entry.date < self.t0:
                 continue
-            amount = abs(float(entry.amount))
+            amount = self._fee_cost(entry)
+            if not amount:
+                continue
             if entry.context_id_type == "contract_id" and entry.context_id is not None:
                 contract = sales_by_id.get(int(entry.context_id))
                 if contract is not None:
@@ -2666,6 +2687,8 @@ class _Costing:
                 self._on_job_end(obj, when)
             elif kind in (KIND_REPROCESS, KIND_COMPRESS):
                 self._on_reprocess(obj)
+        for (ref_type, owner), amount in sorted(self._fee_income_ignored.items()):
+            self.warn(f"fee_income_ignored: {ref_type} {owner} {_isk_amount(amount)}")
         for type_id in sorted(self.bpc_runs_estimated):
             self.warn(
                 f"bpc_run_estimated: type {type_id} {self.bpc_runs_estimated[type_id]:g} runs "

@@ -14,7 +14,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from . import storage, wealth_cache
+from . import storage, timeutil, wealth_cache
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 from .portfolio_wealth import assemble
@@ -242,7 +242,7 @@ def _history_bucket(period: str, bucket: Optional[str], summaries: list[dict]) -
             starts.append(_day(start))
     if not starts:
         return "day"
-    return "week" if (date.today() - min(starts)).days > 90 else "day"
+    return "week" if (timeutil.utc_today() - min(starts)).days > 90 else "day"
 
 
 def realized_history(tool_keys, period: str = "30", bucket: Optional[str] = None) -> dict:
@@ -415,7 +415,7 @@ def wealth_change(today: Optional[date] = None) -> dict:
     NULL, is None for that horizon. Percent is None when the earlier
     wealth is 0. The page shows these numbers as returned.
     """
-    today = today or date.today()
+    today = today or timeutil.utc_today()
     rows = storage.load_portfolio_snapshots(since=today - timedelta(days=30))
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     by_date = {row[0]: dict(zip(columns, row)) for row in rows}
@@ -1178,7 +1178,7 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     overview = portfolio_overview(cfg)
     with wealth_cache.bypassed():
         wealth = total_wealth(cfg)
-    storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
+    storage.upsert_portfolio_snapshot(timeutil.utc_today(), {**overview, **wealth})
     return {**overview, **wealth}
 
 
@@ -1195,7 +1195,7 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     If quotes are down, fall back to a live portfolio_overview so the page
     stays 200; a later call the same day can still write the snapshot.
     """
-    if storage.latest_portfolio_snapshot_date() != date.today():
+    if storage.latest_portfolio_snapshot_date() != timeutil.utc_today():
         try:
             overview = take_portfolio_snapshot(cfg)
         except MarketQuotesUnavailable:
@@ -1216,7 +1216,7 @@ def do_get_wealth_change(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     If quotes are down, return wealth_change() without writing a snapshot
     so the page stays 200.
     """
-    if storage.latest_portfolio_snapshot_date() != date.today():
+    if storage.latest_portfolio_snapshot_date() != timeutil.utc_today():
         try:
             take_portfolio_snapshot(cfg)
         except MarketQuotesUnavailable:
@@ -1232,7 +1232,7 @@ def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
     the *future* for a non-positive `days`, which filtered out every row
     including today's (confirmed real bug in review), rather than a
     reasonable "just today" reading."""
-    since = date.today() - timedelta(days=max(days, 1) - 1) if days is not None else None
+    since = timeutil.utc_today() - timedelta(days=max(days, 1) - 1) if days is not None else None
     rows = storage.load_portfolio_snapshots(since=since)
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     return [dict(zip(columns, row)) for row in rows]
