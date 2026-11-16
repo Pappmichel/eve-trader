@@ -2060,14 +2060,25 @@ class _Costing:
         # lines become one result per type: Production types keep today's
         # sale_ref, other types are Trading (U1 rule 5).
         grouped: dict[int, list] = defaultdict(lambda: [0.0, 0.0, False])
+        # The price share split onto blueprint lines is not booked anywhere
+        # (no result for a blueprint); say so instead of losing it silently.
+        unbooked: dict[int, float] = defaultdict(float)
         for item, share in zip(lines, shares):
             if item.is_blueprint:
                 self._draw_given_line(contract, item, sale_order=False)
+                if view.sale_pool is not None:
+                    unbooked[int(item.type_id)] += float(share)
                 continue
             slot = grouped[int(item.type_id)]
             slot[0] += float(item.quantity)
             slot[1] += share
             slot[2] = True
+        for type_id in sorted(unbooked):
+            if unbooked[type_id] > _EPS:
+                self.warn(
+                    f"contract_blueprint_share_unbooked: {contract.ref} type {type_id} "
+                    f"{_isk_amount(unbooked[type_id])}"
+                )
         if view.sale_pool is None:
             for type_id, (qty, _share, _item) in grouped.items():
                 self._consume(

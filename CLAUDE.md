@@ -248,7 +248,10 @@ acceptance, D7 revision 2026-11-14), origin stays `bought` and `source` is `cont
 the price is split by reference value at that date (D4) and the shares sum
 exactly to the price. The tenant as issuer books Production-type items it
 gives as sales under the same FIFO order as market sales, with no sales tax
-and no broker fee. A contract that both gives and receives items is booked
+and no broker fee. A given blueprint line gets no result; the share of the
+price split onto it (by quantity, blueprints have no reference value) is not
+booked and is warned `contract_blueprint_share_unbooked` with its amount.
+A contract that both gives and receives items is booked
 on both sides and warned `contract_item_swap`. Freight on a contract buy
 is the courier rate when a shipment covers that purchase, otherwise the
 configured rate times packaged m3. The packaged m3 stays frozen on

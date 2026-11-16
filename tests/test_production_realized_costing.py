@@ -1867,3 +1867,31 @@ def test_bpc_without_run_value_stays_price_missing():
     assert layer.price_missing
     assert not has_warning(result, "bpc_run_estimated")
     assert (BP, c.UNIT_BPC_RUN, at(1).date()) in result.price_requests
+
+
+# ------------------------------------- blueprint share of a contract price
+def test_pure_blueprint_contract_warns_about_the_unbooked_price():
+    sold = exchange(30, at(2), [item_line(BP, 1, blueprint=True, runs=10, singleton=True)],
+                    issuer=CHAR, acceptor=7001, price=50_000_000.0, start=HOME)
+    result = rebuild_costing(snapshot(contracts=[sold]))
+    assert result.realized_results == []
+    assert "contract_blueprint_share_unbooked: contract:30 type 701 50000000" in result.warnings
+
+
+def test_mixed_contract_warns_about_the_blueprint_share():
+    # 1 copy + 1 item: no per-run price, so the split is by quantity (50/50).
+    sold = exchange(31, at(2), [
+        item_line(BP, 1, blueprint=True, runs=10, singleton=True, record=1),
+        item_line(MINERAL, 1, record=2),
+    ], issuer=CHAR, acceptor=7001, price=100_000_000.0, start=HOME)
+    result = rebuild_costing(snapshot(contracts=[sold], esi_stock_by_type={}))
+    assert "contract_blueprint_share_unbooked: contract:31 type 701 50000000" in result.warnings
+    [r] = result.realized_results
+    assert r.type_id == MINERAL and r.gross == pytest.approx(50_000_000.0)
+
+
+def test_free_blueprint_contract_has_no_unbooked_warning():
+    gift = exchange(32, at(2), [item_line(BP, 1, blueprint=True, runs=10, singleton=True)],
+                    issuer=CHAR, acceptor=7001, price=0.0, start=HOME)
+    result = rebuild_costing(snapshot(contracts=[gift]))
+    assert not has_warning(result, "contract_blueprint_share_unbooked")
