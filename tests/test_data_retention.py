@@ -147,3 +147,30 @@ def test_goonmetrics_retention_global_job(monkeypatch, _clean_status):
     scheduler._check_and_run_goonmetrics_retention_job()
     assert calls == [1]
     assert "ran_at" in scheduler._goonmetrics_retention_status
+
+
+def test_price_history_retention_days_has_a_floor_of_90():
+    assert TradingConfig().price_history_retention_days == 365.0
+    validate_config_overrides(TradingConfig(), {"price_history_retention_days": 90})
+    with pytest.raises(ConfigError):
+        validate_config_overrides(TradingConfig(), {"price_history_retention_days": 89})
+
+
+def test_goonmetrics_job_uses_price_history_days_and_keeps_200_day_rows(monkeypatch):
+    from eve_trader import timeutil
+    region = 80_000_000 + int(dt.datetime.now().timestamp()) % 1_000_000
+    today = timeutil.utc_today()
+    dates = [(today - dt.timedelta(days=d)).isoformat() for d in (10, 200, 400)]
+    default = storage.DEFAULT_TENANT_ID
+    with storage.tenant_context(default):
+        with storage.connect() as conn:
+            conn.executemany(
+                "INSERT INTO goonmetrics_history VALUES (?,?,?,?,?,?,?,?)",
+                [(region, 1, d, 1.0, 2.0, 1.5, 10.0, 3) for d in dates],
+            )
+        scheduler._prune_goonmetrics_history_job()
+        with storage.connect() as conn:
+            left = [r[0] for r in conn.execute(
+                "SELECT date FROM goonmetrics_history WHERE region_id = ? ORDER BY date", (region,)).fetchall()]
+            conn.execute("DELETE FROM goonmetrics_history WHERE region_id = ?", (region,))
+    assert left == dates[:2][::-1] or sorted(left) == sorted(dates[:2])

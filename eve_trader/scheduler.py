@@ -407,6 +407,10 @@ def _retention_days() -> float:
     return max(30.0, float(TRADING_CONFIG.history_retention_days or 90.0))
 
 
+def _price_history_retention_days() -> float:
+    return max(90.0, float(TRADING_CONFIG.price_history_retention_days or 365.0))
+
+
 def _prune_shortlist_snapshot_job() -> None:
     cutoff = timeutil.utc_now_naive() - dt.timedelta(days=_retention_days())
     deleted = storage.prune_shortlist_snapshot(cutoff.isoformat(timespec="seconds"))
@@ -416,7 +420,7 @@ def _prune_shortlist_snapshot_job() -> None:
 
 def _prune_goonmetrics_history_job() -> None:
     with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-        cutoff = timeutil.utc_today() - dt.timedelta(days=_retention_days())
+        cutoff = timeutil.utc_today() - dt.timedelta(days=_price_history_retention_days())
         deleted = storage.prune_goonmetrics_history(cutoff.isoformat())
     if deleted:
         log.info("Pruned %d old goonmetrics_history rows", deleted)

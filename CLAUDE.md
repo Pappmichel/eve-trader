@@ -1383,11 +1383,12 @@ ignored; `GET /api/admin/errors/groups`), the raw list stays under a toggle.
 pruned once a day by scheduler jobs `shortlist_retention` and
 `goonmetrics_retention` (master switch on; the per-tenant one also needs the
 `trading` grant and an active tenant), keeping `TradingConfig.
-history_retention_days` (90, floor 30, operator value, not on the Settings
-page; the global job reads the Default tenant's). `storage.prune_*` delete in
+history_retention_days` (90, floor 30) of shortlist runs and `TradingConfig.
+price_history_retention_days` (365, floor 90) of Goonmetrics history (the
+Trading price chart shows it all). Both are operator values, not on the
+Settings page; the global job reads the Default tenant's. `storage.prune_*` delete in
 chunks of 20,000 rows, one transaction each; `prune_shortlist_snapshot` never
-deletes a tenant's newest run. Only the newest shortlist run is read, and the
-trend windows read at most 30 days of Goonmetrics history.
+deletes a tenant's newest run. Only the newest shortlist run is read.
 
 ## Backup
 
