@@ -300,6 +300,17 @@ def test_cli_backup_create_calls_create_backup(monkeypatch, tmp_path):
     assert "x.zip" in res.output
 
 
+@pytest.fixture(autouse=True)
+def _restore_ambient_tenant():
+    """cli.main sets the default tenant for the process; put it back so later
+    tests in the same worker see no ambient tenant."""
+    from eve_trader import storage
+
+    token = storage.set_current_tenant(None)
+    yield
+    storage.reset_current_tenant(token)
+
+
 def test_cli_backup_create_exits_1_on_failure(monkeypatch):
     from click.testing import CliRunner
     from eve_trader import cli
