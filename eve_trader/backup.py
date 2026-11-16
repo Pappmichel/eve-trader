@@ -103,6 +103,16 @@ DOCKER_BIN = os.getenv("EVE_TRADER_DOCKER_BIN", "docker")
 PG_DB_NAME = "eve_trader"
 
 
+def _bare_pg_backup_user() -> str:
+    """Database role for `pg_dump` on a bare (non-Docker) host. Defaults to
+    the owner role `postgres`; `EVE_TRADER_PG_BACKUP_USER` names a dedicated
+    read-only backup role instead (LOGIN, BYPASSRLS, member of
+    pg_read_all_data - see deploy/README.md), so a service running as an
+    unprivileged OS user needs no password for the owner role. Docker mode
+    keeps `docker exec ... -U postgres` unchanged."""
+    return os.getenv("EVE_TRADER_PG_BACKUP_USER", "").strip() or "postgres"
+
+
 def create_backup(prefix: str = BACKUP_NAME_PREFIX) -> dict:
     """Creates one timestamped .zip under BACKUP_DIR containing a pg_dump
     (`-Fc`) of the whole Postgres database plus config.yaml (if present),
@@ -136,7 +146,7 @@ def _create_backup_locked(prefix: str = BACKUP_NAME_PREFIX) -> dict:
         # (standard libpq convention, no password ever needs to live in this
         # process's own env/command line). See deploy/README.md's Postgres
         # section for setting up ~/.pgpass for the owner role.
-        pg_dump_cmd = ["pg_dump", "-h", "127.0.0.1", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
+        pg_dump_cmd = ["pg_dump", "-h", "127.0.0.1", "-U", _bare_pg_backup_user(), "-d", PG_DB_NAME, "-Fc"]
 
     try:
         # T1-05 regression (found in Plan 2's independent challenge pass,

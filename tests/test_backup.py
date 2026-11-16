@@ -323,3 +323,41 @@ def test_cli_backup_create_exits_1_on_failure(monkeypatch):
     monkeypatch.setattr(cli.production_config, "resolve_and_set_production_config", lambda *_: None)
     res = CliRunner().invoke(cli.main, ["backup", "create"])
     assert res.exit_code == 1
+
+
+def _capture_cmd(monkeypatch):
+    calls = []
+
+    def _run(cmd, stdout=None, stderr=None, timeout=None, shell=False):
+        calls.append(cmd)
+        if stdout is not None:
+            stdout.write(b"x")
+        return _FakeCompletedProcess()
+    monkeypatch.setattr(backup.subprocess, "run", _run)
+    return calls
+
+
+def test_bare_pg_dump_defaults_to_the_postgres_role(isolated_backup_dir, monkeypatch):
+    monkeypatch.setattr(backup, "PG_CONTAINER", "")
+    monkeypatch.delenv("EVE_TRADER_PG_BACKUP_USER", raising=False)
+    calls = _capture_cmd(monkeypatch)
+    backup.create_backup()
+    cmd = calls[0]
+    assert cmd[cmd.index("-U") + 1] == "postgres"
+
+
+def test_bare_pg_dump_uses_the_configured_backup_role(isolated_backup_dir, monkeypatch):
+    monkeypatch.setattr(backup, "PG_CONTAINER", "")
+    monkeypatch.setenv("EVE_TRADER_PG_BACKUP_USER", "eve_trader_backup")
+    calls = _capture_cmd(monkeypatch)
+    backup.create_backup()
+    cmd = calls[0]
+    assert cmd[cmd.index("-U") + 1] == "eve_trader_backup"
+
+
+def test_docker_pg_dump_ignores_the_backup_role_setting(isolated_backup_dir, monkeypatch):
+    monkeypatch.setenv("EVE_TRADER_PG_BACKUP_USER", "eve_trader_backup")
+    calls = _capture_cmd(monkeypatch)
+    backup.create_backup()
+    cmd = calls[0]
+    assert cmd[cmd.index("-U") + 1] == "postgres"

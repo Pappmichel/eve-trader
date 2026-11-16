@@ -83,6 +83,10 @@ async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> 
     } catch {
       /* not JSON */
     }
+    if (resp.status === 429) {
+      // From the reverse proxy's rate limit (HTML body, no detail). Never retried here.
+      detail = 'Too many requests. Wait a moment and try again.'
+    }
     if (resp.status === 503 && detail === 'service_unavailable') {
       detail = 'The server is temporarily unavailable. Your session is fine, try again shortly.'
     }

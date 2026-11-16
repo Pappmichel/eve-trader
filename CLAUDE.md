@@ -1261,6 +1261,19 @@ them):
   materials of the priced types that ESI's adjusted-price list lacks; their EIV
   share reads 0). Informational only, numbers and `job_costs_reliable` stay.
 
+## Server templates
+
+`deploy/eve-trader.service.template` carries the systemd sandboxing directives
+(no `ProtectHome`: the repo lives in the deploy user's home). `setup.sh` runs a
+fresh install as a system user `eve-trader` (no shell, no sudo; ACLs give it
+read on the repo and write on `data/`), keeps the `User=` of an existing unit,
+and `APP_USER` overrides both; `deploy.sh` never assumes deploy and service
+user are the same. Bare-host backups use `EVE_TRADER_PG_BACKUP_USER` (default
+`postgres`); Docker mode keeps `-U postgres`. nginx has an HTTP and an HTTPS
+template (`setup.sh` picks the HTTPS one when a certificate exists); both have
+a 1 MiB body cap, the `eve_trader_timing` log with the request id and proposal
+`limit_req` zones (general `/api/`, strict for solver/rebuild POSTs).
+
 ## Backup
 
 `eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/

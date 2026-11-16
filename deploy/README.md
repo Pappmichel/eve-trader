@@ -130,7 +130,13 @@ chmod +x deploy/setup.sh
 Installs Python/Node/nginx/certbot/Postgres, builds the venv and the
 frontend, writes `.env`/`config.yaml` from the `.example` files (only if
 they don't already exist - never overwrites a real config), and installs
-(but does not yet fully configure) the systemd service and nginx site. See
+(but does not yet fully configure) the systemd service and nginx site.
+On a fresh install the service runs as a dedicated system user
+(`eve-trader`, no shell, no home, no sudo; `APP_USER=<name>` overrides it)
+while the repository stays owned by the deploy user; the script grants the
+service user read access and write access to `data/` through ACLs. On an
+existing install the `User=` of the installed unit is kept. Node.js 22 is
+required (an older major version is replaced). See
 the script itself for exactly what each step does - it's meant to be read,
 not just trusted.
 
@@ -385,8 +391,14 @@ Once you have a domain pointed at the VM's public IP (an A record):
    `FRONTEND_ORIGIN=https://your-domain`,
    `EVE_SSO_REDIRECT_URI=https://your-domain/api/auth/callback`.
 3. `sudo systemctl restart eve-trader`
-4. `sudo certbot --nginx -d your-domain` (adds HTTPS + the http->https
-   redirect - also rewrites the nginx site config in place).
+4. `sudo certbot certonly --nginx -d your-domain`, then re-run
+   `./deploy/setup.sh your-domain`: with a certificate under
+   `/etc/letsencrypt/live/your-domain/` it renders
+   `nginx-eve-trader-ssl.conf.template` (redirect, HTTPS block, HSTS without
+   `includeSubDomains`) instead of the HTTP template. Do not use
+   `certbot --nginx` to rewrite the file in place any more. On a server whose
+   nginx file was changed by hand, compare first with `diff` against the
+   rendered template, run `sudo nginx -t`, and only then reload.
 
 `access_gate.py`'s session cookie automatically becomes `Secure` (HTTPS-only)
 the moment `FRONTEND_ORIGIN` starts with `https://` - no other change needed
@@ -552,3 +564,39 @@ to miss because `deploy.sh` does not do it for you.
 ```bash
 sudo journalctl -u eve-trader -f
 ```
+
+
+## systemd hardening
+
+The unit template carries the sandboxing directives (`UMask=0027`,
+`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, kernel/cgroup
+protection, `RestrictSUIDSGID`, `LockPersonality`). Side effects to know:
+`PrivateTmp=yes` hides the service's temp files from deploy scripts, and
+`ProtectSystem=full` makes `/etc` read-only for the service (the app writes
+only below its own directory). `ProtectHome` is not set because the repository
+lives in the deploy user's home. A server that already has a hardening drop-in
+(`/etc/systemd/system/eve-trader.service.d/hardening.conf`) behaves the same
+after the template is re-applied; the drop-in may then be removed, it does not
+have to be.
+
+## nginx limits
+
+Both nginx templates set `server_tokens off`, a 1 MiB request body cap, a
+timing log (`eve_trader_timing`: `rt`, `urt`, request id `rid`, also sent to
+the backend as `X-Request-ID`) and rate limits (proposals, not measured):
+10 requests/s per address with burst 40 for `/api/`, and 6 requests/minute with
+burst 3 for the solver and rebuild POST endpoints. Over the limit nginx answers
+429.
+
+## Dedicated service user (existing installation)
+
+Only after the operator agrees. Checklist, with the old unit kept as the way back:
+
+1. Create the user: `sudo useradd --system --no-create-home --shell /usr/sbin/nologin eve-trader` (no sudo group).
+2. Install `acl`. Let the user traverse the parent directories of the repository (`setfacl -m u:eve-trader:x <dir>` for each), read the repository, `.venv` and `frontend/dist` (`setfacl -R -m u:eve-trader:rX`), and write `data/` (`setfacl -R -m u:eve-trader:rwX` plus the same with `-d`; add the deploy user too).
+3. `.env` and `config.yaml`: `setfacl -m u:eve-trader:r <file>` and make sure others have no access. Use `setfacl` only; `chmod`/`chown`/`sed -i` on these files can lose the ACL.
+4. Optional backup role instead of a `postgres` password on the service host (run as the database owner):
+   `CREATE ROLE eve_trader_backup LOGIN NOSUPERUSER BYPASSRLS PASSWORD '<password>'; GRANT pg_read_all_data TO eve_trader_backup;`
+   Store the password in that user's `~/.pgpass`, and set `EVE_TRADER_PG_BACKUP_USER=eve_trader_backup` in `.env`. With Docker the backup keeps using `docker exec ... -U postgres`.
+5. Change `User=` in the unit (or re-run `APP_USER=eve-trader ./deploy/setup.sh <domain>`), `sudo systemctl daemon-reload && sudo systemctl restart eve-trader`, check `GET /api/health` and the journal.
+6. Rollback: set `User=` back to the previous value and restart. Deploys keep using the deploy user's `sudo systemctl`.
