@@ -1467,20 +1467,45 @@ def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch
     }]
 
 
-def test_production_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
-    # GitHub issue #56 - same regression, Production side.
-    from eve_trader.production.models import UnlistedStockRow as ProductionUnlistedStockRow
-    monkeypatch.setattr(production_actions, "do_unlisted_stock", lambda: {"rows": [
-        ProductionUnlistedStockRow(type_id=205, type_name="Nova Cruise Missile", stock_quantity=50.0,
-                                    sell_volume=12.0, margin=0.25, production_needed=7.0),
-    ]})
+def test_production_unlisted_stock_check_starts_background_job(monkeypatch):
+    # The check is a pipeline_runner job now: the route answers {run_id, status}
+    # and the rows live in the status's result (the old response_model-based
+    # field-preservation check moved to tests/test_unlisted_stock_job.py, where
+    # the rows are serialized with asdict).
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", lambda: {
+        "run_id": "unlisted-1", "status": "running", "job_name": "unlisted_stock", "tool": "production"})
     resp = client.post("/api/production/unlisted-stock/check")
     assert resp.status_code == 200
-    assert resp.json() == [{
-        "type_id": 205, "type_name": "Nova Cruise Missile", "stock_quantity": 50.0,
-        "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": None, "doctrine_names": [],
-        "production_needed": 7.0,
-    }]
+    assert resp.json() == {"run_id": "unlisted-1", "status": "running",
+                           "job_name": "unlisted_stock", "tool": "production"}
+
+
+def test_production_unlisted_stock_check_conflict_maps_to_409(monkeypatch):
+    def _raise():
+        raise ConflictError("Rebuild Realized Profit is already running.")
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", _raise)
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 409
+
+
+def test_production_unlisted_stock_check_early_validation_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("No stock targets configured.")
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", _raise)
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "No stock targets configured."}
+
+
+def test_production_unlisted_stock_check_status_returns_rows(monkeypatch):
+    status = {"run_id": "unlisted-1", "status": "succeeded", "job_name": "unlisted_stock",
+              "tool": "production", "result": {"rows": [{"type_id": 205, "type_name": "Nova Cruise Missile",
+                                                          "stock_quantity": 50.0, "sell_volume": 12.0,
+                                                          "margin": 0.25, "production_needed": 7.0}]}}
+    monkeypatch.setattr(production_actions, "do_unlisted_stock_status", lambda: status)
+    resp = client.get("/api/production/unlisted-stock/check/status")
+    assert resp.status_code == 200
+    assert resp.json() == status
 
 
 def test_get_sde_freshness(monkeypatch):

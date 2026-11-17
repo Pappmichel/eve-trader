@@ -59,6 +59,7 @@ JOB_CONTRACT_MARKET_SCAN = "contract_market_scan"  # GitHub issue #428
 JOB_SDE_PREVIEW = "sde_preview"
 JOB_DISCOVER_BUILD_CANDIDATES = "discover_build_candidates"
 JOB_REBUILD_REALIZED = "rebuild_realized"
+JOB_UNLISTED_STOCK = "unlisted_stock"
 JOB_STRUCTURE_RESOLVE = "structure_resolve"  # docs/MANUAL_TRACKING_PLAN.md phase 8
 
 _JOB_LABELS: dict[tuple[str, str], str] = {
@@ -71,6 +72,7 @@ _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_ADMIN, JOB_STRUCTURE_RESOLVE): "Resolve Structure Names",
     (TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES): "Discover Build Candidates",
     (TOOL_PRODUCTION, JOB_REBUILD_REALIZED): "Rebuild Realized Profit",
+    (TOOL_PRODUCTION, JOB_UNLISTED_STOCK): "Check Structure Stock Without Order",
 }
 
 # worker(progress_callback) -> result dict (or any JSON-serializable value)
@@ -260,6 +262,21 @@ def start_discover_build_candidates(top_n: int = 200) -> dict:
         TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES,
         _JOB_LABELS[(TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES)],
         lambda cb: production_actions.do_discover_build_candidates(top_n=top_n, progress_callback=cb),
+    )
+
+
+def start_unlisted_stock() -> dict:
+    """Background Production unlisted-stock check: the time goes into live
+    per-corporation ESI reads (assets and orders), which would hold an HTTP
+    request for minutes. The rows land in the run's `result` as
+    ``{"rows": [...]}`` (plain dicts, the frontend reads them from the
+    status). The early validations run before this in
+    production.actions.do_start_unlisted_stock so they stay immediate 400s."""
+    from .production import actions as production_actions
+    return start_job(
+        TOOL_PRODUCTION, JOB_UNLISTED_STOCK,
+        _JOB_LABELS[(TOOL_PRODUCTION, JOB_UNLISTED_STOCK)],
+        lambda cb: production_actions.do_unlisted_stock_job(),
     )
 
 
