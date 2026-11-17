@@ -40,7 +40,7 @@ click==8.5.1
 cryptography==50.0.2
 # anyio (Starlette/FastAPI) on Python <3.11. Not installed on 3.11+.
 exceptiongroup==1.3.1; python_version < "3.11"
-fastapi==0.162.5
+fastapi==0.163.0
 h11==0.16.0
 httptools==0.9.0
 idna==3.20
