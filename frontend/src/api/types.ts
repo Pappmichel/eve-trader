@@ -1533,6 +1533,14 @@ export interface SdeDiff {
   shrink_warnings?: SdeShrinkWarning[]
   // Hard-coded industry constants compared with the dump's dogma.
   constant_drift?: SdeConstantDrift
+  // Published ship groups missing from SHIP_SIZE_GROUP_IDS (no rig tier).
+  unmapped_ship_groups?: SdeUnmappedShipGroup[]
+}
+
+export interface SdeUnmappedShipGroup {
+  group_id: number
+  name: string
+  published_types: number
 }
 
 export interface SdeShrinkWarning {
@@ -2489,7 +2497,11 @@ export interface CharInfoCharacter {
   corporation_history?: CharInfoCorpHistoryRow[]
 }
 
-export interface CharInfoOverview { characters: CharInfoCharacter[] }
+export interface CharInfoOverview {
+  characters: CharInfoCharacter[]
+  /** Tenant's normal ESI freshness tier (hours): a page syncs itself past this age. */
+  sync_max_age_hours?: number
+}
 
 export interface CharInfoSyncResult {
   ok: boolean
@@ -2497,6 +2509,9 @@ export interface CharInfoSyncResult {
   /** Owners another sync pass was already running for (not an error). */
   in_flight: number[]
   failed: { owner_id: number; name: string | null; error: string | null }[]
+  /** Pairs skipped because ESI's cache had not expired yet (until: ISO time). */
+  unchanged?: { owner_type: string; owner_id: number; data_kind: string; until: string }[]
+  unchanged_message?: string | null
 }
 
 
@@ -2586,7 +2601,7 @@ export interface SkillsOverviewRow {
   freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null; data_as_of?: string | null }>
 }
 
-export interface SkillsOverview { characters: SkillsOverviewRow[] }
+export interface SkillsOverview { characters: SkillsOverviewRow[]; sync_max_age_hours?: number }
 
 export interface CharacterSkills {
   character_id: number
@@ -2764,6 +2779,7 @@ export interface NotificationsList {
   unread_total: number
   types: { type: string; label: string; count: number }[]
   categories: { category: string; label: string; count: number }[]
+  sync_max_age_hours?: number
   characters: { character_id: number; character_name: string; synced_at: string | null; last_error: string | null }[]
   hidden_characters: { character_id: number; character_name: string }[]
 }

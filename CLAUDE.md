@@ -1403,6 +1403,21 @@ them):
   skipped as `REAUTH_NEEDED` gets an attempt stamp via
   `storage.record_esi_attempt` (no error text, no stale clear). Manual syncs
   ignore the backoff.
+- **ESI `Expires` is a lower bound for "due" (audit package M, fix 8).**
+  `esi_client.collect_expires()` collects the `Expires` of every authenticated
+  read next to the `Last-Modified` stamps (same call sites, same page
+  handling in `_get_all_pages`); `_record_success` stores the latest over all
+  pages as `esi_freshness.next_fetch_after` (aware UTC, capped 24 h ahead; a
+  success without a usable header clears it, a failure leaves it).
+  `_kind_is_due` / `pending_due` never call a pair due before it; the tier
+  interval and backoff still apply on top. Manual syncs
+  (`do_sync_for_tool` / `do_sync_all` / `do_sync_kinds`) skip a pair before
+  its `Expires` (confirmed with the user 2026-11-16) and report `unchanged`
+  plus `unchanged_message` ("... unchanged until HH:MM UTC") in the result;
+  the frontend's `useAction` / `useCharacterSync` show it as its own notice.
+  `live_only` kinds and the Contract Market scan do not use it. The Character
+  Management overview responses carry `sync_max_age_hours` (the tenant's normal
+  tier), which `useSyncWhenStale` uses instead of a fixed 6 h.
 - **Idle ticks are free.** `esi_data_sync` starts a job thread (and writes
   `last_run_status`) only when `orchestrator.pending_due()` is non-empty;
   `do_sync_due` uses the same list. Due-ness is one `list_esi_freshness()` read;

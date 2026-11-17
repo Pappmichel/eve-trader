@@ -4207,6 +4207,17 @@ def list_esi_freshness() -> list[tuple]:
     ]
 
 
+def list_esi_next_fetch_after() -> dict[tuple[str, int, str], datetime]:
+    """`{(owner_type, owner_id, data_kind): next_fetch_after}` (aware UTC) for
+    rows that carry an `Expires` lower bound."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, next_fetch_after "
+            "FROM esi_freshness WHERE next_fetch_after IS NOT NULL"
+        ).fetchall()
+    return {(r[0], int(r[1]), r[2]): r[3] for r in rows}
+
+
 def list_esi_failure_counts() -> dict[tuple[str, int, str], int]:
     """`{(owner_type, owner_id, data_kind): consecutive_failures}` for rows with
     at least one transient failure in a row."""
@@ -4275,6 +4286,7 @@ def upsert_esi_freshness(
     now: Optional[str] = None,
     data_as_of: Optional[datetime] = None,
     transient: bool = False,
+    next_fetch_after: Optional[datetime] = None,
 ) -> None:
     """Per-(owner, kind) freshness (decision 5). `transient` marks a failure
     as a short-lived ESI problem: it adds one to `consecutive_failures`; any
@@ -4285,7 +4297,11 @@ def upsert_esi_freshness(
 
     `data_as_of` is when ESI generated the fetched data (its `Last-Modified`).
     A success without one stores the fetch time; it is never later than the
-    fetch time. A failure leaves it unchanged."""
+    fetch time. A failure leaves it unchanged.
+
+    `next_fetch_after` is the latest `Expires` of that fetch. A success
+    replaces it (None = no usable header, so the old value must not keep
+    blocking); a failure leaves it unchanged."""
     ts = now or datetime.now(timezone.utc).isoformat()
     last_success = ts if success else None
     last_error = None if success else (error or "fetch failed")
@@ -4297,18 +4313,21 @@ def upsert_esi_freshness(
         conn.execute(
             "INSERT INTO esi_freshness "
             "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, "
-            "data_as_of, consecutive_failures) "
-            "VALUES (?,?,?,?,?,?,?,?) "
+            "data_as_of, consecutive_failures, next_fetch_after) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
             "last_attempt_at = excluded.last_attempt_at, "
             "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
             "last_error = excluded.last_error, "
             "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of), "
             "consecutive_failures = CASE WHEN ? THEN esi_freshness.consecutive_failures + 1 "
-            "ELSE 0 END",
+            "ELSE 0 END, "
+            "next_fetch_after = CASE WHEN ? THEN excluded.next_fetch_after "
+            "ELSE esi_freshness.next_fetch_after END",
             (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of,
              1 if (transient and not success) else 0,
-             bool(transient and not success)),
+             next_fetch_after if success else None,
+             bool(transient and not success), bool(success)),
         )
 
 

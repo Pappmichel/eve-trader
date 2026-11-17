@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from eve_trader import admin, scheduler, storage
 from eve_trader.actions import ActionError
 from eve_trader.production import constant_drift, constants, sde, sde_diff
+from eve_trader.production.constants import SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
@@ -122,6 +123,54 @@ def test_preview_turns_an_invalid_dump_into_an_action_error(monkeypatch):
     with pytest.raises(ActionError, match="rejected"):
         admin.do_preview_sde()
     assert admin._staged_sde is None
+
+
+# ------------------------------------------------------------ ship group check
+def _ship_fixture(groups: dict[int, bool], types_per_group: int = 1) -> sde.FetchedSde:
+    """groups: {group_id: has published types}. Every group is a category-6 ship
+    group; each one with `published` gets `types_per_group` published types."""
+    group_rows = [(gid, SHIP_CATEGORY_ID, f"Group {gid}") for gid in groups]
+    type_rows = []
+    tid = 100000
+    for gid, published in groups.items():
+        for _ in range(types_per_group if published else 1):
+            type_rows.append((tid, gid, f"Ship {tid}", 1.0, int(published), None, None, None, None))
+            tid += 1
+    return sde.FetchedSde(types=type_rows, groups=group_rows)
+
+
+def test_a_new_published_ship_group_is_reported():
+    fetched = _ship_fixture({**{gid: True for gid in _mapped_ship_group_ids()}, 9999: True})
+    assert sde_diff.unmapped_ship_groups(fetched) == [
+        {"group_id": 9999, "name": "Group 9999", "published_types": 1}]
+
+
+def test_current_ship_groups_are_not_reported():
+    fetched = _ship_fixture({gid: True for gid in _mapped_ship_group_ids()}, types_per_group=3)
+    assert sde_diff.unmapped_ship_groups(fetched) == []
+
+
+def test_ship_groups_without_published_types_are_not_reported():
+    groups = {gid: True for gid in _mapped_ship_group_ids()}
+    groups.update({381: False, 2001: False})
+    assert sde_diff.unmapped_ship_groups(_ship_fixture(groups)) == []
+
+
+def test_non_ship_groups_are_ignored():
+    fetched = sde.FetchedSde(
+        types=[(200001, 4242, "Module", 1.0, 1, None, None, None, None)],
+        groups=[(4242, 7, "Some module group")])
+    assert sde_diff.unmapped_ship_groups(fetched) == []
+
+
+def test_build_diff_carries_unmapped_ship_groups():
+    fetched = _ship_fixture({9999: True})
+    diff = sde_diff.build_diff(fetched, {"sde_types": []})
+    assert [g["group_id"] for g in diff["unmapped_ship_groups"]] == [9999]
+
+
+def _mapped_ship_group_ids() -> set[int]:
+    return set().union(*SHIP_SIZE_GROUP_IDS.values())
 
 
 # ------------------------------------------------------------ shrink check

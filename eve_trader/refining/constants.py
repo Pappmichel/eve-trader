@@ -98,22 +98,9 @@ SCRAPMETAL_BASE_YIELD = 0.50
 # base it gives the same result.
 SCRAPMETAL_SKILL_BONUS_PER_LEVEL = 0.01
 
-# -- Compression (GitHub issue #90's scope decision, apply to the whole
-# feature) - NOT uniform: asteroid ore/moon ore/Mercoxit compress to 1% of
-# uncompressed volume; ice and gas compress to only 10%. Keyed by SDE
-# category_id (production/constants.py has no existing constant for these -
-# Ore's own category_id, 25, is the one this codebase already references
-# indirectly via candidate_discovery; Ice shares the "Ice Product"/"Ice Ore"
-# groups under the same Ore category in the SDE, not a separate category).
-# Confirmed via EVE University Wiki/forums during planning (2026-08-22).
+# Ore's SDE category_id (25). Ice shares the Ore category in the SDE; the
+# compression ratios come from the SDE materials, not from constants here.
 ORE_ICE_CATEGORY_ID = 25
-# SDE group_id for "Ice" (uncompressed ice ore groups) and "Ice Product"
-# (refined ice products - not reprocessable, irrelevant here) - Ice's
-# compression ratio (10%) differs from every other Ore-category group (1%),
-# so it needs its own group_id set rather than a flat per-category constant.
-ICE_GROUP_IDS: frozenset = frozenset({465})
-COMPRESSED_VOLUME_RATIO_ORE = 0.01
-COMPRESSED_VOLUME_RATIO_ICE = 0.10
 
 
 def _rounded_security(security_status: float) -> float:

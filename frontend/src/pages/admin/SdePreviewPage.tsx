@@ -247,7 +247,11 @@ export default function SdePreviewPage() {
 
         {diff && !running && (
           <>
-            <SdePreviewWarnings shrinkWarnings={shrinkWarnings} drift={diff.constant_drift} />
+            <SdePreviewWarnings
+              shrinkWarnings={shrinkWarnings}
+              drift={diff.constant_drift}
+              unmappedShipGroups={diff.unmapped_ship_groups ?? []}
+            />
             <Accordion multiple>
               <Accordion.Item value="new">
                 <Accordion.Control>New Items ({newItems.length})</Accordion.Control>
