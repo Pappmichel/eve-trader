@@ -482,7 +482,24 @@ def test_characters_missing_wallet_scope_uses_id_when_name_unknown(monkeypatch):
     import eve_trader.auth as auth_module
     monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([]))
     result = portfolio._characters_missing_wallet_scope({7})
-    assert result == [{"character_id": 7, "character_name": "7"}]
+    assert result == [{"character_id": 7, "character_name": "Character 7"}]
+
+
+def test_characters_missing_wallet_scope_takes_names_from_stored_sync_data(monkeypatch):
+    """No token record names the character: a name an earlier industry-job
+    sync stored is used (no ESI call); only the rest fall back to the id."""
+    import eve_trader.auth as auth_module
+    from eve_trader.realized import db as realized_db
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([]))
+    asked = []
+    monkeypatch.setattr(realized_db, "stored_owner_names",
+                        lambda ids: asked.append(sorted(ids)) or {7: "Installer Seven"})
+
+    result = portfolio._characters_missing_wallet_scope({7, 8})
+
+    assert result == [{"character_id": 7, "character_name": "Installer Seven"},
+                      {"character_id": 8, "character_name": "Character 8"}]
+    assert asked == [[7, 8]]
 
 
 def test_total_wealth_scoped_to_portfolio_sharing_only(monkeypatch):

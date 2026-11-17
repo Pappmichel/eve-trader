@@ -46,6 +46,13 @@ function renderPage(rows: ReturnType<typeof row>[]) {
 describe('Asset Manager unnamed locations', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('labels the saved-view and tag filters for assistive technology', async () => {
+    renderPage([row({})])
+    await screen.findByText(`Structure ${STRUCTURE} (no access)`)
+    expect(screen.getAllByLabelText('Saved view').length).toBeGreaterThan(0)
+    expect(screen.getAllByLabelText('Hide tags').length).toBeGreaterThan(0)
+  })
+
   it('says why a structure has no name', async () => {
     renderPage([row({})])
     expect(await screen.findByText(`Structure ${STRUCTURE} (no access)`)).toBeTruthy()

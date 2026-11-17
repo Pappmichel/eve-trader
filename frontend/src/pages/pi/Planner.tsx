@@ -197,7 +197,7 @@ export default function Planner() {
               value={productId} onChange={setProductId} disabled={!chain} />
           </SimpleGrid>
 
-          <SegmentedControl value={mode} onChange={(v) => setMode(v as 'type' | 'planet')}
+          <SegmentedControl aria-label="Planet source" value={mode} onChange={(v) => setMode(v as 'type' | 'planet')}
             data={[{ value: 'type', label: 'Planet type + radius' }, { value: 'planet', label: 'Real planet' }]} maw={360} />
           {mode === 'planet' ? (
             <PlanetPicker onChange={(p) => setPlanet(p)} />

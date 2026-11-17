@@ -341,12 +341,12 @@ export const productionApi = {
   removeCategoryLocationOption: (category: string, locationId: number) =>
     del(`/api/production/logistics/location-options/${encodeURIComponent(category)}/${locationId}`),
   logisticsStatus: (scope: T.LogisticsScope = 'build_list') =>
-    get<T.LogisticsRow[]>(`/api/production/logistics?scope=${scope}`),
+    get<T.Computed<T.LogisticsRow>>(`/api/production/logistics?scope=${scope}`),
   distributionRecommendations: (scope: T.LogisticsScope = 'build_list') =>
-    get<T.DistributionRow[]>(`/api/production/logistics/distribution?scope=${scope}`),
+    get<T.Computed<T.DistributionRow>>(`/api/production/logistics/distribution?scope=${scope}`),
   marketRestock: () => get<T.MarketRestockRow[]>('/api/production/logistics/market-restock'),
-  inventionLogistics: () => get<T.LogisticsRow[]>('/api/production/logistics/invention'),
-  t1BpcInventionNeeds: () => get<T.T1BpcInventionNeedRow[]>('/api/production/invention/t1-bpc-needs'),
+  inventionLogistics: () => get<T.Computed<T.LogisticsRow>>('/api/production/logistics/invention'),
+  t1BpcInventionNeeds: () => get<T.Computed<T.T1BpcInventionNeedRow>>('/api/production/invention/t1-bpc-needs'),
   structureNames: () => get<Record<string, string | null>>('/api/production/logistics/structure-names'),
   structureSystemIds: () => get<Record<string, number | null>>('/api/production/logistics/structure-system-ids'),
   resolveStructureName: (locationId: number, force = false) =>

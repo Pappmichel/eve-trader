@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ... import hubs
+from .. import schemas
 from ...actions import ActionError
 
 router = APIRouter()
@@ -30,7 +31,7 @@ def list_hubs():
     return hubs.do_list_hubs()
 
 
-@router.get("/freight")
+@router.get("/freight", response_model=list[schemas.HubFreightEntry], response_model_exclude_unset=True)
 def get_hub_freight():
     return hubs.do_get_hub_freight()
 
@@ -42,7 +43,7 @@ def get_observed_freight():
     return hubs.do_get_observed_freight()
 
 
-@router.post("/freight")
+@router.post("/freight", response_model=list[schemas.HubFreightEntry], response_model_exclude_unset=True)
 def update_hub_freight(rows: Annotated[list[HubFreightRow], Field(max_length=1_000)]):
     try:
         return hubs.do_update_hub_freight({r.region_id: r.freight_cost_per_m3 for r in rows})

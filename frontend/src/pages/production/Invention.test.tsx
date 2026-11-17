@@ -33,13 +33,40 @@ describe('Invention', () => {
     vi.mocked(productionApi.settings).mockResolvedValue({} as never)
     vi.mocked(productionApi.itemNameOptions).mockResolvedValue([] as never)
     vi.mocked(productionApi.plan).mockResolvedValue({ invention_list: [] } as never)
-    vi.mocked(productionApi.t1BpcInventionNeeds).mockRejectedValue(
-      new ApiError(400, "No build list computed yet. Run 'Compute Buy/Build List' first."))
+    vi.mocked(productionApi.t1BpcInventionNeeds).mockResolvedValue({ computed: false, rows: [] })
 
     renderPage()
 
     expect(await screen.findByText(/No build list computed yet/)).toBeInTheDocument()
     expect(screen.queryByText(/Failed to load/)).toBeNull()
+  })
+
+  it('shows the empty-state hint, not the not-computed one, for a computed list with no rows', async () => {
+    vi.mocked(productionApi.sdeCounts).mockResolvedValue({ sde_types: 10 } as never)
+    vi.mocked(productionApi.decryptors).mockResolvedValue([] as never)
+    vi.mocked(productionApi.settings).mockResolvedValue({} as never)
+    vi.mocked(productionApi.itemNameOptions).mockResolvedValue([] as never)
+    vi.mocked(productionApi.plan).mockResolvedValue({ invention_list: [] } as never)
+    vi.mocked(productionApi.t1BpcInventionNeeds).mockResolvedValue({ computed: true, rows: [] })
+
+    renderPage()
+
+    expect(await screen.findByText(/Nothing currently needs inventing/)).toBeInTheDocument()
+    expect(screen.queryByText(/No build list computed yet/)).toBeNull()
+  })
+
+  it('still shows a retryable load error when the T1 BPC request really fails', async () => {
+    vi.mocked(productionApi.sdeCounts).mockResolvedValue({ sde_types: 10 } as never)
+    vi.mocked(productionApi.decryptors).mockResolvedValue([] as never)
+    vi.mocked(productionApi.settings).mockResolvedValue({} as never)
+    vi.mocked(productionApi.itemNameOptions).mockResolvedValue([] as never)
+    vi.mocked(productionApi.plan).mockResolvedValue({ invention_list: [] } as never)
+    vi.mocked(productionApi.t1BpcInventionNeeds).mockRejectedValue(new ApiError(500, 'boom'))
+
+    renderPage()
+
+    expect(await screen.findByText(/Failed to load/)).toBeInTheDocument()
+    expect(screen.queryByText(/No build list computed yet/)).toBeNull()
   })
 
   it('shows a dash instead of 0% when an item has no BPC target', async () => {
@@ -60,7 +87,7 @@ describe('Invention', () => {
           bpc_target_runs: 30, t2_bpc_owned: 10, stockpile_pct: 33.3 },
       ],
     } as never)
-    vi.mocked(productionApi.t1BpcInventionNeeds).mockResolvedValue([] as never)
+    vi.mocked(productionApi.t1BpcInventionNeeds).mockResolvedValue({ computed: true, rows: [] })
 
     renderPage()
 

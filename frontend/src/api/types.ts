@@ -638,6 +638,13 @@ export interface PullFromStop {
   quantity: number
 }
 
+/** `computed: false` = no cached Build List / asset plan yet (a normal state
+ *  after a restart); `rows` is then empty. */
+export interface Computed<Row> {
+  computed: boolean
+  rows: Row[]
+}
+
 export interface LogisticsRow {
   category: string
   location_id: number

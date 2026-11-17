@@ -307,7 +307,7 @@ export default function AssetInventory() {
                 ))}
               </Group>
             </Chip.Group>
-            <MultiSelect placeholder="Hide tags…" w={220} size="xs" clearable
+            <MultiSelect aria-label="Hide tags" placeholder="Hide tags…" w={220} size="xs" clearable
               data={HIDEABLE_BADGES.map((b) => ({ value: b, label: b.replace('_', ' ') }))}
               value={query.hide_badges ?? []} onChange={(v) => update({ hide_badges: v })} />
             <Tooltip label="Only what the planners count as stock: no Asset Safety, deliveries, assembled ships, fittings, listed or contracted items." multiline w={280}>
@@ -318,7 +318,7 @@ export default function AssetInventory() {
               data={[{ value: 'type_location', label: 'Per item & place' }, { value: 'type', label: 'Per item' }, { value: 'none', label: 'Every stack' }]} />
           </Group>
           <Group gap="xs" wrap="wrap">
-            <Select size="xs" w={220} placeholder="Saved views" clearable
+            <Select aria-label="Saved view" size="xs" w={220} placeholder="Saved views" clearable
               data={(views.data?.views ?? []).map((v) => ({ value: String(v.id), label: v.error ? `${v.name} (outdated)` : v.name }))}
               value={activeView ? String(activeView.id) : null}
               onChange={(v) => {

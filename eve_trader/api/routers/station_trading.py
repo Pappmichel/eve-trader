@@ -106,7 +106,7 @@ def update_settings(updates: StationTradingSettingsUpdate):  # type: ignore[vali
 
 
 # ------------------------------------------------------------- realized profit
-@router.get("/realized/summary")
+@router.get("/realized/summary", response_model=schemas.RealizedChannelSummary, response_model_exclude_unset=True)
 def station_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
                              end: Optional[str] = None, since_t0: bool = False):
     return _wrap(

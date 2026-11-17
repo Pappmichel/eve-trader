@@ -487,6 +487,7 @@ function UsersSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
+          aria-label={`Remove user ${i.row.original.character_name ?? i.row.original.character_id}`}
           onClick={() => modals.openConfirmModal({
             title: 'Remove user',
             children: <Text size="sm">
@@ -532,7 +533,7 @@ function UsersSection() {
         />
       )}
       <Group mt="sm">
-        <TextInput placeholder="Character name" value={characterName}
+        <TextInput aria-label="Character name" placeholder="Character name" value={characterName}
           onChange={(e) => setCharacterName(e.currentTarget.value)} w={220} />
         <Tooltip label={addUser.tooltip} disabled={!addUser.tooltip} multiline w={280}>
           <Button size="xs" leftSection={addUser.tierIcon} disabled={!characterName.trim()} loading={addUser.isPending}
@@ -614,7 +615,7 @@ function AllowlistSection() {
         affiliation re-check off. Access itself stays per character, after you approve a request.
       </Text>
       <Group mb="sm">
-        <TextInput placeholder="Exact corp or alliance name" value={query}
+        <TextInput aria-label="Corporation or alliance name" placeholder="Exact corp or alliance name" value={query}
           onChange={(e) => setQuery(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void search() }} w={280} />
         <Button size="xs" variant="default" loading={searching} disabled={!query.trim()} onClick={() => void search()}>
