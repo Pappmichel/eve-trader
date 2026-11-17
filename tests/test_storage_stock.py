@@ -139,18 +139,18 @@ def test_esi_stock_at_location_allowed_flags_with_location_id_none(tenant):
 def test_esi_stock_at_location_exclude_intake_skips_configured_source_at_that_location(tenant):
     other_location = 1000000000002
     storage.replace_assets("character_assets", [
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 500, 0, "pappmichl5"),
-        (2, TYPE_ID, other_location, "Hangar", 80, 0, "pappmichl5"),
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 500, 0, "examplepilot5"),
+        (2, TYPE_ID, other_location, "Hangar", 80, 0, "examplepilot5"),
         (3, TYPE_ID, LOCATION_ID, "Hangar", 40, 0, "someone else"),
-        (4, TYPE_ID, LOCATION_ID, "CorpSAG1", 10, 0, "pappmichl5"),
+        (4, TYPE_ID, LOCATION_ID, "CorpSAG1", 10, 0, "examplepilot5"),
     ])
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
 
     # Without the opt-in, intake still counts (call sites that haven't been
     # updated keep today's behaviour).
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 550
-    # At C-J: intake Hangar for pappmichl5 is excluded; other owner in the
-    # same flag, and pappmichl5's non-intake CorpSAG1, still count.
+    # At C-J: intake Hangar for examplepilot5 is excluded; other owner in the
+    # same flag, and examplepilot5's non-intake CorpSAG1, still count.
     assert storage.esi_stock_at_location(
         TYPE_ID, LOCATION_ID, exclude_intake_at_location_id=LOCATION_ID) == 50
     # Same owner+flag at a different structure is real stock, not intake.
@@ -271,15 +271,15 @@ def test_replace_assets_allows_colliding_item_id_across_different_owners(tenant)
     # a UniqueViolation on the old item_id-only PK. character_assets'/
     # corp_assets' PK is now (item_id, owner_name) - this must not raise.
     storage.replace_assets("character_assets", [
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 230000, 0, "pappmichl"),
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 368000, 0, "pappmichl5"),
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 230000, 0, "examplepilot"),
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 368000, 0, "examplepilot5"),
     ])
 
     assert dict(storage.assets_at_flag(
-        "Hangar", tables=("character_assets",), owner_name="pappmichl",
+        "Hangar", tables=("character_assets",), owner_name="examplepilot",
     )) == {TYPE_ID: 230000}
     assert dict(storage.assets_at_flag(
-        "Hangar", tables=("character_assets",), owner_name="pappmichl5",
+        "Hangar", tables=("character_assets",), owner_name="examplepilot5",
     )) == {TYPE_ID: 368000}
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 598000
 
@@ -292,17 +292,17 @@ def test_container_resolution_does_not_cross_owners_on_colliding_item_id(tenant)
     # owner_name), so pilot B's colliding item_id 1 must not be mistaken for
     # pilot A's own container.
     storage.replace_assets("character_assets", [
-        (1, 649, LOCATION_ID, "Hangar", 1, 0, "pappmichl"),           # A's container, sits directly in Hangar
-        (2, TYPE_ID, 1, "Unlocked", 100, 0, "pappmichl"),             # A's item, nested inside it
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 368000, 0, "pappmichl5"),  # B's own, unrelated stack - colliding item_id
+        (1, 649, LOCATION_ID, "Hangar", 1, 0, "examplepilot"),           # A's container, sits directly in Hangar
+        (2, TYPE_ID, 1, "Unlocked", 100, 0, "examplepilot"),             # A's item, nested inside it
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 368000, 0, "examplepilot5"),  # B's own, unrelated stack - colliding item_id
     ])
 
     # A's nested Tritanium must resolve up through A's own container to
     # LOCATION_ID, not get redirected by B's colliding item_id 1.
-    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="pappmichl")) == {
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="examplepilot")) == {
         649: 1, TYPE_ID: 100,
     }
-    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="pappmichl5")) == {
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="examplepilot5")) == {
         TYPE_ID: 368000,
     }
 
@@ -726,12 +726,12 @@ def _assert_lookup_matches_single(engine, type_ids, locations, intake=None):
 
 def test_stock_lookup_matches_single_id_with_intake_exclusion_and_manual_stock(tenant, _engine_filters):
     storage.replace_assets("character_assets", [
-        (1, TYPE_ID, LOCATION_ID, "Hangar", 500, 0, "pappmichl5"),
-        (2, TYPE_ID, OTHER_LOCATION_ID, "Hangar", 80, 0, "pappmichl5"),
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 500, 0, "examplepilot5"),
+        (2, TYPE_ID, OTHER_LOCATION_ID, "Hangar", 80, 0, "examplepilot5"),
         (3, TYPE_ID, LOCATION_ID, "Hangar", 40, 0, "someone else"),
-        (4, OTHER_TYPE_ID, LOCATION_ID, "Hangar", 7, 0, "pappmichl5"),
+        (4, OTHER_TYPE_ID, LOCATION_ID, "Hangar", 7, 0, "examplepilot5"),
     ])
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
     storage.upsert_manual_stock(TYPE_ID, 25, LOCATION_ID)
     storage.upsert_manual_stock(OTHER_TYPE_ID, 3, OTHER_LOCATION_ID)
 

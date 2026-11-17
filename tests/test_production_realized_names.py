@@ -9,7 +9,7 @@ def test_warning_items_get_names_links_and_readable_text(monkeypatch):
         34: "Tritanium", 22444: "Sleipnir", 1318: "Expanded Cargohold I Blueprint",
     })
     monkeypatch.setattr(names, "owner_names", lambda ids: {
-        1234567893: "pappmichl", 98000001: "Some Corp",
+        1234567893: "examplepilot", 98000001: "Some Corp",
     })
     monkeypatch.setattr(names, "location_names", lambda ids: {1049588174021: "C-J6MT - Home"})
     jobs = {"job:character:1234567893:675263867": {
@@ -49,10 +49,10 @@ def test_warning_items_get_names_links_and_readable_text(monkeypatch):
     unknown = items["unknown_origin"]
     # Both a type and a job: the row links to the job.
     assert unknown["job_ref"] == "job:character:1234567893:675263867"
-    assert unknown["job_label"] == "job #675263867 (Sleipnir, Manufacturing, pappmichl)"
+    assert unknown["job_label"] == "job #675263867 (Sleipnir, Manufacturing, examplepilot)"
     assert unknown["text"] == ("Expanded Cargohold I Blueprint (bpc_run) 200 without a layer "
-                               "(job #675263867 (Sleipnir, Manufacturing, pappmichl))")
-    assert items["coverage_below_threshold"]["text"] == "market sale #6890579030 (pappmichl) Sleipnir coverage 0%"
+                               "(job #675263867 (Sleipnir, Manufacturing, examplepilot))")
+    assert items["coverage_below_threshold"]["text"] == "market sale #6890579030 (examplepilot) Sleipnir coverage 0%"
     assert items["outside_home_structure"]["text"] == "contract #9 Sleipnir sold at C-J6MT - Home"
     assert items["unresolved_region"]["location_name"] == "C-J6MT - Home"
 

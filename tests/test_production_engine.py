@@ -298,7 +298,7 @@ def test_has_bpo_at_location_true_when_only_manual_has_one(monkeypatch):
 
 @pg_helpers.postgres_required()
 def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, tenant):
-    """pappmichl5's personal Hangar is a Sorting intake source AND a
+    """examplepilot5's personal Hangar is a Sorting intake source AND a
     Production producer hangar. Stock sitting there is unsortiertes staging
     and must not cover Buy-List / _current_stock demand at C-J. The same
     character's Hangar at another structure, and a non-intake division at
@@ -311,11 +311,11 @@ def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, ten
         conn.execute(sql.read_text(encoding="utf-8"))
     pg_helpers.wipe_tables("character_assets", "sorting_intake_sources")
     storage.replace_assets("character_assets", [
-        (9101, 34, home, "Hangar", 500, 0, "pappmichl5"),
-        (9102, 34, home, "CorpSAG1", 10, 0, "pappmichl5"),
-        (9103, 34, jita, "Hangar", 80, 0, "pappmichl5"),
+        (9101, 34, home, "Hangar", 500, 0, "examplepilot5"),
+        (9102, 34, home, "CorpSAG1", 10, 0, "examplepilot5"),
+        (9103, 34, jita, "Hangar", 80, 0, "examplepilot5"),
     ])
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     cfg = ProductionConfig(home_location_id=home)
 
@@ -4415,9 +4415,9 @@ def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeyp
         conn.execute((docs / "production_buy_list_schema.sql").read_text(encoding="utf-8"))
     pg_helpers.wipe_tables("character_assets", "sorting_intake_sources", "production_buy_list")
     storage.replace_assets("character_assets", [
-        (9201, 36, home, "Hangar", 1_135_000, 0, "pappmichl5"),
+        (9201, 36, home, "Hangar", 1_135_000, 0, "examplepilot5"),
     ])
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
     monkeypatch.setattr(storage, "save_latest_buy_list", _save_latest_buy_list_impl)
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
 

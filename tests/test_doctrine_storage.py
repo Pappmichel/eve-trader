@@ -397,13 +397,13 @@ def test_doctrine_esi_stock_excludes_sorting_intake_at_home(tenant):
     storage.replace_assets(
         "character_assets",
         [
-            (1, type_id, location_id, "Hangar", 100, 0, "pappmichl5"),
-            (2, type_id, location_id, "CorpSAG1", 25, 0, "pappmichl5"),
+            (1, type_id, location_id, "Hangar", 100, 0, "examplepilot5"),
+            (2, type_id, location_id, "CorpSAG1", 25, 0, "examplepilot5"),
         ],
-        owner_character_id=1001, owner_name="pappmichl5",
+        owner_character_id=1001, owner_name="examplepilot5",
     )
     _share("character", 1001, "assets", "doctrine")
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
     rows = read_esi("assets", "doctrine")
 
     assert storage.esi_stock_from_asset_rows(rows, [type_id], location_id)[type_id] == 125
