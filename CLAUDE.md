@@ -2031,8 +2031,9 @@ Every structure/rig bonus goes through `engine._facility_mults` /
 `facility_resolution` (ME, TE and job cost; also Realized and Max buildable).
 For an item's job category (`job_category`) the order is: the value saved in
 `job_category_facilities` (Logistics page, CLI `eve-trader production
-facilities list|set|clear`), then the rig tier the category structure's name
-states (`production/facility_names.py`, e.g. "IAK-JW - CEZ T2 Adv L T1 Basic
+facilities list|set|clear`), then the tier a **rig sheet** states for the
+category structure's solar system (below), then the rig tier the category
+structure's name states (`production/facility_names.py`, e.g. "IAK-JW - CEZ T2 Adv L T1 Basic
 L"), then the global Settings profile (`*_structure_type` / `*_rig_tier`).
 Rig security comes from the category structure's system when known. Only the
 three ship-size categories have a separate rig for Tech II/III hulls
@@ -2042,6 +2043,33 @@ where it says so; the CEZ/KFEZ/GEZ prefixes are owner tags, not structure
 types. Structure rigs are not in ESI assets unless the corp owns the
 structure, so names are the only automatic source. Data is cached per tenant
 (60 s TTL plus `invalidate_facility_cache()` on every write path).
+
+**Rig sheet source (decided with the user 2026-11-16).** An alliance may keep
+a shared Google sheet with the rig tier per solar system and job category.
+`ProductionConfig.rig_sheet_url` (per tenant, Production settings, validated
+and length-limited) names it; the link is user input and never part of the
+repository, tests or docs. `production/rig_sheet.py` holds a pure parser
+(`parse_csv`, `lookup`) and the only network code (`fetch_csv`: the export
+address is built from the link's sheet id and `gid`, host `docs.google.com`
+only, redirects only to `*.googleusercontent.com`, 10 s, 1 MiB, error texts
+never carry the address or the server's answer). The parser finds each block
+by its `Location` cell, reads the group row above it, identifies a column by
+group plus name (one table, `_COLUMN_TABLE`), follows arrows to the
+neighbouring column inside the same group (a loop or the group's end means no
+value), and treats `F`, empty and unknown codes as no value; only `T1`/`T2`/`N`
+count, a qualifier in brackets counts only as `All` (a category is not one
+reaction kind). A column that depends on the structure type (Raitaru/Azbel/
+Sotiyo, Athanor/Tatara) is read at the type of the category's structure; an
+unknown type gives no value. The last good parse is stored per tenant in
+`production_rig_sheet` (with the source key of the link it came from, so a
+changed link never reads the old sheet). **Planners and `facility_resolution`
+never touch the network**: only `actions.do_reload_rig_sheet` does (saving a
+new link, the Logistics page's "Reload rig sheet" button, and the page's
+automatic reload when the stored copy is older than 24 h). A failed reload
+keeps the stored rows and shows its error. The sheet applies only when the
+category structure's system is known and listed and the cell resolves to
+`T1`/`T2`/`N`; `N` ("No Rig") beats the name. TE follows the ME tier as before.
+The Research/Copy/Invention blocks are not read.
 
 **ME and TE rigs are separate tiers (decided with the user 2026-11-16).** The
 ME tier follows the order above (`rig_tier`, `rig_source`). The time-efficiency

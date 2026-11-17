@@ -326,6 +326,7 @@ export const productionApi = {
     del(`/api/production/logistics/cost-index-overrides/${encodeURIComponent(category)}`),
   categoryFacilities: () => get<T.CategoryFacilities>('/api/production/logistics/facilities'),
   setCategoryFacility: (body: T.CategoryFacilityUpdate) => post('/api/production/logistics/facilities', body),
+  reloadRigSheet: () => post<T.RigSheetStatus>('/api/production/logistics/rig-sheet/reload', {}),
   clearCategoryFacility: (category: string) =>
     del(`/api/production/logistics/facilities/${encodeURIComponent(category)}`),
   categoryLocationOptions: () => get<Record<string, number[]>>('/api/production/logistics/location-options'),

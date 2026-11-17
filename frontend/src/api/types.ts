@@ -1138,6 +1138,8 @@ export interface ProductionSettings {
   supercapital_te_rig_tier?: string | null
   manufacturing_te_rig_tier?: string | null
   invention_rig_tier?: string
+  // Link to the shared rig sheet (docs.google.com spreadsheet); empty = no sheet source.
+  rig_sheet_url?: string
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
@@ -4489,7 +4491,7 @@ export interface LocationReport {
 }
 
 // Per-category structure type and ME rigs (Logistics page).
-export type FacilitySource = 'set' | 'name' | 'global'
+export type FacilitySource = 'set' | 'sheet' | 'name' | 'global'
 // A time-efficiency rig tier follows the ME tier unless one is set.
 export type TeFacilitySource = 'set' | 'global' | 'same as ME'
 
@@ -4526,6 +4528,19 @@ export interface CategoryFacilityTax {
   settings_rate: number
 }
 
+// State of the tenant's rig sheet (Production settings link); what the planners read is the last good fetch.
+export interface RigSheetStatus {
+  configured: boolean
+  fetched_at: string | null
+  age_hours: number | null
+  system_count: number
+  duplicates: string[]
+  error: string | null
+  error_at: string | null
+  // Only on the reload response: whether this fetch succeeded.
+  ok?: boolean
+}
+
 export interface CategoryFacilityRow {
   category: string
   profile: string
@@ -4536,6 +4551,8 @@ export interface CategoryFacilityRow {
   split_by_tech: boolean
   saved: Omit<CategoryFacilityUpdate, 'category'>
   from_name: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
+  // What the rig sheet states for the category structure's system (null = no value).
+  from_sheet?: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
   tax: CategoryFacilityTax
   effective: {
     structure_type: string
@@ -4557,6 +4574,7 @@ export interface CategoryFacilities {
   categories: CategoryFacilityRow[]
   structure_types: string[]
   rig_tiers: string[]
+  rig_sheet?: RigSheetStatus
 }
 
 // ------------------------------------------- Import tab (import_planner.py)

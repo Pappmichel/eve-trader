@@ -3108,6 +3108,67 @@ def load_category_facilities() -> dict[str, dict]:
     }
 
 
+def load_rig_sheet() -> Optional[dict]:
+    """The tenant's stored rig sheet state, or None: {source_key, fetched_at
+    (datetime or None), systems, duplicates, last_error, last_error_at}."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT source_key, fetched_at, systems, duplicates, last_error, last_error_at "
+            "FROM production_rig_sheet"
+        ).fetchone()
+    if row is None:
+        return None
+    return {"source_key": row[0], "fetched_at": row[1], "systems": row[2] or {},
+            "duplicates": row[3] or [], "last_error": row[4], "last_error_at": row[5]}
+
+
+def save_rig_sheet_success(source_key: str, systems: dict, duplicates: list) -> None:
+    """Replaces the stored state with a freshly parsed sheet and clears the error."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO production_rig_sheet (source_key, fetched_at, systems, duplicates, last_error, "
+            "last_error_at) VALUES (?, now(), ?, ?, NULL, NULL) "
+            "ON CONFLICT(tenant_id) DO UPDATE SET source_key=excluded.source_key, fetched_at=excluded.fetched_at, "
+            "systems=excluded.systems, duplicates=excluded.duplicates, last_error=NULL, last_error_at=NULL",
+            (source_key, Jsonb(systems), Jsonb(duplicates)),
+        )
+
+
+def save_rig_sheet_error(source_key: str, error: str) -> None:
+    """Records a failed fetch. The stored rows stay when they came from the
+    same sheet; rows of another sheet are dropped, they must not be read."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO production_rig_sheet (source_key, last_error, last_error_at) VALUES (?, ?, now()) "
+            "ON CONFLICT(tenant_id) DO UPDATE SET "
+            "fetched_at = CASE WHEN production_rig_sheet.source_key = excluded.source_key "
+            "THEN production_rig_sheet.fetched_at ELSE NULL END, "
+            "systems = CASE WHEN production_rig_sheet.source_key = excluded.source_key "
+            "THEN production_rig_sheet.systems ELSE '{}'::jsonb END, "
+            "duplicates = CASE WHEN production_rig_sheet.source_key = excluded.source_key "
+            "THEN production_rig_sheet.duplicates ELSE '[]'::jsonb END, "
+            "source_key = excluded.source_key, last_error = excluded.last_error, "
+            "last_error_at = excluded.last_error_at",
+            (source_key, error),
+        )
+
+
+def delete_rig_sheet() -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM production_rig_sheet")
+
+
+def get_system_name(system_id: Optional[int]) -> Optional[str]:
+    """Solar system name from the local SDE cache."""
+    if system_id is None:
+        return None
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT solar_system_name FROM sde_solar_systems WHERE solar_system_id = ?", (system_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
 def upsert_category_facility(category: str, structure_type: Optional[str],
                              rig_tier_basic: Optional[str], rig_tier_advanced: Optional[str],
                              facility_tax_rate: Optional[float] = None,

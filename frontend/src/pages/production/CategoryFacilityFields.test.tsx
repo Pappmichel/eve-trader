@@ -122,3 +122,16 @@ describe('CategoryFacilityFields TE rig', () => {
     expect(await screen.findByRole('option', { name: 'T1-Rig' })).toBeInTheDocument()
   })
 })
+
+describe('CategoryFacilityFields rig sheet source', () => {
+  it('labels the Auto entry with the sheet tier and its source', () => {
+    const base = row()
+    renderFields({
+      ...base,
+      from_sheet: { rig_tier_basic: 'T2-Rig', rig_tier_advanced: null },
+      from_name: { rig_tier_basic: 'T1-Rig', rig_tier_advanced: null },
+      effective: { ...base.effective, rig_tier_basic: 'T2-Rig', rig_source_basic: 'sheet' },
+    })
+    expect(selectInput('ME rig')).toHaveValue('Auto: T2-Rig (from rig sheet)')
+  })
+})

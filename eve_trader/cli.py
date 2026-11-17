@@ -761,7 +761,7 @@ def facilities_group():
 @_tenant_id_option
 def facilities_list(tenant_id: str | None):
     """Shows the structure type and rigs each job category is computed with,
-    and where each value comes from (set / name / global; a TE rig left unset is "same as ME"), plus the facility
+    and where each value comes from (set / sheet / name / global; a TE rig left unset is "same as ME"), plus the facility
     tax in use (override / observed on the last own jobs / Settings) and how
     old the observation is."""
     result = _targets_call(tenant_id, production_actions.do_list_category_facilities)
@@ -779,6 +779,23 @@ def facilities_list(tenant_id: str | None):
         click.echo(f"{row['category']:<20} {structure[:34]:<34} {basic:<16} {advanced:<16} "
                    f"{eff['security_multiplier']:>5.2f}  {te_basic:<24} {te_advanced:<24} {_tax_text(row.get('tax')):<30} "
                    f"{row['structure_name'] or '-'}")
+    sheet = result.get("rig_sheet") or {}
+    if sheet.get("configured"):
+        loaded = (f"{sheet['system_count']} systems, fetched {sheet['fetched_at']}"
+                  if sheet.get("fetched_at") else "not loaded yet")
+        error = f"; last error: {sheet['error']}" if sheet.get("error") else ""
+        click.echo(f"Rig sheet: {loaded}{error}")
+
+
+@facilities_group.command("reload-sheet")
+@_tenant_id_option
+def facilities_reload_sheet(tenant_id: str | None):
+    """Fetches the rig sheet set in Production settings now and stores it."""
+    status = _targets_call(tenant_id, production_actions.do_reload_rig_sheet)
+    if status["ok"]:
+        click.echo(f"Loaded {status['system_count']} systems.")
+    else:
+        click.echo(f"Failed: {status['error']}")
 
 
 def _tax_text(tax: dict | None) -> str:

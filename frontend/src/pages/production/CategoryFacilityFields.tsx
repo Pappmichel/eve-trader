@@ -33,6 +33,7 @@ export function facilityTaxSummary(tax: CategoryFacilityTax): string {
 
 const SOURCE_TEXT: Record<FacilitySource, string> = {
   set: 'set here',
+  sheet: 'from rig sheet',
   name: 'from structure name',
   global: 'Settings page',
 }
@@ -59,8 +60,11 @@ function autoLabel(value: string | null, source: FacilitySource | null): string 
 }
 
 // The "Auto" label shows what applies when nothing is saved for the field:
-// the tier the structure name states, else the Settings page's profile.
+// the tier the rig sheet states for the structure's system, else the one the
+// structure name states, else the Settings page's profile.
 function autoFallback(row: CategoryFacilityRow, field: 'basic' | 'advanced'): [string | null, FacilitySource] {
+  const sheeted = field === 'basic' ? row.from_sheet?.rig_tier_basic : row.from_sheet?.rig_tier_advanced
+  if (sheeted) return [sheeted, 'sheet']
   const named = field === 'basic' ? row.from_name.rig_tier_basic : row.from_name.rig_tier_advanced
   if (named) return [named, 'name']
   const eff = row.effective
