@@ -5,10 +5,10 @@ description = "C-J import trading and Tech I/II production planning toolkit for 
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Pappmichel" }]
-requires-python = ">=3.10"
-# Supported runtime matrix: Python 3.10, 3.11 (CI), 3.12. Upper bounds on
+requires-python = ">=3.11"
+# Supported runtime matrix: Python 3.11 and 3.12 (CI runs both). Upper bounds on
 # numpy/pandas/scipy exist so a lockfile generated on 3.12 cannot pin
-# wheels that refuse 3.10/3.11 (P5-01: numpy 2.5 / scipy 1.18 / pandas 3
+# wheels that refuse 3.11 (P5-01: numpy 2.5 / scipy 1.18 / pandas 3
 # require Python >=3.12).
 dependencies = [
     "requests>=2.31,<3",
