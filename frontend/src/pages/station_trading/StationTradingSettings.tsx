@@ -10,6 +10,8 @@ import { useAction } from '../../hooks/useAction'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
+import { FeeSkillCharacterSelect, FeeSkillNote, SkillFeeHint } from '../../components/FeeSkillHints'
+import { ObservedRateHint } from '../../components/ObservedRateHint'
 import { pct } from '../../format'
 
 type SkillRow = NonNullable<Awaited<ReturnType<typeof stationTradingApi.skills>>>[number]
@@ -47,22 +49,32 @@ const HUB_STATIONS: Record<number, number> = {
 export default function StationTradingSettings() {
   const { data } = useQuery({ queryKey: ['station-trading', 'settings'], queryFn: stationTradingApi.settings })
   const { data: skills } = useQuery({ queryKey: ['station-trading', 'skills'], queryFn: stationTradingApi.skills })
+  const { data: fees } = useQuery({ queryKey: ['station-trading', 'fee-suggestions'], queryFn: stationTradingApi.feeSuggestions })
 
   const [form, setForm] = useState<StationTradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
-  const save = useAction('Save Settings', stationTradingApi.updateSettings, [['station-trading', 'settings']])
+  const save = useAction('Save Settings', stationTradingApi.updateSettings,
+    [['station-trading', 'settings'], ['station-trading', 'fee-suggestions']])
 
   if (!form) return <Center h={200}><Loader color="accent" /></Center>
 
   const set = <K extends keyof StationTradingSettingsT>(key: K, value: StationTradingSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
+  // A hint's "Use this value": the normal save with that one field changed.
+  const apply = <K extends keyof StationTradingSettingsT>(key: K, value: StationTradingSettingsT[K]) => {
+    set(key, value)
+    save.mutate(changedFields(data, { ...form, [key]: value }))
+  }
+  const observed = fees?.observed
+  const observedDetail = "In a shared corporation wallet this includes other members' sales. "
+    + (observed?.relist_note ?? '')
 
   return (
     <Stack maw={800}>
       <HintCard>
-        Changes take effect immediately. Broker fee/sales tax below default to the base NPC rate - check your
-        in-game Market window and adjust for your own standings/skills.
+        Changes take effect immediately. Broker fee/sales tax are your own values; the hints below each field
+        show what the chosen character's skills and standings, and your wallet, imply - apply one with a click.
       </HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Station</Title>
@@ -80,10 +92,39 @@ export default function StationTradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label="Broker fee" suffix="%" decimalScale={2} value={form.broker_fee_rate * 100} min={0} max={100} step={0.1}
-          onChange={(v) => set('broker_fee_rate', Number(v) / 100)} />
-        <NumberInput label="Sales tax" suffix="%" decimalScale={2} value={form.sales_tax_rate * 100} min={0} max={100} step={0.1}
-          onChange={(v) => set('sales_tax_rate', Number(v) / 100)} />
+        <FeeSkillCharacterSelect hints={fees?.skills} value={form.fee_skill_character_id}
+          onChange={(v) => apply('fee_skill_character_id', v)} />
+        <FeeSkillNote />
+        <Stack gap={4}>
+          <NumberInput label="Broker fee" suffix="%" decimalScale={3} value={form.broker_fee_rate * 100} min={0} max={100} step={0.1}
+            onChange={(v) => set('broker_fee_rate', Number(v) / 100)} />
+          <SkillFeeHint testId="skill-broker-fee" kind="broker" hints={fees?.skills} part={fees?.skills?.broker_fee}
+            label="From skills" current={form.broker_fee_rate} applying={save.isPending}
+            onApply={(v) => apply('broker_fee_rate', v)} />
+          {observed && (
+            <ObservedRateHint testId="observed-broker-fee" label={`Actual last ${observed.window_days} days`}
+              value={observed.suggested_broker_fee_rate} current={form.broker_fee_rate}
+              format={(v) => `${(v * 100).toFixed(3)} %`} same={(a, b) => Math.abs(a - b) < 0.00005}
+              sample={`${observed.sales} sales`} detail={`Broker fee / gross of the sell leg. ${observedDetail}`}
+              emptyText={`${observed.sales} of ${observed.min_sales} sales needed`} emptyMessage={observed.message}
+              onApply={(v) => apply('broker_fee_rate', v)} applying={save.isPending} />
+          )}
+        </Stack>
+        <Stack gap={4}>
+          <NumberInput label="Sales tax" suffix="%" decimalScale={3} value={form.sales_tax_rate * 100} min={0} max={100} step={0.1}
+            onChange={(v) => set('sales_tax_rate', Number(v) / 100)} />
+          <SkillFeeHint testId="skill-sales-tax" kind="tax" hints={fees?.skills} part={fees?.skills?.sales_tax}
+            label="From skills" current={form.sales_tax_rate} applying={save.isPending}
+            onApply={(v) => apply('sales_tax_rate', v)} />
+          {observed && (
+            <ObservedRateHint testId="observed-sales-tax" label={`Actual last ${observed.window_days} days`}
+              value={observed.suggested_sales_tax_rate} current={form.sales_tax_rate}
+              format={(v) => `${(v * 100).toFixed(3)} %`} same={(a, b) => Math.abs(a - b) < 0.00005}
+              sample={`${observed.sales} sales`} detail={`Sales tax / gross. ${observedDetail}`}
+              emptyText={`${observed.sales} of ${observed.min_sales} sales needed`} emptyMessage={observed.message}
+              onApply={(v) => apply('sales_tax_rate', v)} applying={save.isPending} />
+          )}
+        </Stack>
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Candidate Discovery</Title>
@@ -113,9 +154,8 @@ export default function StationTradingSettings() {
         />
       )}
       <Text size="xs" c="dimmed">
-        Effective spread needed to clear fees, base game: {pct(form.broker_fee_rate * 2 + form.sales_tax_rate)}{' '}
-        (broker fee on both legs + sales tax on the sell leg) - Broker Relations/Accounting reduce this in-game,
-        not reflected here (see hint above).
+        Effective spread needed to clear fees: {pct(form.broker_fee_rate * 2 + form.sales_tax_rate)}{' '}
+        (broker fee on both legs + sales tax on the sell leg), at the rates saved above.
       </Text>
     </Stack>
   )

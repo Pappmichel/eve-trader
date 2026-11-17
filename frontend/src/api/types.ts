@@ -133,6 +133,23 @@ export interface HubFreightRow {
   freight_cost_per_m3: number | null
 }
 
+// One hub's freight suggestion (GET /api/hubs/observed-freight): finished courier
+// contracts to the home structure, reward / volume. Aggregates only. No value -> `reason`.
+export interface ObservedFreightRow {
+  region_id: number
+  hub: string
+  source: 'courier_contracts'
+  suggested: number | null
+  shipments: number
+  volume_m3: number
+  window_days: number
+  min_shipments: number
+  start: string
+  end: string
+  reason: 'no_home_structure' | 'no_couriers' | 'too_few_shipments' | null
+  message: string | null
+}
+
 export interface RegionOption {
   region_id: number
   region_name: string
@@ -180,6 +197,9 @@ export interface SparklineSeries {
 // (GET /realized/observed-fees, one per channel). `quote` is the fee share of
 // gross; `suggested` is the value for the setting named by `setting`
 // (Trading's haircut is the share kept, 1 - quote). No value -> `reason`.
+// `upper_bound_quote` also counts order fees of days without a sale (relists,
+// unsold new orders, buy orders); `upper_bound_value` is it in the setting's
+// terms (Trading: 1 - upper_bound_quote). Display only, never applied.
 export interface ObservedSellFees {
   setting: 'market_fees' | 'structure_sell_haircut'
   window_days: number
@@ -189,14 +209,107 @@ export interface ObservedSellFees {
   suggested: number | null
   sales_tax_rate: number | null
   broker_fee_rate: number | null
+  upper_bound_quote: number | null
+  upper_bound_value: number | null
+  order_fees_without_sale: number | null
   reason: 'no_run' | 'needs_rebuild' | 'too_few_sales' | 'no_basis' | null
   message: string | null
   relist_note: string
 }
 
+// Fee hints from one chosen character's skills and standings (GET
+// /fee-suggestions on Trading, Station Trading and PI). Nothing here changes a
+// setting; "Use this value" goes through the page's normal save.
+export type FeeSkillReason =
+  | 'no_character_selected' | 'not_shared' | 'reauth_needed' | 'not_synced' | 'error'
+  | 'player_structure'
+
+export interface FeeSkillCandidate {
+  character_id: number
+  character_name: string
+  shares_standings: boolean
+}
+
+export interface FeeSkillPart {
+  setting: string
+  source: 'skills' | 'skills_standings'
+  suggested: number | null
+  rate: number | null
+  characters: number
+  upper_bound: boolean
+  reason: FeeSkillReason | null
+  message: string | null
+  // broker fee only
+  upper_bound_reason?: string | null
+  upper_bound_message?: string | null
+  standings?: {
+    faction_id: number | null
+    faction_standing: number
+    corporation_id: number | null
+    corporation_standing: number
+    as_of: string | null
+  } | null
+}
+
+export interface FeeSkillHints {
+  tool_key: string
+  character_id: number | null
+  character_name: string | null
+  candidates: FeeSkillCandidate[]
+  reason: FeeSkillReason | null
+  message: string | null
+  skills_as_of: string | null
+  skill_levels: { accounting: number; broker_relations: number } | null
+  location: {
+    location_id: number | null
+    kind: 'none' | 'npc_station' | 'player_structure'
+    name: string | null
+    corporation_id: number | null
+    faction_id: number | null
+  }
+  sales_tax: FeeSkillPart | null
+  broker_fee: FeeSkillPart | null
+}
+
+// The broker fee share the wallet paid on market purchases at the hub.
+export interface ObservedBuyFees {
+  setting: 'jita_buy_broker_fee'
+  source: 'wallet_purchases'
+  window_days: number
+  min_buys: number
+  buys: number
+  purchase_value: number
+  quote: number | null
+  suggested: number | null
+  reason: 'no_run' | 'needs_rebuild' | 'no_hub_system' | 'too_few_buys' | 'no_basis' | null
+  message: string | null
+}
+
+export interface TradingFeeSuggestions {
+  hub: string | null
+  skills: FeeSkillHints
+  observed_buy: ObservedBuyFees
+}
+
+export interface StationTradingObservedFees extends Omit<ObservedSellFees, 'setting'> {
+  suggested_sales_tax_rate: number | null
+  suggested_broker_fee_rate: number | null
+}
+
+export interface StationTradingFeeSuggestions {
+  skills: FeeSkillHints
+  observed: StationTradingObservedFees
+}
+
+export interface PiFeeSuggestions {
+  skills: FeeSkillHints
+}
+
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number
+  jita_buy_broker_fee: number
+  fee_skill_character_id: number | null
   min_profit_threshold: number
   min_margin_threshold: number
   skip_grace_period_days: number
@@ -1111,8 +1224,8 @@ export interface ProductionSettings {
   component_overbuild: number
   bpc_inventory: number
   market_fees: number
-  // jita_buy_broker_fee removed 2026-09-26 (T3-04) - TradingConfig's own
-  // copy is the single source of truth now, edited from Trading Settings.
+  // jita_buy_broker_fee is not here: TradingConfig's own copy is the single
+  // source of truth, edited from Trading Settings.
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
@@ -1143,6 +1256,10 @@ export interface ProductionSettings {
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
+  industry_skill_level: number
+  advanced_industry_skill_level: number
+  reactions_skill_level: number
+  specialist_skill_level: number
   reaction_cost_index_override: number | null
   component_cost_index_override: number | null
   manufacturing_cost_index_override: number | null
@@ -1416,6 +1533,14 @@ export interface SdeDiff {
   shrink_warnings?: SdeShrinkWarning[]
   // Hard-coded industry constants compared with the dump's dogma.
   constant_drift?: SdeConstantDrift
+  // Published ship groups missing from SHIP_SIZE_GROUP_IDS (no rig tier).
+  unmapped_ship_groups?: SdeUnmappedShipGroup[]
+}
+
+export interface SdeUnmappedShipGroup {
+  group_id: number
+  name: string
+  published_types: number
 }
 
 export interface SdeShrinkWarning {
@@ -1775,6 +1900,8 @@ export interface ContractMarketListing {
   date_expired: string | null
   match_score: number | null
   validation_status: string
+  /** Issued by this tenant (character, corporation or an own Doctrine contract). */
+  own: boolean
 }
 
 export interface ContractMarketFitting {
@@ -1783,6 +1910,8 @@ export interface ContractMarketFitting {
   hull_type_id: number | null
   hull_name: string | null
   count: number
+  /** How many of `count` are the tenant's own; min/avg ignore them. */
+  own_count: number
   min_price: number | null
   avg_price: number | null
   contracts: ContractMarketListing[]
@@ -2094,6 +2223,7 @@ export interface StationTradingSettings {
   hub_region_id: number
   broker_fee_rate: number
   sales_tax_rate: number
+  fee_skill_character_id: number | null
   min_spread_threshold: number
   min_daily_volume: number
   enforce_shortlist_cap: boolean
@@ -2333,8 +2463,17 @@ export interface CharInfoClones {
   jump_clones: CharInfoJumpClone[]
   last_clone_jump_date: string | null
   last_station_change_date: string | null
-  /** last_clone_jump_date + 24 h (the base cooldown; skills can shorten it) */
+  /** last_clone_jump_date + clone_jump_cooldown.hours */
   clone_jump_available_at: string | null
+  clone_jump_cooldown?: CharInfoCloneCooldown
+}
+/** basis 'skill': hours = 24 less 1 per Infomorph Synchronizing level (skill_level).
+ *  basis 'latest': the 24 h bound; reason says why the level is unknown. */
+export interface CharInfoCloneCooldown {
+  hours: number
+  basis: 'skill' | 'latest'
+  skill_level: number | null
+  reason: string | null
 }
 export interface CharInfoCorpHistoryRow { corporation_id: number; corporation_name: string; start_date: string | null }
 
@@ -2361,7 +2500,11 @@ export interface CharInfoCharacter {
   corporation_history?: CharInfoCorpHistoryRow[]
 }
 
-export interface CharInfoOverview { characters: CharInfoCharacter[] }
+export interface CharInfoOverview {
+  characters: CharInfoCharacter[]
+  /** Tenant's normal ESI freshness tier (hours): a page syncs itself past this age. */
+  sync_max_age_hours?: number
+}
 
 export interface CharInfoSyncResult {
   ok: boolean
@@ -2369,6 +2512,9 @@ export interface CharInfoSyncResult {
   /** Owners another sync pass was already running for (not an error). */
   in_flight: number[]
   failed: { owner_id: number; name: string | null; error: string | null }[]
+  /** Pairs skipped because ESI's cache had not expired yet (until: ISO time). */
+  unchanged?: { owner_type: string; owner_id: number; data_kind: string; until: string }[]
+  unchanged_message?: string | null
 }
 
 
@@ -2458,7 +2604,7 @@ export interface SkillsOverviewRow {
   freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null; data_as_of?: string | null }>
 }
 
-export interface SkillsOverview { characters: SkillsOverviewRow[] }
+export interface SkillsOverview { characters: SkillsOverviewRow[]; sync_max_age_hours?: number }
 
 export interface CharacterSkills {
   character_id: number
@@ -2636,6 +2782,7 @@ export interface NotificationsList {
   unread_total: number
   types: { type: string; label: string; count: number }[]
   categories: { category: string; label: string; count: number }[]
+  sync_max_age_hours?: number
   characters: { character_id: number; character_name: string; synced_at: string | null; last_error: string | null }[]
   hidden_characters: { character_id: number; character_name: string }[]
 }
@@ -2879,6 +3026,7 @@ export interface PiProfitAssumptions {
 export interface PiProfitability {
   zone: PiZone
   cc_level: number
+  skill_source: 'esi' | 'manual'
   assumptions: PiProfitAssumptions
   rows: PiProfitRow[]
 }
@@ -2948,6 +3096,7 @@ export interface PiPlannerResult {
   }
   zone: PiZone
   cc_level: number
+  skill_source: 'esi' | 'manual'
   chain: string
   product: { type_id: number; name: string }
   assumptions: {
@@ -3075,6 +3224,7 @@ export interface PiSettings {
   pi_price_structure_slug: string
   pi_broker_fee_rate: number
   pi_sales_tax_rate: number
+  pi_fee_skill_character_id: number | null
   pi_valuation: 'sell_orders' | 'buy_orders'
   pi_freight_per_m3: number
   pi_owner_tax_rate: number
@@ -3164,6 +3314,8 @@ export interface PiCharacters {
   }>
   total_slots: number
   max_cc_level: number
+  max_customs_code_expertise: number
+  skill_source: 'esi' | 'manual'
   character_count: number
 }
 

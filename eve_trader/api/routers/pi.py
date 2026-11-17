@@ -94,6 +94,13 @@ def get_settings():
     return _wrap(pi_actions.do_get_settings)
 
 
+@router.get("/fee-suggestions")
+def get_fee_suggestions():
+    """Suggested broker fee and sales tax from the chosen character's skills
+    and standings. Never applied automatically."""
+    return _wrap(pi_actions.do_get_fee_suggestions)
+
+
 @router.put("/settings")
 def put_settings(updates: BoundedPiSettings):
     return _wrap(pi_actions.do_update_settings, updates=updates)

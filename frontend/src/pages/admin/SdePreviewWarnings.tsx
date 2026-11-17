@@ -1,15 +1,20 @@
 import { Alert, List, Stack, Text } from '@mantine/core'
 
-import type { SdeConstantDrift, SdeShrinkWarning } from '../../api/types'
+import type { SdeConstantDrift, SdeShrinkWarning, SdeUnmappedShipGroup } from '../../api/types'
 
 // Shown above the SDE diff: tables that would shrink a lot (Apply then needs
-// its own confirmation) and hard-coded constants that no longer match the
-// dump's dogma. Both are advisory; nothing is changed automatically.
+// its own confirmation), hard-coded constants that no longer match the
+// dump's dogma, and ship groups the size table does not cover. All advisory;
+// nothing is changed automatically.
 export function SdePreviewWarnings({
-  shrinkWarnings, drift,
-}: { shrinkWarnings: SdeShrinkWarning[]; drift?: SdeConstantDrift }) {
+  shrinkWarnings, drift, unmappedShipGroups = [],
+}: {
+  shrinkWarnings: SdeShrinkWarning[]
+  drift?: SdeConstantDrift
+  unmappedShipGroups?: SdeUnmappedShipGroup[]
+}) {
   const drifts = drift?.drifts ?? []
-  if (shrinkWarnings.length === 0 && drifts.length === 0) return null
+  if (shrinkWarnings.length === 0 && drifts.length === 0 && unmappedShipGroups.length === 0) return null
   return (
     <Stack gap="xs">
       {shrinkWarnings.length > 0 && (
@@ -22,6 +27,21 @@ export function SdePreviewWarnings({
             {shrinkWarnings.map((w) => (
               <List.Item key={w.table}>
                 {w.table}: {w.old.toLocaleString('en-US')} → {w.new.toLocaleString('en-US')} (−{w.drop_percent}%)
+              </List.Item>
+            ))}
+          </List>
+        </Alert>
+      )}
+      {unmappedShipGroups.length > 0 && (
+        <Alert color="warn" variant="light" title="Ship groups without a size class">
+          <Text size="sm" mb={4}>
+            These published ship groups are missing from SHIP_SIZE_GROUP_IDS (production/constants.py), so their
+            items get no job category and no rig. Add them to the table before relying on Production numbers.
+          </Text>
+          <List size="sm">
+            {unmappedShipGroups.map((g) => (
+              <List.Item key={g.group_id}>
+                {g.name} (group {g.group_id}): {g.published_types} published types
               </List.Item>
             ))}
           </List>

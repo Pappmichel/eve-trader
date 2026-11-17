@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
 import requests
@@ -19,7 +19,8 @@ from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
 from ..esi_client import (
-    ESIClient, ESIError, ESIHTTPError, ESIRateLimited, ESIStatusError, collect_last_modified,
+    ESIClient, ESIError, ESIHTTPError, ESIRateLimited, ESIStatusError, collect_expires,
+    collect_last_modified,
 )
 from .fetchers import fetcher_for
 from .registry import OWNED_DATA_KINDS, ON_DEMAND, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
@@ -139,13 +140,32 @@ def _is_transient_error(error: BaseException) -> bool:
 
 def _freshness_map() -> dict[tuple[str, int, str], tuple]:
     """`{(owner_type, owner_id, kind): (last_success_at, last_attempt_at,
-    consecutive_failures)}` in two small queries - due-ness used to cost one
-    query per sharing row per tick."""
+    consecutive_failures, next_fetch_after)}` in three small queries -
+    due-ness used to cost one query per sharing row per tick.
+    `next_fetch_after` is the stored ESI `Expires` (None = unknown)."""
     failures = storage.list_esi_failure_counts()
+    expires = storage.list_esi_next_fetch_after()
     return {
-        (ot, oid, kind): (success, attempt, failures.get((ot, oid, kind), 0))
+        (ot, oid, kind): (
+            success, attempt, failures.get((ot, oid, kind), 0), expires.get((ot, oid, kind)),
+        )
         for ot, oid, kind, success, attempt, _err, _as_of in storage.list_esi_freshness()
     }
+
+
+# ESI's longest caches are a day or so; a header further out than this is
+# treated as bogus so one odd value can never park a pair for good.
+MAX_EXPIRES_AHEAD = timedelta(hours=24)
+
+
+def _expires_floor(expires: Optional[datetime], now: Optional[datetime] = None) -> Optional[datetime]:
+    """The stored `Expires` if it still lies ahead, else None."""
+    if expires is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return expires if expires > current else None
 
 
 def _kind_is_due(
@@ -157,9 +177,14 @@ def _kind_is_due(
     equal, so the backoff only ever matters after a failed/skipped attempt."""
     if freshness is None:
         freshness = _freshness_map()
-    entry = freshness.get((owner_type, owner_id, data_kind), (None, None, 0))
+    entry = freshness.get((owner_type, owner_id, data_kind), (None, None, 0, None))
     success, attempt = entry[0], entry[1]
     failures = entry[2] if len(entry) > 2 else 0
+    expires = entry[3] if len(entry) > 3 else None
+    # ESI serves its cache until `Expires`: a fetch before it returns the same
+    # data. A lower bound only - the tier interval below still applies.
+    if _expires_floor(expires, now) is not None:
+        return False
     if _hours_since_success(success, now) < _tier_hours(data_kind):
         return False
     if attempt is not None and _hours_since_success(attempt, now) < _backoff_hours_for(
@@ -217,6 +242,7 @@ def _run_kind(
     extra: dict,
     candidate_auth_roles: Optional[list[str]] = None,
     data_ages: Optional[list[datetime]] = None,
+    expires: Optional[list[datetime]] = None,
 ) -> dict:
     """Generic (kind, owner_type) dispatch. `candidate_auth_roles` is
     wallet-only: corp wallets need every member who holds the scope so
@@ -226,26 +252,36 @@ def _run_kind(
 
     `data_ages` receives the ESI `Last-Modified` of every authenticated
     read of a fetch that succeeded; a failed member attempt adds nothing.
+    `expires` receives their `Expires` the same way.
     """
     fn = fetcher_for(data_kind, owner_type)
     kwargs = dict(extra)
     if candidate_auth_roles:
         kwargs["candidate_auth_roles"] = candidate_auth_roles
-    with collect_last_modified() as seen:
+    with collect_last_modified() as seen, collect_expires() as seen_expires:
         wrote = fn(client, owner_id, auth_role, owner_name, **kwargs)
     if data_ages is not None:
         data_ages.extend(seen)
+    if expires is not None:
+        expires.extend(seen_expires)
     return wrote
 
 
 def _record_success(
     owner_type: str, owner_id: int, data_kind: str, data_ages: Optional[list[datetime]] = None,
+    expires: Optional[list[datetime]] = None,
 ) -> None:
     """The oldest `Last-Modified` is the data's age: the snapshot is only
-    as new as its oldest cached part. None when ESI sent no header."""
+    as new as its oldest cached part. None when ESI sent no header.
+    The latest `Expires` over all pages is when a refetch can first return
+    something new (`next_fetch_after`, capped at `MAX_EXPIRES_AHEAD`)."""
+    next_fetch = None
+    if expires:
+        next_fetch = min(max(expires), datetime.now(timezone.utc) + MAX_EXPIRES_AHEAD)
     storage.upsert_esi_freshness(
         owner_type, owner_id, data_kind, success=True,
         data_as_of=min(data_ages) if data_ages else None,
+        next_fetch_after=next_fetch,
     )
 
 
@@ -401,17 +437,18 @@ def _run_character_owner(
                     reauth_kinds.append(data_kind)
                     continue
                 data_ages: list[datetime] = []
+                expires: list[datetime] = []
                 try:
                     wrote = _run_kind(
                         client=client, data_kind=data_kind, owner_type=owner_type,
                         owner_id=owner_id, auth_role=role, owner_name=owner_name,
-                        extra=extra, data_ages=data_ages,
+                        extra=extra, data_ages=data_ages, expires=expires,
                     )
                 except ESIError as e:
                     kind_report[data_kind] = f"skipped ({e})"
                     failed = (data_kind, e)
                     raise
-                _record_success(owner_type, owner_id, data_kind, data_ages)
+                _record_success(owner_type, owner_id, data_kind, data_ages, expires)
                 kind_report[data_kind] = wrote
             current_kind = None
     except Exception as e:  # noqa: BLE001 - owner task must not abort the pass
@@ -490,6 +527,7 @@ def _run_corporation_kinds_for_members(
                 wrote = None
                 any_candidate = False
                 data_ages: list[datetime] = []
+                expires: list[datetime] = []
                 if data_kind == "wallet":
                     candidate_roles: list[str] = []
                     seen_roles: set[str] = set()
@@ -512,7 +550,7 @@ def _run_corporation_kinds_for_members(
                             client=client, data_kind=data_kind, owner_type=owner_type,
                             owner_id=corp_id, auth_role=candidate_roles[0],
                             owner_name=owner_name, extra=extra,
-                            candidate_auth_roles=candidate_roles, data_ages=data_ages,
+                            candidate_auth_roles=candidate_roles, data_ages=data_ages, expires=expires,
                         )
                         last_error = None
                     except ESIError as e:
@@ -528,7 +566,7 @@ def _run_corporation_kinds_for_members(
                             wrote = _run_kind(
                                 client=client, data_kind=data_kind, owner_type=owner_type,
                                 owner_id=corp_id, auth_role=role, owner_name=owner_name,
-                                extra=extra, data_ages=data_ages,
+                                extra=extra, data_ages=data_ages, expires=expires,
                             )
                             last_error = None
                             member_errors = []
@@ -551,7 +589,7 @@ def _run_corporation_kinds_for_members(
                     # Re-raise the original exception so _record_failure still
                     # sees ESIStatusError (dead owner) vs a plain outage.
                     raise err
-                _record_success(owner_type, corp_id, data_kind, data_ages)
+                _record_success(owner_type, corp_id, data_kind, data_ages, expires)
                 kind_report[data_kind] = wrote
             current_kind = None
     except Exception as e:  # noqa: BLE001
@@ -633,15 +671,62 @@ def _resolve_locations() -> dict:
         return {"resolved": 0, "error": True}
 
 
+def _hold_back_unexpired(
+    sharing: list[tuple[str, int, str, str]], now: Optional[datetime] = None,
+) -> tuple[list[tuple[str, int, str, str]], list[dict]]:
+    """Splits `sharing` into the rows a manual sync fetches and the
+    (owner, kind) pairs still inside their ESI cache window (`Expires` ahead):
+    a fetch there would only return the cached data again. The tier interval
+    and failure backoff do not apply to manual syncs, only this floor."""
+    expires = storage.list_esi_next_fetch_after()
+    if not expires:
+        return sharing, []
+    keep: list[tuple[str, int, str, str]] = []
+    held: dict[tuple[str, int, str], datetime] = {}
+    for row in sharing:
+        key = (row[0], row[1], row[2])
+        until = _expires_floor(expires.get(key), now)
+        if until is None:
+            keep.append(row)
+        else:
+            held[key] = until
+    unchanged = [
+        {"owner_type": ot, "owner_id": oid, "data_kind": kind, "until": until.isoformat()}
+        for (ot, oid, kind), until in sorted(held.items())
+    ]
+    return keep, unchanged
+
+
+def _unchanged_message(unchanged: list[dict]) -> str:
+    first = min(datetime.fromisoformat(u["until"]) for u in unchanged)
+    count = len(unchanged)
+    noun = "data set" if count == 1 else "data sets"
+    return (
+        f"{count} {noun} unchanged until {first.astimezone(timezone.utc):%H:%M} UTC "
+        "(ESI serves the cached copy until then)"
+    )
+
+
 def _sync(
     sharing: list[tuple[str, int, str, str]],
     *,
     client: Optional[ESIClient],
     tool_key: Optional[str],
     extra: Optional[dict] = None,
+    respect_expires: bool = False,
 ) -> dict:
+    """`respect_expires` (manual syncs): pairs before their ESI `Expires` are
+    skipped and reported as `unchanged` / `unchanged_message` in the result
+    (the scheduler path filters the same way through `pending_due`)."""
+    unchanged: list[dict] = []
+    if respect_expires:
+        sharing, unchanged = _hold_back_unexpired(sharing)
     try:
-        return _sync_owners(sharing, client=client, tool_key=tool_key, extra=extra)
+        result = _sync_owners(sharing, client=client, tool_key=tool_key, extra=extra)
+        if unchanged:
+            result["unchanged"] = unchanged
+            result["unchanged_message"] = _unchanged_message(unchanged)
+        return result
     finally:
         # Owners commit one by one, so even a pass that raised may have
         # written new snapshots. Total Wealth caches its priced rows per
@@ -798,7 +883,7 @@ def do_sync_for_tool(
     if tool_key not in ALL_TOOL_KEYS:
         raise RuntimeError(f"unknown tool_key {tool_key!r}")
     sharing = storage.list_esi_sharing(tool_key=tool_key)
-    return _sync(sharing, client=client, tool_key=tool_key, extra=extra)
+    return _sync(sharing, client=client, tool_key=tool_key, extra=extra, respect_expires=True)
 
 
 def do_sync_kinds(
@@ -822,7 +907,7 @@ def do_sync_kinds(
         row for row in storage.list_esi_sharing()
         if row[2] in wanted and (allowed is None or row[3] in allowed)
     ]
-    return _sync(sharing, client=client, tool_key=None, extra=extra)
+    return _sync(sharing, client=client, tool_key=None, extra=extra, respect_expires=True)
 
 
 def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = None) -> dict:
@@ -833,7 +918,7 @@ def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = N
     across every consuming tool.
     """
     sharing = storage.list_esi_sharing()
-    return _sync(sharing, client=client, tool_key=None, extra=extra)
+    return _sync(sharing, client=client, tool_key=None, extra=extra, respect_expires=True)
 
 
 def pending_due(
@@ -905,9 +990,10 @@ def do_sync_due(
     last attempt (see `pending_due`). Returns immediately - no token read, no
     ESI client - when nothing is due.
 
-    Manual `do_sync_for_tool` / `do_sync_all` still fetch regardless of
-    due-ness and stamp freshness, which pushes those pairs past the next
-    scheduled tick. The scheduler calls this once per tenant.
+    Manual `do_sync_for_tool` / `do_sync_all` / `do_sync_kinds` fetch
+    regardless of the tier interval and backoff, but skip a pair before its
+    ESI `Expires` (reported as `unchanged`), and stamp freshness, which pushes
+    those pairs past the next scheduled tick. The scheduler calls this once per tenant.
     """
     due = pending_due(
         granted_tools=granted_tools, demand=demand, now=now, kinds=kinds,

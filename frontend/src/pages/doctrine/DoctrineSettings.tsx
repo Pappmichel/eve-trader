@@ -9,6 +9,7 @@ import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
+import { ObservedFreightHint } from '../../components/ObservedFreightHint'
 import { StructureIdListField } from '../../components/StructureIdListField'
 
 function locationLabel(o: { location_id: number; name: string | null }) {
@@ -211,8 +212,12 @@ export default function DoctrineSettings() {
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <HubSelect label="Market hub" description="Order book the Shopping List buys from (its own setting, independent of Trading's)"
           allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
-        <NumberInput label="Jita import cost (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
-          onChange={(v) => set('import_cost_per_m3', Number(v))} />
+        <Stack gap={4}>
+          <NumberInput label="Jita import cost (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
+            onChange={(v) => set('import_cost_per_m3', Number(v))} />
+          <ObservedFreightHint regionId={form.hub_region_id} current={form.import_cost_per_m3} applying={save.isPending}
+            onApply={(v) => { set('import_cost_per_m3', v); save.mutate(changedFields(data, { ...form, import_cost_per_m3: v })) }} />
+        </Stack>
       </SimpleGrid>
       <Text size="xs" c="dimmed">
         Only affects the Shopping List's own Buy-Jita price (a separate setting from Production's own freight

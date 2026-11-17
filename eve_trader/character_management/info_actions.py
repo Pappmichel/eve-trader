@@ -63,9 +63,9 @@ def _freshness_by_kind(character_id: int) -> dict[str, dict]:
 
 def _snapshot(
     kind: str, character_id: int, tokens: TokenManager, freshness: dict[str, dict],
-    shape: Callable[[list[dict]], Any],
+    shape: Callable[[list[dict]], Any], **read_filters: Any,
 ) -> dict:
-    return fields.snapshot(kind, TOOL_KEY, character_id, tokens, freshness, shape)
+    return fields.snapshot(kind, TOOL_KEY, character_id, tokens, freshness, shape, **read_filters)
 
 
 # --------------------------------------------------------------- name lookup
@@ -91,15 +91,47 @@ def _fatigue_value(raw: Any) -> dict:
     }
 
 
-# Clones can be jumped again this long after the last jump. 24 h is the base
-# cooldown; the Infomorph Synchronizing skill shortens it by up to 4 h, which
-# is not read here, so the UI calls this the latest the cooldown can end.
+# Clones can be jumped again this long after the last jump, before any skill.
+# The SDE dumps carry no default for cloneJumpCoolDown (attribute 1921), so this
+# base value stays a constant.
 CLONE_JUMP_COOLDOWN_HOURS = 24
+# Infomorph Synchronizing (type 33399) shortens the cooldown by one hour per
+# level. Source: the SDE dogma dumps (fuzzwork dgmEffects.csv and
+# dgmTypeAttributes.csv, checked 2026-11-17): effect 5527
+# "skillJumpCloneCooldownReduction" adds the skill's own level (attribute 280
+# skillLevel, operation 3 = ModAdd) to cloneJumpCoolDown (attribute 1921), and
+# the type's description says "Reduced time between clone jumps by 1 hour per
+# level". The dump's attribute 1921 has no unit, so hours come from that text.
+INFOMORPH_SYNCHRONIZING_TYPE_ID = 33399
+CLONE_JUMP_COOLDOWN_REDUCTION_HOURS_PER_LEVEL = 1
 
 
-def _clone_jump_available_at(last_jump: Any) -> Optional[str]:
+def _infomorph_level(rows: list[dict]) -> int:
+    for r in rows:
+        if int(r["skill_id"]) == INFOMORPH_SYNCHRONIZING_TYPE_ID:
+            return int(r.get("active_level") or 0)
+    return 0
+
+
+def _clone_cooldown(last_jump: Any, skill: dict) -> dict:
+    """Clone jump cooldown bound. `skill` is the Infomorph Synchronizing read
+    (`_infomorph_level` as its value). With a readable level the cooldown is
+    computed from it (level 0 keeps the 24 h base); without one it stays the
+    24 h base, the latest the cooldown can end, and `reason` says why."""
+    level = skill.get("value") if skill.get("state") == fields.STATE_OK else None
+    if level is None:
+        hours, basis = CLONE_JUMP_COOLDOWN_HOURS, "latest"
+    else:
+        hours = CLONE_JUMP_COOLDOWN_HOURS - CLONE_JUMP_COOLDOWN_REDUCTION_HOURS_PER_LEVEL * level
+        basis = "skill"
     parsed = fields.parse_dt(last_jump)
-    return (parsed + timedelta(hours=CLONE_JUMP_COOLDOWN_HOURS)).isoformat() if parsed else None
+    return {
+        "hours": hours,
+        "basis": basis,
+        "skill_level": level,
+        "reason": None if level is not None else skill.get("state"),
+        "available_at": (parsed + timedelta(hours=hours)).isoformat() if parsed else None,
+    }
 
 
 def _location_value(raw: dict) -> dict:
@@ -231,12 +263,16 @@ def _implant_list(type_ids, names: dict[int, str]) -> list[dict]:
 def _clones_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
     """Home location plus jump clones with their implants. Location names come
     from the same lookup chain as everything else (SDE stations, global and
-    per-tenant structure-name caches); an unresolved one keeps its id."""
+    per-tenant structure-name caches); an unresolved one keeps its id. The
+    cooldown reads the character's Infomorph Synchronizing level (skills)."""
+    skill = _snapshot("skills", cid, tokens, freshness, _infomorph_level, table="skills")
+
     def shape(rows: list[dict]) -> dict:
         row = rows[0] if rows else None
         if row is None:
             return {"home": None, "jump_clones": [], "last_clone_jump_date": None,
-                    "last_station_change_date": None, "clone_jump_available_at": None}
+                    "last_station_change_date": None, "clone_jump_available_at": None,
+                    "clone_jump_cooldown": _clone_cooldown(None, skill)}
         meta, clones = row["meta"], row["jump_clones"]
         loc_ids = [c["location_id"] for c in clones if c["location_id"]]
         if meta["home_location_id"]:
@@ -249,6 +285,7 @@ def _clones_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
                 "location_id": meta["home_location_id"], "location_type": meta["home_location_type"],
                 "location_name": loc_names.get(int(meta["home_location_id"])),
             }
+        cooldown = _clone_cooldown(meta["last_clone_jump_date"], skill)
         return {
             "home": home,
             "jump_clones": [
@@ -262,7 +299,8 @@ def _clones_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
             ],
             "last_clone_jump_date": meta["last_clone_jump_date"],
             "last_station_change_date": meta["last_station_change_date"],
-            "clone_jump_available_at": _clone_jump_available_at(meta["last_clone_jump_date"]),
+            "clone_jump_available_at": cooldown["available_at"],
+            "clone_jump_cooldown": cooldown,
         }
     return _snapshot("clones", cid, tokens, freshness, shape)
 
@@ -302,7 +340,7 @@ def do_list_character_overview() -> dict:
     """One row per registered ESI character (any character with a token)."""
     token_chars = esi_actions.do_list_token_characters()
     if not token_chars:
-        return {"characters": []}
+        return {"characters": [], "sync_max_age_hours": fields.sync_max_age_hours()}
     client, tokens = _client_and_tokens()
 
     # ThreadPoolExecutor workers do not inherit contextvars (CLAUDE.md).
@@ -311,7 +349,7 @@ def do_list_character_overview() -> dict:
     )
     with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(token_chars))) as pool:
         rows = list(pool.map(work, token_chars))
-    return {"characters": rows}
+    return {"characters": rows, "sync_max_age_hours": fields.sync_max_age_hours()}
 
 
 def do_character_detail(character_id: int) -> dict:

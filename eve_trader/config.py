@@ -576,6 +576,10 @@ class TradingConfig:
     # one field - read TRADING_CONFIG.jita_buy_broker_fee directly from
     # Production/Doctrine code, don't reintroduce a second copy.
     jita_buy_broker_fee: float = 0.0147
+    # The one character whose Broker Relations skill and standings the
+    # Settings page uses to suggest jita_buy_broker_fee (eve_trader/
+    # fee_skill_hints.py). Choosing it changes no fee; None = no suggestion.
+    fee_skill_character_id: Optional[int] = None
     min_profit_threshold: float = 0.0        # Minimum absolute profit/unit to consider
     min_margin_threshold: float = 0.05       # Minimum margin to mark an item "Import"
     # Grace period before actions.do_refresh_and_prune_candidates deactivates a

@@ -50,6 +50,11 @@ function FittingPanel({ fitting, scanned }: { fitting: ContractMarketFitting; sc
           <Text size="sm" c="dimmed">{fitting.hull_name}</Text>
         )}
       </Group>
+      {fitting.own_count > 0 && (
+        <Text size="xs" c="dimmed">
+          Your own contracts are not counted in min/avg ({fitting.own_count} of {fitting.count}).
+        </Text>
+      )}
       <Table.ScrollContainer minWidth={640}>
         <Table striped highlightOnHover withTableBorder>
           <Table.Thead>
@@ -68,7 +73,10 @@ function FittingPanel({ fitting, scanned }: { fitting: ContractMarketFitting; sc
               <Table.Tr key={c.contract_id}>
                 <Table.Td><SourceBadge source={c.source} /></Table.Td>
                 <Table.Td>{isk(c.price)}</Table.Td>
-                <Table.Td>{c.issuer_name ?? (c.issuer_id != null ? String(c.issuer_id) : '–')}</Table.Td>
+                <Table.Td>
+                  {c.issuer_name ?? (c.issuer_id != null ? String(c.issuer_id) : '–')}
+                  {c.own && <Badge size="sm" variant="light" color="teal" ml="xs">Yours</Badge>}
+                </Table.Td>
                 <Table.Td>{c.title || '–'}</Table.Td>
                 <Table.Td>{c.location_name ?? (c.start_location_id != null ? String(c.start_location_id) : '–')}</Table.Td>
                 <Table.Td tt="capitalize">{c.validation_status}</Table.Td>

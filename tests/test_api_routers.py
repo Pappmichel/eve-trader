@@ -1467,20 +1467,45 @@ def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch
     }]
 
 
-def test_production_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
-    # GitHub issue #56 - same regression, Production side.
-    from eve_trader.production.models import UnlistedStockRow as ProductionUnlistedStockRow
-    monkeypatch.setattr(production_actions, "do_unlisted_stock", lambda: {"rows": [
-        ProductionUnlistedStockRow(type_id=205, type_name="Nova Cruise Missile", stock_quantity=50.0,
-                                    sell_volume=12.0, margin=0.25, production_needed=7.0),
-    ]})
+def test_production_unlisted_stock_check_starts_background_job(monkeypatch):
+    # The check is a pipeline_runner job now: the route answers {run_id, status}
+    # and the rows live in the status's result (the old response_model-based
+    # field-preservation check moved to tests/test_unlisted_stock_job.py, where
+    # the rows are serialized with asdict).
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", lambda: {
+        "run_id": "unlisted-1", "status": "running", "job_name": "unlisted_stock", "tool": "production"})
     resp = client.post("/api/production/unlisted-stock/check")
     assert resp.status_code == 200
-    assert resp.json() == [{
-        "type_id": 205, "type_name": "Nova Cruise Missile", "stock_quantity": 50.0,
-        "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": None, "doctrine_names": [],
-        "production_needed": 7.0,
-    }]
+    assert resp.json() == {"run_id": "unlisted-1", "status": "running",
+                           "job_name": "unlisted_stock", "tool": "production"}
+
+
+def test_production_unlisted_stock_check_conflict_maps_to_409(monkeypatch):
+    def _raise():
+        raise ConflictError("Rebuild Realized Profit is already running.")
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", _raise)
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 409
+
+
+def test_production_unlisted_stock_check_early_validation_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("No stock targets configured.")
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", _raise)
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "No stock targets configured."}
+
+
+def test_production_unlisted_stock_check_status_returns_rows(monkeypatch):
+    status = {"run_id": "unlisted-1", "status": "succeeded", "job_name": "unlisted_stock",
+              "tool": "production", "result": {"rows": [{"type_id": 205, "type_name": "Nova Cruise Missile",
+                                                          "stock_quantity": 50.0, "sell_volume": 12.0,
+                                                          "margin": 0.25, "production_needed": 7.0}]}}
+    monkeypatch.setattr(production_actions, "do_unlisted_stock_status", lambda: status)
+    resp = client.get("/api/production/unlisted-stock/check/status")
+    assert resp.status_code == 200
+    assert resp.json() == status
 
 
 def test_get_sde_freshness(monkeypatch):
@@ -2742,3 +2767,47 @@ def test_category_facilities_list_and_clear(monkeypatch):
     monkeypatch.setattr(production_actions, "do_clear_category_facility", lambda category: {"category": category})
     assert client.get("/api/production/logistics/facilities").json() == {"categories": []}
     assert client.delete("/api/production/logistics/facilities/Large Ships").json() == {"category": "Large Ships"}
+
+
+def test_hub_list_route_returns_the_four_hubs_with_systems():
+    resp = client.get("/api/hubs")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["name"] for r in rows] == ["Jita", "Amarr", "Dodixie", "Rens"]
+    assert [r["solar_system_id"] for r in rows] == [30000142, 30002187, 30002659, 30002510]
+    assert all(r["label"] and r["station_id"] for r in rows)
+
+
+def test_observed_freight_route_returns_the_hub_rows(monkeypatch):
+    from eve_trader import hubs
+
+    row = {"region_id": 10000002, "hub": "Jita", "suggested": 686, "shipments": 14}
+    monkeypatch.setattr(hubs, "do_get_observed_freight", lambda: [row])
+    resp = client.get("/api/hubs/observed-freight")
+    assert resp.status_code == 200
+    assert resp.json() == [row]
+
+
+def test_fee_suggestion_routes_call_the_read_only_actions(monkeypatch):
+    from eve_trader.pi import actions as pi_actions
+    from eve_trader.station_trading import actions as station_actions
+
+    monkeypatch.setattr(actions, "do_get_fee_suggestions",
+                        lambda: {"hub": "Jita", "skills": {"reason": "no_character_selected"},
+                                 "observed_buy": {"suggested": 0.0062}})
+    monkeypatch.setattr(station_actions, "do_get_fee_suggestions",
+                        lambda: {"skills": {"reason": "not_shared"}, "observed": {"sales": 3}})
+    monkeypatch.setattr(pi_actions, "do_get_fee_suggestions",
+                        lambda: {"skills": {"reason": "reauth_needed"}})
+    trade = client.get("/api/trading/fee-suggestions").json()
+    assert trade["observed_buy"]["suggested"] == 0.0062
+    assert client.get("/api/station-trading/fee-suggestions").json()["skills"]["reason"] == "not_shared"
+    assert client.get("/api/pi/fee-suggestions").json()["skills"]["reason"] == "reauth_needed"
+
+
+def test_trading_settings_route_saves_the_fee_skills_character(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(actions, "do_update_settings", lambda updates: seen.update(updates) or updates)
+    assert client.post("/api/trading/settings", json={"fee_skill_character_id": 930001}).status_code == 200
+    assert seen == {"fee_skill_character_id": 930001}
+    assert "fee_skill_character_id" in client.get("/api/trading/settings").json()

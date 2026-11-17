@@ -10,27 +10,18 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Optional
 
-from . import storage
+from . import hubs, storage
 from .config import TRADING_CONFIG, TradingConfig
 from .esi_client import ESIClient, ESIError
 
-# Hub solar system per buy-hub region (cfg.jita_region_id), checked against
-# the SDE. Assets count as "already covered" only at the hub's own system's
-# stations, not anywhere in its region.
-HUB_SOLAR_SYSTEM_IDS = {
-    10000002: 30000142,  # Jita (The Forge)
-    10000043: 30002187,  # Amarr (Domain)
-    10000032: 30002659,  # Dodixie (Sinq Laison)
-    10000030: 30002510,  # Rens (Heimatar)
-}
-
 
 def _hub_station_ids(region_id: int) -> frozenset:
-    system_id = HUB_SOLAR_SYSTEM_IDS.get(region_id)
-    if system_id is None:
+    hub = hubs.hub_by_region(region_id)
+    if hub is None:
         # A custom region has no single hub system: any NPC station in it.
         return storage.get_station_ids_in_region(region_id)
-    return storage.get_station_ids_in_system(system_id)
+    # Assets count as "already covered" only at the hub's own system.
+    return storage.get_station_ids_in_system(hub.solar_system_id)
 
 
 def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> list[dict]:
