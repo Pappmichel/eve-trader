@@ -141,6 +141,7 @@ export default function DoctrineRealizedProfit() {
       </Group>
       <JobProgress label={job.formatProgress(job.status?.progress, job.jobName)} progress={job.status?.progress} />
       <SegmentedControl
+        aria-label="Period"
         value={preset}
         onChange={(value) => { setPreset(value); setSaleRef(null) }}
         data={PERIOD_OPTIONS}

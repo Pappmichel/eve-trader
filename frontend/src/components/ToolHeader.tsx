@@ -24,7 +24,9 @@ export function ToolHeader({ title, opened, onToggle, showJump = false }: {
     <Group h="100%" px={{ base: 'xs', sm: 'md' }} justify="space-between" wrap="nowrap">
       <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
         <Burger opened={opened} onClick={onToggle} hiddenFrom="sm" size="md" aria-label="Toggle navigation" />
-        <Text fw={700} tt="uppercase" lts={1} truncate>
+        {/* The page's one h1 (every tool page sits under this header). Text keeps
+            the old look: same size, weight and no heading margin. */}
+        <Text component="h1" size="md" m={0} fw={700} tt="uppercase" lts={1} truncate>
           <Text span inherit visibleFrom="sm">EVE Trader — </Text>{title}
         </Text>
       </Group>
