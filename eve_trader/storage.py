@@ -9351,6 +9351,31 @@ def load_all_doctrine_market_items() -> dict[int, list]:
     return out
 
 
+def load_doctrine_market_item_seen_at() -> dict[int, datetime]:
+    """contract_id -> when its stored item list was last seen on an open
+    contract (the newest row of the list). Kept apart from
+    load_all_doctrine_market_items so ContractItemRow stays unchanged."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, MAX(seen_at) FROM doctrine_market_contract_items "
+            "GROUP BY contract_id"
+        ).fetchall()
+    return {int(cid): seen for cid, seen in rows}
+
+
+def _market_item_params(row: tuple) -> tuple:
+    """(contract_id, record_id, type_id, quantity, is_included, is_singleton,
+    seen_at) - a six-column row has no date yet and gets now() in SQL."""
+    return tuple(row[:6]) + ((row[6] if len(row) > 6 else None),)
+
+
+_MARKET_ITEM_INSERT = (
+    "INSERT INTO doctrine_market_contract_items "
+    "(contract_id, record_id, type_id, quantity, is_included, is_singleton, seen_at) "
+    "VALUES (?,?,?,?,?,?, COALESCE(?, now()))"
+)
+
+
 def list_doctrine_market_contracts() -> list[tuple]:
     """Current Contract Market snapshot rows matching _MARKET_CONTRACT_COLUMNS."""
     with connect() as conn:
@@ -9364,7 +9389,8 @@ def upsert_doctrine_market_contract_items(items: list[tuple]) -> None:
     """Insert or replace item rows without touching contracts or the scan
     row. A contract's item list never changes, so a scan that aborts after
     some successful fetches can still keep those lists for the next run.
-    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton
+    [, seen_at]); without seen_at the list is dated now.
     No FK to doctrine_market_contracts - unmatched candidates are stored too."""
     if not items:
         return
@@ -9377,12 +9403,7 @@ def upsert_doctrine_market_contract_items(items: list[tuple]) -> None:
                 "DELETE FROM doctrine_market_contract_items WHERE contract_id = ?",
                 (cid,),
             )
-            conn.executemany(
-                "INSERT INTO doctrine_market_contract_items "
-                "(contract_id, record_id, type_id, quantity, is_included, is_singleton) "
-                "VALUES (?,?,?,?,?,?)",
-                rows,
-            )
+            conn.executemany(_MARKET_ITEM_INSERT, [_market_item_params(r) for r in rows])
 
 
 def replace_doctrine_market_snapshot(
@@ -9405,7 +9426,8 @@ def replace_doctrine_market_snapshot(
     """Wholesale-replace the Contract Market snapshot for this tenant.
 
     contracts: rows matching _MARKET_CONTRACT_COLUMNS.
-    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton
+    [, seen_at]); a carried list passes its old seen_at, without one it is now.
     Never touches doctrine_contracts.
     """
     with connect() as conn:
@@ -9432,12 +9454,7 @@ def replace_doctrine_market_snapshot(
                 contracts,
             )
         if items:
-            conn.executemany(
-                "INSERT INTO doctrine_market_contract_items "
-                "(contract_id, record_id, type_id, quantity, is_included, is_singleton) "
-                "VALUES (?,?,?,?,?,?)",
-                items,
-            )
+            conn.executemany(_MARKET_ITEM_INSERT, [_market_item_params(r) for r in items])
 
 
 def load_doctrine_contract_history() -> list[tuple]:
