@@ -32,7 +32,11 @@ exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
 right after a snapshot write to fill the realized-profit
 archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
 with any realized-profit tool, and never lets an archive error fail the
-snapshot sync. Do not add a second tool import here. Do not put
+snapshot sync. Do not add a second tool import here. A second, deliberate
+exception: `esi_data/actions.py` lazily calls Production's
+`invalidate_shared_production_owner_ids_cache()` after a sharing change, because
+that cache would otherwise go stale. Do not extend this to other tools, and keep
+it a function-level import (a module-level one risks an import cycle). Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
 paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
@@ -213,7 +217,11 @@ reach `/api/production/realized/` unchanged. Freight is the courier
 rate when a shipment covers the purchase, and the configured rate
 otherwise. Both are labeled that way. HTTP recompute is a `pipeline_runner`
 background job; the CLI rebuild calls the same `do_rebuild_realized`
-in-process. A run row is written only after the replace commits. Each run
+in-process. Opening `/production/realized` starts that rebuild once per page open,
+without a click, when the report is `stale` (an archive sync finished after the
+last recompute) or `needs_rebuild` (no run yet, or sharing changed) and an archive
+exists (`cutover_t0` or `archive_since` is set); opening `/admin/sde-preview`
+starts one SDE preview per page entry, unless a preview is already running. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
 for derived rows. Reprocessing detection also covers compressed gas (SDE group 4168): its
@@ -741,6 +749,36 @@ operator, filesystem/SSH only — not a request parameter).
 access request preselects it, and `eve-trader admin grant-defaults` applies
 it to existing tenants.
 
+Every key in `access_gate.ALL_TOOL_KEYS`, with its router prefix (`_TOOL_PATH_PREFIXES`
+in `api/app.py`), its page (`frontend/src/App.tsx`), its default grant
+(`DEFAULT_TOOL_KEYS`), whether it reads ESI data through `esi_data/registry.py`
+(`consuming_tools`, the same set as `frontend/src/toolKeys.ts`'s
+`ESI_CONSUMING_TOOLS`) and where it is documented. `frontend/src/toolKeys.ts`
+mirrors the key list. `tests/test_claude_md_tool_keys.py` fails when a key is
+missing here.
+
+| Key | Router prefix | Page | Default grant | ESI-consuming | Documented in |
+|---|---|---|---|---|---|
+| `trading` | `/api/trading/` | `/trading` | yes | yes | this file, "Two tools, one backend" |
+| `production` | `/api/production/` | `/production` | yes | yes | this file, "Production realized profit" |
+| `doctrine` | `/api/doctrine/` | `/doctrine` | yes | yes | this file, "Strategic reserve", "Contract Market" |
+| `refining` | `/api/refining/` | `/ore` (Ore & Minerals) | yes | no | this file, "Mineral shopping lists" |
+| `station_trading` | `/api/station-trading/` | `/station-trading` | yes | yes | this file, "Two tools, one backend" |
+| `sorting` | `/api/sorting/` | `/sorting` | yes | yes | this file, "Sorting paste" |
+| `portfolio` | `/api/portfolio/` | `/portfolio` | yes | yes | this file, "Two tools, one backend"; `docs/PORTFOLIO_REWORK_PLAN.md` |
+| `admin` | `/api/admin/` | `/admin`, `/admin/sde-preview` | no | no | this file, "Tool permissions & Admin" |
+| `characters` | `/api/characters/` | `/character-management/characters` | yes | no | `docs/ESI_ACCESS_PLAN.md`, `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `module_reprocessing` | `/api/module-reprocessing/` | `/modules` | no | no | this file, "Mineral shopping lists" |
+| `char_info` | `/api/char-info/` | `/character-management/info` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_skills` | `/api/char-skills/` | `/character-management/skills` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_mail` | `/api/char-mail/` | `/character-management/mail` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_notifications` | `/api/char-notifications/` | `/character-management/notifications` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_contacts` | `/api/char-contacts/` | `/character-management/contacts` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_skill_plans` | `/api/char-skill-plans/` | `/character-management/skill-plans` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_alerts` | `/api/char-alerts/` | `/character-management/alerts` | yes | yes | this file, "Discord alerts"; `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `pi` | `/api/pi/` | `/pi` | yes | yes | `docs/PI_PLAN.md` |
+| `asset_manager` | `/api/asset-manager/` | `/assets` | yes | yes | `docs/ASSET_MANAGER_PLAN.md` |
+
 `tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
 RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
 (`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`.
@@ -760,7 +798,7 @@ surface, not a per-tenant self-service page. `"admin"` is a normal grant
 with `eve-trader admin bootstrap` (see `docs/OPERATOR_SECURITY.md`). No
 other character can reach `/api/admin` unless they have that tool_key.
 
-`"characters"` is a normal ninth grant in `ALL_TOOL_KEYS` (no
+`"characters"` is a normal grant in `ALL_TOOL_KEYS` (no
 `DEFAULT_TENANT_ID` bypass). Admin's tool checkboxes auto-tick it when any
 ESI-consuming tool is selected — UI only; `admin.do_set_tool_grants` stays
 replace-not-merge and does not insert `"characters"` on the server. The
@@ -1025,8 +1063,8 @@ history).
 - **Cross-tool reads** (manual stock, "wanted by", Doctrine match in the ship
   view) check the other tool's grant; the Doctrine match uses the pure
   `doctrine.validation` scorer on fittings read through storage.
-- The old Production Asset Search tab stays until existing tenants have the
-  grant (`eve-trader admin grant-defaults`), then plan phase 5 removes it.
+- Production's old Asset Search tab is removed (commit `58c23df1`); the Asset
+  Manager replaces it.
 
 ## Planetary Industry (PI) tool
 
@@ -1745,7 +1783,7 @@ readers (`esi_stock_at_location_bulk`, `esi_stock_by_location_bulk`,
 `assets_at_flag`), Doctrine's `esi_stock_from_asset_rows` and Trading's
 `own_orders.py` skip it, and live ESI lists go through
 `storage.mark_assembled_or_fitted`. Deliberately *not* applied to valuation
-(Portfolio's `load_all_assets`), the Asset Search lookup or the Asset
+(Portfolio's `load_all_assets`) or the Asset
 Manager (which badges such rows instead) - an assembled ship still has
 value and still exists. A new stock reader must apply the
 same filter.

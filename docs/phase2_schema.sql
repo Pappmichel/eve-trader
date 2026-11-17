@@ -1,9 +1,8 @@
 -- Phase 2 of the multi-tenant migration (see docs/MULTI_TENANT_PLAN.md) -
 -- config/secrets storage: tenant_settings (TradingConfig/ProductionConfig
 -- overrides, replacing config.yaml as the per-tenant persistence backend)
--- and tenant_tokens (OAuth token storage - schema only in this phase,
--- TokenManager itself stays file-based until Phase 3 threads a tenant_id
--- through the OAuth callback flow).
+-- and tenant_tokens (OAuth token storage; TokenManager reads and writes it
+-- since the Phase 3 cutover, see CLAUDE.md's Backup section).
 --
 -- Idempotent, same conventions as docs/phase1_schema.sql - safe to re-run.
 -- Usage (same local dev Postgres as Phase 0/1):

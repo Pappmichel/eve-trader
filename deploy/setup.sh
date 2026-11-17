@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time provisioning for a fresh Ubuntu 22.04/24.04 VM (written for Oracle
+# One-time provisioning for a fresh Ubuntu 24.04 VM (written for Oracle
 # Cloud's Always Free Ampere A1, but doesn't assume ARM specifically - plain
 # apt/pip/npm, no architecture-specific steps).
 #
@@ -9,6 +9,9 @@
 # everything around it (system packages, venv, built frontend, systemd
 # service, nginx). Safe to re-run: every step either checks first or is
 # naturally idempotent (apt install, pip install -r requirements.lock, npm ci).
+#
+# Needs Python 3.11 or newer (pyproject.toml requires-python). Ubuntu 24.04
+# ships 3.12; Ubuntu 22.04's system python3 is 3.10 and is refused below.
 #
 # NOT tested against a real Oracle Cloud instance (no such environment
 # available while writing this) - written from the documented Ubuntu/nginx/
@@ -51,6 +54,11 @@ echo "==> Installing system packages (Python, Node.js, nginx, certbot, Postgres)
 sudo apt-get update -qq
 sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential \
     nginx certbot python3-certbot-nginx curl git postgresql acl
+
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "python3 is $(python3 --version 2>&1); eve-trader needs Python 3.11 or newer (Ubuntu 24.04 ships 3.12)." >&2
+    exit 1
+fi
 
 echo "==> Tuning Postgres for a memory-constrained VM..."
 # Native install, not Docker (see deploy/README.md's "Set up Postgres"

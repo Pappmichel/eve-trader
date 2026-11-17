@@ -1,6 +1,8 @@
 # Central location resolution plan
 
-Status: proposal (2026-10-26). Nothing here is implemented.
+Status: implemented (phases 1-7, 2026-10-26 to 2026-10-27; see the history of
+`eve_trader/locations/`). The text below is the design as proposed; CLAUDE.md's
+"Location resolution" section describes what is built.
 
 Trigger: the Asset Manager showed `Location 1050055429685` for three corp
 Manufacturing jobs. The id was a corp **Office** item, not a structure, so no
