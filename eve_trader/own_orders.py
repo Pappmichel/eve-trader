@@ -83,7 +83,7 @@ def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
 def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
                            cfg: TradingConfig = TRADING_CONFIG,
                            book_auth_roles: Optional[list[str]] = None) -> list[dict]:
-    """Same idea as check_undercut, but pools every registered seller
+    """Pools every registered seller
     character's own orders together (GitHub issue #46: multiple seller
     characters share the same structure's order slots) - `sellers` is a list
     of (character_id, auth_role) pairs. A cheaper order from one of *your
@@ -105,7 +105,7 @@ def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
     Returns one dict per undercut order: {"type_id", "my_price",
     "competitor_price", "difference"} - only orders that are actually beaten
     (competitor_price < my_price) are included, same "only flag real problems"
-    shape as fetch_seller_stock_without_order. Item names aren't resolved
+    shape as fetch_seller_stock_without_order_pooled. Item names aren't resolved
     here (callers already have an SDE-backed name lookup, see actions.py
     do_check_undercut)."""
     my_orders = []
@@ -170,28 +170,41 @@ def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
     return results
 
 
-def check_undercut(character_id: int, auth_role: str, client: ESIClient,
-                    cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
-    """Single-seller convenience wrapper around check_undercut_pooled - see
-    that function's docstring for the real logic."""
-    return check_undercut_pooled([(character_id, auth_role)], client, cfg)
-
-
 def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], client: ESIClient,
                                              shortlist_item_ids: set[int],
                                              cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
-    """Same idea as fetch_seller_stock_without_order, but pools physical
-    stock and sell-order coverage across every registered seller character
-    (GitHub issue #46) - `sellers` is a list of (character_id, auth_role)
-    pairs. "No sell order at all" now means none of the registered sellers'
-    own orders cover it, not just one particular character's - and
-    asset_quantity is the combined total across every seller's own hangar,
-    since the structure's hangar/assets are shared regardless of which
-    character happens to hold them.
+    """Shortlist items the sellers physically have sitting at the structure
+    (personal assets, location_id == cfg.structure_id, excluding
+    storage.NON_STOCK_LOCATION_FLAGS - AssetSafety/Deliveries/etc. aren't
+    actually available to list) that have NO open sell order there at all
+    right now - stock that could be listed for sale but apparently was
+    forgotten. Pools physical stock and sell-order coverage across every
+    registered seller character (GitHub issue #46) - `sellers` is a list of
+    (character_id, auth_role) pairs. "No sell order at all" means none of
+    the registered sellers' own orders cover it, not just one particular
+    character's - and asset_quantity is the combined total across every
+    seller's own hangar, since the structure's hangar/assets are shared
+    regardless of which character happens to hold them.
 
-    See fetch_seller_stock_without_order's own docstring for the scope/scope
-    caveats (shortlist-only, complete-absence-only, ESI scope requirement,
-    one-level-flat asset limitation) - unchanged here, just pooled."""
+    Only considers `shortlist_item_ids` (confirmed scope: not every asset at
+    the structure, just the ones you're actually tracking as tradeable) and
+    only a *complete* absence of a sell order (confirmed scope: a
+    partially-listed item doesn't count, only zero coverage). Returns one
+    dict per flagged type_id: {"type_id", "asset_quantity",
+    "sell_order_remaining" (always 0), "unlisted_quantity"}
+    (unlisted_quantity == asset_quantity here, kept as its own field for a
+    stable row shape).
+
+    Requires esi-assets.read_assets.v1 on the sellers' tokens in addition to
+    the existing esi-markets.read_character_orders.v1 - a seller character
+    authorized before this scope was added needs to be re-added.
+
+    Known limitation: only sees items sitting directly in the structure's own
+    location_id (e.g. "Hangar") - items nested inside a container or a parked
+    ship at the structure have their own location_id (the container's/ship's
+    item_id), same one-level-flat limitation fetch_own_sell_orders has, and
+    unlike storage.esi_stock_at_location's corp-office unwrap (this fetches a
+    personal seller's assets, not a corp's, so there's no office to unwrap)."""
     asset_qty: dict[int, float] = defaultdict(float)
     sell_remaining: dict[int, float] = defaultdict(float)
     reserve_hangar = _reserve_hangar()
@@ -219,40 +232,6 @@ def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], clie
                 "sell_order_remaining": 0.0, "unlisted_quantity": qty,
             })
     return rows
-
-
-def fetch_seller_stock_without_order(character_id: int, auth_role: str, client: ESIClient,
-                                      shortlist_item_ids: set[int],
-                                      cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
-    """Shortlist items the seller physically has sitting at the structure
-    (personal assets, location_id == cfg.structure_id, excluding
-    storage.NON_STOCK_LOCATION_FLAGS - AssetSafety/Deliveries/etc. aren't
-    actually available to list) that have NO open sell order there at all
-    right now - stock that could be listed for sale but apparently was
-    forgotten. Only considers `shortlist_item_ids` (confirmed scope: not
-    every asset at the structure, just the ones you're actually tracking as
-    tradeable) and only a *complete* absence of a sell order (confirmed
-    scope: a partially-listed item doesn't count, only zero coverage).
-    Returns one dict per flagged type_id:
-    {"type_id", "asset_quantity", "sell_order_remaining" (always 0),
-    "unlisted_quantity"} (unlisted_quantity == asset_quantity here, kept as
-    its own field for a stable row shape).
-
-    Requires esi-assets.read_assets.v1 on the seller's token in addition to
-    the existing esi-markets.read_character_orders.v1 - a seller character
-    authorized before this scope was added needs to be re-added.
-
-    Known limitation: only sees items sitting directly in the structure's own
-    location_id (e.g. "Hangar") - items nested inside a container or a parked
-    ship at the structure have their own location_id (the container's/ship's
-    item_id), same one-level-flat limitation fetch_own_sell_orders has, and
-    unlike storage.esi_stock_at_location's corp-office unwrap (this fetches a
-    personal seller's assets, not a corp's, so there's no office to unwrap).
-
-    Single-seller convenience wrapper around
-    fetch_seller_stock_without_order_pooled - see that function's docstring
-    for the multi-character logic."""
-    return fetch_seller_stock_without_order_pooled([(character_id, auth_role)], client, shortlist_item_ids, cfg)
 
 
 def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESIClient,

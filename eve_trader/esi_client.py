@@ -1072,7 +1072,7 @@ class ESIClient:
     def structure_orders_raw(self, structure_id: int, auth_role: str) -> list[dict]:
         """The structure's full, unsummarized order book (every order, every
         type_id) - shared raw fetch behind structure_order_stats_bulk and
-        own_orders.check_undercut, both of which need the whole book anyway
+        own_orders.check_undercut_pooled, both of which need the whole book anyway
         (ESI's /markets/structures/{id}/ endpoint has no type_id filter) and
         would otherwise each re-download it separately.
 
@@ -1135,7 +1135,7 @@ class ESIClient:
         sell_volume/buy_volume are always 0.0 since Goonmetrics' current-
         price endpoint carries no order-book depth at all. Good enough for
         "roughly what's this worth" (Shortlist/Ore Shortlist/Reprocessing
-        Quote); deliberately NOT used by own_orders.check_undercut, whose
+        Quote); deliberately NOT used by own_orders.check_undercut_pooled, whose
         entire purpose is comparing against real competing orders - a
         fallback there could silently report "not undercut" when a real
         order says otherwise, worse than a hard failure.

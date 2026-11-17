@@ -95,7 +95,7 @@ class NewCandidateResult:
 @dataclass
 class UnlistedStockRow:
     """Stock physically sitting at the structure that isn't (fully) covered
-    by an open sell order - see own_orders.fetch_seller_stock_without_order.
+    by an open sell order - see own_orders.fetch_seller_stock_without_order_pooled.
     sell_volume/margin mirror ShortlistRow's own fields (same
     shortlist.evaluate_shortlist_item formula) - None when the item has no
     Jita/C-J order-book data at all (e.g. never priced through the
@@ -120,7 +120,7 @@ class UnlistedStockRow:
 @dataclass
 class UndercutRow:
     """One of the seller's own sell orders currently beaten by a cheaper
-    competing order at the same structure - see own_orders.check_undercut."""
+    competing order at the same structure - see own_orders.check_undercut_pooled."""
     type_id: int
     item: str
     my_price: float

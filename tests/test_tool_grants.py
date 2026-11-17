@@ -1,5 +1,5 @@
 """Tests for storage.py's tool_grants functions (set_tool_grant,
-revoke_tool_grant, revoke_all_tool_grants, list_tool_grants_for_character,
+revoke_all_tool_grants, list_tool_grants_for_character,
 list_users_with_grants) - see docs/admin_schema.sql. Unscoped like
 tenant_registry_entries (storage.connect_unscoped(), no ambient tenant) -
 the Admin tool is a deliberate cross-tenant superadmin surface (see
@@ -60,20 +60,6 @@ def test_list_tool_grants_for_character_returns_multiple_sorted():
 
 def test_list_tool_grants_for_character_empty_when_none_granted():
     assert storage.list_tool_grants_for_character(999) == []
-
-
-def test_revoke_tool_grant_removes_only_that_grant():
-    tenant_id = _new_tenant()
-    storage.set_tool_grant(42, "production", tenant_id)
-    storage.set_tool_grant(42, "trading", tenant_id)
-
-    storage.revoke_tool_grant(42, "production")
-
-    assert storage.list_tool_grants_for_character(42) == ["trading"]
-
-
-def test_revoke_tool_grant_missing_grant_is_a_no_op():
-    storage.revoke_tool_grant(999, "production")  # doesn't raise
 
 
 def test_revoke_all_tool_grants_clears_every_grant_for_character():

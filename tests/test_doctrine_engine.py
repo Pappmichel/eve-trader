@@ -40,7 +40,7 @@ class _FakeTokens:
 
 
 class _FakeESIClient:
-    """Stand-in for ESIClient in shopping_list_rows tests - no seller token
+    """Stand-in for ESIClient in shopping_list tests - no seller token
     (skips the C-J structure order-book check entirely, same as a real
     deployment without one) and an empty Jita order book by default, so
     every test that doesn't care about issue #10's own order-book gate opts
@@ -372,7 +372,7 @@ def test_shopping_prices_jita_landed_includes_doctrine_import_cost(monkeypatch):
     assert jita_landed == pytest.approx(50.0 * (1 + broker_fee) + 900.0 * 2.0)
 
 
-def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
+def test_shopping_list_picks_cheapest_of_build_cj_jita(monkeypatch):
     agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Damage Control II", required_total=10.0,
                                       available=4.0, shortfall=6.0, severity=SEVERITY_CRITICAL, fitting_count=1)
     monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
@@ -391,7 +391,7 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: MODULE_CATEGORY_ID)
     monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 5.0)  # no packaged/flight difference
     # Tier 3 "config-dependent test error" (business-logic audit follow-up,
-    # 2026-09-26): shopping_list_rows' own structure_market_book leg (GitHub
+    # 2026-09-26): shopping_list' own structure_market_book leg (GitHub
     # issue #10 fix, confirmed 2026-09-21 - see this function's own comment)
     # calls production_esi_sync.list_capability_characters, which needs a
     # tenant context this lightweight fixture-only test never sets up. Not a
@@ -401,7 +401,7 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _FakeESIClient)
 
-    rows = engine.shopping_list_rows(cfg=DoctrineConfig(import_cost_per_m3=900.0))
+    rows = engine.shopping_list(cfg=DoctrineConfig(import_cost_per_m3=900.0))[0]
 
     assert len(rows) == 1
     row = rows[0]
@@ -412,18 +412,18 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     assert row.total_cost == pytest.approx(25.0 * 6.0)
 
 
-def test_shopping_list_rows_skips_fully_stocked_items(monkeypatch):
+def test_shopping_list_skips_fully_stocked_items(monkeypatch):
     agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Fully Stocked", required_total=10.0,
                                       available=10.0, shortfall=0.0, severity=None, fitting_count=1)
     monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
-    rows = engine.shopping_list_rows()
+    rows = engine.shopping_list()[0]
 
     assert rows == []
 
 
-def test_shopping_list_rows_recommends_none_when_no_price_data(monkeypatch):
+def test_shopping_list_recommends_none_when_no_price_data(monkeypatch):
     agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Unpriced Thing", required_total=5.0,
                                       available=0.0, shortfall=5.0, severity=SEVERITY_CRITICAL, fitting_count=1)
     monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
@@ -435,20 +435,20 @@ def test_shopping_list_rows_recommends_none_when_no_price_data(monkeypatch):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
-    # See test_shopping_list_rows_picks_cheapest_of_build_cj_jita's own
+    # See test_shopping_list_picks_cheapest_of_build_cj_jita's own
     # comment above for why this is needed (Tier 3 "config-dependent test
     # error", business-logic audit follow-up, 2026-09-26).
     monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _FakeESIClient)
 
-    rows = engine.shopping_list_rows()
+    rows = engine.shopping_list()[0]
 
     assert rows[0].recommended_source is None
     assert rows[0].total_cost is None
 
 
-def test_shopping_list_rows_suppresses_jita_price_with_no_live_orders(monkeypatch):
-    # End-to-end: shopping_list_rows actually threads region_order_stats_bulk's
+def test_shopping_list_suppresses_jita_price_with_no_live_orders(monkeypatch):
+    # End-to-end: shopping_list actually threads region_order_stats_bulk's
     # result through to _shopping_prices, not just _shopping_prices in
     # isolation (GitHub issue #10).
     agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Illiquid Charge", required_total=10.0,
@@ -470,13 +470,13 @@ def test_shopping_list_rows_suppresses_jita_price_with_no_live_orders(monkeypatc
         def region_order_stats_bulk(self, region_id, type_ids):
             return {tid: engine.OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0)
                     for tid in type_ids}
-    # See test_shopping_list_rows_picks_cheapest_of_build_cj_jita's own
+    # See test_shopping_list_picks_cheapest_of_build_cj_jita's own
     # comment above for why this is needed (Tier 3 "config-dependent test
     # error", business-logic audit follow-up, 2026-09-26).
     monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _NoOrdersESIClient)
 
-    rows = engine.shopping_list_rows()
+    rows = engine.shopping_list()[0]
 
     assert rows[0].jita_landed_price is None
     assert rows[0].recommended_source is None
@@ -597,12 +597,12 @@ def test_shopping_list_reads_the_doctrine_hub_not_trading_config(monkeypatch):
             return {}
     monkeypatch.setattr(engine, "ESIClient", _ESI)
 
-    engine.shopping_list_rows(cfg=DoctrineConfig(hub_region_id=10000032))
+    engine.shopping_list(cfg=DoctrineConfig(hub_region_id=10000032))[0]
 
     assert seen == {"ctx_hub": 10000032, "order_book_region": 10000032}
 
 
-def test_shopping_list_rows_all_hubs_picks_cheapest_landed_hub_and_never_queries_region_0(monkeypatch):
+def test_shopping_list_all_hubs_picks_cheapest_landed_hub_and_never_queries_region_0(monkeypatch):
     from eve_trader import hubs
     from eve_trader.esi_client import OrderStats
     agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Damage Control II", required_total=10.0,
@@ -634,7 +634,7 @@ def test_shopping_list_rows_all_hubs_picks_cheapest_landed_hub_and_never_queries
     monkeypatch.setattr(engine.TRADING_CONFIG, "hub_freight_cost_per_m3",
                         {"10000002": 100.0, "10000043": 10.0}, raising=False)
 
-    rows = engine.shopping_list_rows(cfg=cfg)
+    rows = engine.shopping_list(cfg=cfg)[0]
 
     fee = engine.TRADING_CONFIG.jita_buy_broker_fee
     assert 0 not in calls and 0 not in plan_regions

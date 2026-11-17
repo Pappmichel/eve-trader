@@ -539,7 +539,7 @@ class TradingConfig:
     # fall back to a Goonmetrics current-price snapshot for it when no
     # seller is logged in or the ESI call itself fails - see
     # esi_client.ESIClient.structure_order_stats_bulk_or_goonmetrics.
-    # Deliberately NOT used by own_orders.check_undercut (Undercut Check) -
+    # Deliberately NOT used by own_orders.check_undercut_pooled (Undercut Check) -
     # that function's whole purpose is comparing against real competing
     # orders, which a Goonmetrics snapshot can't answer; a fallback there
     # could silently report "not undercut" when a real order says
@@ -817,7 +817,7 @@ class OAuthConfig:
                                                     # structure_markets. Not on PRODUCTION_SCOPES:
                                                     # Production has no wallet consumer.
         "esi-assets.read_assets.v1",                # ESIClient.character_assets (own_orders.fetch_buyer_already_covered,
-                                                     # own_orders.fetch_seller_stock_without_order)
+                                                     # own_orders.fetch_seller_stock_without_order_pooled)
     )
 
 

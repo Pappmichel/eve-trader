@@ -1,5 +1,5 @@
 from eve_trader.config import TradingConfig
-from eve_trader.own_orders import check_undercut
+from eve_trader.own_orders import check_undercut_pooled
 
 
 class FakeClient:
@@ -29,7 +29,7 @@ def test_flags_order_beaten_by_a_cheaper_competitor():
     book = [_book_order(1, 100, 500.0), _book_order(2, 100, 450.0)]  # order_id 1 is mine, 2 is a competitor
     client = FakeClient(my_orders, book)
 
-    result = check_undercut(1, "seller", client, cfg)
+    result = check_undercut_pooled([(1, "seller")], client, cfg)
 
     assert result == [{"type_id": 100, "my_price": 500.0, "competitor_price": 450.0, "difference": 50.0}]
 
@@ -40,7 +40,7 @@ def test_not_flagged_when_my_price_is_still_best():
     book = [_book_order(1, 100, 400.0), _book_order(2, 100, 450.0)]
     client = FakeClient(my_orders, book)
 
-    assert check_undercut(1, "seller", client, cfg) == []
+    assert check_undercut_pooled([(1, "seller")], client, cfg) == []
 
 
 def test_not_flagged_when_no_competing_orders_exist():
@@ -49,7 +49,7 @@ def test_not_flagged_when_no_competing_orders_exist():
     book = [_book_order(1, 100, 400.0)]  # only my own order in the book
     client = FakeClient(my_orders, book)
 
-    assert check_undercut(1, "seller", client, cfg) == []
+    assert check_undercut_pooled([(1, "seller")], client, cfg) == []
 
 
 def test_ignores_buy_orders_in_the_competitor_book():
@@ -60,7 +60,7 @@ def test_ignores_buy_orders_in_the_competitor_book():
     book = [_book_order(1, 100, 400.0), _book_order(2, 100, 1.0, is_buy_order=True)]
     client = FakeClient(my_orders, book)
 
-    assert check_undercut(1, "seller", client, cfg) == []
+    assert check_undercut_pooled([(1, "seller")], client, cfg) == []
 
 
 def test_ignores_orders_at_other_locations():
@@ -69,7 +69,7 @@ def test_ignores_orders_at_other_locations():
     book = [_book_order(1, 100, 400.0), _book_order(2, 100, 350.0)]
     client = FakeClient(my_orders, book)
 
-    assert check_undercut(1, "seller", client, cfg) == []
+    assert check_undercut_pooled([(1, "seller")], client, cfg) == []
 
 
 def test_uses_my_best_price_when_i_have_multiple_orders_for_the_same_item():
@@ -82,4 +82,4 @@ def test_uses_my_best_price_when_i_have_multiple_orders_for_the_same_item():
     client = FakeClient(my_orders, book)
 
     # My best (lowest) own price is 480 - a competitor at 490 doesn't undercut that.
-    assert check_undercut(1, "seller", client, cfg) == []
+    assert check_undercut_pooled([(1, "seller")], client, cfg) == []

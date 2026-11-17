@@ -777,7 +777,7 @@ def do_set_category_cost_index_override(category: str, value: float) -> dict:
     2026-09-16) - see storage.upsert_category_cost_index_override and
     engine.py's _job_cost_rate for the priority this slots into (higher
     than the existing flat reaction_/component_/manufacturing_cost_index_
-    override fields, see do_set_cost_index_override above - not a
+    override fields (set through the Settings save) - not a
     replacement for those, an additional finer-grained layer). No cache to
     invalidate here, unlike do_set_category_location's location-cache
     dependency - _PlanContext reads this fresh on every plan/margin call,
@@ -791,10 +791,6 @@ def do_set_category_cost_index_override(category: str, value: float) -> dict:
 def do_clear_category_cost_index_override(category: str) -> dict:
     storage.delete_category_cost_index_override(category)
     return {"category": category}
-
-
-def do_list_category_cost_index_overrides() -> dict:
-    return {"overrides": storage.load_category_cost_index_overrides()}
 
 
 def do_add_category_location_option(category: str, location_id: int) -> dict:
@@ -999,8 +995,6 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 # net_against_stock replacing stock-target-driven netting).
 # Frozen semantics: docs/PRODUCTION_SEMANTICS.md (SF-1..SF-8). API and the
 # frontend must not call plan_special_order / _expand_all / _invention_need_row.
-
-_COST_INDEX_KINDS = ("reaction", "component", "manufacturing")
 
 # Callbacks registered by api/routers/production.py so special-order mutations
 # that change integrated demand can mark that router's in-process
@@ -1300,26 +1294,6 @@ def do_list_special_order_events(order_id: str | None = None) -> dict:
              "detail": detail, "at": str(at) if at else None}
             for event_id, oid, event, detail, at in rows
         ]
-    }
-
-
-def do_set_cost_index_override(kind: str, value: float) -> dict:
-    """E.5: writes an existing ProductionConfig cost-index field via Settings."""
-    if kind not in _COST_INDEX_KINDS:
-        raise ActionError(f"Unknown cost-index kind {kind!r} - must be reaction, component, or manufacturing.")
-    return do_update_settings({f"{kind}_cost_index_override": value})
-
-
-def do_clear_cost_index_override(kind: str) -> dict:
-    if kind not in _COST_INDEX_KINDS:
-        raise ActionError(f"Unknown cost-index kind {kind!r} - must be reaction, component, or manufacturing.")
-    return do_update_settings({f"{kind}_cost_index_override": None})
-
-
-def do_list_cost_index_overrides() -> dict:
-    cfg = PRODUCTION_CONFIG
-    return {
-        "overrides": {kind: getattr(cfg, f"{kind}_cost_index_override") for kind in _COST_INDEX_KINDS}
     }
 
 

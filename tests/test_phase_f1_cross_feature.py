@@ -59,10 +59,8 @@ def test_combined_net_flag_does_not_write_stored_flags(order_sde):
     assert actions.do_get_special_order(b)["order"].net_against_stock is True
 
 
-def test_slots_and_cost_index_do_not_enter_orders(order_sde, monkeypatch):
+def test_slots_do_not_enter_orders(order_sde, monkeypatch):
     storage.replace_character_slots([("Alice", 5, 3, 2)])
-    monkeypatch.setattr(actions, "do_update_settings", lambda updates, cfg=None: updates)
-    actions.do_set_cost_index_override("component", 0.05)
     jobs.character_slot_overview()
     order_id = actions.do_create_special_order([{"type_id": fx.FINISHED_A, "quantity": 1.0}])["order_id"]
     events = [r["event"] for r in actions.do_list_special_order_events(order_id)["rows"]]

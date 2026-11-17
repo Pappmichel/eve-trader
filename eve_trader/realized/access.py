@@ -139,22 +139,6 @@ def list_wallet_transactions_for_production(
     return db.list_ledger_wallet_transactions(owner_type, owner_id)
 
 
-def list_industry_jobs_for_production(
-    owner_type: str, owner_id: int,
-) -> list[tuple]:
-    if not owner_shared_with_production("industry_jobs", owner_type, owner_id):
-        return []
-    return db.list_ledger_industry_jobs(owner_type, owner_id)
-
-
-def list_job_inputs_for_production(
-    owner_type: str, owner_id: int, job_id: int,
-) -> list[tuple]:
-    if not owner_shared_with_production("industry_jobs", owner_type, owner_id):
-        return []
-    return db.list_ledger_job_inputs(owner_type, owner_id, job_id)
-
-
 def count_archived_for_production(
     table: str, owner_type: str, owner_id: int,
 ) -> int:

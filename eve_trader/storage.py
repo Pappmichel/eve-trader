@@ -820,16 +820,6 @@ def set_tool_grant(character_id: int, tool_key: str, tenant_id: str) -> None:
         )
 
 
-def revoke_tool_grant(character_id: int, tool_key: str) -> None:
-    """Removes a single tool grant - no-op if it wasn't granted (matches
-    set_tool_grant's own "upsert, not error" symmetry)."""
-    with connect_unscoped() as conn:
-        conn.execute(
-            "DELETE FROM tool_grants WHERE character_id = ? AND tool_key = ?",
-            (character_id, tool_key),
-        )
-
-
 def revoke_all_tool_grants(character_id: int) -> None:
     """Removes every tool grant for `character_id` - called from
     admin.do_remove_user alongside remove_tenant_registry_entry.

@@ -61,7 +61,7 @@ def tenant():
     """Tenant provisioning. `create`/`add-entry`/`list` now also have a web
     equivalent (the Admin tool, eve_trader/admin.py + api/routers/admin.py -
     reachable to characters with an explicit admin tool grant, see
-    access_gate.tools_for) - this CLI group stays useful for initial setup
+    access_gate.authorize_session_cookie) - this CLI group stays useful for initial setup
     before a server/session exists at all, and both paths call the exact same
     storage.py functions, so they can never drift apart. `import-tokens`/
     `migrate-sqlite` remain CLI-only - genuinely one-time, operator-run
