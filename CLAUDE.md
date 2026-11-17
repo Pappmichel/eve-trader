@@ -204,7 +204,11 @@ reach `/api/production/realized/` unchanged. Freight is the courier
 rate when a shipment covers the purchase, and the configured rate
 otherwise. Both are labeled that way. HTTP recompute is a `pipeline_runner`
 background job; the CLI rebuild calls the same `do_rebuild_realized`
-in-process. A run row is written only after the replace commits. Each run
+in-process. Opening `/production/realized` starts that rebuild once per page open,
+without a click, when the report is `stale` (an archive sync finished after the
+last recompute) or `needs_rebuild` (no run yet, or sharing changed) and an archive
+exists (`cutover_t0` or `archive_since` is set); opening `/admin/sde-preview`
+starts one SDE preview per page entry, unless a preview is already running. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
 for derived rows. Reprocessing detection also covers compressed gas (SDE group 4168): its
