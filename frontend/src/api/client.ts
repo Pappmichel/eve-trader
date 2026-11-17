@@ -298,7 +298,7 @@ export const productionApi = {
     put<{ type_id: number; choice: string | null }>('/api/production/reaction-chain-choice', {
       type_id: typeId, choice,
     }),
-  structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; hangar_division_flags: string[] }>(
+  structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; invention_rig_tiers?: string[]; hangar_division_flags: string[] }>(
     '/api/production/settings/structure-options',
   ),
   systemSettings: () =>

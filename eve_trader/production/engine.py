@@ -150,7 +150,7 @@ from .constants import (
     INDUSTRY_TIME_BONUS_PCT, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID, REACTIONS_TIME_BONUS_PCT,
     SCC_SURCHARGE_RATE, SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS, SPECIALIST_TIME_SKILLS,
     SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID, STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
-    rig_security_multiplier, structure_rig_multiplier,
+    rig_security_multiplier, structure_rig_multiplier, tier_security_multiplier,
 )
 from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .jobs import character_slot_overview
@@ -625,20 +625,48 @@ def _structure_rig(profile: str, cfg: ProductionConfig) -> tuple[str, str]:
         return cfg.component_structure_type, cfg.component_rig_tier
     if profile == "supercapital":
         return cfg.supercapital_structure_type, cfg.supercapital_rig_tier
+    if profile == "invention":
+        # Invention jobs run in the manufacturing structure; the rig is the
+        # invention cost rig.
+        return cfg.manufacturing_structure_type, cfg.invention_rig_tier
     return cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier
+
+
+def _global_te_rig(profile: str, cfg: ProductionConfig) -> Optional[str]:
+    """The profile's global time-efficiency rig tier; None = follow the ME tier."""
+    return {
+        "reaction": cfg.reaction_te_rig_tier,
+        "component": cfg.component_te_rig_tier,
+        "supercapital": cfg.supercapital_te_rig_tier,
+        "manufacturing": cfg.manufacturing_te_rig_tier,
+    }.get(profile)
+
+
+def _security_status_for(structure_profile: str, cfg: ProductionConfig) -> Optional[float]:
+    """Security status of the system the profile's structure sits in (the
+    flat per-profile system; a category structure's own system outranks it in
+    facility_resolution). Reaction/component structures use the component
+    system, manufacturing structures the manufacturing system - same system
+    mapping as the cost index (see _job_cost_rate). An invention job uses the
+    invention structure's system. Read from the local SDE cache (static
+    data), not ESI."""
+    if structure_profile == "invention":
+        if cfg.invention_rig_tier == "No Rig":
+            return None  # nothing to scale; skip the system lookup
+        system_id = invention._invention_system_id(cfg)
+    elif structure_profile in ("reaction", "component"):
+        system_id = cfg.component_system_id
+    else:
+        system_id = cfg.manufacturing_system_id
+    return storage.get_system_security(system_id)
 
 
 def _security_multiplier_for(structure_profile: str, cfg: ProductionConfig) -> float:
     """Rig bonuses scale with the security status of the system the structure
     sits in (see constants.rig_security_multiplier - reaction/refinery rigs use
-    a different table than Engineering Complex rigs, hence is_reaction below).
-    Reaction/component structures use the component system's security,
-    manufacturing structures use the manufacturing system's - same system
-    mapping as the cost index (see _job_cost_rate), since that's the only
-    system info configured per build category. Read from the local SDE cache
-    (static data), not ESI."""
-    system_id = cfg.component_system_id if structure_profile in ("reaction", "component") else cfg.manufacturing_system_id
-    return rig_security_multiplier(storage.get_system_security(system_id), is_reaction=(structure_profile == "reaction"))
+    a different table than Engineering Complex rigs, hence is_reaction below)."""
+    return rig_security_multiplier(_security_status_for(structure_profile, cfg),
+                                   is_reaction=(structure_profile == "reaction"))
 
 
 # Per-category facilities (job_category_facilities + the category structure's
@@ -662,7 +690,7 @@ def invalidate_facility_cache(all_tenants: bool = False) -> None:
 
 def _load_category_facilities() -> dict[str, dict]:
     """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
-    tax_rate_override (saved, each None when not set), location_id,
+    te_rig_tier_basic, te_rig_tier_advanced, tax_rate_override (saved, each None when not set), location_id,
     structure_name, system_id, security, observed_tax}}. `observed_tax` is
     {job activity id: facility_tax.ObservedTax} for the category's structure
     (activity 1 manufacturing, 11 reaction), read once for every category
@@ -690,6 +718,8 @@ def _load_category_facilities() -> dict[str, dict]:
             "structure_type": row.get("structure_type"),
             "rig_tier_basic": row.get("rig_tier_basic"),
             "rig_tier_advanced": row.get("rig_tier_advanced"),
+            "te_rig_tier_basic": row.get("te_rig_tier_basic"),
+            "te_rig_tier_advanced": row.get("te_rig_tier_advanced"),
             "tax_rate_override": row.get("facility_tax_rate"),
             "location_id": location_id,
             "structure_name": names.get(location_id) if location_id is not None else None,
@@ -722,6 +752,12 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     comes from the category structure's system when it is known, else the
     profile's flat system.
 
+    The time-efficiency rig (`te_rig_tier`, `te_rig_source`) resolves
+    separately: the TE tier saved for the category, then the profile's global
+    TE field, else the same tier as ME. `security_multiplier` is the ME rig's,
+    `te_security_multiplier` the TE rig's (a tier may carry its own security
+    table).
+
     The facility tax rate resolves the same way (`tax_rate`, `tax_source`
     "override" | "observed" | "settings", plus the observation's date and job
     count): the category's saved override, else the rate observed on our own
@@ -734,11 +770,15 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     # rig covers every tech level, stored in the "basic" slot.
     advanced = _is_advanced_tech(activity) and category in SPLIT_BY_TECH_CATEGORIES
     structure_type, structure_source = global_structure, "global"
-    rig_tier, rig_source = global_rig, "global"
     is_reaction = profile == "reaction"
-    security_multiplier = _security_multiplier_for(profile, cfg)
+    security_status = _security_status_for(profile, cfg)
     tax_rate, tax_source = cfg.facility_tax_rate, "settings"
     tax_observed_at, tax_jobs = None, None
+    # ME rig tier: the first source that states one wins. Sources are
+    # (tier, source) candidates in rank order, so a further source slots in
+    # between "set" and "name" without touching the rest.
+    me_candidates: list[tuple[Optional[str], str]] = []
+    te_saved: Optional[str] = None
     if facility is not None:
         override = facility.get("tax_rate_override")
         job_activity = facility_tax.ACTIVITY_REACTION if is_reaction else facility_tax.ACTIVITY_MANUFACTURING
@@ -750,20 +790,31 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
             tax_observed_at, tax_jobs = observation.observed_at, observation.jobs
         if facility["structure_type"]:
             structure_type, structure_source = facility["structure_type"], "set"
-        saved_rig = facility["rig_tier_advanced" if advanced else "rig_tier_basic"]
-        if saved_rig:
-            rig_tier, rig_source = saved_rig, "set"
-        else:
-            named_basic, named_advanced = rig_tiers_from_name(facility["structure_name"], category)
-            named = named_advanced if advanced else named_basic
-            if named:
-                rig_tier, rig_source = named, "name"
+        me_candidates.append((facility["rig_tier_advanced" if advanced else "rig_tier_basic"], "set"))
+        te_saved = facility.get("te_rig_tier_advanced" if advanced else "te_rig_tier_basic")
+        named_basic, named_advanced = rig_tiers_from_name(facility["structure_name"], category)
+        me_candidates.append((named_advanced if advanced else named_basic, "name"))
         if facility["system_id"] is not None:
-            security_multiplier = rig_security_multiplier(facility["security"], is_reaction=is_reaction)
+            security_status = facility["security"]
+    me_candidates.append((global_rig, "global"))
+    rig_tier, rig_source = next((tier, source) for tier, source in me_candidates if tier)
+    # TE rig tier: the category's saved TE tier, else the profile's global TE
+    # tier, else the same tier as ME (so nothing changes until a TE tier is set).
+    global_te = _global_te_rig(profile, cfg)
+    if te_saved:
+        te_rig_tier, te_rig_source = te_saved, "set"
+    elif global_te:
+        te_rig_tier, te_rig_source = global_te, "global"
+    else:
+        te_rig_tier, te_rig_source = rig_tier, "same as ME"
+    security_multiplier = tier_security_multiplier(rig_tier, security_status, is_reaction)
+    te_security_multiplier = tier_security_multiplier(te_rig_tier, security_status, is_reaction)
     return {
         "structure_type": structure_type, "structure_source": structure_source,
         "rig_tier": rig_tier, "rig_source": rig_source,
+        "te_rig_tier": te_rig_tier, "te_rig_source": te_rig_source,
         "security_multiplier": security_multiplier,
+        "te_security_multiplier": te_security_multiplier,
         "tax_rate": tax_rate, "tax_source": tax_source,
         "tax_observed_at": tax_observed_at, "tax_jobs": tax_jobs,
     }
@@ -795,7 +846,8 @@ def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple
     the structure of its job category (see facility_resolution)."""
     resolved = _item_facility(activity, type_id, cfg)
     return structure_rig_multiplier(resolved["structure_type"], resolved["rig_tier"],
-                                    resolved["security_multiplier"])
+                                    resolved["security_multiplier"], resolved["te_rig_tier"],
+                                    resolved["te_security_multiplier"])
 
 
 def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indices: CostIndices) -> float:

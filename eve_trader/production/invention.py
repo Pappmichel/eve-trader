@@ -132,8 +132,9 @@ def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
     Without an observation the fallback is the modelled formula: cost index
     of the invention location's solar system (cfg.invention_location_id via
     locations.reader, else manufacturing_system_id, else the flat Tech II
-    rate) times the manufacturing structure cost bonus (there is no separate
-    invention structure / rig profile), plus the facility tax last observed
+    rate) times the manufacturing structure cost bonus and the invention cost
+    rig (`invention_rig_tier`, resolved by engine.facility_resolution with the
+    invention system's security), plus the facility tax last observed
     on our own jobs at that location (else cfg.facility_tax_rate) plus SCC.
     Manufacturing and reaction job costs stay on `_job_cost_rate` and are
     not affected here.
@@ -168,8 +169,12 @@ def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
                 )
             except Exception:  # noqa: BLE001 - falls back to the flat rate below
                 indices = {}
+        # Modelled fallback only: structure bonus and the invention cost rig
+        # (security from the invention system) via the one rig resolution.
+        from . import engine  # lazy: engine imports this module
+        facility = engine.facility_resolution(None, "Invention", "invention", cfg)
         cost_mult, _, _ = structure_rig_multiplier(
-            cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier)
+            facility["structure_type"], facility["rig_tier"], facility["security_multiplier"])
 
     def formula(activity_id: int, index_key: str) -> float:
         tax_obs = facility_tax_module.observed_for_location(

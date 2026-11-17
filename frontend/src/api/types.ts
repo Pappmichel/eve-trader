@@ -1132,6 +1132,12 @@ export interface ProductionSettings {
   supercapital_rig_tier: string
   manufacturing_structure_type: string
   manufacturing_rig_tier: string
+  // Time-efficiency rig per profile; null = same tier as the ME rig.
+  reaction_te_rig_tier?: string | null
+  component_te_rig_tier?: string | null
+  supercapital_te_rig_tier?: string | null
+  manufacturing_te_rig_tier?: string | null
+  invention_rig_tier?: string
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
@@ -4484,12 +4490,17 @@ export interface LocationReport {
 
 // Per-category structure type and ME rigs (Logistics page).
 export type FacilitySource = 'set' | 'name' | 'global'
+// A time-efficiency rig tier follows the ME tier unless one is set.
+export type TeFacilitySource = 'set' | 'global' | 'same as ME'
 
 export interface CategoryFacilityUpdate {
   category: string
   structure_type: string | null
   rig_tier_basic: string | null
   rig_tier_advanced: string | null
+  // Time-efficiency rig tiers; null/absent = same tier as the ME rig.
+  te_rig_tier_basic?: string | null
+  te_rig_tier_advanced?: string | null
   // Facility tax override as a fraction (0.0025 = 0.25%); null = last observed, then Settings.
   facility_tax_rate: number | null
 }
@@ -4533,7 +4544,12 @@ export interface CategoryFacilityRow {
     rig_source_basic: FacilitySource
     rig_tier_advanced: string | null
     rig_source_advanced: FacilitySource | null
+    te_rig_tier_basic?: string
+    te_rig_source_basic?: TeFacilitySource
+    te_rig_tier_advanced?: string | null
+    te_rig_source_advanced?: TeFacilitySource | null
     security_multiplier: number
+    te_security_multiplier?: number
   }
 }
 

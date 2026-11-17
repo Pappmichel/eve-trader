@@ -21,7 +21,7 @@ from ..paste_parser import resolve_paste
 from . import dynamic_targets, esi_sync, facility_tax, invention, jobs, order_integrity, pricing, sde
 from .engine import production_excluded_hangar, production_excluded_location_ids
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
-from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES
+from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES, THUKKER_FORBIDDEN_CATEGORIES, THUKKER_TIER
 from .engine import (
     _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
     asset_plan_ready_jobs, build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
@@ -624,6 +624,8 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
                 "structure_type": facility.get("structure_type"),
                 "rig_tier_basic": facility.get("rig_tier_basic"),
                 "rig_tier_advanced": facility.get("rig_tier_advanced") if split else None,
+                "te_rig_tier_basic": facility.get("te_rig_tier_basic"),
+                "te_rig_tier_advanced": facility.get("te_rig_tier_advanced") if split else None,
                 "facility_tax_rate": facility.get("tax_rate_override"),
             },
             "from_name": {"rig_tier_basic": named_basic, "rig_tier_advanced": named_advanced if split else None},
@@ -634,6 +636,11 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
                 "rig_source_basic": basic["rig_source"],
                 "rig_tier_advanced": advanced["rig_tier"] if advanced else None,
                 "rig_source_advanced": advanced["rig_source"] if advanced else None,
+                "te_rig_tier_basic": basic["te_rig_tier"],
+                "te_rig_source_basic": basic["te_rig_source"],
+                "te_rig_tier_advanced": advanced["te_rig_tier"] if advanced else None,
+                "te_rig_source_advanced": advanced["te_rig_source"] if advanced else None,
+                "te_security_multiplier": basic["te_security_multiplier"],
                 "security_multiplier": basic["security_multiplier"],
             },
         })
@@ -643,33 +650,40 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
 def do_set_category_facility(category: str, structure_type: Optional[str] = None,
                              rig_tier_basic: Optional[str] = None,
                              rig_tier_advanced: Optional[str] = None,
-                             facility_tax_rate: Optional[float] = None) -> dict:
-    """Saves the structure type, rig tiers and facility tax override for one
-    job category. None means "not set" (the engine then reads the structure
-    name, then the global profile; for the tax the rate observed on our own
-    jobs, then the Settings rate); all four None removes the row.
+                             facility_tax_rate: Optional[float] = None,
+                             te_rig_tier_basic: Optional[str] = None,
+                             te_rig_tier_advanced: Optional[str] = None) -> dict:
+    """Saves the structure type, ME and TE rig tiers and facility tax override
+    for one job category. None means "not set" (the engine then reads the
+    structure name, then the global profile; a TE tier left unset follows the
+    ME tier; for the tax the rate observed on our own jobs, then the Settings
+    rate); all None removes the row.
     `facility_tax_rate` is a fraction (0.0025 = 0.25%)."""
     if category not in JOB_CATEGORIES:
         raise ActionError(f"Unknown category '{category}'. Options: {', '.join(JOB_CATEGORIES)}")
     if structure_type is not None and structure_type not in STRUCTURE_TYPES:
         raise ActionError(f"Unknown structure type '{structure_type}'. Options: {', '.join(STRUCTURE_TYPES)}")
-    for tier in (rig_tier_basic, rig_tier_advanced):
+    for tier in (rig_tier_basic, rig_tier_advanced, te_rig_tier_basic, te_rig_tier_advanced):
         if tier is not None and tier not in RIG_TIERS:
             raise ActionError(f"Unknown rig tier '{tier}'. Options: {', '.join(RIG_TIERS)}")
-    if rig_tier_advanced is not None and category not in SPLIT_BY_TECH_CATEGORIES:
+        if tier == THUKKER_TIER and category in THUKKER_FORBIDDEN_CATEGORIES:
+            raise ActionError(f"The {THUKKER_TIER} rig does not exist for '{category}'.")
+    if ((rig_tier_advanced is not None or te_rig_tier_advanced is not None)
+            and category not in SPLIT_BY_TECH_CATEGORIES):
         raise ActionError(f"'{category}' uses one rig for every tech level; set the Tech I rig only.")
     if facility_tax_rate is not None and not 0 <= facility_tax_rate <= 1:
         raise ActionError(f"Facility tax must be between 0% and 100%, got {facility_tax_rate * 100:g}%.")
     if (structure_type is None and rig_tier_basic is None and rig_tier_advanced is None
-            and facility_tax_rate is None):
+            and te_rig_tier_basic is None and te_rig_tier_advanced is None and facility_tax_rate is None):
         storage.delete_category_facility(category)
     else:
         storage.upsert_category_facility(category, structure_type, rig_tier_basic, rig_tier_advanced,
-                                         facility_tax_rate)
+                                         facility_tax_rate, te_rig_tier_basic, te_rig_tier_advanced)
     invalidate_facility_cache()
     invalidate_discover_cache()  # rigs and tax change every build cost in this category
     return {"category": category, "structure_type": structure_type,
             "rig_tier_basic": rig_tier_basic, "rig_tier_advanced": rig_tier_advanced,
+            "te_rig_tier_basic": te_rig_tier_basic, "te_rig_tier_advanced": te_rig_tier_advanced,
             "facility_tax_rate": facility_tax_rate}
 
 

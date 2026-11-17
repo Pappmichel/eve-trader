@@ -12,7 +12,8 @@ import yaml
 
 from .. import storage
 from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
-from .constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
+from .constants import (HANGAR_DIVISION_FLAGS, INVENTION_RIG_TIERS, RIG_TIERS, STRUCTURE_TYPES,
+                        THUKKER_TIER)
 
 
 @dataclass
@@ -149,6 +150,17 @@ class ProductionConfig:
     supercapital_rig_tier: str = "No Rig"
     manufacturing_structure_type: str = "Citadel (no bonuses)"
     manufacturing_rig_tier: str = "No Rig"
+    # Time-efficiency rig tier per profile. None = same tier as the ME rig
+    # tier above (the long-standing behaviour); set "No Rig" where the
+    # structure carries no time rig. See engine.facility_resolution.
+    reaction_te_rig_tier: Optional[str] = None
+    component_te_rig_tier: Optional[str] = None
+    supercapital_te_rig_tier: Optional[str] = None
+    manufacturing_te_rig_tier: Optional[str] = None
+    # Invention cost rig of the invention structure (constants.
+    # INVENTION_RIG_TIERS); only the modelled invention/copy fee uses it, an
+    # observed total rate stays authoritative.
+    invention_rig_tier: str = "No Rig"
 
     # -- Invention (see production/invention.py) --
     # Default 5/5/5: real invention jobs match maxed skills far more often
@@ -273,6 +285,8 @@ class ProductionConfig:
 _STRUCTURE_TYPE_FIELDS = ("reaction_structure_type", "component_structure_type",
                           "supercapital_structure_type", "manufacturing_structure_type")
 _RIG_TIER_FIELDS = ("reaction_rig_tier", "component_rig_tier", "supercapital_rig_tier", "manufacturing_rig_tier")
+_TE_RIG_TIER_FIELDS = ("reaction_te_rig_tier", "component_te_rig_tier", "supercapital_te_rig_tier",
+                       "manufacturing_te_rig_tier")
 
 
 def validate_production_overrides(overrides: dict) -> None:
@@ -292,6 +306,16 @@ def validate_production_overrides(overrides: dict) -> None:
         if key in overrides and overrides[key] not in RIG_TIERS:
             raise ConfigError(f"{key}: '{overrides[key]}' is not a known rig tier. "
                                f"Options: {', '.join(RIG_TIERS)}")
+    for key in _TE_RIG_TIER_FIELDS:
+        if overrides.get(key) is not None and overrides[key] not in RIG_TIERS:
+            raise ConfigError(f"{key}: '{overrides[key]}' is not a known rig tier. "
+                               f"Options: {', '.join(RIG_TIERS)}")
+    for key in ("reaction_rig_tier", "reaction_te_rig_tier"):
+        if overrides.get(key) == THUKKER_TIER:
+            raise ConfigError(f"{key}: the {THUKKER_TIER} rig does not exist for reactions.")
+    if "invention_rig_tier" in overrides and overrides["invention_rig_tier"] not in INVENTION_RIG_TIERS:
+        raise ConfigError(f"invention_rig_tier: '{overrides['invention_rig_tier']}' is not a known invention "
+                           f"rig tier. Options: {', '.join(INVENTION_RIG_TIERS)}")
     if "stock_hangar_flags" in overrides:
         bad = [f for f in overrides["stock_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:

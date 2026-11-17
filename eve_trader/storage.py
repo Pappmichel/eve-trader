@@ -3093,31 +3093,37 @@ def delete_category_cost_index_override(category: str) -> None:
 
 def load_category_facilities() -> dict[str, dict]:
     """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
-    facility_tax_rate}} - each value None when not set (see docs/job_category_
-    cost_index_overrides_schema.sql's job_category_facilities)."""
+    te_rig_tier_basic, te_rig_tier_advanced, facility_tax_rate}} - each value
+    None when not set (see docs/job_category_cost_index_overrides_schema.sql's
+    job_category_facilities)."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate "
-            "FROM job_category_facilities"
+            "SELECT category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate, "
+            "te_rig_tier_basic, te_rig_tier_advanced FROM job_category_facilities"
         ).fetchall()
     return {
         r[0]: {"structure_type": r[1], "rig_tier_basic": r[2], "rig_tier_advanced": r[3],
-               "facility_tax_rate": r[4]}
+               "facility_tax_rate": r[4], "te_rig_tier_basic": r[5], "te_rig_tier_advanced": r[6]}
         for r in rows
     }
 
 
 def upsert_category_facility(category: str, structure_type: Optional[str],
                              rig_tier_basic: Optional[str], rig_tier_advanced: Optional[str],
-                             facility_tax_rate: Optional[float] = None) -> None:
+                             facility_tax_rate: Optional[float] = None,
+                             te_rig_tier_basic: Optional[str] = None,
+                             te_rig_tier_advanced: Optional[str] = None) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO job_category_facilities "
-            "(category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate) "
-            "VALUES (?,?,?,?,?) ON CONFLICT(tenant_id, category) DO UPDATE SET "
+            "(category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate, "
+            "te_rig_tier_basic, te_rig_tier_advanced) "
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(tenant_id, category) DO UPDATE SET "
             "structure_type=excluded.structure_type, rig_tier_basic=excluded.rig_tier_basic, "
-            "rig_tier_advanced=excluded.rig_tier_advanced, facility_tax_rate=excluded.facility_tax_rate",
-            (category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate),
+            "rig_tier_advanced=excluded.rig_tier_advanced, facility_tax_rate=excluded.facility_tax_rate, "
+            "te_rig_tier_basic=excluded.te_rig_tier_basic, te_rig_tier_advanced=excluded.te_rig_tier_advanced",
+            (category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate,
+             te_rig_tier_basic, te_rig_tier_advanced),
         )
 
 
