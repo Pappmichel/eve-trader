@@ -115,7 +115,7 @@ def test_thukker_uses_its_own_security_table(facilities, security, expected):
     assert resolved["security_multiplier"] == expected
     _, me_mult, te_mult = _mults(resolved)
     structure = STRUCTURE_TYPES[RAITARU]
-    assert me_mult == pytest.approx(structure.me_multiplier * (1 - 0.037 * expected))
+    assert me_mult == pytest.approx(structure.me_multiplier * (1 - 0.02 * expected))
     assert te_mult == pytest.approx(structure.te_multiplier)  # the Thukker rig has no time bonus
 
 

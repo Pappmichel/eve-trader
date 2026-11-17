@@ -240,23 +240,23 @@ RIG_TIERS: dict[str, RigTier] = {
     "No Rig": RigTier(0.0, 0.0),
     "T1-Rig": RigTier(0.02, 0.20),
     "T2-Rig": RigTier(0.024, 0.24),
-    # Thukker material-efficiency rigs (type 45640 and siblings): -3.7 % ME,
-    # no time bonus, and their own security table - 0.1x in high sec, 1.9x in
-    # low sec, 0.1x in null sec/wormholes, so they only pay off in low sec.
-    # TAKEN FROM AN EXTERNAL REVIEW, TO BE CHECKED AGAINST THE SDE: whether
-    # -3.7 % is the base value or already security-scaled, and which job
-    # categories the rig exists for, could not be confirmed from repository
-    # data. Never offered for reactions (THUKKER_FORBIDDEN_CATEGORIES).
-    "Thukker": RigTier(0.037, 0.0, security=(0.1, 1.9, 0.1)),
+    # Thukker material-efficiency rigs (type 45640 and siblings). SDE dogma:
+    # attributeEngRigMatBonus -2.0 (the same base as a T1 rig) with their own
+    # security table hiSecModifier 0.1, lowSecModifier 1.9, nullSecModifier 0.1,
+    # so -3.8 % in low sec and -0.2 % elsewhere. The SDE also lists
+    # attributeThukkerEngRigMatBonus -3.7, whose effect is not confirmed; it is
+    # not applied. Some large Thukker rigs also carry a time bonus (45641:
+    # attributeEngRigTimeBonus -20); the tier models the material rig only.
+    # Never offered for reactions (THUKKER_FORBIDDEN_CATEGORIES).
+    "Thukker": RigTier(0.02, 0.0, security=(0.1, 1.9, 0.1)),
 }
 
 THUKKER_TIER = "Thukker"
 THUKKER_FORBIDDEN_CATEGORIES = frozenset({"Reactions"})
 
 # Invention cost rigs (Standup invention cost rigs, attributeEngRigCostBonus
-# -10 % / -12 %, types 43878, 43879, 43890, 43891). TAKEN FROM AN EXTERNAL
-# REVIEW, TO BE CHECKED AGAINST THE SDE (base vs. scaled value). They scale
-# with the standard Engineering Complex security table. Kept apart from
+# -10 % / -12 %, types 43878, 43879, 43890, 43891; checked against the SDE:
+# base values, with the standard security table hi 1.0 / low 1.9 / null 2.1). Kept apart from
 # RIG_TIERS so the per-category dropdowns never offer them.
 INVENTION_RIG_TIERS: dict[str, RigTier] = {
     "No Rig": RigTier(0.0, 0.0),
