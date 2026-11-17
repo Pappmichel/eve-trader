@@ -4,6 +4,7 @@ import { Button, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Text } fr
 
 import { hubsApi } from '../api/client'
 import { useAction } from '../hooks/useAction'
+import { useTradeHubs } from '../hooks/useTradeHubs'
 import { ALL_HUBS, hubSelectData } from '../tradingHubs'
 
 interface Props {
@@ -17,13 +18,14 @@ interface Props {
 }
 
 // One market-hub dropdown shared by the per-tool Settings pages (GitHub issue
-// #222). A stored region id that isn't one of TRADE_HUBS stays selectable as
+// #222). A stored region id that isn't one of the hub list stays selectable as
 // a "Custom" option instead of silently snapping to Jita. With "All hubs"
 // picked, the shared per-hub freight table is shown right below it.
 export function HubSelect({ label, description, value, onChange, allowAll = false }: Props) {
+  const { data: tradeHubs } = useTradeHubs()
   return (
     <Stack gap="xs">
-      <Select label={label} description={description} data={hubSelectData(value, allowAll)} value={String(value)}
+      <Select label={label} description={description} data={hubSelectData(tradeHubs, value, allowAll)} value={String(value)}
         onChange={(v) => v !== null && onChange(Number(v))} allowDeselect={false} />
       {allowAll && value === ALL_HUBS && <HubFreightTable />}
     </Stack>

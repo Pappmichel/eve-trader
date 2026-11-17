@@ -7,6 +7,7 @@ import OreSettings from './OreSettings'
 import { refiningApi } from '../../api/client'
 
 vi.mock('../../api/client', () => ({
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
   refiningApi: {
     settings: vi.fn(),
     settingsOptions: vi.fn(),

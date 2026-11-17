@@ -2788,3 +2788,12 @@ def test_category_facilities_list_and_clear(monkeypatch):
     monkeypatch.setattr(production_actions, "do_clear_category_facility", lambda category: {"category": category})
     assert client.get("/api/production/logistics/facilities").json() == {"categories": []}
     assert client.delete("/api/production/logistics/facilities/Large Ships").json() == {"category": "Large Ships"}
+
+
+def test_hub_list_route_returns_the_four_hubs_with_systems():
+    resp = client.get("/api/hubs")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["name"] for r in rows] == ["Jita", "Amarr", "Dodixie", "Rens"]
+    assert [r["solar_system_id"] for r in rows] == [30000142, 30002187, 30002659, 30002510]
+    assert all(r["label"] and r["station_id"] for r in rows)

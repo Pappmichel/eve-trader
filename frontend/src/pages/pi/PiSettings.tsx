@@ -7,6 +7,7 @@ import type { PiSettings as PiSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
 import { hubSelectData } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 import { CC_OPTIONS, QueryError, ZONE_OPTIONS } from './common'
 
 type NumKey = {
@@ -17,6 +18,7 @@ export default function PiSettings() {
   const { data, error } = useQuery({ queryKey: ['pi', 'settings'], queryFn: piApi.settings })
   const { data: chars, error: charsError } = useQuery({ queryKey: ['pi', 'characters'], queryFn: piApi.characters })
   const { data: meta } = useQuery({ queryKey: ['pi', 'meta'], queryFn: piApi.meta })
+  const { data: tradeHubs } = useTradeHubs()
   const [form, setForm] = useState<PiSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
   const save = useAction('Save Settings', (s: PiSettingsT) => piApi.updateSettings(s), [
@@ -47,7 +49,7 @@ export default function PiSettings() {
         description="Where PI commodities are priced (independent of the other tools). PI's own freight rate below applies to every choice."
         value={form.pi_price_structure_id > 0 ? `structure:${form.pi_price_structure_id}` : `hub:${form.hub_region_id}`}
         data={[
-          { group: 'Trade hubs', items: hubSelectData(form.hub_region_id, true).map((o) => ({ value: `hub:${o.value}`, label: o.label })) },
+          { group: 'Trade hubs', items: hubSelectData(tradeHubs, form.hub_region_id, true).map((o) => ({ value: `hub:${o.value}`, label: o.label })) },
           ...((meta?.price_structures ?? []).length > 0 ? [{
             group: 'Player structures',
             items: (meta?.price_structures ?? []).map((s) => ({ value: `structure:${s.structure_id}`, label: s.name })),

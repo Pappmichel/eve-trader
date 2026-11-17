@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HubSelect } from './HubSelect'
 import { hubsApi } from '../api/client'
 
-vi.mock('../api/client', () => ({ hubsApi: { freight: vi.fn(), updateFreight: vi.fn() } }))
+vi.mock('../api/client', () => ({ hubsApi: { list: async () => (await import('../testHubs')).TEST_HUBS, freight: vi.fn(), updateFreight: vi.fn() } }))
 
 function renderSelect(value: number, allowAll: boolean, onChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -42,6 +42,17 @@ describe('HubSelect', () => {
     renderSelect(10000002, false)
     await userEvent.click(screen.getByRole('combobox', { name: 'Market hub' }))
     expect(screen.queryByRole('option', { name: 'All hubs (best per item)' })).toBeNull()
+  })
+
+  it('shows a custom region as "Region n" while the hub list loads, then as Custom', async () => {
+    renderSelect(10000016, false)
+    expect(screen.getByDisplayValue('Region 10000016')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Custom (region 10000016)')).toBeInTheDocument()
+  })
+
+  it('shows a listed hub by its label once the list has loaded', async () => {
+    renderSelect(10000043, false)
+    expect(await screen.findByDisplayValue('Amarr (Domain)')).toBeInTheDocument()
   })
 
   it('shows and saves the shared freight table in All hubs mode', async () => {

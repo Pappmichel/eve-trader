@@ -7,6 +7,7 @@ import TradingSettings from './TradingSettings'
 import { tradingApi, productionApi } from '../../api/client'
 
 vi.mock('../../api/client', () => ({
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
   tradingApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),
@@ -50,8 +51,8 @@ describe('TradingSettings buy hub labels', () => {
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
     renderPage()
 
-    expect(await screen.findByLabelText(/Buyer name \(Amarr\)/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Freight cost Amarr→structure/)).toBeInTheDocument()
+    expect(await screen.findByLabelText(/Buyer name \(Amarr\)/, {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByLabelText(/Freight cost Amarr→structure/)).toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Buy hub' })).not.toBeInTheDocument()
   })
 })

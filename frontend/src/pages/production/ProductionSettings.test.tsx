@@ -9,6 +9,7 @@ import type { ObservedSellFees, ProductionSettings as ProductionSettingsT } from
 import ProductionSettings from './ProductionSettings'
 
 vi.mock('../../api/client', () => ({
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
   productionApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),

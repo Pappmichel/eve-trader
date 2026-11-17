@@ -12,6 +12,7 @@ import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
 import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
@@ -20,6 +21,7 @@ export default function TradingSettings() {
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
+  const { data: tradeHubs } = useTradeHubs()
   const save = useAction('Save Settings', tradingApi.updateSettings, [['trading', 'settings']])
 
   // Confirmed real gap: a bare `return null` here rendered a totally blank
@@ -40,7 +42,7 @@ export default function TradingSettings() {
         Freight and fee rates change with the market/carrier - adjust here if import/sale numbers suddenly look unrealistic.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label={`Freight cost ${hubLabel(form.jita_region_id)}→structure (ISK/m³)`}
+        <NumberInput label={`Freight cost ${hubLabel(tradeHubs, form.jita_region_id)}→structure (ISK/m³)`}
           value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
         <Stack gap={4}>
@@ -98,7 +100,7 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Regions &amp; Structure</Title>
       <Text size="xs" c="dimmed">
-        Only change if your trading location shifts entirely. The buy hub ({hubLabel(form.jita_region_id)}) is
+        Only change if your trading location shifts entirely. The buy hub ({hubLabel(tradeHubs, form.jita_region_id)}) is
         picked on the Shortlist page.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
@@ -116,7 +118,7 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <TextInput label={`Buyer name (${hubLabel(form.jita_region_id)})`} value={form.buyer_character_name ?? ''} autoComplete="off"
+        <TextInput label={`Buyer name (${hubLabel(tradeHubs, form.jita_region_id)})`} value={form.buyer_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('buyer_character_name', e.currentTarget.value)} />
         <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('seller_character_name', e.currentTarget.value)} />

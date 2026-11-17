@@ -23,6 +23,13 @@ class HubFreightRow(BaseModel):
     freight_cost_per_m3: Optional[float] = None
 
 
+@router.get("")
+def list_hubs():
+    """The four trade hubs (region, name, label, system, main station) - the
+    one list the pickers and labels read. Static, tenant-independent."""
+    return hubs.do_list_hubs()
+
+
 @router.get("/freight")
 def get_hub_freight():
     return hubs.do_get_hub_freight()
