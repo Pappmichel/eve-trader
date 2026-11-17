@@ -969,7 +969,11 @@ widens the alert type CHECK constraints).
 - **Economics** (`pi/economics.py`): customs = (high-sec NPC 10% - 1% per
   Customs Code Expertise) + owner rate, import x0.5; PI has its own freight
   rate - `hubs.hub_pricing(freight_override=...)`, never the shared hub ->
-  home-structure table. Verdict reasons are a fixed vocabulary.
+  home-structure table. With "All hubs" inputs are bought at the cheapest hub
+  (`hub_pricing`) but outputs are valued at the hub with the highest net
+  revenue for `pi_valuation` (`economics.best_output_hubs`, `Prices.output_*`);
+  the planner response names each import's and export's hub. Verdict reasons
+  are a fixed vocabulary.
 - **Layouts** (`pi/layout/`): `template_io` round-trips EVE templates byte
   for byte (alphabetical keys, La/Lo/Diam floats; pin `S` = product type id,
   `H` = head count, no Command Center pin). Templates are serialized only in

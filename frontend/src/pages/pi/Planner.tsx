@@ -179,6 +179,11 @@ export default function Planner() {
 
   const ev = result?.evaluation
   const eco = result?.economics
+  // With "All hubs" an import is bought at the cheapest hub and an export
+  // valued at the hub paying the most, so each row names its hub.
+  const hubs = result && result.assumptions.market_label === 'the best hub per item'
+    ? Object.fromEntries(Object.entries(result.prices).map(([t, p]) => [t, p.hub ?? null]))
+    : undefined
 
   return (
     <Stack>
@@ -316,8 +321,8 @@ export default function Planner() {
           <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }}>
             <RatesTable title="Extracted" rates={ev.extracted} />
             <RatesTable title="Produced" rates={ev.produced} />
-            <RatesTable title="Imports" rates={ev.imports} />
-            <RatesTable title="Exports" rates={ev.exports} />
+            <RatesTable title={hubs ? 'Imports (bought at)' : 'Imports'} rates={ev.imports} hubs={hubs} />
+            <RatesTable title={hubs ? 'Exports (sold at)' : 'Exports'} rates={ev.exports} hubs={hubs} />
           </SimpleGrid>
           {ev.notes.map((n, i) => <Text key={i} size="sm" c="dimmed">{n}</Text>)}
 
