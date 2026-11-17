@@ -651,6 +651,8 @@ def _security_status_for(structure_profile: str, cfg: ProductionConfig) -> Optio
     invention structure's system. Read from the local SDE cache (static
     data), not ESI."""
     if structure_profile == "invention":
+        if cfg.invention_rig_tier == "No Rig":
+            return None  # nothing to scale; skip the system lookup
         system_id = invention._invention_system_id(cfg)
     elif structure_profile in ("reaction", "component"):
         system_id = cfg.component_system_id
