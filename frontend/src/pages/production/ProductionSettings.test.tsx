@@ -119,7 +119,8 @@ describe('ProductionSettings rig sheet link', () => {
   it('saves the link as its own field', async () => {
     setup(FEES)
     const field = await screen.findByLabelText('Rig sheet link')
-    await userEvent.type(field, 'https://docs.google.com/spreadsheets/d/FAKESHEETID0000000001/edit')
+    await userEvent.click(field)
+    await userEvent.paste('https://docs.google.com/spreadsheets/d/FAKESHEETID0000000001/edit')
     await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
     await waitFor(() => expect(productionApi.updateSettings).toHaveBeenCalledTimes(1))
     expect(vi.mocked(productionApi.updateSettings).mock.calls[0][0]).toEqual({
