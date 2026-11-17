@@ -2057,8 +2057,10 @@ tier uses 0.1 / 1.9 / 0.1 and has no TE bonus, never offered for reactions), and
 per-category dropdowns) is resolved by `facility_resolution(None, "Invention",
 "invention", cfg)` with the invention system's security and only lowers the
 modelled invention/copy fee in `invention.fee_rates`; an observed total rate
-stays authoritative. The Thukker and invention-rig values come from an external
-review and are marked in `constants.py` as still to be checked against the SDE.
+stays authoritative. Rig values follow the SDE dogma: the Thukker material rig
+is the T1 base (2 %) scaled by its own table (so 3.8 % in low sec); its extra
+`attributeThukkerEngRigMatBonus` (-3.7) is not applied until its effect is
+confirmed. Invention cost rigs are -10 % / -12 % with the standard table.
 
 **Facility tax is observed, never bound to a station or category (confirmed
 with the user 2026-11-07).** A structure owner changes the rate at any time, so
