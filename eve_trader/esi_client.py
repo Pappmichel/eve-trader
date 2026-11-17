@@ -2150,25 +2150,71 @@ class ESIClient:
         return out
 
 
-def _summarize_orders(orders: list[dict]) -> OrderStats:
+# Module-level switch for the one comparison script that wants the old
+# count-based rule. Not a setting and not read from config.
+PERCENTILE_BY_VOLUME = True
+
+
+def _summarize_orders(orders: list[dict], by_volume: Optional[bool] = None) -> OrderStats:
     """percentile = 5th percentile sell price / 95th percentile buy price (a
     robust proxy for "realistic" best price, ignoring outlier orders), volume
     = sum of volume_remain across all orders on that side.
+
+    The percentile is weighted by volume_remain: the price of the first order
+    (best price first) at which the cumulative listed volume reaches 5% of the
+    side's volume, so one tiny order cannot set the price of a deep book.
+    `by_volume=False` (or PERCENTILE_BY_VOLUME = False) gives the old rule
+    that counts orders instead, kept for before/after comparisons.
     """
-    sells = sorted((o["price"] for o in orders if not o["is_buy_order"]))
-    buys = sorted((o["price"] for o in orders if o["is_buy_order"]), reverse=True)
-    sell_vol = sum(o["volume_remain"] for o in orders if not o["is_buy_order"])
-    buy_vol = sum(o["volume_remain"] for o in orders if o["is_buy_order"])
+    if by_volume is None:
+        by_volume = PERCENTILE_BY_VOLUME
+    sell_orders = [o for o in orders if not o["is_buy_order"]]
+    buy_orders = [o for o in orders if o["is_buy_order"]]
+    sell_vol = sum(o["volume_remain"] for o in sell_orders)
+    buy_vol = sum(o["volume_remain"] for o in buy_orders)
+    if by_volume:
+        sell_p = _volume_percentile(sell_orders, 0.05, descending=False)
+        buy_p = _volume_percentile(buy_orders, 0.05, descending=True)
+    else:
+        sell_p = _percentile(sorted(o["price"] for o in sell_orders), 0.05)
+        buy_p = _percentile(sorted((o["price"] for o in buy_orders), reverse=True), 0.05)
     return OrderStats(
-        sell_percentile=_percentile(sells, 0.05),
+        sell_percentile=sell_p,
         sell_volume=sell_vol,
-        buy_percentile=_percentile(buys, 0.05),
+        buy_percentile=buy_p,
         buy_volume=buy_vol,
     )
 
 
+def _summarize_orders_by_count(orders: list[dict]) -> OrderStats:
+    """The previous, order-count based rule under its own name (comparison
+    scripts and tests)."""
+    return _summarize_orders(orders, by_volume=False)
+
+
+def _volume_percentile(side_orders: list[dict], pct: float, descending: bool) -> Optional[float]:
+    """Price of the first order, walking from the best price (lowest for
+    sells, highest for buys), where the cumulative volume_remain reaches `pct`
+    of the side's total volume. Empty side -> None. A side whose orders all
+    report zero volume falls back to the count-based rule."""
+    if not side_orders:
+        return None
+    ordered = sorted(side_orders, key=lambda o: o["price"], reverse=descending)
+    total = sum(o["volume_remain"] for o in ordered)
+    if total <= 0:
+        return _percentile([o["price"] for o in ordered], pct)
+    threshold = total * pct
+    cumulative = 0.0
+    for o in ordered:
+        cumulative += o["volume_remain"]
+        if cumulative >= threshold:
+            return o["price"]
+    return ordered[-1]["price"]
+
+
 def _percentile(sorted_values: list[float], pct: float) -> Optional[float]:
-    """`sorted_values` must already be sorted ascending (both call sites in
+    """Count-based percentile (the previous rule; `_summarize_orders(by_volume=
+    False)`). `sorted_values` must already be in best-first order (both call sites in
     _summarize_orders sort before calling) - not re-sorted here since both
     callers already have the sort order they need for their own side (sells
     ascending for a low percentile, buys descending so the same `pct` picks
