@@ -113,6 +113,60 @@ def tenant_import_tokens(tenant_id: str | None, path: str | None):
     click.echo(f"Imported {count} token(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
 
 
+def _echo_counts(counts: dict) -> None:
+    for key, value in counts.items():
+        click.echo(f"{key}: {value}")
+
+
+@tenant.command("encrypt-tokens")
+@click.option("--check", is_flag=True, help="Only count plaintext rows; exit 1 if any exist.")
+def tenant_encrypt_tokens(check: bool):
+    """Encrypts plaintext stored SSO tokens of every tenant with
+    TOKEN_ENCRYPTION_KEY. Idempotent; run with the service stopped (deploy.sh
+    does). Prints counts only."""
+    from . import token_crypto, token_maintenance
+    try:
+        counts = token_maintenance.encrypt_tokens(check_only=check)
+    except token_crypto.TokenCryptoError as exc:
+        raise click.ClickException(str(exc))
+    _echo_counts(counts)
+    if check and counts["plaintext"]:
+        raise SystemExit(1)
+
+
+@tenant.command("rotate-token-key")
+def tenant_rotate_token_key():
+    """Re-encrypts every stored token with the first key of
+    TOKEN_ENCRYPTION_KEY (put the new key first, keep the old one until this
+    has run). Prints counts only."""
+    from . import token_crypto, token_maintenance
+    try:
+        counts = token_maintenance.rotate_token_key()
+    except token_crypto.TokenCryptoError as exc:
+        raise click.ClickException(str(exc))
+    _echo_counts(counts)
+
+
+@tenant.command("decrypt-tokens")
+@click.option("--write-plaintext", is_flag=True,
+              help="Required. Writes plaintext token rows back; only for rolling back to older code.")
+def tenant_decrypt_tokens(write_plaintext: bool):
+    """Emergency rollback step: turns encrypted token rows back into plaintext
+    so a release from before token encryption can read them. Leaves refresh
+    tokens readable in the database and in every later backup."""
+    from . import token_crypto, token_maintenance
+    if not write_plaintext:
+        raise click.ClickException(
+            "Refusing to write plaintext tokens. Pass --write-plaintext if you really are "
+            "rolling back to code from before token encryption."
+        )
+    try:
+        counts = token_maintenance.decrypt_tokens_to_plaintext()
+    except token_crypto.TokenCryptoError as exc:
+        raise click.ClickException(str(exc))
+    _echo_counts(counts)
+
+
 @tenant.command("backfill-esi-sharing")
 @click.option("--tenant-id", default=None, help="Tenant to backfill (default: the fixed default tenant).")
 def tenant_backfill_esi_sharing(tenant_id: str | None):
@@ -986,6 +1040,24 @@ def admin_bootstrap(character_id: int, character_name: str | None, all_tools: bo
         f"created_tenant={result['created_tenant']} "
         f"already_had_admin={result['already_had_admin']}"
     )
+
+
+@admin_group.command("purge-tenant")
+@click.argument("tenant_id")
+@click.option("--confirm", "confirm_name", required=True,
+              help="The tenant's exact name. Deletes the orphaned tenant and all its data for good.")
+def admin_purge_tenant(tenant_id: str, confirm_name: str):
+    """Deletes a tenant that has no registered user, with all its data."""
+    from . import admin as admin_mod
+    from .actions import ActionError
+    storage.enable_long_running()
+    try:
+        result = admin_mod.do_purge_tenant(tenant_id, confirm_name)
+    except ActionError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Purged tenant {result['purged']}: {result['rows_deleted']} row(s) in "
+               f"{len(result['tables'])} table(s); tokens deleted {result['tokens_deleted']}, "
+               f"revoked {result['revoked']}, revoke failed {result['revoke_failed']}.")
 
 
 @admin_group.command("grant-defaults")

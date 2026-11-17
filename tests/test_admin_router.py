@@ -424,3 +424,40 @@ def test_list_error_groups_returns_groups(monkeypatch):
     resp = client.get("/api/admin/errors/groups")
     assert resp.status_code == 200
     assert resp.json()[0]["count"] == 4 and resp.json()[0]["tenant_count"] == 2
+
+
+def test_remove_user_returns_the_removal_summary(monkeypatch):
+    summary = {"removed": 42, "tokens_deleted": 2, "revoked": 1, "revoke_failed": 1,
+               "revoke_skipped": False, "discord_unlinked": True}
+    monkeypatch.setattr(admin, "do_remove_user", lambda **kw: summary)
+    assert client.delete("/api/admin/users/42").json() == summary
+
+
+def test_purge_routes_forward_tenant_and_confirmation(monkeypatch):
+    seen = {}
+    tid = "11111111-1111-1111-1111-111111111111"
+
+    def preview(**kw):
+        seen["preview"] = kw
+        return {"tenant_id": kw["tenant_id"], "name": "N", "tables": [], "total_rows": 0}
+
+    def purge(**kw):
+        seen["purge"] = kw
+        return {"purged": kw["tenant_id"]}
+
+    monkeypatch.setattr(admin, "do_purge_tenant_preview", preview)
+    monkeypatch.setattr(admin, "do_purge_tenant", purge)
+    assert client.get(f"/api/admin/tenants/{tid}/purge-preview").status_code == 200
+    assert client.post(f"/api/admin/tenants/{tid}/purge", json={"confirm_name": "N"}).status_code == 200
+    assert seen["purge"]["confirm_name"] == "N" and seen["purge"]["tenant_id"] == tid
+    assert client.post(f"/api/admin/tenants/{tid}/purge", json={"confirm_name": "x" * 101}).status_code == 422
+    assert client.get("/api/admin/tenants/not-a-uuid/purge-preview").status_code == 422
+
+
+def test_purge_refusal_is_a_400(monkeypatch):
+    def _raise(**kw):
+        raise ActionError("This tenant still has a registered user. Remove the user first.")
+    monkeypatch.setattr(admin, "do_purge_tenant", _raise)
+    resp = client.post("/api/admin/tenants/11111111-1111-1111-1111-111111111111/purge",
+                       json={"confirm_name": "N"})
+    assert resp.status_code == 400

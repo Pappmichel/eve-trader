@@ -59,6 +59,7 @@ def test_create_backup_produces_a_zip_with_dump_and_config(isolated_backup_dir):
         assert "eve_trader.dump" in names
         assert "config.yaml" in names
         assert "tokens.json" not in names  # never included anymore - TokenManager persists to Postgres now
+        assert not any(n == ".env" or n.endswith("/.env") for n in names)  # the token key never travels in a backup
 
         # Real bytes made it through the subprocess -> file -> zip path, not
         # an empty/corrupt placeholder.

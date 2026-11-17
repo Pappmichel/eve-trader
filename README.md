@@ -99,7 +99,7 @@ Get-Content docs\location_registry_schema.sql | docker exec -i eve-trader-pg psq
 
 `phase1_schema.sql` creates the `eve_trader_app` role **without a password**.
 After applying the schema, give it the password your `EVE_TRADER_PG_DSN` uses
-(for local dev, the value in `.env.example`; a real deployment needs a real
+(for local dev, the value in `.env.example`; `TOKEN_ENCRYPTION_KEY` is also required: generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`; a real deployment needs a real
 generated one, see `deploy/README.md`):
 
 ```bash

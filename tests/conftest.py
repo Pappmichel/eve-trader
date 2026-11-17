@@ -28,6 +28,9 @@ os.environ.setdefault(
     "host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=app_devpassword",
 )
 
+# Fixed key for the stored-token encryption (never a real key).
+os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "dGVzdC10b2tlbi1rZXktMDAwMDAwMDAwMDAwMDAwMDA=")
+
 import pytest
 
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
@@ -57,6 +60,14 @@ def _access_gate_test_mode(request, monkeypatch):
             monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
         return
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_token_key_cache():
+    from eve_trader import token_crypto
+    token_crypto.reset_key_cache()
+    yield
+    token_crypto.reset_key_cache()
 
 
 @pytest.fixture(autouse=True)

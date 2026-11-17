@@ -746,3 +746,35 @@ def import_tokens_file(tenant_id: str, path: Optional[Path] = None) -> int:
         for role, record in tokens.items():
             storage.save_tenant_token(role, asdict(record))
     return len(tokens)
+
+
+def revoke_refresh_tokens(refresh_tokens: list[str]) -> tuple[int, int]:
+    """Best-effort revocation of refresh tokens at SSO. Returns
+    `(revoked, failed)`. Never raises and never logs a token; the caller has
+    already deleted the local copies, so a failure here changes nothing
+    locally."""
+    revoked = failed = 0
+    for token in refresh_tokens:
+        if not token:
+            continue
+        try:
+            resp = requests.post(
+                OAUTH_CONFIG.revoke_url,
+                data={
+                    "token": token,
+                    "token_type_hint": "refresh_token",
+                    "client_id": OAUTH_CONFIG.client_id,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            _log.warning("token revoke request failed: %s", type(exc).__name__)
+            failed += 1
+            continue
+        if 200 <= resp.status_code < 300:
+            revoked += 1
+        else:
+            _log.warning("token revoke answered HTTP %s", resp.status_code)
+            failed += 1
+    return revoked, failed

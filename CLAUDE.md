@@ -479,10 +479,39 @@ function or table after that migration (all 5 of its phases are done).
   adding a user, there's no "assign to an existing tenant" flow anymore -
   `admin.do_create_tenant`/the standalone "Create Tenant" UI were removed
   for the same reason. `admin.do_remove_user` deliberately does *not*
-  delete the now-permanently-orphaned tenant or its data - it just
-  deregisters the character, leaving the tenant's data intact/recoverable
-  (matches this app's general preference for reversible over destructive
-  admin operations).
+  delete the now-permanently-orphaned tenant or its data - it deregisters
+  the character and leaves the tenant's data intact, with one deliberate
+  exception: the tenant's stored SSO tokens (every role, alts included) and its
+  Discord link are deleted at once (`storage.delete_all_tenant_tokens`,
+  `delete_alert_destination`), and the refresh tokens are then revoked at SSO
+  on a best-effort basis (`auth.revoke_refresh_tokens`; a failure is only
+  counted, the local deletion never waits for it, and an undecryptable row is
+  deleted without a revoke). The result carries `tokens_deleted`, `revoked`,
+  `revoke_failed`, `revoke_skipped`, `discord_unlinked`. A second, separate
+  exception to "reversible over destructive": `admin.do_purge_tenant`
+  (preview first, `GET/POST /api/admin/tenants/{id}/purge[-preview]`, CLI
+  `eve-trader admin purge-tenant ID --confirm NAME`) deletes an orphaned
+  tenant and all its rows for good. It is refused for the default tenant, the
+  acting admin's own tenant, a tenant with any registry entry (remove the user
+  first) and a wrong confirmation name. Tables come from the catalog (every
+  public base table with a `tenant_id` column), so new tables are covered
+  without a list; RLS tables go in one transaction, the unscoped ones and the
+  `tenants` row after it, so running it again finishes an interrupted purge.
+  Rolling backups keep the data until they rotate out.
+- **Stored SSO tokens are encrypted** (`eve_trader/token_crypto.py`, key list
+  `TOKEN_ENCRYPTION_KEY` in `.env`, first key encrypts, all decrypt). The
+  encryption happens inside `storage.save_tenant_token` /
+  `load_all_tenant_tokens`, so every caller is covered; the stored form is
+  `{"v": 1, "ct": ...}` and the ciphertext carries the tenant id and role, both
+  checked on read. It fails closed: no key, a bad key, a plaintext row or a
+  failed decryption raise `TokenCryptoError` (never skipped, never plaintext),
+  and that error is deliberately neither a dead owner nor a transient ESI
+  failure (no stale clear). The app refuses to start without a key and, outside
+  pytest, when any row is not decryptable (counts only in the log). Operator
+  commands: `eve-trader tenant encrypt-tokens [--check]`, `rotate-token-key`,
+  `decrypt-tokens --write-plaintext` (rollback only); `deploy.sh` stops the
+  service, encrypts and starts it. See `docs/RUNBOOK.md` section 5. Do not add a
+  `CHECK (record ? 'ct')` constraint while a rollback to older code is possible.
 - **Two Postgres roles, never conflate them.** `eve_trader_app`
   (`storage.PG_DSN`) is what the app itself connects as for every real
   query - `NOSUPERUSER NOBYPASSRLS`, so it can *never* accidentally see
@@ -1444,7 +1473,7 @@ deletes a tenant's newest run. Only the newest shortlist run is read.
 `eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/
 compressed format - restorable via `pg_restore`) of the whole Postgres
 database plus `config.yaml` into a timestamped `.zip` under `data/backups/`,
-pruning down to `MAX_BACKUPS` (14) automatically. `data/tokens.json` is
+pruning down to `MAX_BACKUPS` (14) automatically. Stored SSO tokens inside the dump are encrypted and the key (`TOKEN_ENCRYPTION_KEY`, `.env`) is never in the ZIP: keep it in a password manager, a restore needs it. `data/tokens.json` is
 **not** included - `TokenManager` persists to Postgres's `tenant_tokens`
 table now, so the live tokens are already inside the dump; a separate,
 possibly-stale file copy would be actively misleading on a restore. Shells

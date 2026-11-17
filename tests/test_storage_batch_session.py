@@ -136,7 +136,10 @@ def test_save_tenant_token_inside_a_batch_is_visible_to_other_connections_at_onc
         storage.save_tenant_token("producer:1", {"access_token": "new"})
         with storage.connect_own_transaction() as other:
             row = other.execute("SELECT record FROM tenant_tokens WHERE role = 'producer:1'").fetchone()
-        assert row == ({"access_token": "new"},)
+        # The row is stored encrypted; other connections read it back as the
+        # same record.
+        assert row is not None and "access_token" not in row[0] and "ct" in row[0]
+        assert storage.load_all_tenant_tokens()["producer:1"] == {"access_token": "new"}
 
 
 def test_save_tenant_token_survives_a_batch_rollback(tenant):

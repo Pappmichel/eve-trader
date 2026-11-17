@@ -93,7 +93,7 @@ owner). Then `sudo systemctl restart eve-trader`.
 | `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_SECRET` | `.env` and the Discord developer portal | Reset in the portal, update `.env`, restart. Discord alerts stop until the restart; linked accounts stay linked. |
 | Deploy key (read-only Git deploy key) | the repository's deploy-key settings and the server's SSH key | Create a new key pair on the server, add the public half as a read-only deploy key, remove the old one, test `git fetch`. Deploys fail while the keys do not match. |
 | Dynamic-DNS update token | the DNS provider and wherever the update job on the server stores it | Replace the token at the provider, then in the job. The host name stops resolving to the server after the next IP change if the two differ. |
-| Token-encryption key | _Reserved: this section is completed by the change that introduces encrypted token storage._ | |
+| `TOKEN_ENCRYPTION_KEY` | `.env` | See section 5 (Token key). Never replace the key without keeping the old one in the list until `rotate-token-key` has run. |
 
 After any rotation: `curl http://127.0.0.1:8000/api/health`, log in once, and
 open one page that calls ESI.
@@ -121,7 +121,7 @@ off. Details and options: `docs/OPERATOR_SECURITY.md`. Confirm with
 `data/backups/`, and the last 5 are kept. If that backup fails the deploy stops
 before the first migration. The schema files then run in one transaction.
 
-After the restart the script polls `GET /api/health`. On failure it prints the
+Before stopping anything the script checks that `TOKEN_ENCRYPTION_KEY` is in `.env`; it then stops the service, runs `eve-trader tenant encrypt-tokens` and starts the service (section 5). After the start the script polls `GET /api/health`. On failure it prints the
 last journal lines and the rollback command; nothing rolls back by itself.
 
 ```bash
@@ -141,3 +141,45 @@ code).
 Operator health detail (admin session): `GET /api/admin/health` returns the
 version, the age of the newest backup, the newest ESI sync and whether the
 scheduler thread is running.
+
+## 5. Token key
+
+Stored SSO tokens (`tenant_tokens.record`) are encrypted with Fernet keys from
+`TOKEN_ENCRYPTION_KEY` in `.env`. The key is never in the database, the
+repository or a backup ZIP, so a leaked dump or backup does not contain usable
+refresh tokens. It does not protect against someone who can read both the host
+and its `.env`.
+
+**Generate** (once per installation, on a trusted machine):
+`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Put the line in `.env`
+and store a copy in a password manager. The service refuses to start without a
+valid key, and also when any stored row is plaintext or cannot be decrypted;
+the log then names only row counts per tenant.
+
+**Rotate:**
+1. Generate a new key and set `TOKEN_ENCRYPTION_KEY=<new>,<old>` (new first).
+2. Restart, then `.venv/bin/eve-trader tenant rotate-token-key` (prints counts).
+3. Remove `<old>` from `.env` and restart. Keep the old key until step 2 reported
+   no rows left behind (`changed_meanwhile` 0).
+
+**Loss:** without the key the stored tokens are unreadable. Data is untouched;
+every user must authorize their characters again. Set a new key, then delete the
+unreadable rows (`DELETE FROM tenant_tokens` as the owner role) so the service
+starts, and ask users to log in again.
+
+**First deploy of encrypted storage:** put the key in `.env` first. `deploy.sh`
+stops the service, runs `eve-trader tenant encrypt-tokens`, then starts it. The
+pre-deploy backup taken before the schema step is the copy from before
+encryption.
+
+**Restore of an old backup:** after `pg_restore` (section 1) the tokens are in
+whatever form the backup had. Run `.venv/bin/eve-trader tenant encrypt-tokens
+--check`: exit code 0 means everything is encrypted; otherwise stop the service,
+run `eve-trader tenant encrypt-tokens`, start it. A backup written under a
+different key needs that key in `TOKEN_ENCRYPTION_KEY` (comma separated).
+
+**Rollback to code from before token encryption** (emergency only): the older
+code cannot read encrypted rows. With the service stopped and the key still in
+`.env`, run `.venv/bin/eve-trader tenant decrypt-tokens --write-plaintext`, then
+roll back. This leaves refresh tokens readable in the database and in every
+later backup; run `encrypt-tokens` again after moving forward.

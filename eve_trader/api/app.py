@@ -413,8 +413,22 @@ def fail_stale_pipeline_runs_on_startup() -> None:
             storage.fail_stale_pipeline_runs(stale_after_seconds=0)
 
 
+def verify_token_encryption_on_startup() -> None:
+    """The service refuses to start without a valid `TOKEN_ENCRYPTION_KEY`.
+    Outside pytest it also scans every tenant's token rows (same guard as the
+    warm-up threads: tests share a database)."""
+    from .. import token_crypto, token_maintenance
+    token_crypto.require_key()
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    token_maintenance.verify_stored_tokens()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Fail closed before serving anything: stored SSO tokens need a key, and
+    # outside tests every stored row must decrypt (only counts are reported).
+    verify_token_encryption_on_startup()
     _load_default_tenant_config()
     # Clear hung pipeline_runs left by a previous process before accepting
     # work. Skip under pytest: tests share a DB and may have their own

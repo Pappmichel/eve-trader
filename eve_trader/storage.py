@@ -48,6 +48,7 @@ import psycopg.conninfo
 from psycopg_pool import ConnectionPool
 from psycopg.types.json import Jsonb
 
+from . import token_crypto
 from .models import Candidate, NewCandidateResult, ShortlistItem, ShortlistRow
 
 # PG_DSN below reads EVE_TRADER_PG_DSN via os.getenv() at module-import
@@ -653,6 +654,97 @@ def list_tenants() -> list[tuple]:
     (`admin.do_list_tenants`)."""
     with connect_unscoped() as conn:
         return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
+
+
+_SAFE_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def tenant_data_tables() -> list[tuple[str, bool]]:
+    """`(table, row_level_security)` for every base table in the public schema
+    with a `tenant_id` column, found from the catalog so a table added later
+    is covered without a list to maintain. `tenants` itself is not included
+    (its key is the tenant id; purge deletes that row last)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT c.table_name, pc.relrowsecurity "
+            "FROM information_schema.columns c "
+            "JOIN information_schema.tables t ON t.table_schema = c.table_schema "
+            "  AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE' "
+            "JOIN pg_class pc ON pc.relname = c.table_name "
+            "  AND pc.relnamespace = 'public'::regnamespace "
+            "WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id' "
+            "AND c.table_name <> 'tenants' ORDER BY c.table_name"
+        ).fetchall()
+    out = []
+    for name, rls in rows:
+        if not _SAFE_TABLE_NAME.match(name):
+            raise RuntimeError("unexpected table name in catalog")
+        out.append((name, bool(rls)))
+    return out
+
+
+def count_tenant_rows(tenant_id: str) -> dict[str, int]:
+    """Rows per table (non-zero only) that belong to `tenant_id`."""
+    counts: dict[str, int] = {}
+    tables = tenant_data_tables()
+    with tenant_context(tenant_id):
+        with batch_session():
+            with connect() as conn:
+                for name, rls in tables:
+                    if rls:
+                        n = conn.execute(
+                            f'SELECT count(*) FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                        ).fetchone()[0]
+                        if n:
+                            counts[name] = n
+    with connect_unscoped() as conn:
+        for name, rls in tables:
+            if not rls:
+                n = conn.execute(
+                    f'SELECT count(*) FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                ).fetchone()[0]
+                if n:
+                    counts[name] = n
+    return counts
+
+
+def purge_tenant_rows(tenant_id: str) -> dict[str, int]:
+    """Deletes every row of `tenant_id` from every tenant table, then the
+    tenant row itself. RLS tables go in one transaction, the unscoped ones and
+    the `tenants` row after it, so an interrupted run is finished by running
+    it again. Returns rows deleted per table."""
+    deleted: dict[str, int] = {}
+    tables = tenant_data_tables()
+    with long_running():
+        with tenant_context(tenant_id):
+            with batch_session():
+                with connect() as conn:
+                    for name, rls in tables:
+                        if rls:
+                            n = conn.execute(
+                                f'DELETE FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                            ).rowcount
+                            if n:
+                                deleted[name] = n
+        with connect_unscoped() as conn:
+            for name, rls in tables:
+                if not rls:
+                    n = conn.execute(
+                        f'DELETE FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                    ).rowcount
+                    if n:
+                        deleted[name] = n
+            n = conn.execute("DELETE FROM tenants WHERE tenant_id = ?::uuid", (tenant_id,)).rowcount
+            if n:
+                deleted["tenants"] = n
+    return deleted
+
+
+def tenant_registry_entry_count(tenant_id: str) -> int:
+    with connect_unscoped() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM tenant_registry_entries WHERE tenant_id = ?::uuid", (tenant_id,)
+        ).fetchone()[0]
 
 
 def touch_tenant_active(tenant_id: str) -> None:
@@ -1324,7 +1416,9 @@ def load_tenant_settings(scope: str) -> dict:
 # -------------------------------------------------------------- tenant tokens
 def save_tenant_token(role: str, record: dict) -> None:
     """Upserts one OAuth token record (see auth.py's TokenRecord/asdict) for
-    `role` under the current tenant.
+    `role` under the current tenant. The row stores the record encrypted
+    (`token_crypto`); a missing key raises `TokenKeyError` before anything is
+    written.
 
     Commits on its own connection, never inside a caller's batch_session()
     (confirmed real incident 2026-10-03): a token refreshed during an ESI
@@ -1336,11 +1430,15 @@ def save_tenant_token(role: str, record: dict) -> None:
     only by idle_in_transaction_session_timeout after 5 minutes. A batch
     rollback also discarded the new record, and with it EVE's rotated
     refresh token."""
+    tenant_id = _tenant_id_var.get()
+    if tenant_id is None:
+        raise RuntimeError("save_tenant_token called with no current tenant set")
+    stored = token_crypto.encrypt_record(tenant_id, role, record)
     with connect_own_transaction() as conn:
         conn.execute(
             "INSERT INTO tenant_tokens (role, record) VALUES (?, ?) "
             "ON CONFLICT(tenant_id, role) DO UPDATE SET record = excluded.record",
-            (role, Jsonb(record)),
+            (role, Jsonb(stored)),
         )
 
 
@@ -1349,12 +1447,37 @@ def load_all_tenant_tokens() -> dict[str, dict]:
     tenant - TokenManager always operates on its whole store at once (same
     "read everything in one go" shape its old file-based _load() had), not
     a single role in isolation. Ordered by role so a later listing sees a
-    stable first-seen order."""
+    stable first-seen order.
+
+    Fails closed: a plaintext, undecryptable or misplaced row raises
+    `token_crypto.TokenCryptoError` instead of being skipped (a skipped token
+    looks like "never authorized" and the user's re-login would overwrite
+    the row)."""
+    rows = tenant_token_rows()
+    return {
+        role: token_crypto.decrypt_record(tenant_id, role, record)
+        for role, record, tenant_id in rows
+    }
+
+
+def tenant_token_rows() -> list[tuple[str, object, str]]:
+    """Raw `(role, stored_value, tenant_id)` rows of the current tenant, still
+    encrypted. For `token_maintenance` and load_all_tenant_tokens only."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT role, record FROM tenant_tokens ORDER BY role"
+            "SELECT role, record, tenant_id::text FROM tenant_tokens ORDER BY role"
         ).fetchall()
-    return {role: record for role, record in rows}
+    return [(role, record, tid) for role, record, tid in rows]
+
+
+def replace_tenant_token_row(role: str, old_value: object, new_value: dict) -> bool:
+    """Swaps one stored value only if the row still holds `old_value` (a
+    parallel refresh must not be overwritten). True when the row changed."""
+    with connect_own_transaction() as conn:
+        return conn.execute(
+            "UPDATE tenant_tokens SET record = ? WHERE role = ? AND record = ?",
+            (Jsonb(new_value), role, Jsonb(old_value)),
+        ).rowcount > 0
 
 
 def delete_tenant_token(role: str) -> None:
@@ -1362,6 +1485,14 @@ def delete_tenant_token(role: str) -> None:
     error, so callers never need to check existence first."""
     with connect() as conn:
         conn.execute("DELETE FROM tenant_tokens WHERE role = ?", (role,))
+
+
+def delete_all_tenant_tokens() -> int:
+    """Deletes every token row of the current tenant (committed on its own
+    connection so it is final before anything else happens). Returns the
+    number of rows removed."""
+    with connect_own_transaction() as conn:
+        return conn.execute("DELETE FROM tenant_tokens").rowcount
 
 
 # --------------------------------------------------------------------- writes
