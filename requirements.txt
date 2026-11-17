@@ -51,8 +51,8 @@ pandas==2.3.3
 psycopg==3.3.6
 psycopg-binary==3.3.6
 psycopg-pool==3.3.3
-pydantic==2.14.2
-pydantic_core==2.50.2
+pydantic==2.14.3
+pydantic_core==2.50.4
 pycparser==3.12
 PyJWT==2.15.1
 python-dateutil==3.0.0
