@@ -61,7 +61,7 @@ def tenant():
     """Tenant provisioning. `create`/`add-entry`/`list` now also have a web
     equivalent (the Admin tool, eve_trader/admin.py + api/routers/admin.py -
     reachable to characters with an explicit admin tool grant, see
-    access_gate.tools_for) - this CLI group stays useful for initial setup
+    access_gate.authorize_session_cookie) - this CLI group stays useful for initial setup
     before a server/session exists at all, and both paths call the exact same
     storage.py functions, so they can never drift apart. `import-tokens`/
     `migrate-sqlite` remain CLI-only - genuinely one-time, operator-run
@@ -128,7 +128,7 @@ def tenant_encrypt_tokens(check: bool):
     try:
         counts = token_maintenance.encrypt_tokens(check_only=check)
     except token_crypto.TokenCryptoError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     _echo_counts(counts)
     if check and counts["plaintext"]:
         raise SystemExit(1)
@@ -143,7 +143,7 @@ def tenant_rotate_token_key():
     try:
         counts = token_maintenance.rotate_token_key()
     except token_crypto.TokenCryptoError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     _echo_counts(counts)
 
 
@@ -163,7 +163,7 @@ def tenant_decrypt_tokens(write_plaintext: bool):
     try:
         counts = token_maintenance.decrypt_tokens_to_plaintext()
     except token_crypto.TokenCryptoError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     _echo_counts(counts)
 
 
@@ -1083,7 +1083,7 @@ def admin_purge_tenant(tenant_id: str, confirm_name: str):
     try:
         result = admin_mod.do_purge_tenant(tenant_id, confirm_name)
     except ActionError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     click.echo(f"Purged tenant {result['purged']}: {result['rows_deleted']} row(s) in "
                f"{len(result['tables'])} table(s); tokens deleted {result['tokens_deleted']}, "
                f"revoked {result['revoked']}, revoke failed {result['revoke_failed']}.")
@@ -1102,6 +1102,21 @@ def admin_grant_defaults(dry_run: bool):
                    f"({row['character_id']}): {', '.join(row['added'])}")
     click.echo(f"{len(result['changed'])} changed, {result['unchanged']} already complete"
                + (" (dry run)" if dry_run else ""))
+
+
+@admin_group.command("prune-settings")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="Delete the keys. Without it only the keys that would be deleted are listed.")
+def admin_prune_settings(apply_changes: bool):
+    """Remove stored Settings overrides (tenant_settings) whose key is no
+    longer a field of that scope's config class. Dry run by default; prints
+    key names only, never values."""
+    from . import admin as admin_mod
+    result = admin_mod.do_prune_settings(apply=apply_changes)
+    for row in result["changed"]:
+        click.echo(f"{'removed' if apply_changes else 'would remove'} {row['scope']}: "
+                   f"{', '.join(row['keys'])} (tenant {row['tenant_name']}, {row['tenant_id']})")
+    click.echo(f"{len(result['changed'])} scope(s) with unknown keys" + ("" if apply_changes else " (dry run)"))
 
 
 @main.group("assets")

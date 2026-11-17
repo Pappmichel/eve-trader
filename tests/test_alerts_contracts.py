@@ -110,7 +110,8 @@ def test_sold_out_only_when_a_sale_empties_a_fit(monkeypatch):
     ])
 
     sold = {1, 3, 5, 7}
-    assert engine.sold_out_fittings(sold, sold | {6}, NOW) == ["Typhoon DPS", "Scimitar"]
+    names = list(dict.fromkeys(engine.sold_out_by_contract(sold, sold | {6}, NOW).values()))
+    assert names == ["Typhoon DPS", "Scimitar"]
 
 
 def test_long_lists_are_cut():

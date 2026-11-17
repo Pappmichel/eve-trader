@@ -1,7 +1,6 @@
 """Location diagnostics (docs/LOCATION_RESOLUTION_PLAN.md phase 1)."""
 from __future__ import annotations
 
-import pytest
 
 from eve_trader import storage
 from eve_trader.locations import diagnostics as d

@@ -651,26 +651,6 @@ def _manual_only_priced(type_ids: set[int]) -> dict[int, float]:
     return {tid: manual[tid] for tid in type_ids if tid in manual}
 
 
-def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float, int, int]:
-    """`rows`: tuples of (type_id, quantity) - the *effective* quantity,
-    already resolved by the caller (see _blueprint_effective_quantity for
-    why load_owned_blueprints' raw quantity is not usable as-is). Unpriced
-    items are excluded from the total, not counted as 0 - same "explicit
-    gap over silent understatement" precedent as
-    production.engine.stock_value."""
-    value = 0.0
-    priced = 0
-    unpriced = 0
-    for type_id, quantity in rows:
-        price = prices.get(type_id)
-        if price is None:
-            unpriced += 1
-            continue
-        value += quantity * price
-        priced += 1
-    return value, priced, unpriced
-
-
 _BPC_CACHE_TTL_SECONDS = 6 * 3600
 _bpc_cache: dict[tuple, Optional[float]] = {}
 _bpc_cache_at: dict[str, float] = {}

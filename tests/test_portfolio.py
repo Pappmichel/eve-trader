@@ -454,14 +454,6 @@ def test_manual_only_priced_empty_type_ids_short_circuits(monkeypatch):
     assert portfolio._manual_only_priced(set()) == {}
 
 
-def test_value_and_gaps_excludes_unpriced_not_zeroed():
-    rows = [(34, 10), (35, 5)]
-    value, priced, unpriced = portfolio._value_and_gaps(rows, {34: 2.0})
-    assert value == 20.0
-    assert priced == 1
-    assert unpriced == 1
-
-
 def test_blueprint_effective_quantity_normalizes_sentinels():
     assert portfolio._blueprint_effective_quantity(-1) == 1   # BPO sentinel
     assert portfolio._blueprint_effective_quantity(-2) == 1   # BPC sentinel

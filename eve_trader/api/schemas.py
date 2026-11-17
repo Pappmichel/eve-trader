@@ -61,7 +61,7 @@ def check_bounded_json(value: Any, max_bytes: int, max_depth: int = JSON_MAX_DEP
     try:
         size = len(json.dumps(value, separators=(",", ":"), default=str))
     except (TypeError, ValueError, RecursionError):
-        raise ValueError("not valid JSON data")
+        raise ValueError("not valid JSON data") from None
     if size > max_bytes:
         raise ValueError(f"larger than {max_bytes} bytes")
     return value
@@ -1432,7 +1432,6 @@ class ModuleReprocessingSettings(_Base):
     min_margin_threshold: float
     ignore_thresholds: bool
     purchase_region_id: int
-    purchase_structure_id: Optional[int] = None
     input_hub_region_id: int = 10000002
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int

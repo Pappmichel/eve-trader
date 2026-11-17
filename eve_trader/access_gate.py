@@ -259,14 +259,3 @@ def set_session_cookie(response: "Response", character_id: int, character_name: 
 def clear_session_cookie(response: "Response") -> None:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
 
-
-def tools_for(tenant_id: str, character_id: int) -> Optional[list[str]]:
-    """Every tool_key `character_id` currently has for `tenant_id`, from the
-    same single DB read the middleware uses. Returns None when the character
-    is not registered to this tenant (distinct from [] = registered, no
-    grants). DB errors propagate — authorize_session_cookie catches them
-    and fails closed; callers that want the same must catch too."""
-    authz = storage.session_authorization(character_id, tenant_id)
-    if authz is None:
-        return None
-    return authz.tool_keys

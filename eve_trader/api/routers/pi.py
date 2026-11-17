@@ -2,7 +2,7 @@
 (do_*), same pattern as api/routers/refining.py - no business logic here."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 class PlannerBody(BaseModel):

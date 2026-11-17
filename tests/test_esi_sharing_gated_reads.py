@@ -23,7 +23,7 @@ from eve_trader.esi_data.access import AccessorError
 from eve_trader.own_orders import (
     _character_assets,
     fetch_buyer_already_covered,
-    fetch_seller_stock_without_order,
+    fetch_seller_stock_without_order_pooled,
 )
 from eve_trader.production import engine as production_engine
 
@@ -92,7 +92,7 @@ def test_unshared_character_assets_are_invisible_on_seller_unlisted_path(tenant)
     live = [{"type_id": TYPE_ID, "quantity": 100, "location_id": cfg.structure_id,
              "location_flag": "Hangar"}]
     client = AssetClient({BOB: live})
-    rows = fetch_seller_stock_without_order(BOB, "seller", client, {TYPE_ID}, cfg)
+    rows = fetch_seller_stock_without_order_pooled([(BOB, "seller")], client, {TYPE_ID}, cfg)
     assert rows == []
     assert client.asset_calls == []
 
@@ -114,7 +114,7 @@ def test_shared_character_with_empty_snapshot_live_fetches_assets(tenant):
     live = [{"type_id": TYPE_ID, "quantity": 100, "location_id": cfg.structure_id,
              "location_flag": "Hangar"}]
     client = AssetClient({ALICE: live})
-    rows = fetch_seller_stock_without_order(ALICE, "seller", client, {TYPE_ID}, cfg)
+    rows = fetch_seller_stock_without_order_pooled([(ALICE, "seller")], client, {TYPE_ID}, cfg)
     assert rows == [{"type_id": TYPE_ID, "asset_quantity": 100,
                      "sell_order_remaining": 0.0, "unlisted_quantity": 100.0}]
     assert client.asset_calls == [ALICE]

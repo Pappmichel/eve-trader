@@ -487,6 +487,20 @@ its own field. The boot load (`api/app.py` `_load_default_tenant_config`)
 applies all seven scopes (trading, production, doctrine, pi, refining,
 station_trading, module_reprocessing) for the default tenant.
 
+config.yaml is flat and every tenant config class reads it by field name, so
+one key can hit several classes (`hub_region_id` sets five hubs).
+`config.warn_yaml_key_collisions` logs one warning per such key at boot
+(class list: `config_scopes.tenant_config_classes()`, the one scope-to-class
+map; behaviour unchanged). The market slug fields (`structure_market_slug`,
+`home_market`, `pi_price_structure_slug`) are checked in
+`validate_config_overrides` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, empty/None
+allowed, case-sensitive) and quoted in the Goonmetrics URL; a stored invalid
+slug is ignored with a warning on tenant load, never a startup failure. A
+stored override key that is no longer a field is ignored and logged once per
+(scope, key) by `warn_unknown_override_keys` (names only); `eve-trader admin
+prune-settings` (dry run by default, `--apply`, per tenant via
+`enter_tenant`) removes them.
+
 If you add a new config field, it's automatically type-checked - no extra
 work needed unless it's an enum-style string field, in which case add it to
 `validate_production_overrides` (Production-specific checks stay out of the
@@ -1188,6 +1202,11 @@ streamed; it sits inside `RequestIdMiddleware` and outside
   in `deploy/deploy.sh`'s order - never the `eve_trader` dev database. A test
   must not depend on rows another test left behind (SDE tables, `lru_cache`d
   SDE lookups): xdist runs modules in any order on any worker.
+- Lint: `ruff check eve_trader tests deploy` (CI backend job, one matrix row;
+  version pinned in `requirements-dev.txt`, rules in `pyproject.toml`: `F` and
+  `B904` only, no style rules). Fix findings instead of adding `# noqa`; a
+  `noqa` needs a reason (e.g. a pytest fixture imported only for its name).
+  A `raise` inside `except` takes `from e` (or `from None`).
 - `tests/conftest.py` fails any test that sends a real HTTP request through
   `requests`; mock the ESI/Goonmetrics call instead.
 

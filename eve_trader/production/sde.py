@@ -540,6 +540,11 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         })
         fetched[filename] = _fetch_csv(session, base, filename)
     pi_type_ids = pi_type_ids_from(fetched["invTypes.csv"], fetched["invGroups.csv"])
+    # typeID -> metaGroupID (1=Tech I, 2=Tech II, 3=Storyline, 4=Faction,
+    # 5=Officer, 6=Deadspace, ...) - a separate CSV from invTypes.csv (only
+    # meta-variant types get a row at all), needed to tell a genuinely
+    # invented Tech II item apart from a Faction/Officer/Deadspace one that
+    # merely has an elevated metaLevel (see engine.classify_activity).
     meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in fetched["invMetaTypes.csv"]}
     equivalence_type_ids = sde_equivalence.candidate_type_ids(
         fetched["invTypes.csv"], fetched["invGroups.csv"], meta_group_by_type)
@@ -577,12 +582,6 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     inv_groups = fetched["invGroups.csv"]
     inv_categories = fetched["invCategories.csv"]
     inv_market_groups = fetched["invMarketGroups.csv"]
-    # typeID -> metaGroupID (1=Tech I, 2=Tech II, 3=Storyline, 4=Faction,
-    # 5=Officer, 6=Deadspace, ...) - a separate CSV from invTypes.csv (only
-    # meta-variant types get a row at all), needed to tell a genuinely
-    # invented Tech II item apart from a Faction/Officer/Deadspace one that
-    # merely has an elevated metaLevel (see engine.classify_activity).
-    inv_meta_types = fetched["invMetaTypes.csv"]
     activity_time = fetched["industryActivity.csv"]
     activity_materials = fetched["industryActivityMaterials.csv"]
     activity_products = fetched["industryActivityProducts.csv"]

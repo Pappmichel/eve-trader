@@ -33,7 +33,6 @@ chunk_size: 25
 # Purely informational (shown on the Settings page) - the real character used
 # for each role comes from whichever character you authorize via
 # `eve-trader auth --role buyer` / `--role seller`, not from these fields.
-# buyer_character_id: 123456789
 # buyer_character_name: "Your Buyer Toon"
 # seller_character_name: "Your Seller Toon"
 

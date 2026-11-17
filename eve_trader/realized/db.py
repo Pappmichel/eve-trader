@@ -129,22 +129,6 @@ def upsert_ledger_industry_jobs(rows: list[tuple]) -> int:
     return len(rows)
 
 
-def job_ids_already_archived(
-    owner_type: str, owner_id: int, job_ids: Iterable[int],
-) -> set[int]:
-    ids = [int(j) for j in job_ids]
-    if not ids:
-        return set()
-    placeholders = ",".join("?" * len(ids))
-    with storage.connect() as conn:
-        rows = conn.execute(
-            f"SELECT job_id FROM ledger_industry_jobs "
-            f"WHERE owner_type = ? AND owner_id = ? AND job_id IN ({placeholders})",
-            (owner_type, int(owner_id), *ids),
-        ).fetchall()
-    return {int(r[0]) for r in rows}
-
-
 def insert_ledger_job_inputs(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, job_id, type_id, quantity, blueprint_me,
     material_multiplier, decryptor_type_id, encryption_skill_level,
@@ -502,17 +486,6 @@ def list_ledger_job_inputs(
             "WHERE owner_type = ? AND owner_id = ? AND job_id = ? "
             "ORDER BY type_id",
             (owner_type, int(owner_id), int(job_id)),
-        ).fetchall()
-
-
-def list_archive_gaps(owner_type: str, owner_id: int) -> list[tuple]:
-    with storage.connect() as conn:
-        return conn.execute(
-            "SELECT data_kind, gap_start, gap_end, detected_at "
-            "FROM ledger_archive_gaps "
-            "WHERE owner_type = ? AND owner_id = ? "
-            "ORDER BY gap_start",
-            (owner_type, int(owner_id)),
         ).fetchall()
 
 
@@ -1157,19 +1130,6 @@ def outstanding_priced_contract_items(owners: list[tuple[str, int]]) -> list[tup
         (int(contract_id), int(type_id), float(quantity), None if price is None else float(price))
         for contract_id, type_id, quantity, price in rows
     ]
-
-
-def oldest_wallet_transaction_date(
-    owners: list[tuple[str, int]],
-) -> Optional[datetime]:
-    """Cutover T0 candidate: oldest archived wallet tx among these owners."""
-    where, params = _owner_in_clause(owners)
-    with storage.connect() as conn:
-        row = conn.execute(
-            f"SELECT MIN(date) FROM ledger_wallet_transactions WHERE {where}",
-            tuple(params),
-        ).fetchone()
-    return row[0] if row and row[0] is not None else None
 
 
 def list_cached_reference_prices(
@@ -2504,26 +2464,6 @@ def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
             f"WHERE {where} AND type = 'courier' "
             "ORDER BY contract_id, (volume IS NULL), date_issued NULLS LAST",
             tuple(params),
-        ).fetchall()
-
-
-def list_forge_home_couriers(
-    owners: list[tuple[str, int]], home_location_id: int,
-) -> list[tuple]:
-    """Finished courier contracts this tenant issued, from The Forge to the
-    home structure, deduped by contract_id.
-    (contract_id, date_completed, volume, reward)."""
-    if not owners:
-        return []
-    where, params = _owner_in_clause(owners)
-    with storage.connect() as conn:
-        return conn.execute(
-            "SELECT DISTINCT ON (contract_id) contract_id, date_completed, volume, reward "
-            "FROM ledger_contracts "
-            f"WHERE {where} AND type = 'courier' AND status = 'finished' "
-            "AND date_completed IS NOT NULL AND region_id = ? AND end_location_id = ? "
-            "ORDER BY contract_id, date_completed",
-            (*params, THE_FORGE_REGION_ID, int(home_location_id)),
         ).fetchall()
 
 

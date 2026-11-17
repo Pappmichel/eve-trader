@@ -19,11 +19,11 @@ from __future__ import annotations
 import contextvars
 import copy
 from dataclasses import dataclass
-from typing import Optional
 
 import yaml
 
 from .. import storage
+from ..config import warn_unknown_override_keys
 from ..config import (
     ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides,
 )
@@ -73,10 +73,6 @@ class ModuleReprocessingConfig:
     # optimizer are priced at - independent of purchase_region_id (modules)
     # and no longer TradingConfig.jita_region_id (#222). Default Jita.
     input_hub_region_id: int = JITA_REGION_ID
-    # Set to source from a specific player structure's own sell orders
-    # instead of the whole region's public order book - None (the default)
-    # means "region only", matching this tool's initial scope.
-    purchase_structure_id: Optional[int] = None
 
     # -- Shortlist auto-maintenance (candidate_discovery.discover_candidates) --
     # Same "off by default, user opts in" shape as TradingConfig's/
@@ -132,6 +128,7 @@ def resolve_and_set_module_reprocessing_config(tenant_id: str) -> contextvars.To
     cfg = load_module_reprocessing_config()
     overrides = storage.load_tenant_settings("module_reprocessing")
     if overrides:
+        warn_unknown_override_keys("module_reprocessing", ModuleReprocessingConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _module_reprocessing_config_var.set(cfg)
 

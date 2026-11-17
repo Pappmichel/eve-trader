@@ -10,8 +10,8 @@ from eve_trader import storage
 from . import pg_helpers
 from .pg_helpers import (
     _apply_admin_schema, _apply_esi_access_schema, _apply_phase1_schema,  # noqa: F401
-    _apply_phase2_schema, _apply_phase3_schema,
-    tenant, tenant_pair,
+    _apply_phase2_schema, _apply_phase3_schema,  # noqa: F401 - pytest fixtures
+    tenant, tenant_pair,  # noqa: F401 - pytest fixtures
 )
 
 psycopg = pytest.importorskip("psycopg")

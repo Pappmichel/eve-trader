@@ -211,7 +211,7 @@ class AggregatedStockpileRow:
 
 @dataclass
 class ShoppingListRow:
-    """engine.shopping_list_rows' output - one row per type_id with a real
+    """engine.shopping_list's output - one row per type_id with a real
     stockpile shortfall (across every doctrine), enriched with a Build-vs-
     Buy-C-J-vs-Buy-Jita comparison. build_cost/cj_price/jita_landed_price
     are always all populated when available, regardless of which one wins -

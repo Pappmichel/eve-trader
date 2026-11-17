@@ -18,18 +18,18 @@ from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
 from . import buyer_sources, equivalents, parser, ready_to_list, reserve, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
-from .constants import AMPEL_GRAY, EXACT_SECTIONS
+from .constants import AMPEL_GRAY
 from .models import (
     AggregatedStockpileRow, ContractItemRow, ContractRow, DeviationRow, Doctrine, DoctrineStatus, Fitting,
-    FittingItem, FittingStatus, ParsedFitting, ParsedIssue, ParsedItem, ParseIssue, ShoppingListRow, StockpileRow,
+    FittingItem, FittingStatus, ParsedFitting, ParsedIssue, ParsedItem, ShoppingListRow, StockpileRow,
 )
-from .parser import FittingParseError, ResolvedType
+from .parser import ResolvedType
 
 log = logging.getLogger("eve_trader.doctrine.engine")
 
 # Deliberate, confirmed exception to constants.py's own "no imports from
 # eve_trader.production" policy (see that module's docstring) - the
-# Shopping List's Build cost (shopping_list_rows below) reuses Production's
+# Shopping List's Build cost (shopping_list below) reuses Production's
 # real build-cost engine directly rather than a second, possibly-divergent
 # estimate, so a user's owned-BPO/ME/TE/structure config gives the exact
 # same number here as it would in the Production tool itself. Only pure,
@@ -245,11 +245,6 @@ def sold_out_by_contract(sold: set[int], unavailable: set[int], now: datetime) -
             continue
         available[key] += 1
     return {cid: sold_fittings[key] for cid, key in sold_keys.items() if not available[key]}
-
-
-def sold_out_fittings(sold: set[int], unavailable: set[int], now: datetime) -> list[str]:
-    """Names of the fittings a sale just emptied; see sold_out_by_contract."""
-    return list(dict.fromkeys(sold_out_by_contract(sold, unavailable, now).values()))
 
 
 def contract_doctrine_matches(contract_ids: set[int]) -> dict[int, str]:
@@ -603,7 +598,7 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
     into one row (GitHub issue #1) - "how much of X do I need in total"
     without manually adding up several StockpileRows. Summing
     required_total/available/shortfall across rows for the same type_id is
-    mathematically safe: validation.allocate_stockpile already partitions
+    mathematically safe: validation.allocate_stockpile_with_equivalents already partitions
     the physical stock across fittings by priority, so no row's `available`
     double-counts another's. severity is the worst among contributing rows
     (validation.worst_severity) - two fittings can legitimately disagree
@@ -679,7 +674,7 @@ def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[floa
     so that part is still read off PRODUCTION_CONFIG - no reason to
     duplicate it as a second Doctrine setting nobody asked for.
 
-    `home_stats`/`jita_stats` (shopping_list_rows' own live ESI order-book
+    `home_stats`/`jita_stats` (shopping_list's own live ESI order-book
     check, GitHub issue #10) gate each price on real listed sell volume, not
     just Goonmetrics' quote existing - confirmed real bug: Goonmetrics can
     return a nonzero "sell" price for a market with zero actual sell orders
@@ -705,10 +700,6 @@ def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[floa
     elif jita_quote and jita_quote.sell > 0 and (jita_stats is None or jita_stats.sell_volume > 0):
         jita_landed = jita_quote.sell * (1 + broker_fee) + cfg.import_cost_per_m3 * (volume or 0)
     return cj, jita_landed
-
-
-def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> list[ShoppingListRow]:
-    return shopping_list(doctrine_id, cfg)[0]
 
 
 def shopping_list(doctrine_id: Optional[str] = None,

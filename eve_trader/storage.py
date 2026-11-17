@@ -820,16 +820,6 @@ def set_tool_grant(character_id: int, tool_key: str, tenant_id: str) -> None:
         )
 
 
-def revoke_tool_grant(character_id: int, tool_key: str) -> None:
-    """Removes a single tool grant - no-op if it wasn't granted (matches
-    set_tool_grant's own "upsert, not error" symmetry)."""
-    with connect_unscoped() as conn:
-        conn.execute(
-            "DELETE FROM tool_grants WHERE character_id = ? AND tool_key = ?",
-            (character_id, tool_key),
-        )
-
-
 def revoke_all_tool_grants(character_id: int) -> None:
     """Removes every tool grant for `character_id` - called from
     admin.do_remove_user alongside remove_tenant_registry_entry.
@@ -1402,6 +1392,19 @@ def save_tenant_settings(scope: str, updates: dict) -> None:
             "INSERT INTO tenant_settings (scope, overrides) VALUES (?, ?) "
             "ON CONFLICT(tenant_id, scope) DO UPDATE SET overrides = tenant_settings.overrides || excluded.overrides",
             (scope, Jsonb(updates)),
+        )
+
+
+def remove_tenant_settings_keys(scope: str, keys: list[str]) -> None:
+    """Deletes `keys` from the current tenant's stored overrides for `scope`
+    (JSONB `-`), leaving every other key in place. A missing row or key is a
+    no-op."""
+    if not keys:
+        return
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tenant_settings SET overrides = overrides - ?::text[] WHERE scope = ?",
+            (list(keys), scope),
         )
 
 

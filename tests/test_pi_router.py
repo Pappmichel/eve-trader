@@ -3,7 +3,6 @@ actions are monkeypatched on the module object (CLAUDE.md testing
 conventions); no Postgres needed except for the grant test."""
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from eve_trader import storage

@@ -63,6 +63,11 @@ jobs:
       # only a -r include, which pip-audit would otherwise check as zero
       # packages.
       - run: python -m pip_audit -r requirements.txt
+      # One matrix row is enough: the result does not depend on OS or Python
+      # version. Rules and scope: pyproject.toml [tool.ruff.lint].
+      - name: Lint (ruff)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python -m ruff check eve_trader tests deploy
       - run: python -m pytest -n auto
 
   commit-messages:

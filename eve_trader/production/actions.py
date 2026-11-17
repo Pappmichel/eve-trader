@@ -24,7 +24,7 @@ from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_mer
 from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES, THUKKER_FORBIDDEN_CATEGORIES, THUKKER_TIER
 from .engine import (
     _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
-    asset_plan_ready_jobs, build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
+    asset_plan_ready_jobs, build_material_tree, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_excluded_locations_cache, invalidate_facility_cache,
     invalidate_ship_margin_cache, t1_bpc_invention_needs,
@@ -490,15 +490,6 @@ def do_recalculate_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG) ->
     return result
 
 
-def do_dynamic_target_history(type_id: int, days: int = 30) -> dict:
-    days = max(1, min(int(days), 90))
-    rows = storage.dynamic_value_history(type_id, days)
-    for row in rows:
-        row["day"] = row["day"].isoformat()
-        row["computed_at"] = row["computed_at"].isoformat() if row["computed_at"] else None
-    return {"type_id": type_id, "rows": rows}
-
-
 def do_preview_dynamic_targets(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Read-only dry run for every row with a home target, switch ignored
     (section 14.1): current vs. proposed with all inputs. Writes nothing."""
@@ -777,7 +768,7 @@ def do_set_category_cost_index_override(category: str, value: float) -> dict:
     2026-09-16) - see storage.upsert_category_cost_index_override and
     engine.py's _job_cost_rate for the priority this slots into (higher
     than the existing flat reaction_/component_/manufacturing_cost_index_
-    override fields, see do_set_cost_index_override above - not a
+    override fields (set through the Settings save) - not a
     replacement for those, an additional finer-grained layer). No cache to
     invalidate here, unlike do_set_category_location's location-cache
     dependency - _PlanContext reads this fresh on every plan/margin call,
@@ -791,10 +782,6 @@ def do_set_category_cost_index_override(category: str, value: float) -> dict:
 def do_clear_category_cost_index_override(category: str) -> dict:
     storage.delete_category_cost_index_override(category)
     return {"category": category}
-
-
-def do_list_category_cost_index_overrides() -> dict:
-    return {"overrides": storage.load_category_cost_index_overrides()}
 
 
 def do_add_category_location_option(category: str, location_id: int) -> dict:
@@ -999,8 +986,6 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 # net_against_stock replacing stock-target-driven netting).
 # Frozen semantics: docs/PRODUCTION_SEMANTICS.md (SF-1..SF-8). API and the
 # frontend must not call plan_special_order / _expand_all / _invention_need_row.
-
-_COST_INDEX_KINDS = ("reaction", "component", "manufacturing")
 
 # Callbacks registered by api/routers/production.py so special-order mutations
 # that change integrated demand can mark that router's in-process
@@ -1303,26 +1288,6 @@ def do_list_special_order_events(order_id: str | None = None) -> dict:
     }
 
 
-def do_set_cost_index_override(kind: str, value: float) -> dict:
-    """E.5: writes an existing ProductionConfig cost-index field via Settings."""
-    if kind not in _COST_INDEX_KINDS:
-        raise ActionError(f"Unknown cost-index kind {kind!r} - must be reaction, component, or manufacturing.")
-    return do_update_settings({f"{kind}_cost_index_override": value})
-
-
-def do_clear_cost_index_override(kind: str) -> dict:
-    if kind not in _COST_INDEX_KINDS:
-        raise ActionError(f"Unknown cost-index kind {kind!r} - must be reaction, component, or manufacturing.")
-    return do_update_settings({f"{kind}_cost_index_override": None})
-
-
-def do_list_cost_index_overrides() -> dict:
-    cfg = PRODUCTION_CONFIG
-    return {
-        "overrides": {kind: getattr(cfg, f"{kind}_cost_index_override") for kind in _COST_INDEX_KINDS}
-    }
-
-
 # GitHub issue #64 (found in a full-codebase audit 2026-08-21): the three
 # Logistics-tab reads used to call engine.py directly from
 # api/routers/production.py, bypassing this module - the only architectural
@@ -1462,23 +1427,6 @@ def do_get_build_candidates(top_n: int = 200) -> dict:
     completed yet for this tenant."""
     candidates = get_cached_discover_results(top_n=top_n) or []
     return {"rows": [BuildCandidate(**c) for c in candidates]}
-
-
-def do_compare_alchemy(product_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[dict]:
-    """Thin wrapper - see engine.compare_alchemy_profitability. Resolves
-    product_name via the same exact-match SDE lookup pattern used
-    elsewhere (see refining/reprocessing.py's resolve_type_id for the
-    pattern), raises ActionError if unresolvable."""
-    matches = storage.search_sde_types(product_name, limit=5)
-    type_id = None
-    for tid, type_name in matches:
-        if type_name.strip().lower() == product_name.strip().lower():
-            type_id = tid
-            break
-    if type_id is None:
-        raise ActionError(f"No exact SDE match for '{product_name}'.")
-    result = compare_alchemy_profitability(type_id, cfg)
-    return asdict(result) if result else None
 
 
 def do_get_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:

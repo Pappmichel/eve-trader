@@ -50,13 +50,13 @@ def test_validate_rejects_number_for_string_field():
 
 def test_validate_accepts_none_for_optional_field():
     cfg = TradingConfig()
-    validate_config_overrides(cfg, {"buyer_character_id": None})
+    validate_config_overrides(cfg, {"structure_market_slug": None})
 
 
 def test_validate_rejects_wrong_type_for_optional_field():
     cfg = TradingConfig()
-    with pytest.raises(ConfigError, match="buyer_character_id"):
-        validate_config_overrides(cfg, {"buyer_character_id": "not a number"})
+    with pytest.raises(ConfigError, match="structure_market_slug"):
+        validate_config_overrides(cfg, {"structure_market_slug": 12345})
 
 
 def test_validate_accepts_bool_field():

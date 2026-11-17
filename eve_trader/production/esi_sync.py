@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG

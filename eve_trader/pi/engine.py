@@ -76,28 +76,11 @@ def raw_inputs(static: StaticData, product: int, source_tier: int) -> list[int]:
     return sorted(raw)
 
 
-def balanced_factories(static: StaticData, product: int, source_tier: int, top_count: int) -> dict[int, int]:
-    """Factory counts per made type so that `top_count` factories of the
-    product never wait for an on-planet intermediate (rounded up)."""
-    made = made_types(static, product, source_tier)
-    counts: dict[int, int] = {product: top_count}
-    demand: dict[int, float] = {}
-    for t in reversed(made):  # highest tier first
-        s = static.schematic_by_output[t]
-        if t != product:
-            per_factory = s.output_qty * s.runs_per_hour
-            counts[t] = max(1, math.ceil(demand.get(t, 0.0) / per_factory - EPS)) if demand.get(t, 0.0) > 0 else 0
-        runs = counts[t] * s.runs_per_hour
-        for i, q in s.inputs:
-            demand[i] = demand.get(i, 0.0) + runs * q
-    return {t: n for t, n in counts.items() if n > 0}
-
-
 def factories_for_rate(static: StaticData, product: int, source_tier: int, rate: float,
                        made: Optional[frozenset] = None) -> dict[int, int]:
     """Factory counts to make `rate` units/h of the product, each stage
     rounded up to whole factories and sized to what the stage above really
-    needs. Unlike balanced_factories this allows a partly used top stage -
+    needs. A partly used top stage is allowed -
     real P1->P4 colonies run their High-Tech plant below capacity, since a
     fully fed one needs ~30 factories and never fits a Command Center."""
     tree = made_types(static, product, source_tier)

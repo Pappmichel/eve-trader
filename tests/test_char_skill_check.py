@@ -311,7 +311,7 @@ def test_the_route_needs_both_the_skills_and_the_doctrine_grant(monkeypatch, _ga
     storage.set_tool_grant(1, "char_skills", _TENANT)
     ok = _client.get("/api/char-skills/doctrine-check", params={"doctrine_id": "abc"}, cookies=_cookie())
     assert ok.status_code == 200 and seen == {"d": "abc"}
-    storage.revoke_tool_grant(1, "doctrine")
+    storage.replace_tool_grants(1, ["char_skills"], _TENANT)
     assert _client.get("/api/char-skills/doctrine-check", cookies=_cookie()).status_code == 403   # skills alone
 
 

@@ -23,9 +23,9 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except actions.ConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ------------------------------------------------------------------- reads
@@ -105,7 +105,7 @@ def get_history_sparklines(type_ids: str = ""):
     try:
         ids = sorted({int(t) for t in type_ids.split(",") if t.strip()})
     except ValueError:
-        raise HTTPException(status_code=400, detail="type_ids must be a comma-separated list of integers.")
+        raise HTTPException(status_code=400, detail="type_ids must be a comma-separated list of integers.") from None
     if len(ids) > SPARKLINE_MAX_IDS:
         raise HTTPException(status_code=400, detail=f"At most {SPARKLINE_MAX_IDS} type_ids per request.")
     since = (timeutil.utc_today() - timedelta(days=SPARKLINE_DAYS)).isoformat()

@@ -209,7 +209,7 @@ def test_middleware_allows_protected_routes_with_a_valid_session_when_enabled(
     # tenant_scope.enter_tenant (Phase 4) resolves this tenant's config via a
     # real Postgres query on every request now, not just storage's own
     # ambient tenant - this test genuinely needs Postgres reachable. A valid
-    # session alone isn't enough anymore (see access_gate.tools_for) - the
+    # session alone isn't enough anymore (see access_gate.authorize_session_cookie) - the
     # cookie's own character_id/tenant_id must also have a "trading" grant.
     _enable_gate(monkeypatch)
     _provision(tools=("trading",))

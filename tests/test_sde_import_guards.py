@@ -2,7 +2,6 @@
 daily freshness check job."""
 from __future__ import annotations
 
-import datetime as dt
 
 import pytest
 import requests

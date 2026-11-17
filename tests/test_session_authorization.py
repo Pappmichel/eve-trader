@@ -116,7 +116,7 @@ def test_revoked_grant_is_rejected_on_the_next_request(monkeypatch, _apply_admin
     cookies = _cookie(11, tenant_id)
     assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
 
-    storage.revoke_tool_grant(11, "trading")
+    storage.replace_tool_grants(11, [], tenant_id)
     assert client.get("/api/trading/settings", cookies=cookies).status_code == 403
 
 
@@ -277,7 +277,6 @@ def test_normal_user_cannot_reach_admin_api(monkeypatch, _apply_admin_schema):
 def test_session_authorization_none_vs_empty_grants(_apply_admin_schema):
     tenant_id = storage.create_tenant("A")
     assert storage.session_authorization(11, tenant_id) is None
-    assert access_gate.tools_for(tenant_id, 11) is None
 
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
     result = storage.session_authorization(11, tenant_id)
@@ -287,7 +286,6 @@ def test_session_authorization_none_vs_empty_grants(_apply_admin_schema):
     assert result.access_suspended is False
     assert result.allowlist_active is False
     assert result.corporation_id is None
-    assert access_gate.tools_for(tenant_id, 11) == []
 
 
 def test_cross_finding_grant_survives_physically_after_removal(monkeypatch, _apply_admin_schema):

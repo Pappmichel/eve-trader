@@ -2,7 +2,7 @@
 failsafe for structure pricing (confirmed with the user 2026-08-24): tries
 the real order book first, falls back to a Goonmetrics current-price
 snapshot when no seller is logged in or the real call fails. Deliberately
-NOT wired into own_orders.check_undercut - see that decision's own
+NOT wired into own_orders.check_undercut_pooled - see that decision's own
 docstring in esi_client.py.
 """
 import pytest

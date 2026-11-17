@@ -47,4 +47,4 @@ def update_hub_freight(rows: Annotated[list[HubFreightRow], Field(max_length=1_0
     try:
         return hubs.do_update_hub_freight({r.region_id: r.freight_cost_per_m3 for r in rows})
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

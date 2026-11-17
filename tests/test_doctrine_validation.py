@@ -277,14 +277,14 @@ def test_allocate_stockpile_greedy_priority_order():
         ("f1", {100: (8.0, "exact")}),
         ("f2", {100: (8.0, "exact")}),
     ]
-    alloc = v.allocate_stockpile(soll, {100: 10.0})
+    alloc = v.allocate_stockpile_with_equivalents(soll, {100: 10.0}, None)[0]
     assert alloc["f1"][100] == 8.0
     assert alloc["f2"][100] == 2.0  # only 2 left after f1 takes its full 8
 
 
 def test_allocate_stockpile_never_overallocates():
     soll = [("f1", {100: (5.0, "exact")})]
-    alloc = v.allocate_stockpile(soll, {100: 20.0})
+    alloc = v.allocate_stockpile_with_equivalents(soll, {100: 20.0}, None)[0]
     assert alloc["f1"][100] == 5.0
 
 

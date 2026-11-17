@@ -727,7 +727,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         # nobody can read it at all, or every real call fails (lost docking
         # access, ESI outage) - see structure_order_stats_bulk_or_goonmetrics's
         # own docstring for why this is safe here but NOT used by
-        # check_undercut.
+        # check_undercut_pooled.
         structure_stats_by_item, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
             cfg.structure_id, priced_item_ids,
             auth_roles=structure_book_auth_roles(seller_characters),
@@ -926,7 +926,7 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
     """Live-fetches the seller's structure assets/sell orders and returns
     every shortlist item (active *or* inactive/deactivated) sitting there
     that has NO open sell order at all right now - see
-    own_orders.fetch_seller_stock_without_order (only a complete absence of a
+    own_orders.fetch_seller_stock_without_order_pooled (only a complete absence of a
     sell order counts, and only shortlist items are considered - confirmed
     scope). Deliberately not filtered to active-only: an item can be
     deactivated (Skip-grace-period prune, or the optional 300-item cap) while
@@ -1036,7 +1036,7 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
 def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     """Live-fetches the seller's own sell orders and the structure's full
     order book, and returns every one of the seller's orders that's currently
-    beaten by a cheaper competing order - see own_orders.check_undercut. No
+    beaten by a cheaper competing order - see own_orders.check_undercut_pooled. No
     ESI "you got undercut" notification exists, so this is only ever a
     fresh live check, same one-shot (not cached/persisted) shape as
     do_check_seller_unlisted_stock."""

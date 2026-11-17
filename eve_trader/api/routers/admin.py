@@ -25,9 +25,9 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _actor_character_id(
@@ -143,11 +143,6 @@ def add_allowlist_entry(req: AllowlistEntryRequest,
 @router.delete("/allowlist/{entry_type}/{entry_id}")
 def remove_allowlist_entry(entry_type: str, entry_id: int):
     return _wrap(admin.do_remove_allowlist_entry, entry_type=entry_type, entry_id=entry_id)
-
-
-@router.get("/access-requests/count")
-def count_access_requests():
-    return _wrap(admin.do_count_pending_access_requests)
 
 
 @router.get("/access-requests")

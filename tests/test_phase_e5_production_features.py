@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from eve_trader import storage
-from eve_trader.actions import ActionError
 from eve_trader.production import actions, jobs
 
 from . import pg_helpers, special_order_fixtures as fx
@@ -20,22 +19,6 @@ def order_sde(tenant, monkeypatch):
     fx.seed_widgets()
     fx.patch_planner_network(monkeypatch, home=fx.HOME, jita={})
     return tenant
-
-
-def test_cost_index_override_roundtrip(order_sde, monkeypatch):
-    captured = {}
-
-    def _save(updates, cfg=None):
-        captured["updates"] = updates
-        return updates
-
-    monkeypatch.setattr(actions, "do_update_settings", lambda updates, cfg=None: _save(updates, cfg))
-    actions.do_set_cost_index_override("manufacturing", 0.12)
-    assert captured["updates"] == {"manufacturing_cost_index_override": 0.12}
-    actions.do_clear_cost_index_override("reaction")
-    assert captured["updates"] == {"reaction_cost_index_override": None}
-    with pytest.raises(ActionError, match="Unknown cost-index kind"):
-        actions.do_set_cost_index_override("bogus", 0.1)
 
 
 def test_slot_overview_does_not_write_special_orders(order_sde):

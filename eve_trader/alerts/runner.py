@@ -38,7 +38,7 @@ from ..esi_data import read_esi, select_auth_role
 from ..esi_data import orchestrator as esi_orchestrator
 from ..character_management import fields
 from . import discord_client, logic
-from .actions import KIND_BY_ALERT, TOOL_KEY, content_paused, deliver
+from .actions import TOOL_KEY, content_paused, deliver
 
 log = logging.getLogger(__name__)
 
