@@ -648,7 +648,7 @@ def test_courier_rate_follows_the_contracts_share(tenant, monkeypatch):
          None, None, None),
     ])
     ledger_db.upsert_ledger_contracts([(
-        "character", ALICE, 236650353, 92267134, None, 7001,
+        "character", ALICE, 236650353, 1234567894, None, 7001,
         LOC, home, "courier", "finished", None, 0, 80_000.0,
         issued, issued, None, 100.0, 1_000_000.0, 10000002,
     )])

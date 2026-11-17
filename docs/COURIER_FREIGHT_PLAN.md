@@ -131,7 +131,7 @@ where no courier exists yet.
 
 ## 2. What the test server shows (Default tenant, 2026-10-18)
 
-All couriers are issued by **jason Andven** (92267134, buyer). After his
+All couriers are issued by **the buyer character** (1234567894, buyer). After his
 token got the contracts scope and contracts were shared with Production, one
 sync archived his contracts (`ledger_contracts`, type `courier`, already
 handled by the archive since the Production plan's Phase 5):

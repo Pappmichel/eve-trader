@@ -2270,12 +2270,12 @@ def test_available_characters_serializes_action_result(monkeypatch):
 
 def test_available_corps_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_list_available_corps", lambda: {
-        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+        "corps": ["Example Corp (corp)", "building mining and research corporation (corp)"],
     })
     resp = client.get("/api/sorting/available-corps")
     assert resp.status_code == 200
     assert resp.json() == {
-        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+        "corps": ["Example Corp (corp)", "building mining and research corporation (corp)"],
     }
 
 

@@ -573,7 +573,7 @@ The scripts were throwaway and are not committed.
 
 | # | Result | Consequence |
 |---|---|---|
-| S-01 | Default: 10,275 character + 14,246 corp rows. Largest owner: corp "RichlTech" 14,022; largest character 5,293. Next tenant: corp "Les bobos batisseurs" 15,654 rows | Python paging over one owner set is a few tens of thousands of rows; keep it, revisit only if a tenant passes ~100k |
+| S-01 | Default: 10,275 character + 14,246 corp rows. Largest owner: corp "Example Corp" 14,022; largest character 5,293. Next tenant: corp "Les bobos batisseurs" 15,654 rows | Python paging over one owner set is a few tens of thousands of rows; keep it, revisit only if a tenant passes ~100k |
 | S-02 | Default: 321 distinct places, 16 without a name in any tier (59 rows). Others: 0-1 | Unnamed places are rare; the "Structure <id>" fallback is enough |
 | S-03 | Default: 17,653 structure-range, 6,825 station-range, 43 system-range ids (items in space); no NULL `resolved_location_id` | System-range ids need the "in space" label (`labels.location_kind` already classifies by range); no orphan handling needed on this data |
 | S-04 | Flags seen: AutoFit, Hangar, CorpSAG1-7, Cargo, Unlocked, slots, DroneBay, FighterBay/Tube, SpecializedXHold, AssetSafety, CorpDeliveries, Deliveries, OfficeFolder, Impounded. `resolved_hangar_flag` is NULL for every row of three tenants (stale rows, filled on the next asset sync) | Hangar labels cover these flags; tenants with NULL show "Unknown" until synced (P-10), so the freshness panel's "Sync to refresh" matters |

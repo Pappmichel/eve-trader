@@ -636,7 +636,7 @@ are in the same file as the plan, not rediscovered from `git log`.
   they must not recreate the row.
 - **`sorting_intake_sources` identifies sources by `owner_name`.**
   `docs/sorting_schema.sql` / `storage.add_sorting_intake_source` store
-  `owner_name` (character name or `"RichlTech (corp)"`-style corp
+  `owner_name` (character name or `"Example Corp (corp)"`-style corp
   label), and `sorting/engine.py` passes that into
   `assets_at_flag(..., owner_name=...)`. Adding `owner_character_id` /
   `owner_corporation_id` to the asset tables (Phase 1) is not enough

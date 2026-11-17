@@ -28,7 +28,7 @@ CJ = 1035466617946                # stockpile structure
 
 class _Tokens:
     def list_records(self):
-        return [TokenRecord("esi:91", BUYER, "Jason Andven", "", "", 0.0, "")]
+        return [TokenRecord("esi:91", BUYER, "Example Buyer", "", "", 0.0, "")]
 
 
 def _asset(owner_id, type_id, qty, location=JITA_44, **extra):
@@ -115,7 +115,7 @@ def test_open_buy_orders_warns_instead_of_failing(monkeypatch, shared, role, cli
     result = buyer_sources.open_buy_orders([MODULE], {BUYER}, {FORGE}, _Tokens(), client)
 
     assert result.by_type == {}
-    assert len(result.warnings) == 1 and needle in result.warnings[0] and "Jason Andven" in result.warnings[0]
+    assert len(result.warnings) == 1 and needle in result.warnings[0] and "Example Buyer" in result.warnings[0]
 
 
 def test_collect_is_off_without_buyers():

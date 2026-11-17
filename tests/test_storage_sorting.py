@@ -40,7 +40,7 @@ def _wipe_sorting_sources():
 
 def test_add_and_load_sorting_intake_sources(tenant):
     source_id = storage.add_sorting_intake_source("character", "Hangar", owner_name="Alice", label="Alice hangar")
-    storage.add_sorting_intake_source("corp", "CorpSAG3", owner_name="RichlTech (corp)", label=None)
+    storage.add_sorting_intake_source("corp", "CorpSAG3", owner_name="Example Corp (corp)", label=None)
 
     rows = storage.load_sorting_intake_sources()
     by_kind = {r[1]: r for r in rows}
@@ -48,12 +48,12 @@ def test_add_and_load_sorting_intake_sources(tenant):
     assert by_kind["character"][2] == "Alice"
     assert by_kind["character"][3] == "Hangar"
     assert by_kind["character"][4] == "Alice hangar"
-    assert by_kind["corp"][2] == "RichlTech (corp)"
+    assert by_kind["corp"][2] == "Example Corp (corp)"
     assert by_kind["corp"][3] == "CorpSAG3"
 
 
 def test_remove_sorting_intake_source(tenant):
-    source_id = storage.add_sorting_intake_source("corp", "CorpSAG1", owner_name="RichlTech (corp)")
+    source_id = storage.add_sorting_intake_source("corp", "CorpSAG1", owner_name="Example Corp (corp)")
     storage.remove_sorting_intake_source(source_id)
     assert storage.load_sorting_intake_sources() == []
 
@@ -61,7 +61,7 @@ def test_remove_sorting_intake_source(tenant):
 def test_sorting_intake_source_of_tenant_a_is_invisible_to_tenant_b(tenant_pair):
     tenant_a, tenant_b = tenant_pair
     with storage.tenant_context(tenant_a):
-        storage.add_sorting_intake_source("corp", "CorpSAG1", owner_name="RichlTech (corp)", label="A only")
+        storage.add_sorting_intake_source("corp", "CorpSAG1", owner_name="Example Corp (corp)", label="A only")
         assert len(storage.load_sorting_intake_sources()) == 1
 
     with storage.tenant_context(tenant_b):
@@ -103,9 +103,9 @@ def test_load_tenant_character_names_reads_character_assets_not_registry(tenant)
 def test_load_tenant_corp_names_reads_corp_assets(tenant):
     other = storage.create_tenant("Other sorting-corps tenant")
     storage.replace_assets("corp_assets", [
-        (10, 34, LOCATION_ID, "CorpSAG1", 10, 0, "RichlTech (corp)"),
+        (10, 34, LOCATION_ID, "CorpSAG1", 10, 0, "Example Corp (corp)"),
         (11, 34, LOCATION_ID, "CorpSAG2", 20, 0, "building mining and research corporation (corp)"),
-        (12, 35, LOCATION_ID, "CorpSAG1", 1, 0, "RichlTech (corp)"),
+        (12, 35, LOCATION_ID, "CorpSAG1", 1, 0, "Example Corp (corp)"),
     ])
     with storage.tenant_context(other):
         storage.replace_assets("corp_assets", [
@@ -114,6 +114,6 @@ def test_load_tenant_corp_names_reads_corp_assets(tenant):
 
     names = storage.load_tenant_corp_names()
     assert set(names) == {
-        "RichlTech (corp)",
+        "Example Corp (corp)",
         "building mining and research corporation (corp)",
     }
