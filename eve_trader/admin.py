@@ -702,10 +702,6 @@ def do_list_access_requests(status: str | None = None) -> list[dict]:
     return storage.list_access_requests(status)
 
 
-def do_count_pending_access_requests() -> dict:
-    return {"pending": storage.count_pending_access_requests()}
-
-
 def do_approve_access_request(character_id: int, tool_keys: list[str],
                                decided_by_character_id: int | None = None) -> dict:
     """Creates a dedicated tenant named after the character and grants

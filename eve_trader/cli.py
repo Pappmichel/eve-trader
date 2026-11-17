@@ -128,7 +128,7 @@ def tenant_encrypt_tokens(check: bool):
     try:
         counts = token_maintenance.encrypt_tokens(check_only=check)
     except token_crypto.TokenCryptoError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     _echo_counts(counts)
     if check and counts["plaintext"]:
         raise SystemExit(1)
@@ -143,7 +143,7 @@ def tenant_rotate_token_key():
     try:
         counts = token_maintenance.rotate_token_key()
     except token_crypto.TokenCryptoError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     _echo_counts(counts)
 
 
@@ -163,7 +163,7 @@ def tenant_decrypt_tokens(write_plaintext: bool):
     try:
         counts = token_maintenance.decrypt_tokens_to_plaintext()
     except token_crypto.TokenCryptoError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     _echo_counts(counts)
 
 
@@ -1083,7 +1083,7 @@ def admin_purge_tenant(tenant_id: str, confirm_name: str):
     try:
         result = admin_mod.do_purge_tenant(tenant_id, confirm_name)
     except ActionError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     click.echo(f"Purged tenant {result['purged']}: {result['rows_deleted']} row(s) in "
                f"{len(result['tables'])} table(s); tokens deleted {result['tokens_deleted']}, "
                f"revoked {result['revoked']}, revoke failed {result['revoke_failed']}.")

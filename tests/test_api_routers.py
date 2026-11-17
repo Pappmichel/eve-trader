@@ -1588,50 +1588,6 @@ def test_get_build_candidates_empty_when_no_scan_yet(monkeypatch):
     assert resp.json() == []
 
 
-def test_alchemy_compare_passes_product_name(monkeypatch):
-    captured = {}
-
-    def _capture(product_name, **kwargs):
-        captured["product_name"] = product_name
-        return {
-            "product_type_id": 16675,
-            "product_type_name": "Caesarium Cadmide",
-            "normal_isk_per_hour": 200000.0,
-            "alchemy_isk_per_hour": 4166.67,
-            "alchemy_unrefined_type_id": 32824,
-            "alchemy_unrefined_type_name": "Unrefined Caesarium Cadmide",
-            "scrapmetal_yield_pct": 0.55,
-        }
-    monkeypatch.setattr(production_actions, "do_compare_alchemy", _capture)
-
-    resp = client.get("/api/production/alchemy-compare/Caesarium%20Cadmide")
-
-    assert resp.status_code == 200
-    assert captured["product_name"] == "Caesarium Cadmide"
-    assert resp.json()["product_type_id"] == 16675
-    assert resp.json()["normal_isk_per_hour"] == 200000.0
-
-
-def test_alchemy_compare_action_error_maps_to_400(monkeypatch):
-    def _raise(*args, **kwargs):
-        raise ActionError("No exact SDE match for 'Nope'.")
-    monkeypatch.setattr(production_actions, "do_compare_alchemy", _raise)
-
-    resp = client.get("/api/production/alchemy-compare/Nope")
-
-    assert resp.status_code == 400
-    assert "No exact SDE match" in resp.json()["detail"]
-
-
-def test_alchemy_compare_none_serializes_as_null(monkeypatch):
-    monkeypatch.setattr(production_actions, "do_compare_alchemy", lambda **kwargs: None)
-
-    resp = client.get("/api/production/alchemy-compare/Rifter")
-
-    assert resp.status_code == 200
-    assert resp.json() is None
-
-
 def test_get_ship_margins_serializes_action_result(monkeypatch):
     monkeypatch.setattr(production_actions, "do_get_ship_margins", lambda **kwargs: {"rows": [
         ShipMarginRow(type_id=1, type_name="Rifter", activity="Tech I", home_price=1000.0, jita_price=900.0,
@@ -1732,7 +1688,6 @@ def test_get_material_tree_action_error_maps_to_400(monkeypatch):
 
 # ------------------------------------------------------------------ portfolio
 def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkeypatch):
-    from datetime import date
 
     from eve_trader import portfolio
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: utc_today())
@@ -1771,7 +1726,6 @@ def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypa
 
 
 def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypatch):
-    from datetime import date
 
     from eve_trader import portfolio
     latest = [None]
@@ -2318,7 +2272,7 @@ def test_price_history_is_split_by_region(monkeypatch):
 
 
 def test_history_sparklines_shape_and_calendar_cutoff(monkeypatch):
-    from datetime import date, timedelta
+    from datetime import timedelta
     from eve_trader.config import TRADING_CONFIG
 
     calls = []

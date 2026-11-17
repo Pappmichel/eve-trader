@@ -71,9 +71,9 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ------------------------------------------------------------------- reads
@@ -791,11 +791,6 @@ def get_build_candidates(top_n: int = 200):
     return _wrap(actions.do_get_build_candidates, top_n=top_n)["rows"]
 
 
-@router.get("/alchemy-compare/{product_name}")
-def alchemy_compare(product_name: str):
-    return _wrap(actions.do_compare_alchemy, product_name=product_name)
-
-
 @router.get("/margins", response_model=list[schemas.ShipMarginRow])
 def get_ship_margins():
     return _wrap(actions.do_get_ship_margins)["rows"]
@@ -864,17 +859,6 @@ def set_stock_target_mode(type_id: int, req: StockTargetModeRequest):
 @router.post("/stock-targets/recalculate")
 def recalculate_dynamic_targets():
     return _wrap(actions.do_recalculate_dynamic_targets)
-
-
-@router.post("/stock-targets/dynamic-preview")
-def preview_dynamic_targets():
-    """Dry run for every row with a home target; writes nothing."""
-    return _wrap(actions.do_preview_dynamic_targets)
-
-
-@router.get("/stock-targets/{type_id}/dynamic-history")
-def get_dynamic_target_history(type_id: int, days: int = 30):
-    return _wrap(actions.do_dynamic_target_history, type_id=type_id, days=days)
 
 
 class ManualStockRequest(BaseModel):

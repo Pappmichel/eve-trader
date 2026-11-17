@@ -61,7 +61,7 @@ def check_bounded_json(value: Any, max_bytes: int, max_depth: int = JSON_MAX_DEP
     try:
         size = len(json.dumps(value, separators=(",", ":"), default=str))
     except (TypeError, ValueError, RecursionError):
-        raise ValueError("not valid JSON data")
+        raise ValueError("not valid JSON data") from None
     if size > max_bytes:
         raise ValueError(f"larger than {max_bytes} bytes")
     return value

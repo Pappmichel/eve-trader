@@ -22,10 +22,10 @@ def _wrap(fn, **kwargs):
         return fn(**kwargs)
     except ConflictError as e:
         from fastapi import HTTPException
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
         from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 class RealizedFlags(BaseModel):

@@ -19,7 +19,6 @@ from __future__ import annotations
 import contextvars
 import copy
 from dataclasses import dataclass
-from typing import Optional
 
 import yaml
 

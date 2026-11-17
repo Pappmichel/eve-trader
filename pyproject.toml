@@ -57,6 +57,17 @@ include = ["eve_trader*"]
 [tool.setuptools.package-data]
 "eve_trader.pi.layout" = ["reference_templates.json"]
 
+# Lint is deliberately narrow: pyflakes errors (unused imports/variables,
+# undefined names) and B904 (raise inside except without `from`). No style
+# rules. Run: ruff check eve_trader tests deploy
+[tool.ruff.lint]
+select = ["F", "B904"]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixtures imported from tests/pg_helpers.py are re-declared as test
+# arguments, which pyflakes reports as F811.
+"tests/**" = ["F811"]
+
 [tool.pytest.ini_options]
 markers = [
     "release: Production Special-Order freeze regression (phases C–H)",

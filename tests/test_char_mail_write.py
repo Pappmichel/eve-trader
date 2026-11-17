@@ -4,8 +4,6 @@ routes. Everything acts on a character's behalf in the game, so the gates are
 tested as hard as the happy paths."""
 from __future__ import annotations
 
-import json
-import uuid
 from dataclasses import asdict
 
 import pytest

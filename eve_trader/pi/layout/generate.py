@@ -30,7 +30,7 @@ from typing import Callable, Optional
 from .. import constants as C
 from .. import decay
 from ..engine import made_in
-from ..model import CHAINS, Design, StaticData, factory_kind_for_tier
+from ..model import Design, StaticData, factory_kind_for_tier
 from . import validate
 from .geometry import EQUATOR, central_angle
 from .template_io import Layout, Link, Pin, Route, safe_comment

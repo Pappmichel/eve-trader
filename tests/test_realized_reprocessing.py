@@ -19,7 +19,7 @@ from eve_trader.realized.costing import (
     rebuild_costing,
 )
 
-from .test_production_realized_costing import CHAR, T0, at, buy, job, remaining, sell, snapshot
+from .test_production_realized_costing import CHAR, at, buy, job, remaining, sell, snapshot
 
 VELD = 1230
 COMP = 62516

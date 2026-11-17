@@ -24,7 +24,6 @@ safety valve on top of it).
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
 from typing import Optional
 

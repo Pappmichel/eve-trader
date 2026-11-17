@@ -18,12 +18,12 @@ from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
 from . import buyer_sources, equivalents, parser, ready_to_list, reserve, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
-from .constants import AMPEL_GRAY, EXACT_SECTIONS
+from .constants import AMPEL_GRAY
 from .models import (
     AggregatedStockpileRow, ContractItemRow, ContractRow, DeviationRow, Doctrine, DoctrineStatus, Fitting,
-    FittingItem, FittingStatus, ParsedFitting, ParsedIssue, ParsedItem, ParseIssue, ShoppingListRow, StockpileRow,
+    FittingItem, FittingStatus, ParsedFitting, ParsedIssue, ParsedItem, ShoppingListRow, StockpileRow,
 )
-from .parser import FittingParseError, ResolvedType
+from .parser import ResolvedType
 
 log = logging.getLogger("eve_trader.doctrine.engine")
 

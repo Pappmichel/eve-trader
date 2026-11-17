@@ -1145,6 +1145,11 @@ streamed; it sits inside `RequestIdMiddleware` and outside
   in `deploy/deploy.sh`'s order - never the `eve_trader` dev database. A test
   must not depend on rows another test left behind (SDE tables, `lru_cache`d
   SDE lookups): xdist runs modules in any order on any worker.
+- Lint: `ruff check eve_trader tests deploy` (CI backend job, one matrix row;
+  version pinned in `requirements-dev.txt`, rules in `pyproject.toml`: `F` and
+  `B904` only, no style rules). Fix findings instead of adding `# noqa`; a
+  `noqa` needs a reason (e.g. a pytest fixture imported only for its name).
+  A `raise` inside `except` takes `from e` (or `from None`).
 - `tests/conftest.py` fails any test that sends a real HTTP request through
   `requests`; mock the ESI/Goonmetrics call instead.
 

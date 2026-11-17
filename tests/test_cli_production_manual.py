@@ -9,7 +9,7 @@ import contextlib
 import pytest
 from click.testing import CliRunner
 
-from eve_trader import cli, config, storage, tenant_scope
+from eve_trader import cli, config, storage
 from eve_trader.actions import ActionError
 from eve_trader.production import actions as production_actions
 from eve_trader.production import config as production_config

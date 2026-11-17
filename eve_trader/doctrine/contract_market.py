@@ -423,7 +423,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
                 client, tm, _system_id, min_volume, progress_callback, open_ids)
         except _NoAllianceSource:
             if not cfg.contract_market_include_public:
-                raise ActionError(_NO_ALLIANCE_SOURCE_MSG)
+                raise ActionError(_NO_ALLIANCE_SOURCE_MSG) from None
             alliance_skipped = True
             scan_alliance = False
 

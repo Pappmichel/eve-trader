@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from eve_trader import storage
-from eve_trader.actions import ActionError
 from eve_trader.production import actions, jobs
 
 from . import pg_helpers, special_order_fixtures as fx
