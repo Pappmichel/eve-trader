@@ -1,6 +1,7 @@
 # EVE Trader — C-J Import Trading & Production
 
-Four tools for EVE Online, sharing one backend and one multi-tenant Postgres
+EVE Online tools (the full list with each tool's grant key is in CLAUDE.md's
+"Tool permissions & Admin" section) sharing one backend and one multi-tenant Postgres
 store (RLS-isolated per tenant - see `docs/MULTI_TENANT_PLAN.md`):
 
 - **Trading** — a market-arbitrage toolkit that buys goods in Jita (The
@@ -136,9 +137,7 @@ docker exec -i eve-trader-pg psql -U postgres -d eve_trader   -c "ALTER ROLE eve
 Trading:
 
 ```bash
-# One-time per character
-eve-trader auth --role buyer     # the character that buys in Jita
-eve-trader auth --role seller    # the character that sells in the structure
+# Characters are authorized in the web app (Characters page), not with a CLI command.
 
 # Daily
 eve-trader refresh-shortlist     # recompute landed cost / margin / decision
@@ -154,7 +153,10 @@ eve-trader pipeline --safe
 
 For day-to-day use, the web app (below) covers every one of these steps with
 buttons instead of CLI commands - the CLI is mainly useful for scripting/
-automation. Production has no CLI equivalent yet; use the web app.
+automation. Production and Doctrine have CLI groups too: `eve-trader production manual ...`,
+`production targets ...`, `production facilities ...`, `production realized ...`,
+`production max-build` and `doctrine reserve` / `doctrine max-fit`;
+`eve-trader production --help` lists them.
 
 ## Configuration
 

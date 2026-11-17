@@ -701,7 +701,7 @@ surface, not a per-tenant self-service page. `"admin"` is a normal grant
 with `eve-trader admin bootstrap` (see `docs/OPERATOR_SECURITY.md`). No
 other character can reach `/api/admin` unless they have that tool_key.
 
-`"characters"` is a normal ninth grant in `ALL_TOOL_KEYS` (no
+`"characters"` is a normal grant in `ALL_TOOL_KEYS` (no
 `DEFAULT_TENANT_ID` bypass). Admin's tool checkboxes auto-tick it when any
 ESI-consuming tool is selected — UI only; `admin.do_set_tool_grants` stays
 replace-not-merge and does not insert `"characters"` on the server. The
@@ -963,8 +963,8 @@ history).
 - **Cross-tool reads** (manual stock, "wanted by", Doctrine match in the ship
   view) check the other tool's grant; the Doctrine match uses the pure
   `doctrine.validation` scorer on fittings read through storage.
-- The old Production Asset Search tab stays until existing tenants have the
-  grant (`eve-trader admin grant-defaults`), then plan phase 5 removes it.
+- Production's old Asset Search tab is removed (commit `58c23df1`); the Asset
+  Manager replaces it.
 
 ## Planetary Industry (PI) tool
 
@@ -1654,7 +1654,7 @@ readers (`esi_stock_at_location_bulk`, `esi_stock_by_location_bulk`,
 `assets_at_flag`), Doctrine's `esi_stock_from_asset_rows` and Trading's
 `own_orders.py` skip it, and live ESI lists go through
 `storage.mark_assembled_or_fitted`. Deliberately *not* applied to valuation
-(Portfolio's `load_all_assets`), the Asset Search lookup or the Asset
+(Portfolio's `load_all_assets`) or the Asset
 Manager (which badges such rows instead) - an assembled ship still has
 value and still exists. A new stock reader must apply the
 same filter.
