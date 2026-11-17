@@ -251,6 +251,14 @@ def resolve_effective_volume_bulk(items: list[tuple[int, Optional[float], Option
     results: dict[int, Optional[float]] = {}
     sde_volume_by_id: dict[int, Optional[float]] = {}
     to_fetch: list[int] = []
+    # Two bulk reads instead of one query per type: categories only for
+    # triples that carry none, cached packaged volumes for every Ship/Module
+    # type at once. A type without a cache row stays "never looked up" and
+    # takes the ESI path below (missing is not 0).
+    no_category = [t for t, v, c in items if v is not None and c is None]
+    if no_category:
+        storage.prefetch_type_categories(no_category)
+    candidates: list[int] = []
     for type_id, sde_volume, category_id in items:
         sde_volume_by_id[type_id] = sde_volume
         if sde_volume is None:
@@ -261,11 +269,14 @@ def resolve_effective_volume_bulk(items: list[tuple[int, Optional[float], Option
         if category_id not in (_SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID):
             results[type_id] = sde_volume
             continue
-        cached = storage.get_cached_packaged_volume(type_id)
+        candidates.append(type_id)
+    cached_volumes = storage.get_cached_packaged_volumes_bulk(candidates)
+    for type_id in dict.fromkeys(candidates):
+        cached = cached_volumes.get(type_id)
         if cached is not None:
             results[type_id] = cached
-            continue
-        to_fetch.append(type_id)
+        else:
+            to_fetch.append(type_id)
 
     if not to_fetch:
         return results

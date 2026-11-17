@@ -92,7 +92,7 @@ def test_build_candidate_universe_from_sde_uses_packaged_volume_for_capital_modu
     # Capital Shield Booster I lists volume=4000 but packaged_volume=1000).
     # Ships have the identical quirk but are excluded from candidates
     # entirely (excluded_path_prefixes), so only capital modules hit this.
-    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 1000.0)
+    monkeypatch.setattr(storage, "get_cached_packaged_volumes_bulk", lambda type_ids: {t: 1000.0 for t in type_ids})
 
     market_groups = [(1, None, "Ship Equipment")]
     sde_types = [
@@ -110,7 +110,7 @@ def test_build_candidate_universe_from_sde_leaves_ordinary_modules_unchanged(mon
     # cache lookup still runs (no clean SDE-only signal for which modules
     # differ, same as production/engine.py's own _haul_volume), but returns
     # the same value candidate_universe already had.
-    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 5.0)
+    monkeypatch.setattr(storage, "get_cached_packaged_volumes_bulk", lambda type_ids: {t: 5.0 for t in type_ids})
 
     market_groups = [(1, None, "Ship Equipment")]
     sde_types = [(1234, "Large Shield Booster I", 5.0, 1, 0, MODULE_CATEGORY_ID)]

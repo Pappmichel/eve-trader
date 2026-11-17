@@ -1,4 +1,11 @@
 from eve_trader import storage
+import psycopg
+import pytest
+
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+
+pytestmark = pg_helpers.postgres_required()
 from eve_trader.esi_client import ESIClient, resolve_effective_volume, resolve_effective_volume_bulk
 
 
@@ -84,13 +91,13 @@ def test_resolve_effective_volume_bulk_returns_none_for_none_sde_volume():
 
 
 def test_resolve_effective_volume_bulk_uses_already_cached_values_without_esi(monkeypatch):
-    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 1000.0)
+    monkeypatch.setattr(storage, "get_cached_packaged_volumes_bulk", lambda type_ids: {t: 1000.0 for t in type_ids})
     result = resolve_effective_volume_bulk([(20703, 4000.0, 7)])  # MODULE_CATEGORY_ID
     assert result == {20703: 1000.0}
 
 
 def test_resolve_effective_volume_bulk_fetches_uncached_items_concurrently_and_caches_them(monkeypatch):
-    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: None)  # nothing cached yet
+    monkeypatch.setattr(storage, "get_cached_packaged_volumes_bulk", lambda type_ids: {})  # nothing cached yet
     cached = {}
     monkeypatch.setattr(storage, "set_cached_packaged_volume", lambda type_id, v: cached.setdefault(type_id, v))
     monkeypatch.setattr(ESIClient, "get_packaged_volume", lambda self, type_id: type_id * 10.0)
@@ -104,7 +111,7 @@ def test_resolve_effective_volume_bulk_fetches_uncached_items_concurrently_and_c
 
 
 def test_resolve_effective_volume_bulk_falls_back_to_sde_volume_on_esi_failure_without_caching(monkeypatch):
-    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: None)
+    monkeypatch.setattr(storage, "get_cached_packaged_volumes_bulk", lambda type_ids: {})
     cached = {}
     monkeypatch.setattr(storage, "set_cached_packaged_volume", lambda type_id, v: cached.setdefault(type_id, v))
 
@@ -124,7 +131,7 @@ def test_resolve_effective_volume_bulk_propagates_ambient_tenant_to_worker_threa
     # from the submitting thread without storage.with_current_tenant.
     _tenant_id = "11111111-1111-1111-1111-111111111111"
     seen_tenants = []
-    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: None)
+    monkeypatch.setattr(storage, "get_cached_packaged_volumes_bulk", lambda type_ids: {})
     monkeypatch.setattr(storage, "set_cached_packaged_volume", lambda type_id, v: None)
 
     def fake_get_packaged_volume(self, type_id):
@@ -136,3 +143,67 @@ def test_resolve_effective_volume_bulk_propagates_ambient_tenant_to_worker_threa
         resolve_effective_volume_bulk([(20703, 4000.0, 7)])
 
     assert seen_tenants == [_tenant_id]
+
+
+# Fix: the cache read is one bulk query, not one query per type.
+
+@pytest.fixture
+def _clean_volumes():
+    def wipe():
+        with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+            conn.execute("DELETE FROM type_packaged_volume WHERE type_id BETWEEN 100000 AND 100999")
+    wipe()
+    yield
+    wipe()
+
+
+def _count_queries(monkeypatch):
+    import psycopg
+    counter = {"n": 0}
+    orig = psycopg.Cursor.execute
+
+    def counting(self, query, params=None, **kw):
+        counter["n"] += 1
+        return orig(self, query, params, **kw)
+    monkeypatch.setattr(psycopg.Cursor, "execute", counting)
+    return counter
+
+
+def _run_with_cache(n_types, cached_ids, monkeypatch):
+    items = [(100000 + i, 4000.0 + i, 7) for i in range(n_types)]
+    for tid in cached_ids:
+        storage.set_cached_packaged_volume(100000 + tid, 1.5)
+    monkeypatch.setattr(ESIClient, "get_packaged_volume", lambda self, type_id: 9.0)
+    counter = _count_queries(monkeypatch)
+    result = resolve_effective_volume_bulk(items)
+    return result, counter["n"]
+
+
+def test_resolve_effective_volume_bulk_query_count_does_not_grow_with_type_count(tenant, _clean_volumes, monkeypatch):
+    _res_small, n_small = _run_with_cache(50, range(50), monkeypatch)
+    _res_big, n_big = _run_with_cache(500, range(500), monkeypatch)
+    assert n_big == n_small
+    assert n_big < 10
+
+
+def test_resolve_effective_volume_bulk_mixes_cached_and_missing_types(tenant, _clean_volumes, monkeypatch):
+    result, _n = _run_with_cache(6, [0, 2, 4], monkeypatch)
+    assert result[100000] == 1.5 and result[100002] == 1.5 and result[100004] == 1.5
+    assert result[100001] == 9.0 and result[100003] == 9.0 and result[100005] == 9.0
+
+
+def test_resolve_effective_volume_bulk_matches_single_path_and_handles_duplicates(tenant, _clean_volumes, monkeypatch):
+    storage.set_cached_packaged_volume(100000, 2.5)
+    monkeypatch.setattr(ESIClient, "get_packaged_volume", lambda self, type_id: 7.0)
+    items = [(100000, 4000.0, 7), (100001, 5000.0, 6), (100000, 4000.0, 7), (34, 0.01, 4), (5, None, None)]
+    bulk = resolve_effective_volume_bulk(items)
+    single = {t: resolve_effective_volume(t, v, category_id=c) for t, v, c in items}
+    assert bulk == single == {100000: 2.5, 100001: 7.0, 34: 0.01, 5: None}
+
+
+def test_resolve_effective_volume_bulk_prefetches_missing_categories_once(tenant, monkeypatch):
+    calls = []
+    orig = storage.prefetch_type_categories
+    monkeypatch.setattr(storage, "prefetch_type_categories", lambda ids: calls.append(list(ids)) or orig(ids))
+    resolve_effective_volume_bulk([(34, 0.01, None), (35, 0.01, None), (36, 0.01, 4)])
+    assert len(calls) == 1 and sorted(calls[0]) == [34, 35]

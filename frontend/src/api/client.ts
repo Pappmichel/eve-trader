@@ -204,7 +204,11 @@ export const productionApi = {
   assetPlan: () => get<T.AssetPlan | null>('/api/production/asset-plan'),
   marketStatus: () => get<T.MarketStatusRow[]>('/api/production/market-status'),
   stockValue: () => get<{ total_value: number; priced_items: number; unpriced_items: number }>('/api/production/stock-value'),
-  checkUnlistedStock: () => post<T.ProductionUnlistedStockRow[]>('/api/production/unlisted-stock/check'),
+  // Background job: the check reads corporation assets/orders live from ESI
+  // and can take minutes. Start returns {run_id, status}; the rows arrive in
+  // the status's result.rows (also after a page reload, from the last run).
+  checkUnlistedStock: () => post<T.PipelineRunStatus>('/api/production/unlisted-stock/check'),
+  checkUnlistedStockStatus: () => get<T.PipelineRunStatus>('/api/production/unlisted-stock/check/status'),
   // Background job (2026-09-13, Phase 2 of the button-transparency pass) -
   // the scan can walk up to ~19,400 SDE items on a cold cache, genuinely
   // slow enough to warrant progress reporting instead of a blocking
