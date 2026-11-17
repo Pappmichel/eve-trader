@@ -282,7 +282,7 @@ def test_wallet_transactions_producer_key_accepted_once_wallet_shared(tenant, _a
     from eve_trader.auth import TokenRecord
 
     rec = TokenRecord(
-        role="producer:1234567893", character_id=1234567893, character_name="pappmichl",
+        role="producer:1234567893", character_id=1234567893, character_name="examplepilot",
         access_token="a", refresh_token="r", expires_at=9999999999.0,
         scopes="esi-wallet.read_character_wallet.v1 esi-assets.read_assets.v1",
     )

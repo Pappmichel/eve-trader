@@ -48,11 +48,11 @@ def test_do_list_contracts_resolves_source_role_to_character_name(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [_contract_db_row()])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
     monkeypatch.setattr(actions, "_character_names_by_role_key",
-                         lambda: {"doctrine:1234567893": "pappmichl"})
+                         lambda: {"doctrine:1234567893": "examplepilot"})
 
     result = actions.do_list_contracts()
 
-    assert result["rows"][0]["source_character_name"] == "pappmichl"
+    assert result["rows"][0]["source_character_name"] == "examplepilot"
     assert result["rows"][0]["source_role"] == "doctrine:1234567893"  # raw key still present too
 
 
@@ -90,13 +90,13 @@ def test_do_list_contracts_resolves_a_non_doctrine_prefixed_source_role(monkeypa
                          lambda **kwargs: [_contract_db_row(source_role="esi:1234567893")])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
     monkeypatch.setattr(TokenManager, "list_records", lambda self: [
-        TokenRecord(role="esi:1234567893", character_id=1234567893, character_name="pappmichl",
+        TokenRecord(role="esi:1234567893", character_id=1234567893, character_name="examplepilot",
                     access_token="a", refresh_token="r", expires_at=9999999999.0, scopes="s"),
     ])
 
     result = actions.do_list_contracts()
 
-    assert result["rows"][0]["source_character_name"] == "pappmichl"
+    assert result["rows"][0]["source_character_name"] == "examplepilot"
 
 
 def test_do_list_contracts_resolves_hull_from_matched_fitting(monkeypatch):
@@ -143,14 +143,14 @@ def test_do_contract_history_resolves_hull_name_and_character_name(monkeypatch):
     monkeypatch.setattr(storage, "load_doctrine_contract_history", lambda: [_history_db_row()])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
     monkeypatch.setattr(actions, "_character_names_by_role_key",
-                         lambda: {"doctrine:1234567893": "pappmichl"})
+                         lambda: {"doctrine:1234567893": "examplepilot"})
 
     result = actions.do_contract_history()
 
     row = result["rows"][0]
     assert row["hull_type_id"] == 1000
     assert row["hull_name"] == "Rifter"
-    assert row["source_character_name"] == "pappmichl"
+    assert row["source_character_name"] == "examplepilot"
     assert row["fitting_name"] == "Fit"  # already on the row, passed through untouched
     assert row["acceptor_id"] == 99
 

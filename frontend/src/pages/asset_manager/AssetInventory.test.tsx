@@ -21,7 +21,7 @@ function row(overrides: Record<string, unknown>) {
   return {
     key: 'k1', type_id: 2399, type_name: 'Precious Metals', group_id: 1, group_name: 'Basic Commodities',
     category_id: 43, category_name: 'Planetary Commodities', quantity: 39440, volume: 15000, value: 1e6,
-    unit_price: 25, unpriced: 0, stacks: 1, owners: ['pappmichl4'], sources: ['esi'], badges: [],
+    unit_price: 25, unpriced: 0, stacks: 1, owners: ['examplepilot4'], sources: ['esi'], badges: [],
     location_id: STRUCTURE, location_name: null, location_kind: 'unknown', location_status: 'forbidden',
     ...overrides,
   }

@@ -422,7 +422,7 @@ dev SSO sessions instead of requiring a re-authorize click for each role.
 
 Confirmed live: `eve-trader tenant import-tokens` reported importing all
 18 records; a real `GET /api/auth/status` against the running server
-returned the real buyer/seller character names (`Example Buyer`/`pappmichl`)
+returned the real buyer/seller character names (`Example Buyer`/`examplepilot`)
 straight from Postgres with no re-authorization; `GET
 /api/production/producer-characters` returned all 16 real producer
 characters. Full `pytest` suite: 344 passed with Postgres up (334 + 10 new
