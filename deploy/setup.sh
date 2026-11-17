@@ -222,6 +222,7 @@ cat <<EOF
      itself is already installed and tuned by this script, but the schema/
      role password are deliberately manual, one-time steps.
   2. Edit $APP_DIR/.env and $APP_DIR/config.yaml with your real values
+     (including TOKEN_ENCRYPTION_KEY - see .env.example; keep a copy in a password manager)
      (EVE_SSO_CLIENT_ID, structure_id, character names, ...), then provision
      yourself as a tenant (`eve-trader tenant create`/`tenant add-entry` -
      see deploy/README.md, this replaces the old config.yaml allowlist).

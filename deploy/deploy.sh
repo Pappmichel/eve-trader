@@ -182,6 +182,32 @@ deploy_restart_and_verify() {
     deploy_health_check || { deploy_fail_hint; exit 1; }
 }
 
+# Stored SSO tokens are encrypted with TOKEN_ENCRYPTION_KEY from .env. The new
+# code refuses plaintext rows and the old code cannot read encrypted ones, so
+# the deploy stops the service, encrypts, and only then starts it. The key must
+# be in .env before anything is stopped.
+deploy_require_token_key() {
+    local line=""
+    if [ -f .env ]; then
+        line="$(grep -E '^[[:space:]]*TOKEN_ENCRYPTION_KEY=' .env | tail -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
+    fi
+    [ -n "$line" ] || die "TOKEN_ENCRYPTION_KEY is missing in .env. Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\" and store a copy in a password manager (backups never contain it). Nothing was stopped or changed."
+}
+
+deploy_stop_encrypt_start_and_verify() {
+    log "Stopping eve-trader to encrypt stored tokens..."
+    sudo systemctl stop eve-trader
+    log "Encrypting stored SSO tokens (idempotent)..."
+    if ! .venv/bin/eve-trader tenant encrypt-tokens; then
+        echo "ERROR: encrypt-tokens failed; the service stays stopped. See docs/RUNBOOK.md (Token key)." >&2
+        exit 1
+    fi
+    log "Starting eve-trader..."
+    sudo systemctl start eve-trader
+    log "Verifying..."
+    deploy_health_check || { deploy_fail_hint; exit 1; }
+}
+
 # Git part of a rollback (testable without systemd): resolve the target
 # (argument, else the recorded previous commit), refuse on a dirty tree, check
 # it out detached and record the move. Sets ROLLBACK_FROM and ROLLBACK_TO.
@@ -299,6 +325,8 @@ deploy_main() {
     new_sha="$(git rev-parse HEAD)"
     DEPLOY_PREV_SHA="$prev_sha"
 
+    deploy_require_token_key
+
     if [ "${DEPLOY_BACKUP:-}" = "1" ] || deploy_schema_changed "${prev_sha:-$new_sha}" "$new_sha"; then
         log "Pre-deploy database backup (schema files changed or DEPLOY_BACKUP=1)..."
         # Same function the Admin tool and the scheduler use; writes a 0600
@@ -390,7 +418,7 @@ deploy_main() {
     deploy_build_frontend
     deploy_swap_frontend
 
-    deploy_restart_and_verify
+    deploy_stop_encrypt_start_and_verify
 
     if [ "${DEPLOY_NO_TAG:-}" != "1" ]; then
         local tag

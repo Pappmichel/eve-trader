@@ -653,6 +653,8 @@ class OAuthConfig:
     session_secret_key: str = field(default_factory=lambda: os.getenv("SESSION_SECRET_KEY", ""))
     authorize_url: str = "https://login.eveonline.com/v2/oauth/authorize"
     token_url: str = "https://login.eveonline.com/v2/oauth/token"
+    # Refresh-token revocation (public PKCE client: token + client_id only).
+    revoke_url: str = "https://login.eveonline.com/v2/oauth/revoke"
     jwks_url: str = "https://login.eveonline.com/oauth/jwks"
     issuer: str = "login.eveonline.com"
     token_store_path: Path = field(default_factory=lambda: DATA_DIR / "tokens.json")

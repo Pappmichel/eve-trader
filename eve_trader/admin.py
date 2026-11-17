@@ -17,9 +17,9 @@ import logging
 
 import requests
 
-from . import access_gate, backup, storage, tenant_scope
+from . import access_gate, backup, storage, tenant_scope, token_crypto
 from .actions import ActionError
-from .auth import TokenManager
+from .auth import TokenManager, revoke_refresh_tokens
 from .config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from .esi_client import ESIClient, ESIError
 from .production import dynamic_targets, esi_sync, jita_price_cache, sde, sde_diff
@@ -99,15 +99,102 @@ def do_grant_default_tools(dry_run: bool = False) -> dict:
     return {"changed": changed, "unchanged": unchanged, "dry_run": dry_run}
 
 
+def _delete_tenant_credentials(tenant_id: str) -> dict:
+    """Deletes every stored SSO token and the Discord link (which also turns
+    every alert subscription off) of one tenant, and returns the refresh
+    tokens that were readable so the caller can revoke them at SSO after the
+    deletion. A row that cannot be decrypted is deleted all the same."""
+    with tenant_scope.enter_tenant(tenant_id):
+        try:
+            refresh_tokens = [
+                str(rec.get("refresh_token") or "")
+                for rec in storage.load_all_tenant_tokens().values()
+            ]
+            readable = True
+        except token_crypto.TokenCryptoError:
+            refresh_tokens, readable = [], False
+        tokens_deleted = storage.delete_all_tenant_tokens()
+        discord_unlinked = storage.delete_alert_destination()
+    return {
+        "tokens_deleted": tokens_deleted,
+        "refresh_tokens": [t for t in refresh_tokens if t],
+        "revoke_skipped": not readable and tokens_deleted > 0,
+        "discord_unlinked": discord_unlinked,
+    }
+
+
+def _revoke_result(creds: dict) -> dict:
+    revoked, failed = revoke_refresh_tokens(creds["refresh_tokens"])
+    return {
+        "tokens_deleted": creds["tokens_deleted"],
+        "revoked": revoked,
+        "revoke_failed": failed,
+        "revoke_skipped": creds["revoke_skipped"],
+        "discord_unlinked": creds["discord_unlinked"],
+    }
+
+
 def do_remove_user(character_id: int) -> dict:
     """Deregisters `character_id` entirely - both their login (tenant_
-    registry_entries) and every tool grant they had. Idempotent (matches
-    storage.remove_tenant_registry_entry/revoke_all_tool_grants's own
-    no-op-if-missing semantics) - removing an already-removed/never-added
-    character isn't an error."""
+    registry_entries) and every tool grant they had - and deletes the
+    tenant's stored SSO tokens and Discord link at once (the tenant's other
+    data stays). The refresh tokens are then revoked at SSO on a best-effort
+    basis; the local deletion never depends on that call. Idempotent -
+    removing an already-removed/never-added character isn't an error."""
+    tenant_id = storage.resolve_tenant_id(character_id)
+    creds = (
+        _delete_tenant_credentials(tenant_id) if tenant_id is not None
+        else {"tokens_deleted": 0, "refresh_tokens": [], "revoke_skipped": False, "discord_unlinked": False}
+    )
     storage.remove_tenant_registry_entry(character_id)
     storage.revoke_all_tool_grants(character_id)
-    return {"removed": character_id}
+    return {"removed": character_id, **_revoke_result(creds)}
+
+
+def _purgeable_tenant_name(tenant_id: str, actor_character_id: int | None = None) -> str:
+    if str(tenant_id) == storage.DEFAULT_TENANT_ID:
+        raise ActionError("The default tenant can not be deleted.")
+    names = {str(t[0]): t[1] for t in storage.list_tenants()}
+    if str(tenant_id) not in names:
+        raise ActionError("Unknown tenant.")
+    if storage.tenant_registry_entry_count(tenant_id) > 0:
+        raise ActionError("This tenant still has a registered user. Remove the user first.")
+    if actor_character_id is not None and storage.resolve_tenant_id(actor_character_id) == str(tenant_id):
+        raise ActionError("You can not delete your own tenant.")
+    return names[str(tenant_id)]
+
+
+def do_purge_tenant_preview(tenant_id: str, actor_character_id: int | None = None) -> dict:
+    """What a purge would delete: tenant name, rows per table, total."""
+    tenant_id = str(tenant_id)
+    name = _purgeable_tenant_name(tenant_id, actor_character_id)
+    counts = storage.count_tenant_rows(tenant_id)
+    return {
+        "tenant_id": tenant_id, "name": name,
+        "tables": [{"table": t, "rows": n} for t, n in sorted(counts.items())],
+        "total_rows": sum(counts.values()),
+    }
+
+
+def do_purge_tenant(tenant_id: str, confirm_name: str, actor_character_id: int | None = None) -> dict:
+    """Deletes an orphaned tenant (no registered user) and all its data for
+    good. `confirm_name` must equal the tenant's name exactly. Stored tokens
+    go first (then revoked at SSO, best effort). Running it again finishes an
+    interrupted purge. Rolling backups keep the data until they rotate out."""
+    tenant_id = str(tenant_id)
+    name = _purgeable_tenant_name(tenant_id, actor_character_id)
+    if confirm_name != name:
+        raise ActionError("The confirmation name does not match the tenant name.")
+    creds = _delete_tenant_credentials(tenant_id)
+    deleted = storage.purge_tenant_rows(tenant_id)
+    from .asset_manager import actions as asset_manager_actions
+    asset_manager_actions.invalidate_cache(tenant_id)
+    return {
+        "purged": tenant_id, "name": name,
+        "rows_deleted": sum(deleted.values()),
+        "tables": [{"table": t, "rows": n} for t, n in sorted(deleted.items())],
+        **_revoke_result(creds),
+    }
 
 
 def do_start_sde_preview() -> dict:

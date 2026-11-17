@@ -22,6 +22,7 @@ import type {
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { ErrorsSection } from './ErrorsSection'
+import { PurgeTenantDialog } from './PurgeTenantDialog'
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
 // previewing/applying it is a cross-tenant-impacting action - moved here from
@@ -365,19 +366,32 @@ function impactSummary(impact: AllowlistImpact): string {
   return lines.join(' ')
 }
 
-// Read-only - tenants are always created implicitly as part of "Add User"
-// below (one dedicated tenant per character, enforced at the DB level, see
-// docs/admin_schema.sql). Kept visible here mainly to spot orphaned tenants
-// left behind by a removed user (do_remove_user intentionally leaves the
-// tenant and its data in place).
+// Tenants are created implicitly as part of "Add User" below (one dedicated
+// tenant per character, enforced at the DB level, see docs/admin_schema.sql).
+// Removing a user leaves the tenant and its data in place (tokens and the
+// Discord link are deleted); an orphaned tenant - one with no registered user -
+// can be deleted for good here, after a confirmation that shows the row counts.
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001'
+
 function TenantSection() {
   const { data: tenants, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: users } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
+  const [purgeTarget, setPurgeTarget] = useState<AdminTenant | null>(null)
+  const usedTenantIds = useMemo(() => new Set((users ?? []).map((u) => u.tenant_id)), [users])
 
   const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
     { header: 'Name', accessorKey: 'name', size: 220 },
     { header: 'Tenant ID', accessorKey: 'tenant_id', size: 300 },
     { header: 'Created', accessorKey: 'created_at', size: 180, cell: (i) => dateTime(i.getValue()) },
-  ], [])
+    {
+      header: '', id: 'purge', size: 120, enableSorting: false,
+      cell: (i) => {
+        const t = i.row.original
+        if (!users || t.tenant_id === DEFAULT_TENANT_ID || usedTenantIds.has(t.tenant_id)) return null
+        return <Button size="compact-xs" color="danger" variant="light" onClick={() => setPurgeTarget(t)}>Delete tenant</Button>
+      },
+    },
+  ], [users, usedTenantIds])
 
   return (
     <div>
@@ -393,6 +407,7 @@ function TenantSection() {
         onRetry={() => refetch()}
         dataUpdatedAt={dataUpdatedAt}
       />
+      {purgeTarget && <PurgeTenantDialog tenant={purgeTarget} onClose={() => setPurgeTarget(null)} />}
     </div>
   )
 }
@@ -421,7 +436,13 @@ function UsersSection() {
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']],
     { tier: 'live', effect: 'Resolves the character name live via ESI, creates a new tenant and grants every tool except admin and module_reprocessing.' })
-  const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
+  const removeUser = useAction('Remove User', async (characterId: number) => {
+    const r = await adminApi.removeUser(characterId)
+    const revoke = r.tokens_deleted === 0 ? '' : r.revoke_skipped
+      ? ' SSO revoke skipped (tokens were unreadable).'
+      : ` SSO revoke: ${r.revoked} ok, ${r.revoke_failed} failed.`
+    return `Removed. ${r.tokens_deleted} stored tokens deleted${r.discord_unlinked ? ', Discord unlinked' : ''}.${revoke}`
+  }, [['admin', 'users'], ['admin', 'tenants']])
   const refreshAffiliations = useAction(
     'Refresh affiliations', adminApi.refreshAffiliations, [['admin', 'users']],
     { tier: 'live', effect: 'Loads every registered character’s corporation and alliance from ESI.' },
@@ -469,7 +490,8 @@ function UsersSection() {
             title: 'Remove user',
             children: <Text size="sm">
               Remove {i.row.original.character_name ?? `#${i.row.original.character_id}`} from Admin?
-              Their tenant and its data stay intact - they just lose access until re-added.
+              Their stored ESI tokens and Discord link are deleted immediately, and the tokens are revoked
+              at EVE SSO. Their tenant and its other data stay intact - they just lose access until re-added.
             </Text>,
             labels: { confirm: 'Remove', cancel: 'Cancel' },
             confirmProps: { color: 'danger' },

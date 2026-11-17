@@ -1298,6 +1298,36 @@ export interface CorporationRoleCheckResult {
   corporations: CorporationRoleCheck[]
 }
 
+export interface RemoveUserResult {
+  removed: number
+  tokens_deleted: number
+  revoked: number
+  revoke_failed: number
+  revoke_skipped: boolean
+  discord_unlinked: boolean
+}
+
+export interface TenantPurgeTable { table: string; rows: number }
+
+export interface TenantPurgePreview {
+  tenant_id: string
+  name: string
+  total_rows: number
+  tables: TenantPurgeTable[]
+}
+
+export interface TenantPurgeResult {
+  purged: string
+  tokens_deleted: number
+  revoked: number
+  revoke_failed: number
+  revoke_skipped: boolean
+  discord_unlinked: boolean
+  name: string
+  rows_deleted: number
+  tables: TenantPurgeTable[]
+}
+
 export interface AdminTenant {
   tenant_id: string
   name: string

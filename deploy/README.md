@@ -289,7 +289,11 @@ EVE_SSO_CALLBACK_HOST=<public-ip>
 FRONTEND_ORIGIN=http://<public-ip>
 EVE_SSO_REDIRECT_URI=http://<public-ip>/api/auth/callback
 SESSION_SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
+TOKEN_ENCRYPTION_KEY=<generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
 ```
+`TOKEN_ENCRYPTION_KEY` encrypts the stored SSO tokens; the service refuses to start without it and
+`deploy.sh` aborts before stopping anything if it is missing. Store a copy in a password manager:
+backups never contain it (see docs/RUNBOOK.md, Token key).
 Easy to hand-edit `.env` in `nano` and accidentally skip a line (confirmed
 real, 2026-08-16 - `SESSION_SECRET_KEY` got missed this way, which doesn't
 fail until the *first* login attempt, with a raw Internal Server Error and

@@ -52,4 +52,9 @@ done
 # Local dev value only; matches EVE_TRADER_PG_DSN in .cursor/environment.json.
 psql "$APP_DSN" -v ON_ERROR_STOP=1 -q -c   "ALTER ROLE eve_trader_app WITH PASSWORD 'app_devpassword';" >/dev/null
 
+# --- Dev token-encryption key (only if .env has none; the service needs it) ---
+if [ -f .env ] && ! grep -qE '^[[:space:]]*TOKEN_ENCRYPTION_KEY=.+' .env; then
+  python3 -c "from cryptography.fernet import Fernet; print('TOKEN_ENCRYPTION_KEY=' + Fernet.generate_key().decode())" >> .env 2>/dev/null || true
+fi
+
 echo "start.sh: PostgreSQL ready (test DB: eve_trader, app DB: eve_trader_dev)"

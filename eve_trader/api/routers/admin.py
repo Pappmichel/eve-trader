@@ -6,6 +6,7 @@ a normal grant (CLI bootstrap or another admin); there is no DEFAULT_TENANT_ID
 bypass. Nothing in this router itself re-checks that."""
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException
@@ -49,6 +50,22 @@ def get_health_detail():
 def list_tenants():
     # Registry read (connect_unscoped) - no live ESI/Goonmetrics.
     return admin.do_list_tenants()
+
+
+@router.get("/tenants/{tenant_id}/purge-preview")
+def purge_tenant_preview(tenant_id: uuid.UUID, actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(admin.do_purge_tenant_preview, tenant_id=str(tenant_id), actor_character_id=actor)
+
+
+class PurgeTenantRequest(BaseModel):
+    confirm_name: NameText
+
+
+@router.post("/tenants/{tenant_id}/purge")
+def purge_tenant(tenant_id: uuid.UUID, req: PurgeTenantRequest,
+                 actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(admin.do_purge_tenant, tenant_id=str(tenant_id),
+                 confirm_name=req.confirm_name, actor_character_id=actor)
 
 
 @router.get("/users", response_model=list[schemas.AdminUser])
