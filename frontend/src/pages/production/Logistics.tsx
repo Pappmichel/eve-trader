@@ -56,22 +56,25 @@ export default function Logistics() {
     setScope(next)
     writeScope(next)
   }
-  const { data: rows, isError } = useQuery({
+  const { data: status, isError, refetch: refetchStatus } = useQuery({
     queryKey: ['production', 'logistics', 'status', scope], queryFn: () => productionApi.logisticsStatus(scope), retry: false,
   })
-  const { data: distributionRows } = useQuery({
+  const rows = status?.rows
+  const { data: distribution } = useQuery({
     queryKey: ['production', 'logistics', 'distribution', scope],
     queryFn: () => productionApi.distributionRecommendations(scope), retry: false,
   })
+  const distributionRows = distribution?.rows
   const { data: assetPlan } = useQuery({
     queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan, enabled: scope === 'asset_ready',
   })
   const { data: restockRows, isError: restockError } = useQuery({
     queryKey: ['production', 'logistics', 'market-restock'], queryFn: productionApi.marketRestock, retry: false,
   })
-  const { data: inventionRows } = useQuery({
+  const { data: inventionLogistics } = useQuery({
     queryKey: ['production', 'logistics', 'invention'], queryFn: productionApi.inventionLogistics, retry: false,
   })
+  const inventionRows = inventionLogistics?.rows
   const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
 
   const [sourceDraft, setSourceDraft] = useState<number | null>(null)
@@ -488,6 +491,8 @@ export default function Logistics() {
       {categoriesLoading || locationsLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={320} />
       ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetchStatus()} maxHeight={320} />
+      ) : status?.computed === false ? (
         scope === 'asset_ready' ? (
           <HintCard>
             No asset-optimized build list computed yet - run <b>Refresh Asset Build List</b> in the Build List

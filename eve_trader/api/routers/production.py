@@ -622,33 +622,39 @@ def get_category_cost_index_overrides():
 LogisticsScope = Literal["build_list", "asset_ready"]
 
 
-def _logistics_jobs_kwargs(scope: LogisticsScope) -> dict:
+def _logistics_jobs_kwargs(scope: LogisticsScope) -> Optional[dict]:
     """Which cached plan the Logistics material tables read
     (docs/LOGISTICS_SCOPE_TOGGLE_PLAN.md). "build_list" needs a non-empty
     Build List, as before. "asset_ready" needs a computed asset plan, but an
     empty jobs list is a valid state (nothing to build) - the action then
-    returns no rows."""
+    returns no rows. None means "not computed yet": a normal state (the plans
+    live in memory, so every restart starts there), answered as 200
+    `{computed: false, rows: []}` rather than an error."""
     if scope == "asset_ready":
         asset = _last_asset_plan.get(_tenant_key())
         if asset is None:
-            raise HTTPException(
-                status_code=400,
-                detail="No asset-optimized build list computed yet. Run 'Refresh Asset Build List' first.")
+            return None
         return {"asset_jobs": asset.get("jobs") or []}
     plan = _last_plan.get(_tenant_key())
     if not plan or not plan.get("build_list"):
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
+        return None
     return {"build_list": plan["build_list"]}
 
 
-@router.get("/logistics", response_model=list[schemas.LogisticsRow])
+@router.get("/logistics", response_model=schemas.LogisticsResponse)
 def get_logistics_status(scope: LogisticsScope = "build_list"):
-    return _wrap(actions.do_get_logistics_status, **_logistics_jobs_kwargs(scope))
+    kwargs = _logistics_jobs_kwargs(scope)
+    if kwargs is None:
+        return {"computed": False, "rows": []}
+    return {"computed": True, "rows": _wrap(actions.do_get_logistics_status, **kwargs)}
 
 
-@router.get("/logistics/distribution", response_model=list[schemas.DistributionRow])
+@router.get("/logistics/distribution", response_model=schemas.DistributionResponse)
 def get_distribution_recommendations(scope: LogisticsScope = "build_list"):
-    return _wrap(actions.do_get_distribution_recommendations, **_logistics_jobs_kwargs(scope))
+    kwargs = _logistics_jobs_kwargs(scope)
+    if kwargs is None:
+        return {"computed": False, "rows": []}
+    return {"computed": True, "rows": _wrap(actions.do_get_distribution_recommendations, **kwargs)}
 
 
 @router.get("/logistics/market-restock", response_model=list[schemas.MarketRestockRow])
@@ -657,26 +663,28 @@ def get_market_restock():
     return _wrap(actions.do_get_market_restock)
 
 
-@router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
+@router.get("/logistics/invention", response_model=schemas.LogisticsResponse)
 def get_invention_logistics():
     # Deliberately only checks plan is None (not invention_list's own
     # truthiness, unlike the sibling endpoints above) - an empty
     # invention_list is a real, valid "nothing needs inventing right now"
-    # state (no Tech II stock targets configured), not an error.
+    # state (no Tech II stock targets configured): computed true, no rows.
     plan = _last_plan.get(_tenant_key())
     if plan is None:
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_invention_logistics, invention_list=plan.get("invention_list") or [])
+        return {"computed": False, "rows": []}
+    return {"computed": True,
+            "rows": _wrap(actions.do_get_invention_logistics, invention_list=plan.get("invention_list") or [])}
 
 
-@router.get("/invention/t1-bpc-needs", response_model=list[schemas.T1BpcInventionNeedRow])
+@router.get("/invention/t1-bpc-needs", response_model=schemas.T1BpcInventionNeedsResponse)
 def get_t1_bpc_invention_needs():
     # Same "plan is None, not invention_list's own truthiness" rule as
     # get_invention_logistics above - an empty list is a valid state.
     plan = _last_plan.get(_tenant_key())
     if plan is None:
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=plan.get("invention_list") or [])
+        return {"computed": False, "rows": []}
+    return {"computed": True,
+            "rows": _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=plan.get("invention_list") or [])}
 
 
 @router.get("/logistics/structure-names")

@@ -951,7 +951,8 @@ def test_plan_is_isolated_per_tenant(monkeypatch):
     assert client.get("/api/production/plan").json() is None
     # tenant-b's own logistics reads must also not see tenant-a's build_list.
     resp = client.get("/api/production/logistics")
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    assert resp.json() == {"computed": False, "rows": []}
 
 
 def test_logistics_scope_asset_ready_reads_asset_plan(monkeypatch):
@@ -974,21 +975,27 @@ def test_logistics_scope_asset_ready_reads_asset_plan(monkeypatch):
     monkeypatch.setattr(production_actions, "do_get_distribution_recommendations", fake_distribution)
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-logistics-scope")
 
+    # No asset plan yet is a normal state, not an error.
     resp = client.get("/api/production/logistics?scope=asset_ready")
-    assert resp.status_code == 400
-    assert "asset-optimized" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.json() == {"computed": False, "rows": []}
+    resp = client.get("/api/production/logistics/distribution?scope=asset_ready")
+    assert resp.status_code == 200
+    assert resp.json() == {"computed": False, "rows": []}
+    assert "status" not in seen and "distribution" not in seen
 
     monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
                         lambda: {"jobs": 1, "plan": {"jobs": [job], "order_progress": []}})
     assert client.post("/api/production/asset-plan/refresh").status_code == 200
 
-    assert client.get("/api/production/logistics?scope=asset_ready").json() == []
-    assert client.get("/api/production/logistics/distribution?scope=asset_ready").json() == []
+    assert client.get("/api/production/logistics?scope=asset_ready").json() == {"computed": True, "rows": []}
+    assert client.get("/api/production/logistics/distribution?scope=asset_ready").json() == {
+        "computed": True, "rows": []}
     assert seen["status"][0] is None and [j.type_id for j in seen["status"][1]] == [10]
     assert seen["distribution"][0] is None and [j.type_id for j in seen["distribution"][1]] == [10]
 
     # Default scope is unchanged: no Build List computed for this tenant.
-    assert client.get("/api/production/logistics").status_code == 400
+    assert client.get("/api/production/logistics").json() == {"computed": False, "rows": []}
     assert client.get("/api/production/logistics?scope=bogus").status_code == 422
 
 
@@ -1001,7 +1008,51 @@ def test_logistics_scope_asset_ready_empty_plan_is_not_an_error(monkeypatch):
     monkeypatch.setattr(production_actions, "do_get_logistics_status",
                         lambda build_list=None, asset_jobs=None: [] if asset_jobs == [] else None)
     resp = client.get("/api/production/logistics?scope=asset_ready")
-    assert resp.status_code == 200 and resp.json() == []
+    assert resp.status_code == 200 and resp.json() == {"computed": True, "rows": []}
+
+
+def test_invention_endpoints_distinguish_no_plan_from_an_empty_invention_list(monkeypatch):
+    """No cached plan is `computed: false`; a plan with nothing to invent is
+    `computed: true` with no rows (docs: an empty invention_list is valid)."""
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-invention-empty-state")
+    for path in ("/api/production/logistics/invention", "/api/production/invention/t1-bpc-needs"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert resp.json() == {"computed": False, "rows": []}
+
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": [],
+                 "adjusted_prices_available": True},
+        "stock_targets": 0, "missing_types": 0, "buy_entries": 0, "build_jobs": 0,
+    })
+    monkeypatch.setattr(production_actions, "do_get_invention_logistics", lambda invention_list=None: [])
+    monkeypatch.setattr(production_actions, "do_get_t1_bpc_invention_needs", lambda invention_list=None: [])
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    for path in ("/api/production/logistics/invention", "/api/production/invention/t1-bpc-needs"):
+        assert client.get(path).json() == {"computed": True, "rows": []}
+
+
+def test_invention_endpoints_return_the_action_rows(monkeypatch):
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-invention-rows")
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": [],
+                 "adjusted_prices_available": True},
+        "stock_targets": 0, "missing_types": 0, "buy_entries": 0, "build_jobs": 0,
+    })
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    monkeypatch.setattr(production_actions, "do_get_invention_logistics", lambda invention_list=None: [{
+        "category": "Ships", "location_id": 5, "type_id": 7, "type_name": "Datacore", "needed": 4.0,
+        "available": 1.0, "missing": 3.0, "pull_from": [{"location_id": 9, "quantity": 1.0}], "volume_m3": 0.1,
+    }])
+    monkeypatch.setattr(production_actions, "do_get_t1_bpc_invention_needs", lambda invention_list=None: [{
+        "type_id": 8, "name": "Blueprint", "needed": 3, "available": 1, "missing": 2,
+        "bpo_present": True, "stockpile_pct": 33.0,
+    }])
+
+    logistics = client.get("/api/production/logistics/invention").json()
+    assert logistics["computed"] is True and logistics["rows"][0]["missing"] == 3.0
+    needs = client.get("/api/production/invention/t1-bpc-needs").json()
+    assert needs["computed"] is True and needs["rows"][0]["bpo_present"] is True
 
 
 def test_plan_serializes_special_order_fields(monkeypatch):

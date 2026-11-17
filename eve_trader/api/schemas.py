@@ -329,6 +329,18 @@ class DistributionRow(_Base):
     volume_m3: float = 0.0
 
 
+class LogisticsResponse(_Base):
+    """`computed` is false while no cached plan exists for the scope (a normal
+    state after a restart: the plans live in memory); `rows` is then empty."""
+    computed: bool
+    rows: list[LogisticsRow]
+
+
+class DistributionResponse(_Base):
+    computed: bool
+    rows: list[DistributionRow]
+
+
 class MarketRestockRow(_Base):
     type_id: int
     type_name: str
@@ -452,6 +464,11 @@ class T1BpcInventionNeedRow(_Base):
     missing: int
     bpo_present: bool
     stockpile_pct: float
+
+
+class T1BpcInventionNeedsResponse(_Base):
+    computed: bool
+    rows: list[T1BpcInventionNeedRow]
 
 
 class IndustryJobRow(_Base):
