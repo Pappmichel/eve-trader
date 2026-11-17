@@ -24,6 +24,16 @@ function pctHint(value: number | undefined): string {
   return value === undefined ? '–' : `${(value * 100).toFixed(2)}%`
 }
 
+const SAME_AS_ME = '__same_as_me__'
+
+type TeField = 'reaction_te_rig_tier' | 'component_te_rig_tier' | 'supercapital_te_rig_tier' | 'manufacturing_te_rig_tier'
+const TE_PROFILES: { field: TeField; label: string; noThukker?: boolean }[] = [
+  { field: 'reaction_te_rig_tier', label: 'Reactions', noThukker: true },
+  { field: 'component_te_rig_tier', label: 'Components' },
+  { field: 'supercapital_te_rig_tier', label: 'Supercapitals' },
+  { field: 'manufacturing_te_rig_tier', label: 'Manufacturing' },
+]
+
 export default function ProductionSettings() {
   const { data } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
   const { data: structureOptions } = useQuery({ queryKey: ['production', 'structure-options'], queryFn: productionApi.structureOptions })
@@ -162,7 +172,7 @@ export default function ProductionSettings() {
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Select label="Structure - Reactions" data={structureOptions.structure_types} value={form.reaction_structure_type}
           onChange={(v) => v && set('reaction_structure_type', v)} />
-        <Select label="Rig - Reactions" data={structureOptions.rig_tiers} value={form.reaction_rig_tier}
+        <Select label="Rig - Reactions" data={structureOptions.rig_tiers.filter((t) => t !== 'Thukker')} value={form.reaction_rig_tier}
           onChange={(v) => v && set('reaction_rig_tier', v)} />
         <Select label="Structure - Components" data={structureOptions.structure_types} value={form.component_structure_type}
           onChange={(v) => v && set('component_structure_type', v)} />
@@ -176,6 +186,23 @@ export default function ProductionSettings() {
           onChange={(v) => v && set('manufacturing_structure_type', v)} />
         <Select label="Rig - Manufacturing (everything else)" data={structureOptions.rig_tiers} value={form.manufacturing_rig_tier}
           onChange={(v) => v && set('manufacturing_rig_tier', v)} />
+      </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        Time-efficiency (TE) rig per profile. &quot;Same as ME&quot; (the default) uses the ME rig above for time as
+        well; pick &quot;No Rig&quot; where the structure carries no time rig. A category&apos;s own TE rig on the
+        Logistics page wins.
+      </Text>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        {TE_PROFILES.map(({ field, label, noThukker }) => (
+          <Select key={field} label={`TE rig - ${label}`} value={form[field] ?? SAME_AS_ME}
+            data={[{ value: SAME_AS_ME, label: 'Same as ME' },
+              ...structureOptions.rig_tiers.filter((t) => !(noThukker && t === 'Thukker')).map((t) => ({ value: t, label: t }))]}
+            allowDeselect={false}
+            onChange={(v) => set(field, v && v !== SAME_AS_ME ? v : null)} />
+        ))}
+        <Select label="Invention cost rig (invention structure)" value={form.invention_rig_tier ?? 'No Rig'}
+          data={structureOptions.invention_rig_tiers ?? ['No Rig']} allowDeselect={false}
+          onChange={(v) => v && set('invention_rig_tier', v)} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Invention Skills</Title>

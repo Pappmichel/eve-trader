@@ -6,6 +6,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CategoryFacilityRow, CategoryFacilityTax } from '../../api/types'
 import { CategoryFacilityFields } from './CategoryFacilityFields'
 
+// Mantine's Select labels both its input and its option list; the input is the one to click.
+const selectInput = (name: string) =>
+  screen.getAllByLabelText(name).find((e) => e.tagName === 'INPUT') as HTMLElement
+const findSelectInput = async (name: string) =>
+  (await screen.findAllByLabelText(name)).find((e) => e.tagName === 'INPUT') as HTMLElement
+
 function row(tax: Partial<CategoryFacilityTax> = {}, savedTax: number | null = null): CategoryFacilityRow {
   return {
     category: 'Large Ships', profile: 'manufacturing', location_id: 1049588174021,
@@ -20,10 +26,10 @@ function row(tax: Partial<CategoryFacilityTax> = {}, savedTax: number | null = n
   }
 }
 
-function renderFields(r: CategoryFacilityRow, onSave = vi.fn()) {
+function renderFields(r: CategoryFacilityRow, onSave = vi.fn(), rigTiers = ['T1-Rig']) {
   render(
     <MantineProvider>
-      <CategoryFacilityFields row={r} structureTypes={['Raitaru']} rigTiers={['T1-Rig']} saving={false} onSave={onSave} />
+      <CategoryFacilityFields row={r} structureTypes={['Raitaru']} rigTiers={rigTiers} saving={false} onSave={onSave} />
     </MantineProvider>,
   )
   return onSave
@@ -80,5 +86,41 @@ describe('CategoryFacilityFields facility tax', () => {
     await userEvent.click(screen.getByLabelText('Facility tax override'))
     await userEvent.tab()
     expect(onSave).not.toHaveBeenCalled()
+  })
+})
+
+describe('CategoryFacilityFields TE rig', () => {
+  const withTe = (extra: Partial<CategoryFacilityRow['effective']> = {}, category = 'Large Ships'): CategoryFacilityRow => {
+    const base = row()
+    return {
+      ...base, category,
+      effective: {
+        ...base.effective, te_rig_tier_basic: 'T1-Rig', te_rig_source_basic: 'same as ME',
+        te_rig_tier_advanced: null, te_rig_source_advanced: null, ...extra,
+      },
+    }
+  }
+
+  it('shows the TE tier in use with its source', () => {
+    renderFields(withTe())
+    expect(screen.getByText(/TE T1-Rig \(same as ME\)/)).toBeInTheDocument()
+    expect(selectInput('TE rig')).toHaveValue('Auto: T1-Rig (same as ME)')
+  })
+
+  it('saves a chosen TE tier next to the other saved fields', async () => {
+    const onSave = renderFields(withTe(), vi.fn(), ['No Rig', 'T1-Rig'])
+    await userEvent.click(selectInput('TE rig'))
+    await userEvent.click(await screen.findByRole('option', { name: 'No Rig' }))
+    expect(onSave).toHaveBeenCalledWith({
+      category: 'Large Ships', structure_type: null, rig_tier_basic: null, rig_tier_advanced: null,
+      facility_tax_rate: null, te_rig_tier_basic: 'No Rig',
+    })
+  })
+
+  it('does not offer the Thukker rig for reactions', async () => {
+    renderFields(withTe({}, 'Reactions'), vi.fn(), ['T1-Rig', 'Thukker'])
+    await userEvent.click(selectInput('TE rig'))
+    expect(screen.queryByRole('option', { name: 'Thukker' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('option', { name: 'T1-Rig' })).toBeInTheDocument()
   })
 })

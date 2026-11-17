@@ -42,11 +42,18 @@ const FEES: ObservedSellFees = {
   relist_note: 'Relist and order-modification fees are included only as far as they are attributed to a sale.',
 }
 
+// Mantine's Select labels both its input and its option list; the input is the one to click.
+const selectInput = (name: string) =>
+  screen.getAllByLabelText(name).find((e) => e.tagName === 'INPUT') as HTMLElement
+const findSelectInput = async (name: string) =>
+  (await screen.findAllByLabelText(name)).find((e) => e.tagName === 'INPUT') as HTMLElement
+
 function setup(fees: ObservedSellFees) {
   vi.mocked(productionApi.settings).mockResolvedValue(SETTINGS)
   vi.mocked(productionApi.updateSettings).mockResolvedValue(SETTINGS)
   vi.mocked(productionApi.structureOptions).mockResolvedValue(
-    { hangar_division_flags: [], structure_types: [], rig_tiers: [] } as any)
+    { hangar_division_flags: [], structure_types: [], rig_tiers: ['No Rig', 'T1-Rig', 'Thukker'],
+      invention_rig_tiers: ['No Rig', 'Invention T1-Rig'] } as any)
   vi.mocked(productionApi.systemSettings).mockResolvedValue({} as any)
   vi.mocked(productionApi.systemCostIndices).mockResolvedValue({} as any)
   vi.mocked(productionApi.allSolarSystems).mockResolvedValue([])
@@ -82,5 +89,28 @@ describe('ProductionSettings observed sell fees', () => {
     })
     expect(await screen.findByText(/no value \(4 of 20 sales needed\)/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('ProductionSettings TE rigs', () => {
+  it('saves a TE tier and the invention rig as their own fields', async () => {
+    setup(FEES)
+    const te = (await findSelectInput('TE rig - Manufacturing'))
+    expect(te).toHaveValue('Same as ME')
+    await userEvent.click(te)
+    await userEvent.click(await screen.findByRole('option', { name: 'No Rig' }))
+    await userEvent.click(selectInput('Invention cost rig (invention structure)'))
+    await userEvent.click(await screen.findByRole('option', { name: 'Invention T1-Rig' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(productionApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(productionApi.updateSettings).mock.calls[0][0]).toEqual({
+      manufacturing_te_rig_tier: 'No Rig', invention_rig_tier: 'Invention T1-Rig',
+    })
+  })
+
+  it('does not offer Thukker for the reaction TE rig', async () => {
+    setup(FEES)
+    await userEvent.click((await findSelectInput('TE rig - Reactions')))
+    expect(screen.queryByRole('option', { name: 'Thukker' })).not.toBeInTheDocument()
   })
 })

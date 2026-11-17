@@ -2043,6 +2043,23 @@ types. Structure rigs are not in ESI assets unless the corp owns the
 structure, so names are the only automatic source. Data is cached per tenant
 (60 s TTL plus `invalidate_facility_cache()` on every write path).
 
+**ME and TE rigs are separate tiers (decided with the user 2026-11-16).** The
+ME tier follows the order above (`rig_tier`, `rig_source`). The time-efficiency
+tier (`te_rig_tier`, `te_rig_source`) is the category's saved
+`te_rig_tier_basic`/`_advanced`, else the profile's global
+`<profile>_te_rig_tier`, else **the same tier as ME** ("same as ME"), so nothing
+changes until someone sets a TE tier; the structure name is an ME source only.
+Each tier may carry its own security table (`RigTier.security`; the Thukker
+tier uses 0.1 / 1.9 / 0.1 and has no TE bonus, never offered for reactions), and
+`facility_resolution` returns the ME and TE security multipliers separately
+(`security_multiplier` stays the ME one). The invention cost rig
+(`invention_rig_tier`, `constants.INVENTION_RIG_TIERS`, kept out of the
+per-category dropdowns) is resolved by `facility_resolution(None, "Invention",
+"invention", cfg)` with the invention system's security and only lowers the
+modelled invention/copy fee in `invention.fee_rates`; an observed total rate
+stays authoritative. The Thukker and invention-rig values come from an external
+review and are marked in `constants.py` as still to be checked against the SDE.
+
 **Facility tax is observed, never bound to a station or category (confirmed
 with the user 2026-11-07).** A structure owner changes the rate at any time, so
 no fixed rate is stored for a station or category. `engine.facility_resolution`
