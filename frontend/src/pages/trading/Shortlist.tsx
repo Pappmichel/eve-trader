@@ -168,7 +168,7 @@ export default function Shortlist() {
         hoverCard: (r: ShortlistRow) => (
           <Stack gap={2} miw={200}>
             <Text size="sm" fw={600}>{r.item}</Text>
-            <DetailRow label={`Cost (${hubLabel(tradeHubs, settings?.jita_region_id)})`} value={isk(r.landed_cost)} />
+            <DetailRow label={`Cost (${hub})`} value={isk(r.landed_cost)} />
             <DetailRow label="Sale (Structure)" value={isk(r.net_sell)} />
             <DetailRow label="Profit / unit" value={isk(r.profit_per_unit)} />
             <DetailRow label="Margin" value={pct(r.margin)} />
@@ -273,12 +273,12 @@ ${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
     { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
     // Label follows the configured buy hub (user feedback, 2026-10-01) - was
     // hardcoded "Cost (Jita)" regardless of jita_region_id's actual value.
-    { header: `Cost (${hubLabel(tradeHubs, settings?.jita_region_id)})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    { header: `Cost (${hub})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
     {
       // Highest hub buy price that still yields profit_per_unit >= 0 (GitHub
       // issue #221). Computed server-side: (net_sell - import_cost) /
       // (1 + broker fee). Comparable to the hub sell price, not to "Cost".
-      header: `Breakeven Buy (${hubLabel(tradeHubs, settings?.jita_region_id)})`, id: 'breakevenPrice', size: 150,
+      header: `Breakeven Buy (${hub})`, id: 'breakevenPrice', size: 150,
       accessorFn: (r) => r.breakeven_buy_price,
       cell: (i) => isk(i.getValue()),
       meta: { cellTitle: () => 'Highest hub buy price that still breaks even after broker fee, freight and structure sale fees.' },
@@ -286,7 +286,7 @@ ${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()) },
-  ], [trends, sparkCache, settings?.jita_region_id])
+  ], [trends, sparkCache, hub])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
