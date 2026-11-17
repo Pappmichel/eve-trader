@@ -92,3 +92,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON job_category_facilities TO eve_trader_ap
 -- own jobs at the category's structure, and the Settings rate when there is
 -- none (production/facility_tax.py, engine.facility_resolution).
 ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS facility_tax_rate DOUBLE PRECISION;
+
+-- Separate time-efficiency rig tier per category (NULL = same tier as the ME
+-- rig tier, the behaviour before the split).
+ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS te_rig_tier_basic TEXT;
+ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS te_rig_tier_advanced TEXT;

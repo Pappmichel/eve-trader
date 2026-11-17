@@ -43,6 +43,7 @@ tax question, unrelated to ME/TE (see the config.py docstring / Settings tab).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 # SDE industryActivity activity IDs used by this tool.
 ACTIVITY_MANUFACTURING = 1
@@ -220,6 +221,13 @@ STRUCTURE_TYPES: dict[str, StructureType] = {
 class RigTier:
     me_bonus: float   # additional ME% reduction (before security scaling), stacks with structure's me_multiplier
     te_bonus: float   # additional TE% reduction (before security scaling), stacks with structure's te_multiplier
+    # Own security table (high sec, low sec, null sec/wormhole multiplier)
+    # for a rig whose scaling differs from the standard Engineering Complex
+    # table (rig_security_multiplier); None = the standard table.
+    security: Optional[tuple[float, float, float]] = None
+    # Job cost reduction (invention cost rigs), scaled by the same security
+    # multiplier; 0 for every manufacturing/reaction rig.
+    cost_bonus: float = 0.0
 
 
 # Base (highsec, 1x) rig bonuses - confirmed via rig dogma attributes (e.g.
@@ -232,7 +240,49 @@ RIG_TIERS: dict[str, RigTier] = {
     "No Rig": RigTier(0.0, 0.0),
     "T1-Rig": RigTier(0.02, 0.20),
     "T2-Rig": RigTier(0.024, 0.24),
+    # Thukker material-efficiency rigs (type 45640 and siblings): -3.7 % ME,
+    # no time bonus, and their own security table - 0.1x in high sec, 1.9x in
+    # low sec, 0.1x in null sec/wormholes, so they only pay off in low sec.
+    # TAKEN FROM AN EXTERNAL REVIEW, TO BE CHECKED AGAINST THE SDE: whether
+    # -3.7 % is the base value or already security-scaled, and which job
+    # categories the rig exists for, could not be confirmed from repository
+    # data. Never offered for reactions (THUKKER_FORBIDDEN_CATEGORIES).
+    "Thukker": RigTier(0.037, 0.0, security=(0.1, 1.9, 0.1)),
 }
+
+THUKKER_TIER = "Thukker"
+THUKKER_FORBIDDEN_CATEGORIES = frozenset({"Reactions"})
+
+# Invention cost rigs (Standup invention cost rigs, attributeEngRigCostBonus
+# -10 % / -12 %, types 43878, 43879, 43890, 43891). TAKEN FROM AN EXTERNAL
+# REVIEW, TO BE CHECKED AGAINST THE SDE (base vs. scaled value). They scale
+# with the standard Engineering Complex security table. Kept apart from
+# RIG_TIERS so the per-category dropdowns never offer them.
+INVENTION_RIG_TIERS: dict[str, RigTier] = {
+    "No Rig": RigTier(0.0, 0.0),
+    "Invention T1-Rig": RigTier(0.0, 0.0, cost_bonus=0.10),
+    "Invention T2-Rig": RigTier(0.0, 0.0, cost_bonus=0.12),
+}
+
+_ANY_RIG_TIER: dict[str, RigTier] = {**RIG_TIERS, **INVENTION_RIG_TIERS}
+
+
+def tier_security_multiplier(rig_tier: str, security_status: float | None, is_reaction: bool = False) -> float:
+    """Security scaling of one rig tier: its own table when it has one (high
+    sec at rounded security >= 0.5, low sec above 0, else null sec), the
+    standard table otherwise (rig_security_multiplier). An unknown security
+    takes the table's high-sec value, the same lowest-bonus assumption the
+    standard table makes."""
+    table = _ANY_RIG_TIER[rig_tier].security
+    if table is None:
+        return rig_security_multiplier(security_status, is_reaction)
+    high, low, null = table
+    if security_status is None:
+        return high
+    rounded = _rounded_security(security_status)
+    if rounded >= 0.5:
+        return high
+    return low if rounded > 0.0 else null
 
 
 def _rounded_security(security_status: float) -> float:
@@ -289,7 +339,9 @@ def rig_security_multiplier(security_status: float | None, is_reaction: bool = F
     return 2.1
 
 
-def structure_rig_multiplier(structure_type: str, rig_tier: str, security_multiplier: float = 1.0) -> tuple[float, float, float]:
+def structure_rig_multiplier(structure_type: str, rig_tier: str, security_multiplier: float = 1.0,
+                             te_rig_tier: Optional[str] = None,
+                             te_security_multiplier: Optional[float] = None) -> tuple[float, float, float]:
     """Combines STRUCTURE_TYPES + RIG_TIERS into one (cost, ME, TE) multiplier
     triple, applied on top of ACTIVITY_MODS/decryptor-derived base values.
     `security_multiplier` scales the rig's bonus (see rig_security_multiplier -
@@ -297,13 +349,20 @@ def structure_rig_multiplier(structure_type: str, rig_tier: str, security_multip
     rigs are a real EVE item (e.g. "Standup M-Set Composite Reactor Time
     Efficiency I/II", confirmed via dogma attributes) - both me_bonus and
     te_bonus always apply here regardless of activity; there is no reaction
-    special-case."""
+    special-case.
+
+    `rig_tier` is the ME tier (and the invention cost rig, via cost_bonus);
+    `te_rig_tier` is the time-efficiency tier and defaults to the ME tier,
+    `te_security_multiplier` to `security_multiplier`."""
     structure = STRUCTURE_TYPES[structure_type]
-    rig = RIG_TIERS[rig_tier]
+    rig = _ANY_RIG_TIER[rig_tier]
+    te_rig = rig if te_rig_tier is None else _ANY_RIG_TIER[te_rig_tier]
+    if te_security_multiplier is None:
+        te_security_multiplier = security_multiplier
     me_rig_bonus = rig.me_bonus * security_multiplier
-    te_rig_bonus = rig.te_bonus * security_multiplier
+    te_rig_bonus = te_rig.te_bonus * te_security_multiplier
     return (
-        structure.cost_multiplier,
+        structure.cost_multiplier * (1 - rig.cost_bonus * security_multiplier),
         structure.me_multiplier * (1 - me_rig_bonus),
         structure.te_multiplier * (1 - te_rig_bonus),
     )

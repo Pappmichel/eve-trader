@@ -463,6 +463,11 @@ class ProductionSettings(BaseModel):
     supercapital_rig_tier: str
     manufacturing_structure_type: str
     manufacturing_rig_tier: str
+    reaction_te_rig_tier: Optional[str] = None
+    component_te_rig_tier: Optional[str] = None
+    supercapital_te_rig_tier: Optional[str] = None
+    manufacturing_te_rig_tier: Optional[str] = None
+    invention_rig_tier: str = "No Rig"
     encryption_skill_level: int
     datacore_skill_1_level: int
     datacore_skill_2_level: int
@@ -555,8 +560,9 @@ def get_system_cost_indices():
 
 @router.get("/settings/structure-options")
 def get_structure_options():
-    from ...production.constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
+    from ...production.constants import HANGAR_DIVISION_FLAGS, INVENTION_RIG_TIERS, RIG_TIERS, STRUCTURE_TYPES
     return {"structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS),
+            "invention_rig_tiers": list(INVENTION_RIG_TIERS),
             "hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}
 
 
@@ -936,14 +942,18 @@ class CategoryFacilityRequest(BaseModel):
     structure_type: Optional[NameText] = None
     rig_tier_basic: Optional[NameText] = None
     rig_tier_advanced: Optional[NameText] = None
+    te_rig_tier_basic: Optional[NameText] = None
+    te_rig_tier_advanced: Optional[NameText] = None
     facility_tax_rate: Optional[float] = None  # fraction; None = observed rate, then Settings
 
 
 @router.post("/logistics/facilities")
 def set_category_facility(req: CategoryFacilityRequest):
+    te_rigs = {key: value for key, value in (("te_rig_tier_basic", req.te_rig_tier_basic),
+                                             ("te_rig_tier_advanced", req.te_rig_tier_advanced)) if value is not None}
     return _wrap(actions.do_set_category_facility, category=req.category, structure_type=req.structure_type,
                  rig_tier_basic=req.rig_tier_basic, rig_tier_advanced=req.rig_tier_advanced,
-                 facility_tax_rate=req.facility_tax_rate)
+                 facility_tax_rate=req.facility_tax_rate, **te_rigs)
 
 
 @router.delete("/logistics/facilities/{category}")
