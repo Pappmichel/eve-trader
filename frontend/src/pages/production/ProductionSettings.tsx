@@ -76,7 +76,8 @@ export default function ProductionSettings() {
       }
     }
     return result
-  }, [['production', 'settings'], ['production', 'structure-names'], ['production', 'reaction-capacity-status']])
+  }, [['production', 'settings'], ['production', 'structure-names'], ['production', 'reaction-capacity-status'],
+    ['production', 'category-facilities']])
   const saveComponentSystem = useAction('Save Component System', () => {
     const opt = systemSelectData.find((o) => o.value === componentSystemId)
     return productionApi.setSystem('component', Number(componentSystemId), opt?.label ?? '')
@@ -204,6 +205,11 @@ export default function ProductionSettings() {
           data={structureOptions.invention_rig_tiers ?? ['No Rig']} allowDeselect={false}
           onChange={(v) => v && set('invention_rig_tier', v)} />
       </SimpleGrid>
+
+      <TextInput label="Rig sheet link" value={form.rig_sheet_url ?? ''} maxLength={500}
+        placeholder="https://docs.google.com/spreadsheets/d/..."
+        description="Optional. A shared Google sheet that lists the rig tier per solar system and job category. It is used for a category's structure when its system is listed, after a tier saved on the Logistics page and before the structure name. Saving a new link loads it once; the Logistics page shows its state and reloads it."
+        onChange={(e) => set('rig_sheet_url', e.currentTarget.value)} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Invention Skills</Title>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>

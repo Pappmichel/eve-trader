@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton, NumberInput, SegmentedControl,
@@ -15,6 +15,7 @@ import { StructureIdField } from '../../components/StructureIdField'
 import { useAction } from '../../hooks/useAction'
 import { qty, volume } from '../../format'
 import { CategoryFacilityFields } from './CategoryFacilityFields'
+import { RigSheetCard } from './RigSheetCard'
 import { StalePlanAlert } from './StalePlanAlert'
 
 const SCOPE_KEY = 'production-logistics-scope'
@@ -203,6 +204,11 @@ export default function Logistics() {
     ['production', 'category-facilities'], ['production', 'logistics'],
   ])
 
+  const reloadRigSheet = useAction('Rig Sheet Reloaded', productionApi.reloadRigSheet, [
+    ['production', 'category-facilities'], ['production', 'logistics'],
+  ])
+  const reloadRigSheetNow = useCallback(() => reloadRigSheet.mutate(), [reloadRigSheet.mutate])  // eslint-disable-line react-hooks/exhaustive-deps
+
   const grouped = useMemo(() => {
     const map = new Map<string, LogisticsRow[]>()
     for (const r of rows ?? []) {
@@ -288,6 +294,7 @@ export default function Logistics() {
 
   return (
     <Stack>
+      <RigSheetCard status={facilities?.rig_sheet} reloading={reloadRigSheet.isPending} onReload={reloadRigSheetNow} />
       <Card withBorder>
         <Title order={4} mb="xs">Structure per Category</Title>
         <Text size="xs" c="dimmed" mb="sm">

@@ -512,3 +512,15 @@ def test_category_list_carries_the_sheet_value_and_status(stored, monkeypatch):
     assert row["from_sheet"]["rig_tier_basic"] == T1
     assert row["effective"]["rig_source_basic"] == "sheet"
     assert result["rig_sheet"]["system_count"] == 4
+
+
+def test_reload_route_returns_the_action_result(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from eve_trader.api.app import create_app
+
+    status = {"configured": True, "ok": False, "error": "The rig sheet could not be fetched (HTTP 403).",
+              "system_count": 0, "fetched_at": None, "age_hours": None, "duplicates": [], "error_at": None}
+    monkeypatch.setattr(actions, "do_reload_rig_sheet", lambda *a, **k: status)
+    response = TestClient(create_app()).post("/api/production/logistics/rig-sheet/reload", json={})
+    assert response.status_code == 200 and response.json()["error"].endswith("(HTTP 403).")
