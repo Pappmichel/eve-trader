@@ -9,8 +9,6 @@ import { CategoryFacilityFields } from './CategoryFacilityFields'
 // Mantine's Select labels both its input and its option list; the input is the one to click.
 const selectInput = (name: string) =>
   screen.getAllByLabelText(name).find((e) => e.tagName === 'INPUT') as HTMLElement
-const findSelectInput = async (name: string) =>
-  (await screen.findAllByLabelText(name)).find((e) => e.tagName === 'INPUT') as HTMLElement
 
 function row(tax: Partial<CategoryFacilityTax> = {}, savedTax: number | null = null): CategoryFacilityRow {
   return {
