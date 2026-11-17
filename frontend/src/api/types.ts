@@ -1775,6 +1775,8 @@ export interface ContractMarketListing {
   date_expired: string | null
   match_score: number | null
   validation_status: string
+  /** Issued by this tenant (character, corporation or an own Doctrine contract). */
+  own: boolean
 }
 
 export interface ContractMarketFitting {
@@ -1783,6 +1785,8 @@ export interface ContractMarketFitting {
   hull_type_id: number | null
   hull_name: string | null
   count: number
+  /** How many of `count` are the tenant's own; min/avg ignore them. */
+  own_count: number
   min_price: number | null
   avg_price: number | null
   contracts: ContractMarketListing[]
