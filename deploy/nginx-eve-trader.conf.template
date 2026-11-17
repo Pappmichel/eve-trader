@@ -60,20 +60,20 @@ server {
 
     # CSP grounded in what this app's own built frontend actually loads
     # (confirmed 2026-09-26 by grepping frontend/dist's built JS for
-    # external URLs - none - and index.html for external tags - only Google
-    # Fonts): same-origin API (`/api/*`, same host, no separate API
+    # external URLs - none - and index.html for external tags - none
+    # locally): same-origin API (`/api/*`, same host, no separate API
     # domain), no third-party CDN scripts, no analytics. The EVE SSO login
     # redirect (`/api/auth/gate/start` -> login.eveonline.com) is a plain
     # server-side 302 the browser navigates to - top-level navigation isn't
     # governed by CSP at all, so no `login.eveonline.com` allowance is
     # needed anywhere below.
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" always;
     # style-src needs 'unsafe-inline': the UI library stack (floating-ui,
     # Radix-style portals/positioning) sets inline style="..." attributes for
     # positioning at runtime, not just stylesheet classes - a real
     # requirement, not a lazy default. script-src stays strict (no
     # 'unsafe-inline'/'unsafe-eval') since nothing in the built bundle needed
-    # either. The Google Fonts entries stay until the fonts are served locally.
+    # either. Fonts are self-hosted (bundled woff2), so no font host is allowed.
 
     location / {
         # 429 comes from limit_req (zones defined at the top of this file).
