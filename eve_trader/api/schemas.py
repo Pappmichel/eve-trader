@@ -27,6 +27,7 @@ class _Base(BaseModel):
 # which is what ``partial.partial_model`` copies into the update models.
 NameText = Annotated[str, StringConstraints(max_length=100)]
 ShortText = Annotated[str, StringConstraints(max_length=200)]
+UrlText = Annotated[str, StringConstraints(max_length=500)]
 LongText = Annotated[str, StringConstraints(max_length=10_000)]
 PasteText = Annotated[str, StringConstraints(max_length=500_000)]
 # 50,000: the largest bulk action sends a whole shortlist (thousands of ids)

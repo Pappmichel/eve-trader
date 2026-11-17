@@ -32,6 +32,7 @@ from .engine import (
     invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
     plan_production, plan_special_order, production_needs_by_type, shared_production_owner_ids, stock_value,
 )
+from . import rig_sheet
 from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .models import (
     BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
@@ -62,6 +63,7 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
         key in updates and getattr(cfg, key) != updates[key]
         for key in _REACTION_CAPACITY_KEYS
     )
+    previous_sheet_url = cfg.rig_sheet_url
     try:
         validate_production_overrides(updates)  # structure_type/rig_tier enum check - see its docstring
         validate_production_merged(cfg, updates)  # dynamic stock target cross-field checks (V-06)
@@ -84,7 +86,80 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
     if "excluded_system_ids" in updates:
         invalidate_excluded_locations_cache()
         _mark_cached_production_plans_stale()  # stock changes under the cached Build / Asset plans
+    if "rig_sheet_url" in updates and updates["rig_sheet_url"] != previous_sheet_url:
+        _apply_rig_sheet_url_change(cfg)
     return updates
+
+
+def _apply_rig_sheet_url_change(cfg: ProductionConfig) -> None:
+    """A new or cleared rig sheet link: the old state belongs to another sheet
+    (never read again, see engine._stored_rig_sheet_systems), so drop it and,
+    for a new link, fetch once. A fetch failure is stored for the page to
+    show; it never fails the settings save."""
+    invalidate_facility_cache()
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    if not cfg.rig_sheet_url:
+        storage.delete_rig_sheet()
+        return
+    do_reload_rig_sheet(cfg)
+
+
+def do_reload_rig_sheet(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Fetches the configured rig sheet and stores the parsed rows as the new
+    last good state. A failed fetch, or a sheet without a recognisable column
+    row, keeps the stored rows and records the error; the result then has
+    `ok: False` and the message (no URL, no server text). This is the only
+    place that touches the network for the rig sheet."""
+    url = cfg.rig_sheet_url
+    if not url:
+        raise ActionError("No rig sheet link is set (Production settings).")
+    try:
+        key = rig_sheet.source_key(url)
+    except rig_sheet.RigSheetError as e:
+        raise ActionError(str(e)) from e
+    try:
+        state = rig_sheet.parse_csv(rig_sheet.fetch_csv(url))
+    except rig_sheet.RigSheetError as e:
+        storage.save_rig_sheet_error(key, str(e))
+        ok = False
+    else:
+        storage.save_rig_sheet_success(key, state["systems"], state["duplicates"])
+        ok = True
+    invalidate_facility_cache()
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    status = do_get_rig_sheet_status(cfg)
+    status["ok"] = ok
+    return status
+
+
+def do_get_rig_sheet_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """{configured, fetched_at, age_hours, system_count, duplicates, error,
+    error_at}: what is stored for the current link. Rows stored for another
+    link do not count."""
+    result = {"configured": bool(cfg.rig_sheet_url), "fetched_at": None, "age_hours": None,
+              "system_count": 0, "duplicates": [], "error": None, "error_at": None}
+    if not cfg.rig_sheet_url:
+        return result
+    try:
+        key = rig_sheet.source_key(cfg.rig_sheet_url)
+    except rig_sheet.RigSheetError:
+        result["error"] = "The stored rig sheet link is not valid."
+        return result
+    state = storage.load_rig_sheet()
+    if state is None or state["source_key"] != key:
+        return result
+    fetched = state["fetched_at"]
+    result.update({
+        "fetched_at": fetched.isoformat() if fetched else None,
+        "age_hours": (datetime.now(timezone.utc) - fetched).total_seconds() / 3600 if fetched else None,
+        "system_count": len(state["systems"]),
+        "duplicates": list(state["duplicates"]),
+        "error": state["last_error"],
+        "error_at": state["last_error_at"].isoformat() if state["last_error_at"] else None,
+    })
+    return result
 
 
 def do_set_reaction_chain_choice(type_id: int, choice: Optional[str]) -> dict:
@@ -583,7 +658,7 @@ def do_clear_category_location(category: str) -> dict:
 def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Structure type and ME rig per job category: what is saved, what the
     category structure's name states, and what the engine actually uses
-    (with its source: "set", "name" or "global"). Ship categories have a
+    (with its source: "set", "sheet", "name" or "global"). Ship categories have a
     separate rig for Tech II/III hulls; other categories use one rig for
     every tech level (`advanced` is None for them). `tax` is the facility
     tax: the saved override, the rate last observed on our own jobs at the
@@ -600,6 +675,10 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
         split = category in SPLIT_BY_TECH_CATEGORIES
         basic = facility_resolution(category, "Tech I", profile, cfg)
         advanced = facility_resolution(category, "Tech II", profile, cfg) if split else None
+        sheet_cells = facility.get("sheet_cells") if cfg.rig_sheet_url else None
+        sheet_basic = rig_sheet.lookup(sheet_cells, category, False, basic["structure_type"])
+        sheet_advanced = (rig_sheet.lookup(sheet_cells, category, True, basic["structure_type"])
+                          if split else None)
         job_activity = (facility_tax.ACTIVITY_REACTION if profile == "reaction"
                         else facility_tax.ACTIVITY_MANUFACTURING)
         observation = (facility.get("observed_tax") or {}).get(job_activity)
@@ -629,6 +708,7 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
                 "facility_tax_rate": facility.get("tax_rate_override"),
             },
             "from_name": {"rig_tier_basic": named_basic, "rig_tier_advanced": named_advanced if split else None},
+            "from_sheet": {"rig_tier_basic": sheet_basic, "rig_tier_advanced": sheet_advanced},
             "effective": {
                 "structure_type": basic["structure_type"],
                 "structure_source": basic["structure_source"],
@@ -644,7 +724,8 @@ def do_list_category_facilities(cfg: ProductionConfig = PRODUCTION_CONFIG) -> di
                 "security_multiplier": basic["security_multiplier"],
             },
         })
-    return {"categories": rows, "structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS)}
+    return {"categories": rows, "structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS),
+            "rig_sheet": do_get_rig_sheet_status(cfg)}
 
 
 def do_set_category_facility(category: str, structure_type: Optional[str] = None,

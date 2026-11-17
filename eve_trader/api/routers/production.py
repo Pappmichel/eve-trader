@@ -28,7 +28,7 @@ from ...actions import ConflictError
 from ...production import actions
 from ...production.actions import ActionError
 from ...production.config import PRODUCTION_CONFIG
-from ..schemas import LongText, NameText, ShortTextList
+from ..schemas import LongText, NameText, ShortTextList, UrlText
 
 router = APIRouter()
 
@@ -468,6 +468,7 @@ class ProductionSettings(BaseModel):
     supercapital_te_rig_tier: Optional[str] = None
     manufacturing_te_rig_tier: Optional[str] = None
     invention_rig_tier: str = "No Rig"
+    rig_sheet_url: UrlText = ""
     encryption_skill_level: int
     datacore_skill_1_level: int
     datacore_skill_2_level: int
@@ -935,6 +936,14 @@ def clear_category_location(category: str):
 @router.get("/logistics/facilities")
 def get_category_facilities():
     return _wrap(actions.do_list_category_facilities)
+
+
+@router.post("/logistics/rig-sheet/reload")
+def reload_rig_sheet():
+    """Fetches the tenant's rig sheet now (the Logistics page's button and its
+    automatic reload of a state older than 24 h). A failure is stored and
+    returned in the response, not raised: the page shows it next to the age."""
+    return _wrap(actions.do_reload_rig_sheet)
 
 
 class CategoryFacilityRequest(BaseModel):

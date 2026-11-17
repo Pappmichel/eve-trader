@@ -152,6 +152,7 @@ from .constants import (
     SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID, STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
     rig_security_multiplier, structure_rig_multiplier, tier_security_multiplier,
 )
+from . import rig_sheet
 from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .jobs import character_slot_overview
 from .models import (
@@ -688,6 +689,23 @@ def invalidate_facility_cache(all_tenants: bool = False) -> None:
     facility_tax.invalidate(all_tenants)
 
 
+def _stored_rig_sheet_systems() -> Optional[dict]:
+    """The stored rig sheet rows, only while a link is set and the rows come
+    from that link's sheet (a changed link never reads the old sheet). Never a
+    network call; None = no sheet source."""
+    url = PRODUCTION_CONFIG.rig_sheet_url
+    if not url:
+        return None
+    try:
+        key = rig_sheet.source_key(url)
+    except rig_sheet.RigSheetError:
+        return None
+    state = storage.load_rig_sheet()
+    if state is None or state["source_key"] != key or state["fetched_at"] is None:
+        return None
+    return state["systems"]
+
+
 def _load_category_facilities() -> dict[str, dict]:
     """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
     te_rig_tier_basic, te_rig_tier_advanced, tax_rate_override (saved, each None when not set), location_id,
@@ -709,6 +727,7 @@ def _load_category_facilities() -> dict[str, dict]:
     systems = storage.load_category_system_ids()
     names = storage.get_location_names(set(locations.values())) if locations else {}
     observed = facility_tax.observed_rates() if locations else {}
+    sheet_systems = _stored_rig_sheet_systems() if locations else None
     result: dict[str, dict] = {}
     for category in set(saved) | set(locations):
         row = saved.get(category, {})
@@ -725,6 +744,8 @@ def _load_category_facilities() -> dict[str, dict]:
             "structure_name": names.get(location_id) if location_id is not None else None,
             "system_id": system_id,
             "security": storage.get_system_security(system_id) if system_id is not None else None,
+            "sheet_cells": (rig_sheet.system_cells(sheet_systems, storage.get_system_name(system_id))
+                            if sheet_systems and system_id is not None else None),
             "observed_tax": {
                 activity_id: observed[(location_id, activity_id)]
                 for activity_id in (facility_tax.ACTIVITY_MANUFACTURING, facility_tax.ACTIVITY_REACTION)
@@ -747,7 +768,9 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
                         cfg: ProductionConfig) -> dict:
     """Which structure type, rig tier and security apply to one job category
     and tech level, and where each came from. Order: the tier saved for the
-    category, then the tier its structure's name states, then the global
+    category, then the tier the rig sheet states for the category structure's
+    system (only with a link set, read from the stored state; "No Rig" there
+    beats the name), then the tier its structure's name states, then the global
     profile (ProductionConfig.<profile>_structure_type/_rig_tier). Security
     comes from the category structure's system when it is known, else the
     profile's flat system.
@@ -791,6 +814,9 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
         if facility["structure_type"]:
             structure_type, structure_source = facility["structure_type"], "set"
         me_candidates.append((facility["rig_tier_advanced" if advanced else "rig_tier_basic"], "set"))
+        if cfg.rig_sheet_url and facility.get("sheet_cells"):
+            me_candidates.append((rig_sheet.lookup(facility["sheet_cells"], category, advanced, structure_type),
+                                  "sheet"))
         te_saved = facility.get("te_rig_tier_advanced" if advanced else "te_rig_tier_basic")
         named_basic, named_advanced = rig_tiers_from_name(facility["structure_name"], category)
         me_candidates.append((named_advanced if advanced else named_basic, "name"))

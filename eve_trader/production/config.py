@@ -161,6 +161,10 @@ class ProductionConfig:
     # INVENTION_RIG_TIERS); only the modelled invention/copy fee uses it, an
     # observed total rate stays authoritative.
     invention_rig_tier: str = "No Rig"
+    # Link to a shared Google sheet that lists the rig tier per solar system
+    # and job category (production/rig_sheet.py). Empty = no sheet source. The
+    # link is per-tenant user input and never part of the repository.
+    rig_sheet_url: str = ""
 
     # -- Invention (see production/invention.py) --
     # Default 5/5/5: real invention jobs match maxed skills far more often
@@ -313,6 +317,11 @@ def validate_production_overrides(overrides: dict) -> None:
     for key in ("reaction_rig_tier", "reaction_te_rig_tier"):
         if overrides.get(key) == THUKKER_TIER:
             raise ConfigError(f"{key}: the {THUKKER_TIER} rig does not exist for reactions.")
+    if overrides.get("rig_sheet_url"):
+        from . import rig_sheet
+        if not rig_sheet.is_valid_url(overrides["rig_sheet_url"]):
+            raise ConfigError("rig_sheet_url: must be a https://docs.google.com/spreadsheets link "
+                               "with a spreadsheet id.")
     if "invention_rig_tier" in overrides and overrides["invention_rig_tier"] not in INVENTION_RIG_TIERS:
         raise ConfigError(f"invention_rig_tier: '{overrides['invention_rig_tier']}' is not a known invention "
                            f"rig tier. Options: {', '.join(INVENTION_RIG_TIERS)}")
