@@ -217,10 +217,99 @@ export interface ObservedSellFees {
   relist_note: string
 }
 
+// Fee hints from one chosen character's skills and standings (GET
+// /fee-suggestions on Trading, Station Trading and PI). Nothing here changes a
+// setting; "Use this value" goes through the page's normal save.
+export type FeeSkillReason =
+  | 'no_character_selected' | 'not_shared' | 'reauth_needed' | 'not_synced' | 'error'
+  | 'player_structure'
+
+export interface FeeSkillCandidate {
+  character_id: number
+  character_name: string
+  shares_standings: boolean
+}
+
+export interface FeeSkillPart {
+  setting: string
+  source: 'skills' | 'skills_standings'
+  suggested: number | null
+  rate: number | null
+  characters: number
+  upper_bound: boolean
+  reason: FeeSkillReason | null
+  message: string | null
+  // broker fee only
+  upper_bound_reason?: string | null
+  upper_bound_message?: string | null
+  standings?: {
+    faction_id: number | null
+    faction_standing: number
+    corporation_id: number | null
+    corporation_standing: number
+    as_of: string | null
+  } | null
+}
+
+export interface FeeSkillHints {
+  tool_key: string
+  character_id: number | null
+  character_name: string | null
+  candidates: FeeSkillCandidate[]
+  reason: FeeSkillReason | null
+  message: string | null
+  skills_as_of: string | null
+  skill_levels: { accounting: number; broker_relations: number } | null
+  location: {
+    location_id: number | null
+    kind: 'none' | 'npc_station' | 'player_structure'
+    name: string | null
+    corporation_id: number | null
+    faction_id: number | null
+  }
+  sales_tax: FeeSkillPart | null
+  broker_fee: FeeSkillPart | null
+}
+
+// The broker fee share the wallet paid on market purchases at the hub.
+export interface ObservedBuyFees {
+  setting: 'jita_buy_broker_fee'
+  source: 'wallet_purchases'
+  window_days: number
+  min_buys: number
+  buys: number
+  purchase_value: number
+  quote: number | null
+  suggested: number | null
+  reason: 'no_run' | 'needs_rebuild' | 'no_hub_system' | 'too_few_buys' | 'no_basis' | null
+  message: string | null
+}
+
+export interface TradingFeeSuggestions {
+  hub: string | null
+  skills: FeeSkillHints
+  observed_buy: ObservedBuyFees
+}
+
+export interface StationTradingObservedFees extends Omit<ObservedSellFees, 'setting'> {
+  suggested_sales_tax_rate: number | null
+  suggested_broker_fee_rate: number | null
+}
+
+export interface StationTradingFeeSuggestions {
+  skills: FeeSkillHints
+  observed: StationTradingObservedFees
+}
+
+export interface PiFeeSuggestions {
+  skills: FeeSkillHints
+}
+
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number
   jita_buy_broker_fee: number
+  fee_skill_character_id: number | null
   min_profit_threshold: number
   min_margin_threshold: number
   skip_grace_period_days: number
@@ -2122,6 +2211,7 @@ export interface StationTradingSettings {
   hub_region_id: number
   broker_fee_rate: number
   sales_tax_rate: number
+  fee_skill_character_id: number | null
   min_spread_threshold: number
   min_daily_volume: number
   enforce_shortlist_cap: boolean
@@ -3104,6 +3194,7 @@ export interface PiSettings {
   pi_price_structure_slug: string
   pi_broker_fee_rate: number
   pi_sales_tax_rate: number
+  pi_fee_skill_character_id: number | null
   pi_valuation: 'sell_orders' | 'buy_orders'
   pi_freight_per_m3: number
   pi_owner_tax_rate: number

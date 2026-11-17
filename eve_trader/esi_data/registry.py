@@ -212,7 +212,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # attributes and SP totals, read through `read_esi("skills",
         # "char_skills")`. Production/Station Trading keep reading the slot
         # rows from `character_slots` under their own sharing rows.
-        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans", "pi"),
+        # "trading" / "station_trading" / "pi" also read per-skill rows
+        # (table="skills") for the fee hints (eve_trader/fee_skills.py).
+        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans", "pi",
+                         "trading"),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(
@@ -273,7 +276,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-characters.read_standings.v1",
         corporation_scope=None,
         corp_roles=(),
-        consuming_tools=("char_info",),
+        # Trading, Station Trading and PI: the station owner's standings in
+        # the broker fee hint (eve_trader/fee_skills.py). Still on demand.
+        consuming_tools=("char_info", "trading", "station_trading", "pi"),
         freshness_tier=TIER_RARE,
         schedule_mode=ON_DEMAND,
     ),

@@ -170,6 +170,7 @@ they laid out side by side:
 | What would a produced item sold through Doctrine have cost to buy (production saving, informational)? | The buy-list purchase price even when building was cheaper, frozen per (type, sale day) in `ledger_saving_buy_prices` by every rebuild: the planner's live quote for a sale today or yesterday, otherwise The Forge daily average plus buy broker fee and haul cost per packaged m3. Never `ledger_valuation_prices` (that holds the cheaper value, i.e. the build cost). Lines without a price are left out and the priced share is shown | `realized/saving_prices.py`, `doctrine/realized.py` |
 | What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
 | What is an owned item worth (Portfolio Total Wealth and Capital, and Production's `stock_value`)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
+| What does a fee setting cost one character (Settings hints)? | The chosen character's skills and raw standings through the formulas in `fee_skills.py`, or the wallet's observed quote (sell: `sell_fees.observed_quote`; buy: attributed broker fees / price of hub purchases, `realized/buy_fees.py`). Shown only, applied by click | `fee_skill_hints.py`, `realized/buy_fees.py` |
 | What freight did a hub purchase pay? | The courier shipment rate (`sum(reward) / sum(volume)`) when a finished shipment to the home structure was issued at or after the purchase from that station; otherwise the configured hub rate frozen at ingest. Packaged m3 stays the volume frozen at ingest | `realized/costing.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
@@ -360,6 +361,30 @@ channels by that owner's market gross per channel (`db.without_sale_fees_by_owne
 nothing). It also holds buy-order and unmatched contract broker fees, so it is an
 upper bound; no button, nothing stored. Trading shows it as `1 - upper_bound_quote`
 (`upper_bound_value`, a lower bound for the haircut) next to the fee share.
+
+**Fees from skills and standings (click to apply, never automatic).**
+`eve_trader/fee_skills.py` (pure) holds the formulas, checked against EVE
+University's "Trading" page: sales tax 7.5 % x (1 - 0.11 x Accounting), NPC
+station broker fee 3 % - 0.3 % x Broker Relations - 0.03 % x faction standing -
+0.02 % x corporation standing (raw standings towards the station owner; no floor
+stated, clamped at 0; Advanced Broker Relations only touches relists). In a player
+structure the owner sets the broker fee, so only the sales tax comes from skills.
+`eve_trader/fee_skill_hints.py` is the I/O half: one character per tool, chosen
+in its Settings (`TradingConfig.fee_skill_character_id`,
+`StationTradingConfig.fee_skill_character_id`, `PiConfig.pi_fee_skill_character_id`,
+confirmed with the user 2026-11-16). Choosing one changes no fee; without one the
+reason is `no_character_selected`. Skills and standings are read only through
+`fields.snapshot` (`not_shared` / `reauth_needed` / `not_synced`; the choice stays
+saved). Standings are on demand: without them (or without an SDE station owner,
+`sde_stations.corporation_id` + `sde_npc_corporations.faction_id`) the broker fee
+is still shown, labeled an upper bound. Routes: `GET /api/trading/fee-suggestions`
+(`jita_buy_broker_fee`: a standing buy order at the hub's main station, plus
+`observed_buy` = attributed broker fees / price of the Trading wallets' market
+buys in the hub system over 30 days, >= 20 buys, `realized/buy_fees.py`; instant
+buys pay no broker fee, so it is usually lower, O3-08), `GET /api/station-trading/
+fee-suggestions` (`broker_fee_rate`, `sales_tax_rate`: skills at `station_id` plus
+the channel's `observed_quote` split), `GET /api/pi/fee-suggestions` (skills only,
+at the price structure or the hub's main station). Field defaults stay unchanged.
 
 ## Architecture: actions.py is the one entry point
 
@@ -859,7 +884,10 @@ silently retried (a retry after a timeout could double-send).
 `character_slots` row Production/Station Trading already read from the
 same `skills` data kind; same kind, two tools, two row shapes, each under
 its own sharing row (`esi_data/access.py`'s `_read_character_skills` vs.
-`_read_skills`). Needs two new global SDE tables (`sde_skill_requirements`/
+`_read_skills`). `pi` always gets per-skill rows; Production, Trading and Station
+Trading get them with `table="skills"` (Trading/Station Trading for the fee
+hints, which also make `trading`, `station_trading` and `pi` consumers of the
+on-demand `standings` kind). Needs two new global SDE tables (`sde_skill_requirements`/
 `sde_skill_meta`, filled by streaming-filtering `dgmTypeAttributes.csv`
 during an SDE refresh - see `production/sde.py`'s `skill_rows_from_
 attributes`) for skill prerequisites/rank/attributes, used by both Skill

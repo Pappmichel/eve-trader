@@ -745,6 +745,7 @@ class StationTradingSettings(_Base):
     hub_region_id: int = 10000002
     broker_fee_rate: float
     sales_tax_rate: float
+    fee_skill_character_id: Optional[int] = None
     min_spread_threshold: float
     min_daily_volume: float
     enforce_shortlist_cap: bool

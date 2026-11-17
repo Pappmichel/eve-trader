@@ -653,6 +653,29 @@ def do_update_settings(updates: dict[str, Any], cfg: PiConfig = PI_CONFIG) -> di
     return do_get_settings(cfg)
 
 
+def do_get_fee_suggestions(cfg: PiConfig = PI_CONFIG) -> dict:
+    """Read-only suggestions for `pi_sales_tax_rate` and `pi_broker_fee_rate`
+    from the chosen character's skills and standings
+    (`pi_fee_skill_character_id`) at the market PI sells in: the price
+    structure when one is set (owner-set broker fee, sales tax only), else the
+    hub's main station (no single station in "All hubs" mode: the broker fee
+    is then shown without standings, as an upper bound). Never applied
+    automatically."""
+    from .. import fee_skill_hints, hubs  # lazy: reaches auth/esi_data
+
+    if cfg.pi_price_structure_id:
+        location_id = int(cfg.pi_price_structure_id)
+    else:
+        hub = hubs.hub_by_region(cfg.hub_region_id)
+        location_id = None if hub is None else hub.station_id
+    return {
+        "skills": fee_skill_hints.skill_fee_hints(
+            "pi", cfg.pi_fee_skill_character_id, location_id=location_id,
+            sales_tax_setting="pi_sales_tax_rate", broker_setting="pi_broker_fee_rate",
+        ),
+    }
+
+
 # ------------------------------------------------------------------ characters (D3)
 def do_characters(cfg: PiConfig = PI_CONFIG) -> dict:
     from . import skills

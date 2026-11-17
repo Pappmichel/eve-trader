@@ -35,7 +35,8 @@ _TABLE_FIELDS = {
     "sde_blueprint_products": "blueprint_products",
     "sde_invention_probability": "invention_probability",
     "sde_blueprint_skills": "blueprint_skills", "sde_solar_systems": "solar_systems",
-    "sde_regions": "regions", "sde_stations": "stations", "sde_categories": "categories",
+    "sde_regions": "regions", "sde_stations": "stations",
+    "sde_npc_corporations": "npc_corporations", "sde_categories": "categories",
     "sde_type_slots": "type_slots", "sde_type_equivalents": "type_equivalents",
     "sde_type_materials": "type_materials", "sde_skill_requirements": "skill_requirements",
     "sde_skill_meta": "skill_meta", "sde_pi_schematics": "pi_schematics",
@@ -123,7 +124,9 @@ def _diff_rows(old_rows, new_rows, key_fn, name_fn, fields) -> dict:
         old = old_by_key[key]
         changes = {}
         for field_name, idx, is_float in fields:
-            old_val, new_val = old[idx], row[idx]
+            # A row stored before a column existed is shorter: missing = NULL.
+            old_val = old[idx] if idx < len(old) else None
+            new_val = row[idx] if idx < len(row) else None
             if is_float:
                 if _floats_differ(old_val, new_val):
                     changes[field_name] = [old_val, new_val]
@@ -184,7 +187,12 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
         (
             "sde_stations", fetched.stations,
             lambda row: int(row[0]), lambda row: row[2],
-            (("system_id", 1, False), ("station_name", 2, False)),
+            (("system_id", 1, False), ("station_name", 2, False), ("corporation_id", 3, False)),
+        ),
+        (
+            "sde_npc_corporations", fetched.npc_corporations,
+            lambda row: int(row[0]), lambda row: str(row[0]),
+            (("faction_id", 1, False),),
         ),
         (
             "sde_categories", fetched.categories,

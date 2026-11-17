@@ -152,6 +152,7 @@ export const tradingApi = {
   startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
   realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
+  feeSuggestions: () => get<T.TradingFeeSuggestions>('/api/trading/fee-suggestions'),
   updateSettings: (s: Partial<T.TradingSettings>) => post<T.TradingSettings>('/api/trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
@@ -717,6 +718,7 @@ export const stationTradingApi = {
   checkUndercut: () => post<T.StationTradingUndercutCheckResult>('/api/station-trading/undercut/check'),
   skills: () => get<T.SkillSummary[]>('/api/station-trading/skills'),
   settings: () => get<T.StationTradingSettings>('/api/station-trading/settings'),
+  feeSuggestions: () => get<T.StationTradingFeeSuggestions>('/api/station-trading/fee-suggestions'),
   updateSettings: (s: Partial<T.StationTradingSettings>) =>
     post<T.StationTradingSettings>('/api/station-trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/station-trading/esi/sync-time'),
@@ -1101,6 +1103,7 @@ export const piApi = {
   updatePlan: (id: number, plan: Record<string, unknown>) => put<T.PiPlan>(`/api/pi/plans/${id}`, plan),
   deletePlan: (id: number) => del<{ deleted: number }>(`/api/pi/plans/${id}`),
   settings: () => get<T.PiSettings>('/api/pi/settings'),
+  feeSuggestions: () => get<T.PiFeeSuggestions>('/api/pi/fee-suggestions'),
   updateSettings: (updates: Partial<T.PiSettings>) => put<T.PiSettings>('/api/pi/settings', updates),
   characters: () => get<T.PiCharacters>('/api/pi/characters'),
   colonies: () => get<T.PiColonies>('/api/pi/colonies'),

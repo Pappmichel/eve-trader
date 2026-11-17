@@ -89,6 +89,14 @@ def remove_trader_character(role_key: str):
     return _wrap(actions.do_remove_trader_character, role_key=role_key)
 
 
+@router.get("/fee-suggestions")
+def get_fee_suggestions():
+    """Suggested broker fee and sales tax from the chosen character's skills
+    and standings, plus the channel's observed wallet quote. Never applied
+    automatically."""
+    return _wrap(actions.do_get_fee_suggestions)
+
+
 StationTradingSettingsUpdate = partial_model(schemas.StationTradingSettings, "StationTradingSettingsUpdate")
 
 

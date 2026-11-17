@@ -119,8 +119,13 @@ def test_character_management_kinds():
     assert by_key["location"].character_scope == "esi-location.read_location.v1"
     assert by_key["ship"].character_scope == "esi-location.read_ship_type.v1"
     assert by_key["online"].character_scope == "esi-location.read_online.v1"
-    for key in ("standings", "loyalty", "location", "ship", "online"):
+    for key in ("loyalty", "location", "ship", "online"):
         assert by_key[key].consuming_tools == ("char_info",)
+    # Standings also feed the broker fee hints (eve_trader/fee_skills.py),
+    # and stay on demand: the scheduler never fetches them.
+    assert by_key["standings"].consuming_tools == ("char_info", "trading", "station_trading", "pi")
+    assert by_key["standings"].schedule_mode == "on_demand"
+    assert "trading" in by_key["skills"].consuming_tools
     # Live-only kinds: the three location kinds, plus mail (own code path,
     # phase 3 - never an orchestrator kind, so the stale clear cannot reach it).
     assert {k.key for k in OWNED_DATA_KINDS if k.live_only} == {"location", "ship", "online", "mail", "fatigue", "contacts", "calendar"}
