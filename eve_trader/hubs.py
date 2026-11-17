@@ -150,6 +150,13 @@ def do_get_hub_freight(cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
             for rid, name in TRADE_HUBS.items()]
 
 
+def do_get_observed_freight() -> list[dict]:
+    """Per hub: the freight rate the tenant's finished courier contracts
+    imply, as a suggestion only (realized/freight_rates.py)."""
+    from .realized import freight_rates  # lazy: the realized package imports hubs
+    return freight_rates.observed_freight_all()
+
+
 def do_update_hub_freight(rates: Mapping[int, Optional[float]],
                           cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
     """Replaces the shared freight table. A None rate removes that hub's

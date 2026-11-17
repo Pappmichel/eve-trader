@@ -9,7 +9,7 @@ import type { ObservedSellFees, ProductionSettings as ProductionSettingsT } from
 import ProductionSettings from './ProductionSettings'
 
 vi.mock('../../api/client', () => ({
-  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS, observedFreight: async () => [{ region_id: 10000002, hub: 'Jita', source: 'courier_contracts', suggested: 686, shipments: 14, volume_m3: 9e4, window_days: 90, min_shipments: 3, start: '', end: '', reason: null, message: null }] },
   productionApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),
@@ -91,6 +91,17 @@ describe('ProductionSettings observed sell fees', () => {
     })
     expect(await screen.findByText(/no value \(4 of 20 sales needed\)/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('ProductionSettings observed freight', () => {
+  it('"Use this value" saves only the freight field through the settings save', async () => {
+    setup(FEES)
+    expect(await screen.findByText(/Actual last 90 days: 686 ISK\/m³ \(14 shipments\)/)).toBeInTheDocument()
+    expect(productionApi.updateSettings).not.toHaveBeenCalled()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Use this value' })[0])
+    await waitFor(() => expect(productionApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(productionApi.updateSettings).mock.calls[0][0]).toEqual({ haul_cost_per_m3: 686 })
   })
 })
 

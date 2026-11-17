@@ -2797,3 +2797,13 @@ def test_hub_list_route_returns_the_four_hubs_with_systems():
     assert [r["name"] for r in rows] == ["Jita", "Amarr", "Dodixie", "Rens"]
     assert [r["solar_system_id"] for r in rows] == [30000142, 30002187, 30002659, 30002510]
     assert all(r["label"] and r["station_id"] for r in rows)
+
+
+def test_observed_freight_route_returns_the_hub_rows(monkeypatch):
+    from eve_trader import hubs
+
+    row = {"region_id": 10000002, "hub": "Jita", "suggested": 686, "shipments": 14}
+    monkeypatch.setattr(hubs, "do_get_observed_freight", lambda: [row])
+    resp = client.get("/api/hubs/observed-freight")
+    assert resp.status_code == 200
+    assert resp.json() == [row]

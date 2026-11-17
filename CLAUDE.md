@@ -146,6 +146,18 @@ covers only a few regions (The Forge, Insmother, Delve); for any other region
 `goonmetrics_client.region_has_goonmetrics_history` is false and
 `price_history` reads ESI daily history instead.
 
+The hub list itself lives once, in `hubs.HUBS` (region, name, label, solar
+system, main station); `hubs.TRADE_HUBS` is derived from it with the same order
+and keys, `own_orders` reads the hub system from it, and the frontend gets it
+from `GET /api/hubs` (`useTradeHubs()`), never from a second hard-coded list.
+`GET /api/hubs/observed-freight` (`realized/freight_rates.py`) suggests a
+freight rate per hub: `sum(reward) / sum(volume)` of the finished couriers to
+the home structure in the last 90 days (`costing.group_shipments`, at least 3
+shipments from that hub's system, owners per D11, aggregates only). Settings
+pages show it under each tool's own freight field and per row of the hub
+freight table with "Use this value" (normal settings save); the five freight
+fields stay separate (PI freight is hub-to-planet and not part of it).
+
 **Price sources matrix** - four different price sources answer four
 different questions, deliberately, not by accident, but nowhere else are
 they laid out side by side:

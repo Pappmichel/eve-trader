@@ -9,6 +9,7 @@ import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
 import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
+import { ObservedFreightHint } from '../../components/ObservedFreightHint'
 import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { hubLabel } from '../../tradingHubs'
@@ -42,9 +43,13 @@ export default function TradingSettings() {
         Freight and fee rates change with the market/carrier - adjust here if import/sale numbers suddenly look unrealistic.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label={`Freight cost ${hubLabel(tradeHubs, form.jita_region_id)}→structure (ISK/m³)`}
-          value={form.import_cost_per_m3} min={0} step={50}
-          onChange={(v) => set('import_cost_per_m3', Number(v))} />
+        <Stack gap={4}>
+          <NumberInput label={`Freight cost ${hubLabel(tradeHubs, form.jita_region_id)}→structure (ISK/m³)`}
+            value={form.import_cost_per_m3} min={0} step={50}
+            onChange={(v) => set('import_cost_per_m3', Number(v))} />
+          <ObservedFreightHint regionId={form.jita_region_id} current={form.import_cost_per_m3} applying={save.isPending}
+            onApply={(v) => { set('import_cost_per_m3', v); save.mutate(changedFields(data, { ...form, import_cost_per_m3: v })) }} />
+        </Stack>
         <Stack gap={4}>
           <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
             value={form.structure_sell_haircut * 100} min={0} max={100} step={1}

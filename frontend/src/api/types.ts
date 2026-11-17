@@ -133,6 +133,23 @@ export interface HubFreightRow {
   freight_cost_per_m3: number | null
 }
 
+// One hub's freight suggestion (GET /api/hubs/observed-freight): finished courier
+// contracts to the home structure, reward / volume. Aggregates only. No value -> `reason`.
+export interface ObservedFreightRow {
+  region_id: number
+  hub: string
+  source: 'courier_contracts'
+  suggested: number | null
+  shipments: number
+  volume_m3: number
+  window_days: number
+  min_shipments: number
+  start: string
+  end: string
+  reason: 'no_home_structure' | 'no_couriers' | 'too_few_shipments' | null
+  message: string | null
+}
+
 export interface RegionOption {
   region_id: number
   region_name: string

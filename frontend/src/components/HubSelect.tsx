@@ -5,7 +5,9 @@ import { Button, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Text } fr
 import { hubsApi } from '../api/client'
 import { useAction } from '../hooks/useAction'
 import { useTradeHubs } from '../hooks/useTradeHubs'
+import { ObservedFreightHint } from './ObservedFreightHint'
 import { ALL_HUBS, hubSelectData } from '../tradingHubs'
+import type { HubFreightRow } from '../api/types'
 
 interface Props {
   label: string
@@ -32,6 +34,11 @@ export function HubSelect({ label, description, value, onChange, allowAll = fals
   )
 }
 
+const tableRows = (rows: HubFreightRow[], draft: Record<number, number | ''>) => rows.map((r) => ({
+  region_id: r.region_id,
+  freight_cost_per_m3: draft[r.region_id] === '' || draft[r.region_id] === undefined ? null : Number(draft[r.region_id]),
+}))
+
 // The tenant's shared freight table (ISK/m³ from each hub to the structure),
 // used by every tool set to "All hubs". Saved on its own, independent of the
 // surrounding Settings form.
@@ -53,15 +60,17 @@ export function HubFreightTable() {
       </Text>
       <SimpleGrid cols={2}>
         {data.map((r) => (
-          <NumberInput key={r.region_id} label={r.hub} min={0} step={50} value={draft[r.region_id] ?? ''}
-            onChange={(v) => setDraft((d) => ({ ...d, [r.region_id]: v === '' ? '' : Number(v) }))} />
+          <Stack key={r.region_id} gap={4}>
+            <NumberInput label={r.hub} min={0} step={50} value={draft[r.region_id] ?? ''}
+              onChange={(v) => setDraft((d) => ({ ...d, [r.region_id]: v === '' ? '' : Number(v) }))} />
+            <ObservedFreightHint compact regionId={r.region_id} applying={save.isPending}
+              current={draft[r.region_id] === '' || draft[r.region_id] === undefined ? NaN : Number(draft[r.region_id])}
+              onApply={(v) => { setDraft((d) => ({ ...d, [r.region_id]: v })); save.mutate(tableRows(data, { ...draft, [r.region_id]: v })) }} />
+          </Stack>
         ))}
       </SimpleGrid>
       <Group justify="flex-end" mt="xs">
-        <Button size="xs" loading={save.isPending} onClick={() => save.mutate(data.map((r) => ({
-          region_id: r.region_id,
-          freight_cost_per_m3: draft[r.region_id] === '' || draft[r.region_id] === undefined ? null : Number(draft[r.region_id]),
-        })))}>
+        <Button size="xs" loading={save.isPending} onClick={() => save.mutate(tableRows(data, draft))}>
           Save freight table
         </Button>
       </Group>

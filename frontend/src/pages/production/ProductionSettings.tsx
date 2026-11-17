@@ -10,6 +10,7 @@ import { useSolarSystemOptions, useStructureNameOptions } from '../../hooks/useS
 import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
 import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
+import { ObservedFreightHint } from '../../components/ObservedFreightHint'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { DynamicTargetSettingsCard } from './DynamicTargetSettingsCard'
@@ -108,8 +109,12 @@ export default function ProductionSettings() {
           onChange={(v) => set('component_overbuild', Number(v) / 100)} />
         <HubSelect label="Market hub" description="Region Production prices its 'Jita' side against (independent of Trading's). Best hub buys each item where it lands cheapest; margins and listings keep using Jita."
           allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
-        <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
-          onChange={(v) => set('haul_cost_per_m3', Number(v))} />
+        <Stack gap={4}>
+          <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
+            onChange={(v) => set('haul_cost_per_m3', Number(v))} />
+          <ObservedFreightHint regionId={form.hub_region_id} current={form.haul_cost_per_m3} applying={save.isPending}
+            onApply={(v) => { set('haul_cost_per_m3', v); save.mutate(changedFields(data, { ...form, haul_cost_per_m3: v })) }} />
+        </Stack>
         <Stack gap={4}>
           <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
             onChange={(v) => set('market_fees', Number(v) / 100)} />

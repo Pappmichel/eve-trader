@@ -35,6 +35,13 @@ def get_hub_freight():
     return hubs.do_get_hub_freight()
 
 
+@router.get("/observed-freight")
+def get_observed_freight():
+    """Suggested freight rate per hub from finished courier contracts
+    (aggregates only; never applied automatically)."""
+    return hubs.do_get_observed_freight()
+
+
 @router.post("/freight")
 def update_hub_freight(rows: Annotated[list[HubFreightRow], Field(max_length=1_000)]):
     try:

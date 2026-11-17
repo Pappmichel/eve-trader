@@ -7,7 +7,7 @@ import TradingSettings from './TradingSettings'
 import { tradingApi, productionApi } from '../../api/client'
 
 vi.mock('../../api/client', () => ({
-  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS, observedFreight: async () => [{ region_id: 10000002, hub: 'Jita', source: 'courier_contracts', suggested: 686, shipments: 14, volume_m3: 9e4, window_days: 90, min_shipments: 3, start: '', end: '', reason: null, message: null }] },
   tradingApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),
@@ -97,6 +97,24 @@ describe('TradingSettings observed sell fees', () => {
 
     expect(await screen.findByText(/Rebuild the realized-profit ledger first/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('TradingSettings observed freight', () => {
+  it('"Use this value" saves only the freight field through the settings save', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(tradingApi.updateSettings).mockClear()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_ledger_run', message: 'x' } as any)
+    renderPage()
+
+    expect(await screen.findByText(/Actual last 90 days: 686 ISK\/m³ \(14 shipments\)/)).toBeInTheDocument()
+    expect(tradingApi.updateSettings).not.toHaveBeenCalled()
+    const buttons = await screen.findAllByRole('button', { name: 'Use this value' })
+    await userEvent.click(buttons[0])
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ import_cost_per_m3: 686 })
   })
 })
 

@@ -1014,6 +1014,7 @@ export const charactersApi = {
 export const hubsApi = {
   list: () => get<TradeHub[]>('/api/hubs'),
   freight: () => get<T.HubFreightRow[]>('/api/hubs/freight'),
+  observedFreight: () => get<T.ObservedFreightRow[]>('/api/hubs/observed-freight'),
   updateFreight: (rows: { region_id: number; freight_cost_per_m3: number | null }[]) =>
     post<T.HubFreightRow[]>('/api/hubs/freight', rows),
 }
