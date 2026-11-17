@@ -90,12 +90,12 @@ def test_refresh_shortlist_conflict_maps_to_409(monkeypatch):
 
 def test_get_transaction_characters_serializes_role_tuples(monkeypatch):
     monkeypatch.setattr(actions, "do_list_transaction_characters", lambda: [
-        ("buyer:2112625428", 2112625428, "Some Buyer"),
+        ("buyer:1234567891", 1234567891, "Some Buyer"),
     ])
     resp = client.get("/api/trading/transaction-characters")
     assert resp.status_code == 200
     assert resp.json() == [
-        {"role_key": "buyer:2112625428", "character_id": 2112625428, "character_name": "Some Buyer"},
+        {"role_key": "buyer:1234567891", "character_id": 1234567891, "character_name": "Some Buyer"},
     ]
 
 
@@ -112,10 +112,10 @@ def test_get_wallet_transactions_passes_role_key_and_lookback_days(monkeypatch):
         }]
     monkeypatch.setattr(actions, "do_wallet_transactions", _fake)
 
-    resp = client.get("/api/trading/wallet-transactions?role_key=buyer:2112625428&lookback_days=90")
+    resp = client.get("/api/trading/wallet-transactions?role_key=buyer:1234567891&lookback_days=90")
 
     assert resp.status_code == 200
-    assert captured == {"role_key": "buyer:2112625428", "lookback_days": 90}
+    assert captured == {"role_key": "buyer:1234567891", "lookback_days": 90}
     assert resp.json()[0]["item"] == "Tritanium"
 
 
@@ -2270,12 +2270,12 @@ def test_available_characters_serializes_action_result(monkeypatch):
 
 def test_available_corps_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_list_available_corps", lambda: {
-        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+        "corps": ["Example Corp (corp)", "building mining and research corporation (corp)"],
     })
     resp = client.get("/api/sorting/available-corps")
     assert resp.status_code == 200
     assert resp.json() == {
-        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+        "corps": ["Example Corp (corp)", "building mining and research corporation (corp)"],
     }
 
 

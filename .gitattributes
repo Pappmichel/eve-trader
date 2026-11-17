@@ -3,3 +3,5 @@
 # bash fail with "bad interpreter" on the actual Linux deploy target.
 *.sh text eol=lf
 deploy/*.template text eol=lf
+
+.githooks/* text eol=lf

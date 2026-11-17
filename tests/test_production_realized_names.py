@@ -9,28 +9,28 @@ def test_warning_items_get_names_links_and_readable_text(monkeypatch):
         34: "Tritanium", 22444: "Sleipnir", 1318: "Expanded Cargohold I Blueprint",
     })
     monkeypatch.setattr(names, "owner_names", lambda ids: {
-        1560510246: "pappmichl", 98723738: "Some Corp",
+        1234567893: "pappmichl", 98000001: "Some Corp",
     })
     monkeypatch.setattr(names, "location_names", lambda ids: {1049588174021: "C-J6MT - Home"})
-    jobs = {"job:character:1560510246:675263867": {
-        "type_id": 22444, "activity": "Manufacturing", "owner_id": 1560510246,
+    jobs = {"job:character:1234567893:675263867": {
+        "type_id": 22444, "activity": "Manufacturing", "owner_id": 1234567893,
     }}
     groups = [
         {"kind": "inventory_drift", "count": 1, "items": [
             {"type_id": 34, "ledger_qty": 15.0, "esi_qty": 12.0, "drift": -3.0},
         ]},
         {"kind": "archive_gap", "count": 1, "items": [
-            {"owner_type": "corporation", "owner_id": 98723738, "data_kind": "wallet_journal"},
+            {"owner_type": "corporation", "owner_id": 98000001, "data_kind": "wallet_journal"},
         ]},
         {"kind": "trading_overlap", "count": 1, "items": [
             {"message": "trading_overlap: Production type 34 is also bought on the market"},
         ]},
         {"kind": "unknown_origin", "count": 1, "items": [
             {"message": "unknown_origin: type 1318 (bpc_run) 200 without a layer "
-                        "(job:character:1560510246:675263867)"},
+                        "(job:character:1234567893:675263867)"},
         ]},
         {"kind": "coverage_below_threshold", "count": 1, "items": [
-            {"message": "coverage_below_threshold: tx:character:1560510246:0:6890579030 "
+            {"message": "coverage_below_threshold: tx:character:1234567893:0:6890579030 "
                         "type 22444 coverage 0%"},
         ]},
         {"kind": "outside_home_structure", "count": 1, "items": [
@@ -48,7 +48,7 @@ def test_warning_items_get_names_links_and_readable_text(monkeypatch):
     assert overlap["text"] == "Tritanium is also bought on the market"
     unknown = items["unknown_origin"]
     # Both a type and a job: the row links to the job.
-    assert unknown["job_ref"] == "job:character:1560510246:675263867"
+    assert unknown["job_ref"] == "job:character:1234567893:675263867"
     assert unknown["job_label"] == "job #675263867 (Sleipnir, Manufacturing, pappmichl)"
     assert unknown["text"] == ("Expanded Cargohold I Blueprint (bpc_run) 200 without a layer "
                                "(job #675263867 (Sleipnir, Manufacturing, pappmichl))")

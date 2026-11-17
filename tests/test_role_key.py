@@ -28,7 +28,7 @@ from .pg_helpers import (  # noqa: F401
 
 VALID = (
     "buyer:1",
-    "seller:2112625428",
+    "seller:1234567891",
     "producer:42",
     "doctrine:99",
     "doctrine-assets:99",
@@ -93,7 +93,7 @@ def test_tool_role_prefix_mapping_is_the_login_vocabulary():
 
 @pytest.mark.parametrize("key,tool", [
     ("buyer:1", "trading"),
-    ("seller:2112625428", "trading"),
+    ("seller:1234567891", "trading"),
     ("producer:42", "production"),
     ("doctrine:99", "doctrine"),
     ("doctrine-assets:99", "doctrine"),
@@ -282,18 +282,18 @@ def test_wallet_transactions_producer_key_accepted_once_wallet_shared(tenant, _a
     from eve_trader.auth import TokenRecord
 
     rec = TokenRecord(
-        role="producer:1560510246", character_id=1560510246, character_name="pappmichl",
+        role="producer:1234567893", character_id=1234567893, character_name="pappmichl",
         access_token="a", refresh_token="r", expires_at=9999999999.0,
         scopes="esi-wallet.read_character_wallet.v1 esi-assets.read_assets.v1",
     )
-    storage.save_tenant_token("producer:1560510246", asdict(rec))
+    storage.save_tenant_token("producer:1234567893", asdict(rec))
 
     with pytest.raises(ActionError, match="has not shared Wallet"):
-        do_wallet_transactions("producer:1560510246")
+        do_wallet_transactions("producer:1234567893")
 
-    storage.upsert_esi_sharing("character", 1560510246, "wallet", "trading")
+    storage.upsert_esi_sharing("character", 1234567893, "wallet", "trading")
     monkeypatch.setattr(
         "eve_trader.actions.fetch_recent_transactions",
         lambda character_id, auth_role, client, lookback_days: [],
     )
-    assert do_wallet_transactions("producer:1560510246") == []
+    assert do_wallet_transactions("producer:1234567893") == []

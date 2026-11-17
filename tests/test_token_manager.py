@@ -45,14 +45,14 @@ def test_save_record_round_trips_through_a_fresh_instance(tenant):
     # has its own dedicated tests). Keeps this test about round-tripping,
     # not migration.
     tm = TokenManager(OAuthConfig())
-    tm._tokens["buyer:42"] = _record("buyer:42", character_id=42, character_name="Jason Andven")
+    tm._tokens["buyer:42"] = _record("buyer:42", character_id=42, character_name="Example Buyer")
     tm._save_record("buyer:42")
 
     fresh = TokenManager(OAuthConfig())
     assert fresh.has_token("buyer:42")
     record = fresh.get_record("buyer:42")
     assert record.character_id == 42
-    assert record.character_name == "Jason Andven"
+    assert record.character_name == "Example Buyer"
 
 
 @pg_helpers.postgres_required()

@@ -138,8 +138,8 @@ def test_structure_orders_raw_same_principal_hits_cache_even_across_clients(monk
     calls = _fake_get_all_pages(monkeypatch, {
         "/markets/structures/1234567890/": [{"type_id": 34, "is_buy_order": False, "price": 5.5, "volume_remain": 1000}],
     })
-    ESIClient().structure_orders_raw(1234567890, "seller:2112625428")
-    ESIClient().structure_orders_raw(1234567890, "seller:2112625428")
+    ESIClient().structure_orders_raw(1234567890, "seller:1234567891")
+    ESIClient().structure_orders_raw(1234567890, "seller:1234567891")
     assert calls["/markets/structures/1234567890/"] == 1
 
 

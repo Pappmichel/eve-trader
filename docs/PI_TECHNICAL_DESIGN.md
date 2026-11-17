@@ -529,7 +529,7 @@ arbitrary layouts (analyser/editor/ESI colonies).
 - Golden tests: the two hand calculations in PI_PLAN 2; tax bases; tier
   counts; decay formula against CCP's sample; template round-trip on the
   real reference templates (both Eve-PI's MIT ones and a few user exports;
-  **not** the unlicensed DalShooth files committed to the repo) **[P-61]**.
+  **not** the unlicensed DalShooth files committed to the repo) **[P-61]**. See `THIRD_PARTY_NOTICES.md`.
 - Router tests monkeypatch the module object (`from ...pi import actions`),
   per CLAUDE.md testing conventions. Caches get an autouse reset fixture
   (`pi.static`, design cache) **[P-62]**.
@@ -617,7 +617,7 @@ arbitrary layouts (analyser/editor/ESI colonies).
 | P-58 | PiConfig not resolved per tenant | add to `enter_tenant` |
 | P-59 | flat config.yaml / `_FIELD_RANGES` name collisions | `pi_` field prefix |
 | P-60 | slow test suite | corpus behind marker |
-| P-61 | unlicensed reference templates in repo | use MIT/user exports only |
+| P-61 | unlicensed reference templates in repo | kept; source and licensing status listed in `THIRD_PARTY_NOTICES.md` (not covered by the MIT license) |
 | P-62 | caches leak between tests | autouse reset fixtures |
 | P-64 | CCP noise term only adds yield | noise-free only for ratios; full formula for calibration |
 | P-63 | the SDE holds 1,976 PI planets in the unreachable Jove regions (UUA-F4, J7HZ-F, A821-A) and 21,084 in J-space | System analysis says "region not reachable" for Jove regions; the later planet finder excludes them; J-space handled as wormhole zone |

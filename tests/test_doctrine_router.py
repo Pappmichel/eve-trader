@@ -296,7 +296,7 @@ def test_settings_round_trip_buyer_character_ids(monkeypatch):
 
 
 def test_buyer_character_options(monkeypatch):
-    options = [{"character_id": 91, "character_name": "Jason Andven",
+    options = [{"character_id": 91, "character_name": "Example Buyer",
                 "assets_shared": True, "market_orders_shared": False}]
     monkeypatch.setattr(doctrine_actions, "do_list_buyer_character_options", lambda: options)
 

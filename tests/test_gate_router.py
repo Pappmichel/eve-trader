@@ -282,13 +282,13 @@ def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_succes
 ):
     _enable_gate(monkeypatch)
     tenant_id = str(uuid.uuid4())
-    storage.add_tenant_registry_entry(tenant_id, 2112625428)
+    storage.add_tenant_registry_entry(tenant_id, 1234567891)
     state = "test-gate-allowed"
     auth_router._pending[state] = {
         "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(2112625428, "Allowed Character", "owner-hash", ())))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(1234567891, "Allowed Character", "owner-hash", ())))
 
     resp = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},
@@ -314,13 +314,13 @@ def test_callback_gate_branch_refreshes_the_cached_character_name(
     # since EVE SSO's own identity lookup already returns the current name.
     _enable_gate(monkeypatch)
     tenant_id = storage.create_tenant(f"Test Tenant {uuid.uuid4()}")
-    storage.add_tenant_registry_entry(tenant_id, 2112625428, character_name="Old Name")
+    storage.add_tenant_registry_entry(tenant_id, 1234567891, character_name="Old Name")
     state = "test-gate-name-refresh"
     auth_router._pending[state] = {
         "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(2112625428, "New Name", "owner-hash", ())))
+    monkeypatch.setattr(TokenManager, "_identity", staticmethod(lambda token: SsoIdentity(1234567891, "New Name", "owner-hash", ())))
 
     client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},
@@ -328,7 +328,7 @@ def test_callback_gate_branch_refreshes_the_cached_character_name(
     )
 
     users = storage.list_users_with_grants()
-    assert next(u for u in users if u["character_id"] == 2112625428)["character_name"] == "New Name"
+    assert next(u for u in users if u["character_id"] == 1234567891)["character_name"] == "New Name"
 
 
 @pg_helpers.postgres_required()

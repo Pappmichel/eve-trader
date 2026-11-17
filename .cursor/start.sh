@@ -57,4 +57,7 @@ if [ -f .env ] && ! grep -qE '^[[:space:]]*TOKEN_ENCRYPTION_KEY=.+' .env; then
   python3 -c "from cryptography.fernet import Fernet; print('TOKEN_ENCRYPTION_KEY=' + Fernet.generate_key().decode())" >> .env 2>/dev/null || true
 fi
 
+# --- Commit-message hook (rejects AI attribution lines) ---
+git config core.hooksPath .githooks 2>/dev/null || true
+
 echo "start.sh: PostgreSQL ready (test DB: eve_trader, app DB: eve_trader_dev)"

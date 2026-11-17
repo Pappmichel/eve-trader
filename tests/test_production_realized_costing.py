@@ -1323,7 +1323,7 @@ def test_ingest_freight_follows_the_hub_table(monkeypatch):
 
 # ------------------------------------------------------- courier freight (F1-F5)
 AMARR = 60008494
-HAULER = 92267134
+HAULER = 1234567894
 
 
 def courier(contract_id, issued, *, start=JITA, end=HOME, volume=100.0, reward=80_000.0,

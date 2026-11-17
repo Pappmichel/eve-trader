@@ -581,7 +581,7 @@ Corrections after checking the first draft against the code:
 ## 13. Phase 0 findings (2026-10-17, test server, Default tenant, read-only)
 
 Checked with throwaway scripts against live ESI using the stored tokens of the
-Default tenant's characters (seller/producer 1560510246, buyer 92267134,
+Default tenant's characters (seller/producer 1234567893, buyer 1234567894,
 doctrine 624503518). Only aggregates were printed; nothing was written.
 
 - **V1 job cost - confirmed.** For all 349 jobs inside the journal window,
@@ -646,13 +646,13 @@ The user re-authorized the characters; all checks were run again on the test
 server (same scripts, read-only, scripts deleted afterwards). V1-V5, V7 and
 V8 gave the same results. New or changed:
 
-- **V6 corp jobs - now readable for corp 98723738.** 15 of 18 tokens read
+- **V6 corp jobs - now readable for corp 98000001.** 15 of 18 tokens read
   its corp jobs. With `include_completed=true`: 2000 jobs (2 pages of 1000;
   355 active, 1645 completed back to 2026-09-23), `cost` and `probability`
   on all, `successful_runs` on all finished ones. Still none of them appears
   in the installers' character endpoints (0 of 350 checked), so corp jobs
   come only from the corp endpoint. Corp 98370861 (the C-J seller
-  1560510246's corp) is still 403 for every token - jobs installed there
+  1234567893's corp) is still 403 for every token - jobs installed there
   stay invisible until a Director of that corp authorizes.
 - **Corp job history depth.** 2000 rows, exactly 2 full pages (page 3 is
   404), sorted newest first, oldest start 2026-09-23. The corp was founded in
@@ -670,7 +670,7 @@ V8 gave the same results. New or changed:
   - the same cap is assumed for the character endpoint (392 rows today) and
     handled by the same gap check.
 - **Corp wallets not readable.** Only two tokens carry the corp wallet scope
-  (`buyer:92267134`, `producer:1560510246`) and both get 403 (no Accountant
+  (`buyer:1234567894`, `producer:1234567893`) and both get 403 (no Accountant
   role) on both corps. D7's "mine alone" corp-wallet option therefore has no
   data today; corp job costs are unaffected (they come from the job's
   `cost`).

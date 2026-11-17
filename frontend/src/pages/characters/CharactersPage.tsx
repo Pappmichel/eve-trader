@@ -35,6 +35,7 @@ import {
 } from '../../esiAccess'
 import { useAction } from '../../hooks/useAction'
 import { openAccessConfirmModal } from '../../roleAccessDescriptions'
+import CcpNotice from '../../components/CcpNotice'
 
 const CHARACTERS_KEYS = [
   ['characters', 'owners'],
@@ -838,6 +839,7 @@ export default function CharactersPage() {
         <Divider />
         <ToolViewSection sharing={sharing} owners={owners} />
       </Stack>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

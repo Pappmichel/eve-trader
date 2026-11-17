@@ -21,6 +21,7 @@ import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
 import type { AttentionItem, ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
+import CcpNotice from '../components/CcpNotice'
 
 const PERIOD_KEY = 'portfolio-realized-period'
 const TAB_KEY = 'portfolio-wealth-tab'
@@ -702,6 +703,7 @@ export default function Portfolio() {
         <Divider />
         <ManualPricesSection />
       </Stack>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

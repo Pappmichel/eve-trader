@@ -24,7 +24,7 @@ def _no_location_names(monkeypatch):
 
 
 def _contract_db_row(**overrides) -> tuple:
-    base = dict(contract_id=1, source_role="doctrine:1560510246", for_corporation=False, issuer_id=42,
+    base = dict(contract_id=1, source_role="doctrine:1234567893", for_corporation=False, issuer_id=42,
                 start_location_id=1, status="outstanding", title="t", price=1.0, date_expired=None,
                 matched_fitting_id="f1", match_score=1.0, validation_status="valid", synced_at="2026-01-01")
     base.update(overrides)
@@ -48,12 +48,12 @@ def test_do_list_contracts_resolves_source_role_to_character_name(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [_contract_db_row()])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
     monkeypatch.setattr(actions, "_character_names_by_role_key",
-                         lambda: {"doctrine:1560510246": "pappmichl"})
+                         lambda: {"doctrine:1234567893": "pappmichl"})
 
     result = actions.do_list_contracts()
 
     assert result["rows"][0]["source_character_name"] == "pappmichl"
-    assert result["rows"][0]["source_role"] == "doctrine:1560510246"  # raw key still present too
+    assert result["rows"][0]["source_role"] == "doctrine:1234567893"  # raw key still present too
 
 
 def test_do_list_contracts_leaves_out_contracts_without_a_doctrine_hull(monkeypatch):
@@ -87,10 +87,10 @@ def test_do_list_contracts_resolves_a_non_doctrine_prefixed_source_role(monkeypa
     list_doctrine_characters(), which never contained those - the
     Character column silently went blank."""
     monkeypatch.setattr(storage, "list_doctrine_contracts",
-                         lambda **kwargs: [_contract_db_row(source_role="esi:1560510246")])
+                         lambda **kwargs: [_contract_db_row(source_role="esi:1234567893")])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
     monkeypatch.setattr(TokenManager, "list_records", lambda self: [
-        TokenRecord(role="esi:1560510246", character_id=1560510246, character_name="pappmichl",
+        TokenRecord(role="esi:1234567893", character_id=1234567893, character_name="pappmichl",
                     access_token="a", refresh_token="r", expires_at=9999999999.0, scopes="s"),
     ])
 
@@ -126,7 +126,7 @@ def test_do_list_contracts_blank_hull_when_unmatched(monkeypatch):
 
 
 def _history_db_row(**overrides) -> tuple:
-    base = dict(contract_id=1, source_role="doctrine:1560510246", fitting_id="f1", fitting_name="Fit",
+    base = dict(contract_id=1, source_role="doctrine:1234567893", fitting_id="f1", fitting_name="Fit",
                 hull_type_id=1000, title="t", price=100.0, acceptor_id=99, acceptor_name=None,
                 date_issued="2026-01-01T00:00:00Z", date_completed="2026-01-02T00:00:00Z")
     base.update(overrides)
@@ -143,7 +143,7 @@ def test_do_contract_history_resolves_hull_name_and_character_name(monkeypatch):
     monkeypatch.setattr(storage, "load_doctrine_contract_history", lambda: [_history_db_row()])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
     monkeypatch.setattr(actions, "_character_names_by_role_key",
-                         lambda: {"doctrine:1560510246": "pappmichl"})
+                         lambda: {"doctrine:1234567893": "pappmichl"})
 
     result = actions.do_contract_history()
 
