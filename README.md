@@ -215,6 +215,18 @@ They never touch the `eve_trader` dev database: they create and use
 and apply every schema file to it. `EVE_TRADER_TEST_PG_DB` changes that
 base name.
 
+## Development: commit-message hook
+
+Enable the repository's hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The `commit-msg` hook rejects `Co-Authored-By:` lines naming Claude, Anthropic
+or Cursor, `Claude-Session:` lines and "Generated with Claude Code" footers.
+CI checks the commits of every pull request against the same rule.
+
 ## Deploying somewhere reachable beyond localhost
 
 See [`deploy/README.md`](deploy/README.md) and
