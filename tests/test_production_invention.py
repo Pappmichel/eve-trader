@@ -397,3 +397,39 @@ def test_default_config_assumes_maxed_invention_skills():
     assert invention.skill_multiplier(cfg) == pytest.approx(1.458333, rel=1e-5)
     # base probability x multiplier, no decryptor
     assert RECIPE["base_probability"] * invention.skill_multiplier(cfg) == pytest.approx(0.34 * 1.458333, rel=1e-5)
+
+
+@pytest.mark.parametrize("dc1, dc2, enc, expected", [
+    (5, 5, 5, 1 + 10 / 30 + 5 / 40),   # 1.458333
+    (4, 4, 4, 1 + 8 / 30 + 4 / 40),    # 1.366667
+    (0, 0, 0, 1.0),
+    (3, 1, 2, 1 + 4 / 30 + 2 / 40),    # datacore levels add, encryption has its own divisor
+])
+def test_skill_multiplier_pins_the_datacore_and_encryption_weights(dc1, dc2, enc, expected):
+    from eve_trader.production.config import ProductionConfig
+
+    cfg = ProductionConfig(datacore_skill_1_level=dc1, datacore_skill_2_level=dc2, encryption_skill_level=enc)
+    assert invention.skill_multiplier(cfg) == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("me_bonus, baseline_me, expected_net_drop", [
+    (2, 0, 1_000.0),    # +2 ME on 50,000 ISK of reducible materials: exactly 2 % = 1,000
+    (-1, 0, -500.0),    # -1 ME costs exactly 1 % = 500 more
+])
+def test_me_bonus_saves_exactly_that_percent_of_reducible_material_cost(
+        monkeypatch, me_bonus, baseline_me, expected_net_drop):
+    from eve_trader.production.constants import Decryptor
+    from eve_trader.production.config import ProductionConfig
+
+    # Two free decryptors identical except for ME, so every other term of the
+    # net cost is the same and only the ME credit differs.
+    monkeypatch.setitem(invention.DECRYPTORS, "_base", Decryptor(0, 1.0, 0, baseline_me, 4))
+    monkeypatch.setitem(invention.DECRYPTORS, "_with_me", Decryptor(0, 1.0, 0, me_bonus, 4))
+    monkeypatch.setattr(invention.pricing, "buy_price", lambda *a, **k: 100_000.0)
+    cfg = ProductionConfig()
+
+    base = invention.estimate(100, "_base", {}, {}, cfg=cfg, reducible_material_cost_per_run=50_000.0, rates=None)
+    with_me = invention.estimate(100, "_with_me", {}, {}, cfg=cfg, reducible_material_cost_per_run=50_000.0, rates=None)
+
+    assert with_me.material_savings_per_run == pytest.approx(50_000.0 * me_bonus / 100)
+    assert base.net_cost_per_run - with_me.net_cost_per_run == pytest.approx(expected_net_drop)
