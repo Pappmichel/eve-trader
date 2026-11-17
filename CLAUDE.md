@@ -1051,6 +1051,15 @@ widens the alert type CHECK constraints).
   revenue for `pi_valuation` (`economics.best_output_hubs`, `Prices.output_*`);
   the planner response names each import's and export's hub. Verdict reasons
   are a fixed vocabulary.
+- **Skills drive tax and demand (D3, GH #47).** `actions._skill_defaults(cfg)`
+  gives `cc_level` and `customs_code_expertise` from `skills.load_overview`
+  (highest level over the characters sharing skills with PI, `skill_source`
+  `esi`), else the manual `pi_cc_level` / `pi_customs_code_expertise_level`
+  (`manual`). A request calls it once and passes it on (`_cc_level`, `_market`,
+  `_tax_parts`, `skills=`); an explicit parameter wins. Profitability, planner,
+  chain, ways-to-build, chain plan, system analysis and Production demand all
+  use it and return `skill_source`. The design cache key holds the CC level
+  actually used. Applied automatically (not a fee suggestion).
 - **Layouts** (`pi/layout/`): `template_io` round-trips EVE templates byte
   for byte (alphabetical keys, La/Lo/Diam floats; pin `S` = product type id,
   `H` = head count, no Command Center pin). Templates are serialized only in

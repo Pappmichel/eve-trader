@@ -103,7 +103,7 @@ export default function Profitability() {
         <Text size="xs" c="dimmed">
           Assumptions: yield {num(a.yield_per_head, 0)}/head/h (effective {num(a.effective_yield_per_head, 0)}),
           program {num(a.program_hours, 0)} h, collected every {num(a.interval_hours, 0)} h,
-          customs tax {pct(a.tax_rate)}{a.npc_tax_rate !== undefined && <> (NPC {pct(a.npc_tax_rate)} {a.zone === 'highsec' ? 'in high-sec' : '- none outside high-sec'} + owner {pct(a.owner_tax_rate ?? 0)})</>}, freight {isk(a.freight_per_m3)}/m³,
+          customs tax {pct(a.tax_rate)}{a.npc_tax_rate !== undefined && <> (NPC {pct(a.npc_tax_rate)} {a.zone === 'highsec' ? 'in high-sec' : '- none outside high-sec'} + owner {pct(a.owner_tax_rate ?? 0)}; {data?.skill_source === 'esi' ? 'Customs Code Expertise from shared skills' : 'Customs Code Expertise from Settings'})</>}, freight {isk(a.freight_per_m3)}/m³,
           prices at {a.market_label ?? (a.hub_region_id === ALL_HUBS ? 'the best hub per item' : `region ${a.hub_region_id}`)}
           {' '}({a.valuation === 'buy_orders' ? 'sold into buy orders' : 'listed as sell orders'}).
           Change them under Settings.

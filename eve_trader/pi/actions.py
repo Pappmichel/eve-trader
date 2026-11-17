@@ -46,8 +46,32 @@ def _zone_or_default(zone: Optional[str], cfg: PiConfig) -> str:
     return z
 
 
-def _cc_level(cc_level: Optional[int], cfg: PiConfig) -> int:
-    lv = cfg.pi_cc_level if cc_level is None else int(cc_level)
+def _skills_from_overview(cfg: PiConfig, overview: dict) -> dict:
+    if overview.get("characters"):
+        return {"cc_level": int(overview["max_cc_level"]),
+                "customs_code_expertise": int(overview["max_customs_code_expertise"]), "source": "esi"}
+    return {"cc_level": int(cfg.pi_cc_level),
+            "customs_code_expertise": int(cfg.pi_customs_code_expertise_level), "source": "manual"}
+
+
+def _skill_defaults(cfg: PiConfig) -> dict:
+    """Command Center level and Customs Code Expertise a request uses when
+    it names none (D3): the highest level over the characters sharing
+    skills with PI (`skill_source` "esi"), else the manual settings
+    ("manual"). Reads tokens and the ESI snapshot, so a request calls it
+    once and passes the result on."""
+    try:
+        overview = do_characters(cfg)
+    except Exception:  # noqa: BLE001 - token store unavailable -> manual values
+        overview = {}
+    return _skills_from_overview(cfg, overview)
+
+
+def _cc_level(cc_level: Optional[int], cfg: PiConfig, skills: Optional[dict] = None) -> int:
+    if cc_level is None:
+        lv = (skills or _skill_defaults(cfg))["cc_level"]
+    else:
+        lv = int(cc_level)
     if lv not in C.CC_LEVELS:
         raise ActionError("Command Center level must be 0-5")
     return lv
@@ -69,9 +93,11 @@ def _assumptions(cfg: PiConfig, zone: str, yield_override: Optional[float] = Non
 
 def _market(cfg: PiConfig, zone: str, owner_tax_rate: Optional[float] = None,
             freight_per_m3: Optional[float] = None, customs_code_expertise: Optional[int] = None,
-            assumptions: Optional[engine.Assumptions] = None) -> econ.MarketSettings:
+            assumptions: Optional[engine.Assumptions] = None,
+            skills: Optional[dict] = None) -> econ.MarketSettings:
     owner = cfg.pi_owner_tax_rate if owner_tax_rate is None else float(owner_tax_rate)
-    cce = cfg.pi_customs_code_expertise_level if customs_code_expertise is None else int(customs_code_expertise)
+    cce = ((skills or _skill_defaults(cfg))["customs_code_expertise"]
+           if customs_code_expertise is None else int(customs_code_expertise))
     a = assumptions or _assumptions(cfg, zone)
     return econ.MarketSettings(
         broker_fee=cfg.pi_broker_fee_rate, sales_tax=cfg.pi_sales_tax_rate, valuation=cfg.pi_valuation,
@@ -366,9 +392,10 @@ def do_get_meta(cfg: PiConfig = PI_CONFIG) -> dict:
 
 
 # ------------------------------------------------------------------ profitability
-def _profit_rows(static: StaticData, cfg: PiConfig, zone: str, cc_level: int, prices: econ.Prices) -> list[dict]:
+def _profit_rows(static: StaticData, cfg: PiConfig, zone: str, cc_level: int, prices: econ.Prices,
+                 skills: Optional[dict] = None) -> list[dict]:
     a = _assumptions(cfg, zone)
-    m = _market(cfg, zone, assumptions=a)
+    m = _market(cfg, zone, assumptions=a, skills=skills)
     medians = _radius_medians()
     rows: list[dict] = []
     for chain, (source, target) in CHAINS.items():
@@ -422,16 +449,18 @@ def do_profitability(zone: Optional[str] = None, cc_level: Optional[int] = None,
                      cfg: PiConfig = PI_CONFIG) -> dict:
     static = _static()
     z = _zone_or_default(zone, cfg)
-    lv = _cc_level(cc_level, cfg)
+    sk = _skill_defaults(cfg)
+    lv = _cc_level(cc_level, cfg, sk)
     prices = _prices(static, cfg)
-    rows = _profit_rows(static, cfg, z, lv, prices)
-    return {"zone": z, "cc_level": lv, "assumptions": {**_assumptions_dict(cfg, z), "price_note": prices.source_note},
+    rows = _profit_rows(static, cfg, z, lv, prices, sk)
+    return {"zone": z, "cc_level": lv, "skill_source": sk["source"],
+            "assumptions": {**_assumptions_dict(cfg, z, sk), "price_note": prices.source_note},
             "rows": rows}
 
 
-def _assumptions_dict(cfg: PiConfig, zone: str) -> dict:
+def _assumptions_dict(cfg: PiConfig, zone: str, skills: Optional[dict] = None) -> dict:
     a = _assumptions(cfg, zone)
-    m = _market(cfg, zone, assumptions=a)
+    m = _market(cfg, zone, assumptions=a, skills=skills)
     return {
         "zone": zone, "yield_per_head": a.yield_per_head, "effective_yield_per_head": a.effective_yield,
         "program_hours": a.program_hours, "interval_hours": a.interval_hours,
@@ -439,15 +468,17 @@ def _assumptions_dict(cfg: PiConfig, zone: str) -> dict:
         "hub_region_id": int(cfg.hub_region_id),
         "price_structure_id": int(cfg.pi_price_structure_id or 0),
         "market_label": market_label(cfg),
-        **_tax_parts(cfg, zone),
+        **_tax_parts(cfg, zone, skills=skills),
     }
 
 
-def _tax_parts(cfg: PiConfig, zone: str, owner_tax_rate: Optional[float] = None) -> dict:
+def _tax_parts(cfg: PiConfig, zone: str, owner_tax_rate: Optional[float] = None,
+               skills: Optional[dict] = None) -> dict:
     """The customs rate split into its NPC part (high-sec only) and the
     owner part, so the UI can show why a rate is what it is."""
     owner = cfg.pi_owner_tax_rate if owner_tax_rate is None else float(owner_tax_rate)
-    return {"npc_tax_rate": econ.npc_tax_rate(zone, cfg.pi_customs_code_expertise_level),
+    cce = (skills or _skill_defaults(cfg))["customs_code_expertise"]
+    return {"npc_tax_rate": econ.npc_tax_rate(zone, cce),
             "owner_tax_rate": owner, "default_zone": cfg.pi_zone}
 
 
@@ -486,7 +517,8 @@ def do_planner(chain: str, product_type_id: int, planet_id: Optional[int] = None
         raise ActionError(f"Unknown chain {chain!r}")
     planet, planet_zone, system = _planet_from(static, planet_id, planet_type_id, radius_km)
     z = _zone_or_default(zone or planet_zone, cfg)
-    lv = _cc_level(cc_level, cfg)
+    sk = _skill_defaults(cfg)
+    lv = _cc_level(cc_level, cfg, sk)
     reason = engine.check_feasible(static, planet.planet_type_id, chain, int(product_type_id))
     if reason:
         raise ActionError(reason)
@@ -498,19 +530,19 @@ def do_planner(chain: str, product_type_id: int, planet_id: Optional[int] = None
         ev, why = engine.best_design(static, planet, chain, int(product_type_id), lv, a, exact_radius=True)
         if ev is None:
             raise ActionError(why or "Nothing fits")
-    m = _market(cfg, z, owner_tax_rate, freight_per_m3, assumptions=a)
+    m = _market(cfg, z, owner_tax_rate, freight_per_m3, assumptions=a, skills=sk)
     prices = _prices(static, cfg)
     e = econ.compute(ev, static, prices, m)
     return {
         "planet": {"planet_id": planet.planet_id, "name": planet.name, "planet_type_id": planet.planet_type_id,
                    "planet_type": C.PLANET_TYPES[planet.planet_type_id], "radius_km": planet.radius_km,
                    "system": system},
-        "zone": z, "cc_level": lv, "chain": chain,
+        "zone": z, "cc_level": lv, "chain": chain, "skill_source": sk["source"],
         "product": {"type_id": int(product_type_id), "name": static.name(int(product_type_id))},
         "assumptions": {"yield_per_head": a.yield_per_head, "effective_yield_per_head": a.effective_yield,
                         "program_hours": a.program_hours, "interval_hours": a.interval_hours,
                         "tax_rate": m.tax_rate, "freight_per_m3": m.freight_per_m3,
-                        "market_label": market_label(cfg), **_tax_parts(cfg, z, owner_tax_rate)},
+                        "market_label": market_label(cfg), **_tax_parts(cfg, z, owner_tax_rate, sk)},
         "evaluation": evaluation_dict(static, ev),
         "economics": _economics_dict(e, static),
         "prices": _price_rows(prices, ev.imports, ev.exports),
@@ -530,9 +562,10 @@ def do_chain(product_type_id: int, zone: Optional[str] = None, cc_level: Optiona
         if not math.isfinite(per_hour) or not 0 < per_hour <= 1_000_000:
             raise ActionError("Wanted output per hour must be a positive number up to 1,000,000")
     z = _zone_or_default(zone, cfg)
-    lv = _cc_level(cc_level, cfg)
+    sk = _skill_defaults(cfg)
+    lv = _cc_level(cc_level, cfg, sk)
     a = _assumptions(cfg, z)
-    m = _market(cfg, z, assumptions=a)
+    m = _market(cfg, z, assumptions=a, skills=sk)
     prices = _prices(static, cfg)
     medians = _radius_medians()
 
@@ -555,6 +588,7 @@ def do_chain(product_type_id: int, zone: Optional[str] = None, cc_level: Optiona
     result = chains_mod.chain_plan(static, product, best, extract, prices, m, per_hour=per_hour)
     result["zone"] = z
     result["cc_level"] = lv
+    result["skill_source"] = sk["source"]
     return result
 
 
@@ -703,19 +737,19 @@ def do_system_analysis(solar_system_id: int, slots: Optional[int] = None, charac
         raise ActionError("This system has no PI planets")
     zone = system["zone"]
     overview: dict = {}
-    if slots is None or characters is None or cc_level is None:
-        try:
-            overview = do_characters(cfg)
-        except Exception:  # noqa: BLE001 - token store unavailable -> manual values
-            overview = {}
+    try:
+        overview = do_characters(cfg)
+    except Exception:  # noqa: BLE001 - token store unavailable -> manual values
+        overview = {}
+    sk = _skills_from_overview(cfg, overview)
     n_slots = int(slots if slots is not None else
                   overview.get("total_slots") or cfg.pi_characters * cfg.pi_planets_per_character)
     n_chars = int(characters if characters is not None else overview.get("character_count") or cfg.pi_characters)
-    lv = _cc_level(cc_level if cc_level is not None else overview.get("max_cc_level"), cfg)
+    lv = _cc_level(cc_level, cfg, sk)
     if not (0 < n_slots <= 60) or not (0 < n_chars <= 100):
         raise ActionError("Slots must be 1-60 and characters 1-100")
     a = _assumptions(cfg, zone)
-    m = _market(cfg, zone, owner_tax_rate, assumptions=a)
+    m = _market(cfg, zone, owner_tax_rate, assumptions=a, skills=sk)
     prices = _prices(static, cfg)
 
     planets = [Planet(p["planet_type_id"], p["radius_km"], p["planet_id"], p["name"], int(solar_system_id))
@@ -778,7 +812,7 @@ def do_system_analysis(solar_system_id: int, slots: Optional[int] = None, charac
     names = {p.planet_id: p.name for p in planets}
     return {
         "system": {k: v for k, v in system.items() if k != "planets"},
-        "zone": zone, "slots": n_slots, "characters": n_chars, "cc_level": lv,
+        "zone": zone, "slots": n_slots, "characters": n_chars, "cc_level": lv, "skill_source": sk["source"],
         "assumptions": {"yield_per_head": a.yield_per_head, "program_hours": a.program_hours,
                         "interval_hours": a.interval_hours, "tax_rate": m.tax_rate},
         "planets": [{**p, "best": per_planet.get(p["planet_id"], [])} for p in system["planets"]],
@@ -810,12 +844,13 @@ def do_production_demand(cfg: PiConfig = PI_CONFIG) -> dict:
     static = _static()
     buy_list = storage.load_latest_buy_list()
     z = cfg.pi_zone
-    lv = cfg.pi_cc_level
+    sk = _skill_defaults(cfg)
+    lv = sk["cc_level"]
     a = _assumptions(cfg, z)
-    m = _market(cfg, z, assumptions=a)
+    m = _market(cfg, z, assumptions=a, skills=sk)
     pi_items = {t: q for t, q in buy_list.items() if t in static.commodities and static.tier(t)}
     if not pi_items:
-        return {"rows": [], "days": cfg.pi_demand_days, "zone": z}
+        return {"rows": [], "days": cfg.pi_demand_days, "zone": z, "cc_level": lv, "skill_source": sk["source"]}
     prices = _prices(static, cfg, with_history=False)
     medians = _radius_medians()
 
@@ -837,7 +872,7 @@ def do_production_demand(cfg: PiConfig = PI_CONFIG) -> dict:
         return out
 
     rows = demand.demand_rows(static, pi_items, prices, m, candidates, cfg.pi_demand_days)
-    return {"rows": rows, "days": cfg.pi_demand_days, "zone": z}
+    return {"rows": rows, "days": cfg.pi_demand_days, "zone": z, "cc_level": lv, "skill_source": sk["source"]}
 
 
 # ------------------------------------------------------------------ templates & layouts (6, 6A)

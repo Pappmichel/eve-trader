@@ -2998,6 +2998,7 @@ export interface PiProfitAssumptions {
 export interface PiProfitability {
   zone: PiZone
   cc_level: number
+  skill_source: 'esi' | 'manual'
   assumptions: PiProfitAssumptions
   rows: PiProfitRow[]
 }
@@ -3067,6 +3068,7 @@ export interface PiPlannerResult {
   }
   zone: PiZone
   cc_level: number
+  skill_source: 'esi' | 'manual'
   chain: string
   product: { type_id: number; name: string }
   assumptions: {
@@ -3284,6 +3286,8 @@ export interface PiCharacters {
   }>
   total_slots: number
   max_cc_level: number
+  max_customs_code_expertise: number
+  skill_source: 'esi' | 'manual'
   character_count: number
 }
 

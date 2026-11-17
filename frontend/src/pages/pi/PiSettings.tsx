@@ -173,7 +173,7 @@ export default function PiSettings() {
               )}
             </Table.Tbody>
           </Table>
-          <Text size="sm">Total planet slots: <b>{chars.total_slots}</b> (highest CC level {chars.max_cc_level})</Text>
+          <Text size="sm">Total planet slots: <b>{chars.total_slots}</b> (highest CC level {chars.max_cc_level}, highest Customs Code Expertise {chars.max_customs_code_expertise}; {chars.skill_source === 'esi' ? 'from shared skills' : 'from the manual values above'})</Text>
         </>
       )}
     </Stack>
