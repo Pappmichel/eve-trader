@@ -39,12 +39,15 @@ Highlights:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate     # or .venv\Scripts\activate on Windows
-# Python 3.10, 3.11 (CI), or 3.12. Install the lockfile, not open ranges:
+# Python 3.11 or 3.12 (CI runs both; production uses 3.12). Install the lockfile, not open ranges:
 pip install -r requirements.lock
 pip install -e . --no-deps                             # installs the `eve-trader` command
 # To run the tests: pip install -r requirements-dev.txt (runtime pins + pytest, httpx)
 
 cp .env.example .env          # fill in EVE_SSO_CLIENT_ID (register at developers.eveonline.com)
+# Set SESSION_SECRET_KEY in .env too: paste the output of this command after the =.
+# Without it, the first login fails with a RuntimeError (the gate is on by default).
+python -c "import secrets; print(secrets.token_hex(32))"
 cp config.example.yaml config.yaml   # adjust structure_id, character names, thresholds
 ```
 
@@ -56,47 +59,24 @@ brings a local-dev line that matches the `ALTER ROLE` step below. The app
 refuses to start without the variable:
 
 ```bash
-docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
-  -e POSTGRES_DB=eve_trader -p 5432:5432 postgres:16
+docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword   -e POSTGRES_DB=eve_trader -p 5432:5432 postgres:16
 
-# owner role applies the schema (never the app's own role - see CLAUDE.md's
-# "Multi-tenant Postgres" section for why). All schema files, not just
-# phase1-3 - admin_schema.sql/doctrine_schema.sql/observability_schema.sql/
-# refining_schema.sql/special_orders_schema.sql/
-# station_trading_schema.sql/sorting_schema.sql/
-# production_buy_list_schema.sql/pipeline_runs_schema.sql/
-# session_revocations_schema.sql/job_category_cost_index_overrides_schema.sql/
-# esi_access_schema.sql (also drops the retired per-prefix consent table)/
-# portfolio_schema.sql/module_reprocessing_schema.sql/
-# character_management_schema.sql/pi_schema.sql/
-# production_ledger_schema.sql/asset_manager_schema.sql/location_registry_schema.sql
-# back the Admin/Doctrine/error-tracking/Ore & Minerals/Special
-# Orders/Station Trading/Sorting/Module Reprocessing features, and their routers are registered unconditionally, so
-# skipping them means 500s the moment you touch those tools, not just a
-# missing feature:
-Get-Content docs\phase1_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\phase2_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\phase3_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\admin_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\doctrine_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\observability_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\refining_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\special_orders_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\station_trading_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\sorting_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\production_buy_list_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\pipeline_runs_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\session_revocations_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\job_category_cost_index_overrides_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\esi_access_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\portfolio_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\module_reprocessing_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\character_management_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\pi_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\production_ledger_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\asset_manager_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
-Get-Content docs\location_registry_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+# Apply every schema file as the owner role (postgres), never as the app's own
+# role - see CLAUDE.md's "Multi-tenant Postgres" section for why. deploy/deploy.sh
+# holds the authoritative order (its `for f in ...` loop; tests/pg_helpers.py reads
+# the same list). If this list and that loop ever differ, deploy.sh wins.
+for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql          doctrine_schema.sql observability_schema.sql refining_schema.sql          station_trading_schema.sql special_orders_schema.sql sorting_schema.sql          production_buy_list_schema.sql pipeline_runs_schema.sql          session_revocations_schema.sql job_category_cost_index_overrides_schema.sql          esi_access_schema.sql portfolio_schema.sql module_reprocessing_schema.sql          character_management_schema.sql pi_schema.sql production_ledger_schema.sql          asset_manager_schema.sql location_registry_schema.sql; do
+  docker exec -i eve-trader-pg psql -U postgres -d eve_trader < "docs/$f"
+done
 ```
+
+On PowerShell, pipe each file in the same way, for example:
+
+```powershell
+Get-Content docs\phase1_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+```
+
+`docs/phase0_setup.sql` is not part of setup (it was removed in #531).
 
 `phase1_schema.sql` creates the `eve_trader_app` role **without a password**.
 After applying the schema, give it the password your `EVE_TRADER_PG_DSN` uses
@@ -106,6 +86,20 @@ generated one, see `deploy/README.md`):
 ```bash
 docker exec -i eve-trader-pg psql -U postgres -d eve_trader   -c "ALTER ROLE eve_trader_app WITH PASSWORD 'app_devpassword';"
 ```
+
+### First admin (once, after the schema and `.env` are in place)
+
+The access gate is on by default, so a fresh install has nobody who can open the
+Admin tool. Create the first admin from the shell, not over HTTP:
+
+```bash
+eve-trader admin bootstrap --character-id <EVE character id> --character-name "<name>" --all-tools --confirm
+```
+
+The command registers the character ID you pass; the character does not need to
+have logged in before. Then log in with EVE SSO as that character. Without
+`--all-tools` only the `admin` grant is given. `--confirm` is required. See
+`docs/OPERATOR_SECURITY.md`.
 
 ### Registering an EVE SSO application
 
