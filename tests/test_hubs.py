@@ -64,3 +64,17 @@ def test_get_hub_freight_lists_every_hub():
     assert [r["region_id"] for r in rows] == list(hubs.TRADE_HUBS)
     assert {r["region_id"]: r["freight_cost_per_m3"] for r in rows}[RENS] == 300.0
     assert {r["region_id"]: r["freight_cost_per_m3"] for r in rows}[JITA] is None
+
+
+def test_hub_list_is_the_one_source_of_every_hub_view():
+    rows = hubs.do_list_hubs()
+    assert [r["region_id"] for r in rows] == [JITA, AMARR, DODIXIE, RENS]
+    assert [r["solar_system_id"] for r in rows] == [30000142, 30002187, 30002659, 30002510]
+    assert rows[0]["label"] == "Jita (The Forge)" and rows[0]["station_id"] == 60003760
+    # Existing iterators keep their order and keys; Jita stays first.
+    assert list(hubs.TRADE_HUBS) == [r["region_id"] for r in rows]
+    assert next(iter(hubs.TRADE_HUBS)) == JITA
+    assert hubs.TRADE_HUBS[AMARR] == "Amarr"
+    assert hubs.hub_by_region(RENS).solar_system_id == 30002510
+    assert hubs.hub_by_region(10000060) is None
+    assert hubs.ALL_HUBS == 0

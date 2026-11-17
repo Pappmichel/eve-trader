@@ -67,6 +67,7 @@ export function useAction<TArgs = void, TResult = unknown>(
       for (const key of invalidateKeys) {
         queryClient.invalidateQueries({ queryKey: key })
       }
+      notifyIfUnchanged(result)
       acceptOwnDataChange(queryClient)
     },
     onError: (err: unknown) => {
@@ -84,6 +85,19 @@ export function useAction<TArgs = void, TResult = unknown>(
     tooltip: tooltipParts.length ? tooltipParts.join(' ') : undefined,
     tierIcon: <ActionTierIcon tier={tier} />,
   })
+}
+
+// A manual ESI sync skips data sets still inside ESI's cache window and says
+// so in `unchanged_message` ("2 data sets unchanged until 14:32 UTC ...").
+// Shown as its own notice because the generic toast above collapses a large
+// sync result to a plain "Done".
+export function notifyIfUnchanged(result: unknown): void {
+  const message = result && typeof result === 'object'
+    ? (result as Record<string, unknown>).unchanged_message
+    : undefined
+  if (typeof message === 'string' && message) {
+    notify({ title: 'Nothing new from ESI yet', message, color: 'info' })
+  }
 }
 
 // Shared `onSuccess` callback for a mutation whose result may carry a

@@ -15,7 +15,7 @@ from typing import Optional
 
 from .. import storage
 from ..actions import ActionError
-from ..realized import access, db, names as display_names
+from ..realized import access, db, names as display_names, sell_fees
 from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 from .config import STATION_TRADING_CONFIG
 
@@ -127,6 +127,22 @@ def _run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
     t0 = None if run[2] is None else _as_utc(run[2])
     changed = run[4] is None or run[4] != access.owner_scope_hash()
     return run, t0, changed
+
+
+def observed_sell_fees() -> dict:
+    """What the wallet charged on Station Trading's market sales of the last
+    30 days, split into sales tax and broker fee (`sell_fees.observed_quote`),
+    as values for `sales_tax_rate` and `broker_fee_rate`. The broker share is
+    the sell leg's; costing spreads a day's order fees over that day's
+    order-based fills. Shown beside the settings; applying is the user's
+    click."""
+    run, _t0, sharing_changed = _run_state()
+    data = sell_fees.observed_quote(run=run, sharing_changed=sharing_changed, scope=_scope())
+    tax, broker = data["sales_tax_rate"], data["broker_fee_rate"]
+    data["suggested_sales_tax_rate"] = None if tax is None else round(tax, 4)
+    data["suggested_broker_fee_rate"] = None if broker is None else round(broker, 4)
+    data["relist_note"] = sell_fees.RELIST_NOTE
+    return data
 
 
 def _status(run, t0, archive_since, wallet_sync, results_ever: int, *,

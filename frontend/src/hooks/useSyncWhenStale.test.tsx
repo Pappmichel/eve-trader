@@ -18,6 +18,13 @@ describe('isStale', () => {
     expect(isStale([hoursAgo(1), hoursAgo(5)], 6, NOW)).toBe(false)
     expect(isStale([], 6, NOW)).toBe(false)
   })
+  it('uses the tier hours the server reports, 6 h while that is still loading', () => {
+    expect(isStale([hoursAgo(5)], 2, NOW)).toBe(true)
+    expect(isStale([hoursAgo(5)], 12, NOW)).toBe(false)
+    expect(isStale([hoursAgo(5)], undefined, NOW)).toBe(false)
+    expect(isStale([hoursAgo(7)], undefined, NOW)).toBe(true)
+    expect(isStale([hoursAgo(7)], null, NOW)).toBe(true)
+  })
   it('newestStamp ignores empties', () => {
     expect(newestStamp([null, undefined, '2026-01-01', '2026-02-01'])).toBe('2026-02-01')
     expect(newestStamp([null])).toBeNull()

@@ -19,6 +19,7 @@ import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, iskUnit, qty } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 // Same feature and UX shape as Ore & Minerals' own Mineral Shopping List
 // (pages/refining/MineralShoppingList.tsx), but the optimizer also considers
@@ -37,7 +38,8 @@ export default function MineralShoppingList() {
     queryKey: ['module_reprocessing', 'settings'], queryFn: moduleReprocessingApi.settings,
   })
   const allHubs = settings?.input_hub_region_id === ALL_HUBS
-  const hub = hubLabel(settings?.input_hub_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = hubLabel(tradeHubs, settings?.input_hub_region_id)
 
   const [rows, setRows] = useState<MineralRequirement[]>([])
   useEffect(() => { if (saved) setRows(saved) }, [saved])

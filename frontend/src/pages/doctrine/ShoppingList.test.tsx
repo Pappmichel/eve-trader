@@ -6,7 +6,10 @@ import ShoppingList from './ShoppingList'
 import { doctrineApi } from '../../api/client'
 import { pct } from '../../format'
 
-vi.mock('../../api/client', () => ({ doctrineApi: { shoppingList: vi.fn(), settings: vi.fn() } }))
+vi.mock('../../api/client', () => ({
+  doctrineApi: { shoppingList: vi.fn(), settings: vi.fn() },
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
+}))
 
 const ROW = {
   type_id: 1, type_name: 'Damage Control II', shortfall: 6, build_cost: null, cj_price: null,

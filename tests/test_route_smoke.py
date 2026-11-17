@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from eve_trader import esi_client, storage
 from eve_trader.api.app import create_app
-from eve_trader.config import ACCESS_CONFIG
+from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 
 from .pg_helpers import OWNER_DSN, _apply_phase1_schema, postgres_required  # noqa: F401
 
@@ -176,6 +176,8 @@ def smoke_client(monkeypatch, smoke_tenant):
 
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
     monkeypatch.setattr(storage, "DEFAULT_TENANT_ID", smoke_tenant)
+    # The SSO start routes need a client id; CI has no .env, a dev box does.
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "route-smoke-client")
     # The network is down: every outbound request (ESI, Goonmetrics, SDE host)
     # fails like an outage, so routes exercise their real error handling and
     # no retry backoff sleeps. Replaces the blanket block of conftest's

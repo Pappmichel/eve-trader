@@ -1449,7 +1449,8 @@ def do_start_discover_build_candidates(top_n: int = 200) -> dict:
 
 def do_discover_build_candidates_status() -> dict:
     from .. import pipeline_runner
-    return pipeline_runner.job_status(pipeline_runner.TOOL_PRODUCTION)
+    return pipeline_runner.job_status(
+        pipeline_runner.TOOL_PRODUCTION, pipeline_runner.JOB_DISCOVER_BUILD_CANDIDATES)
 
 
 def do_get_build_candidates(top_n: int = 200) -> dict:
@@ -1578,6 +1579,46 @@ def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dic
         out[a["type_id"]] = out.get(a["type_id"], 0.0) + a.get("quantity", 0)
 
 
+def _unlisted_preconditions(cfg: ProductionConfig) -> tuple[list, list]:
+    """The cheap, ESI-free checks of the unlisted-stock check. Shared by
+    do_unlisted_stock and do_start_unlisted_stock, so the HTTP start answers
+    them as an immediate 400 instead of a failed background run."""
+    if cfg.home_location_id is None:
+        raise ActionError("No structure/location ID configured (Settings -> Market & Location).")
+    stock_targets = dynamic_targets.effective_stock_targets(cfg)
+    if not stock_targets:
+        raise ActionError("No stock targets configured.")
+    # docs/ESI_ACCESS_PLAN.md Known gap 4 (closed): sharing-based, not the
+    # legacy producer:* prefix - a character shared via the newer esi:<id>
+    # key (Characters page add-a-character path) must not be invisible here.
+    characters = esi_sync.list_shared_producer_characters()
+    if not characters:
+        raise ActionError("No Production character shared yet.")
+    return stock_targets, characters
+
+
+def do_start_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Starts the unlisted-stock check as a background job ({run_id, status};
+    HTTP 409 while this tenant has another job running). Missing location,
+    targets or characters raise ActionError here, before a job exists."""
+    from .. import pipeline_runner
+    _unlisted_preconditions(cfg)
+    return pipeline_runner.start_unlisted_stock()
+
+
+def do_unlisted_stock_status() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.job_status(
+        pipeline_runner.TOOL_PRODUCTION, pipeline_runner.JOB_UNLISTED_STOCK)
+
+
+def do_unlisted_stock_job(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Worker body of the background job: do_unlisted_stock with the row
+    dataclasses turned into plain dicts, since the result is stored as JSONB."""
+    result = do_unlisted_stock(cfg)
+    return {"rows": [asdict(r) for r in result["rows"]]}
+
+
 def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Live-fetches every registered producer character's (+ their corps')
     assets and sell orders (personal *and* corp - see corp_orders_seen below)
@@ -1592,20 +1633,10 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     with only backup_stock configured is a personal/component buffer never
     meant to be listed for sale, so it must not show up here.
 
-    Track B (2026-09-11, this tenant): POST /api/production/unlisted-stock/check
-    returned 400 in 0.001s (no home_location_id; also 0 stock targets and
-    0 producer characters). Not migrated to pipeline_runner."""
-    if cfg.home_location_id is None:
-        raise ActionError("No structure/location ID configured (Settings -> Market & Location).")
-    stock_targets = dynamic_targets.effective_stock_targets(cfg)
-    if not stock_targets:
-        raise ActionError("No stock targets configured.")
-    # docs/ESI_ACCESS_PLAN.md Known gap 4 (closed): sharing-based, not the
-    # legacy producer:* prefix - a character shared via the newer esi:<id>
-    # key (Characters page add-a-character path) must not be invisible here.
-    characters = esi_sync.list_shared_producer_characters()
-    if not characters:
-        raise ActionError("No Production character shared yet.")
+    The web path runs this as a background job (do_start_unlisted_stock /
+    pipeline_runner.JOB_UNLISTED_STOCK); the CLI and tests call it directly.
+    """
+    stock_targets, characters = _unlisted_preconditions(cfg)
 
     scope = _unlisted_read_scope()
     client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))

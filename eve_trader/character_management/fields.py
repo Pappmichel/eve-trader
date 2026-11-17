@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional
 
 from .. import storage
 from ..auth import TokenManager
-from ..config import OAUTH_CONFIG
+from ..config import OAUTH_CONFIG, TRADING_CONFIG
 from ..esi_client import ESIError
 from ..esi_data import is_shared, read_esi, select_auth_role
 from ..esi_data.registry import OWNED_DATA_KINDS
@@ -104,7 +104,7 @@ def summarise_sync(result: dict) -> dict:
     another pass was already syncing - the UI must say "sync already
     running" for those, not treat them as success or failure (plan R10)."""
     owners = result.get("owners", [])
-    return {
+    summary = {
         "ok": bool(result.get("ok")),
         "characters": result.get("characters", {}),
         "in_flight": [o["owner_id"] for o in owners if o.get("skipped") == "in_flight"],
@@ -113,6 +113,23 @@ def summarise_sync(result: dict) -> dict:
             for o in owners if not o.get("ok", True) and o.get("skipped") != "in_flight"
         ],
     }
+    # Pairs a manual sync skipped because ESI's cache had not expired yet
+    # (present only when there were any).
+    if result.get("unchanged"):
+        summary["unchanged"] = result["unchanged"]
+        summary["unchanged_message"] = result.get("unchanged_message")
+    return summary
+
+
+def sync_max_age_hours() -> float:
+    """The tenant's "normal" freshness tier in hours: how old a Character
+    Management page's data may be before the page syncs itself on open. Read
+    from the live config so the pages follow the Trading setting without
+    needing the Trading grant."""
+    try:
+        return float(TRADING_CONFIG.esi_normal_interval_hours)
+    except (TypeError, ValueError, AttributeError):
+        return 6.0
 
 
 def token_characters() -> list[dict]:

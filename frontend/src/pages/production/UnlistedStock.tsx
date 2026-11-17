@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Button, Stack, Text, Tooltip } from '@mantine/core'
+import { Alert, Button, Stack, Text, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -7,13 +7,30 @@ import type { ProductionUnlistedStockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { ItemWithNeeds } from '../../components/NeedBadges'
 import { HintCard } from '../../components/HintCard'
-import { useAction } from '../../hooks/useAction'
+import { JobProgress } from '../../components/JobProgress'
+import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { pct, qty } from '../../format'
 
+const UNLISTED_LABELS = { unlisted_stock: 'Check Structure Stock Without Order' }
+
 export default function UnlistedStock() {
-  const check = useAction('Check Structure Stock Without Order', productionApi.checkUnlistedStock, [],
-    { tier: 'live', effect: 'Compares your ESI asset/corp hangar stock live against currently open sell orders.' })
-  const data = check.data
+  // Background job: corporation assets/orders are read live from ESI, which
+  // can take minutes. The last run's rows come back with the status, so a
+  // reload shows them again.
+  const job = useBackgroundJob({
+    queryKey: ['production', 'unlisted-stock', 'status'],
+    fetchStatus: productionApi.checkUnlistedStockStatus,
+    resultKeys: [],
+    labels: UNLISTED_LABELS,
+    defaultLabel: 'Check Structure Stock Without Order',
+    pollIntervalMs: 1500,
+  })
+  const start = useBackgroundJobStart(job, () => productionApi.checkUnlistedStock())
+  const running = job.runningStatus || start.isPending
+  const rows = job.status?.result?.rows
+  const data = job.status?.status === 'succeeded' && Array.isArray(rows)
+    ? (rows as ProductionUnlistedStockRow[]) : undefined
 
   const columns = useMemo<ColumnDef<ProductionUnlistedStockRow, any>[]>(() => [
     {
@@ -35,20 +52,33 @@ export default function UnlistedStock() {
         <b>and</b> corp orders/hangars. Corp orders need the Accountant or Trader role on at least one registered
         character. Only targets with a <b>Home</b> or <b>Jita Market Target</b> are considered. A <b>Doctrine needs</b>
         badge marks items the doctrine stockpile is currently short of, a <b>Production needs</b> badge items on the
-        last Build List's buy list.
+        last Build List's buy list. The check runs in the background; you can leave the page and come back
+        to the last result.
       </HintCard>
 
-      <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>
-        <Button w={280} leftSection={check.tierIcon} onClick={() => check.mutate()} loading={check.isPending}>
+      <Tooltip
+        label={`Compares your ESI asset/corp hangar stock live against currently open sell orders - runs as a background job. ${TIER_COPY.live}`}
+        multiline w={280}
+      >
+        <Button w={280} rightSection={<ActionTierIcon tier="live" />} variant={running ? 'light' : undefined}
+          onClick={() => start.mutate()} disabled={running}>
           Check Structure Stock Without Order
         </Button>
       </Tooltip>
 
-      {data && data.length === 0 && (
+      {running && (
+        <JobProgress label={job.formatProgress(job.status?.progress, job.jobName)} progress={job.status?.progress} />
+      )}
+
+      {!running && job.status?.status === 'failed' && (
+        <Alert color="red" title="Check failed">{job.status.error || 'The background job failed.'}</Alert>
+      )}
+
+      {!running && data && data.length === 0 && (
         <HintCard>All listing-target stock in the C-J hangar is listed.</HintCard>
       )}
 
-      {data && data.length > 0 && (
+      {!running && data && data.length > 0 && (
         <>
           <Text size="sm" c="dimmed">{data.length} listing-target stock items in the C-J hangar without a sell order</Text>
           <DataTable getRowId={(r) => String(r.type_id)} tableId="production-unlisted-stock" rowDetail data={data} columns={columns} maxHeight={560} />

@@ -1819,6 +1819,95 @@ def sell_fee_totals(
     return (int(row[0]), float(row[1]), float(row[2]), float(row[3]))
 
 
+def bought_market_fee_totals(
+    start: datetime, end: datetime, *, wallet_owners: list, location_ids: list[int],
+) -> tuple[int, float, float]:
+    """(buys, materials, fees) over the market buy fills of `wallet_owners` at
+    `location_ids` in [start, end), from the derived cost layers.
+
+    A buy fill's layer carries its price (`cost_materials_bought`) and the
+    broker fee costing attributed to it (`cost_fees`, D12), both per unit. A
+    layer still in stock is one row (weighted by its original quantity); a
+    layer fully consumed is gone from `prod_cost_layers`, so its draws stand
+    in for it (their components are totals). The fee share is constant within
+    a layer, so either view gives the same quote for it. A layer moved between
+    own owners (`source = 'transfer'`) is not a purchase and does not count.
+    The archived transaction (`source_ref` = `tx:<type>:<id>:<division>:<tx>`)
+    supplies the place and owner."""
+    if not wallet_owners or not location_ids:
+        return 0, 0.0, 0.0
+    match, match_params = _owner_match_sql(wallet_owners, "")
+    sql = (
+        "WITH tx AS ("
+        " SELECT 'tx:' || owner_type || ':' || owner_id || ':' || division || ':' || transaction_id AS ref"
+        " FROM ledger_wallet_transactions"
+        " WHERE is_buy AND date >= ? AND date < ? AND location_id = ANY(?) AND " + match +
+        "), layer_part AS ("
+        " SELECT l.logical_layer_id, l.source_ref,"
+        " l.cost_materials_bought * COALESCE(l.quantity_original, l.quantity_left) AS mat,"
+        " l.cost_fees * COALESCE(l.quantity_original, l.quantity_left) AS fee"
+        " FROM prod_cost_layers l JOIN tx ON tx.ref = l.source_ref"
+        " WHERE l.origin = 'bought' AND l.source = 'market'"
+        "), draw_part AS ("
+        " SELECT d.source_ref, d.cost_materials_bought AS mat, d.cost_fees AS fee"
+        " FROM prod_cost_draws d JOIN tx ON tx.ref = d.source_ref"
+        " WHERE d.origin = 'bought' AND d.source = 'market'"
+        " AND NOT EXISTS (SELECT 1 FROM layer_part lp WHERE lp.logical_layer_id = d.logical_layer_id)"
+        ") SELECT COUNT(DISTINCT source_ref), COALESCE(SUM(mat), 0), COALESCE(SUM(fee), 0) FROM ("
+        " SELECT source_ref, mat, fee FROM layer_part UNION ALL SELECT source_ref, mat, fee FROM draw_part"
+        ") p"
+    )
+    params = (start, end, sorted({int(i) for i in location_ids}), *match_params)
+    with storage.connect() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return int(row[0]), float(row[1]), float(row[2])
+
+
+def without_sale_fees_by_owner(start_day, end_day, owners: Optional[list]) -> dict:
+    """{(owner_type, owner_id): amount} of the order fees costing could not
+    attribute to a fill (`prod_fee_lines` kind `without_sale`) on UTC days in
+    [start_day, end_day). `owners` None means every owner, an empty list none:
+    unlike `fee_totals_between`, a report reads only its own wallet owners."""
+    if owners is not None and not owners:
+        return {}
+    sql = (
+        "SELECT owner_type, owner_id, COALESCE(SUM(amount), 0) FROM prod_fee_lines "
+        "WHERE kind = 'without_sale' AND fee_date >= ? AND fee_date < ?"
+    )
+    params: list = [start_day, end_day]
+    if owners is not None:
+        match, match_params = _owner_match_sql(owners, "")
+        sql += " AND " + match
+        params.extend(match_params)
+    sql += " GROUP BY owner_type, owner_id"
+    with storage.connect() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return {(str(r[0]), int(r[1])): float(r[2]) for r in rows}
+
+
+def market_gross_by_owner_channel(start: datetime, end: datetime, owners: list) -> dict:
+    """{(owner_type, owner_id): {channel: gross}} over the market sales of
+    `owners` in [start, end), every channel. Used to split an owner's fees that
+    belong to no fill across the channels that owner sold in."""
+    if not owners:
+        return {}
+    match, match_params = _owner_match_sql(owners, "")
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, channel, COALESCE(SUM(gross), 0) "
+            "FROM prod_realized_results "
+            "WHERE source = 'market' AND gross IS NOT NULL AND gross > 0 "
+            "AND channel IS NOT NULL AND owner_id IS NOT NULL "
+            "AND sale_date >= ? AND sale_date < ? AND " + match
+            + " GROUP BY owner_type, owner_id, channel",
+            (start, end, *match_params),
+        ).fetchall()
+    out: dict = {}
+    for owner_type, owner_id, channel, gross in rows:
+        out.setdefault((str(owner_type), int(owner_id)), {})[str(channel)] = float(gross)
+    return out
+
+
 def realized_by_type(
     start: datetime,
     end: datetime,

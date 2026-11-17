@@ -9,7 +9,10 @@ from __future__ import annotations
 import struct
 
 from . import constant_drift
-from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
+from .constants import (
+    ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION,
+    SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS,
+)
 from .sde import FetchedSde
 
 _ITEM_COMPARE_FIELDS = (
@@ -35,7 +38,8 @@ _TABLE_FIELDS = {
     "sde_blueprint_products": "blueprint_products",
     "sde_invention_probability": "invention_probability",
     "sde_blueprint_skills": "blueprint_skills", "sde_solar_systems": "solar_systems",
-    "sde_regions": "regions", "sde_stations": "stations", "sde_categories": "categories",
+    "sde_regions": "regions", "sde_stations": "stations",
+    "sde_npc_corporations": "npc_corporations", "sde_categories": "categories",
     "sde_type_slots": "type_slots", "sde_type_equivalents": "type_equivalents",
     "sde_type_materials": "type_materials", "sde_skill_requirements": "skill_requirements",
     "sde_skill_meta": "skill_meta", "sde_pi_schematics": "pi_schematics",
@@ -58,6 +62,24 @@ def shrink_warnings(fetched: FetchedSde, old_counts: dict) -> list[dict]:
         if drop > SHRINK_LIMIT_PERCENT:
             warnings.append({"table": table, "old": old, "new": new, "drop_percent": round(drop, 1)})
     return warnings
+
+
+def unmapped_ship_groups(fetched: FetchedSde) -> list[dict]:
+    """Ship groups (category 6) with published types that have no size class
+    in constants.SHIP_SIZE_GROUP_IDS: {group_id, name, published_types}. The
+    size table is the source (the SDE carries no size class), so such a group
+    gets no job category and its items get no rig. A group without published
+    types (381, 2001) is not reported."""
+    mapped = frozenset().union(*SHIP_SIZE_GROUP_IDS.values())
+    ship_groups = {int(g[0]): g[2] for g in fetched.groups if g[1] == SHIP_CATEGORY_ID}
+    counts: dict[int, int] = {}
+    for t in fetched.types:
+        if t[4] and t[1] in ship_groups:
+            counts[t[1]] = counts.get(t[1], 0) + 1
+    return [
+        {"group_id": gid, "name": ship_groups[gid], "published_types": n}
+        for gid, n in sorted(counts.items()) if gid not in mapped
+    ]
 
 
 def _pg_real(value):
@@ -123,7 +145,9 @@ def _diff_rows(old_rows, new_rows, key_fn, name_fn, fields) -> dict:
         old = old_by_key[key]
         changes = {}
         for field_name, idx, is_float in fields:
-            old_val, new_val = old[idx], row[idx]
+            # A row stored before a column existed is shorter: missing = NULL.
+            old_val = old[idx] if idx < len(old) else None
+            new_val = row[idx] if idx < len(row) else None
             if is_float:
                 if _floats_differ(old_val, new_val):
                     changes[field_name] = [old_val, new_val]
@@ -184,7 +208,12 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
         (
             "sde_stations", fetched.stations,
             lambda row: int(row[0]), lambda row: row[2],
-            (("system_id", 1, False), ("station_name", 2, False)),
+            (("system_id", 1, False), ("station_name", 2, False), ("corporation_id", 3, False)),
+        ),
+        (
+            "sde_npc_corporations", fetched.npc_corporations,
+            lambda row: int(row[0]), lambda row: str(row[0]),
+            (("faction_id", 1, False),),
         ),
         (
             "sde_categories", fetched.categories,
@@ -440,4 +469,5 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
             {tid: row[2] for tid, row in new_types.items() if tid in constant_drift.wanted_type_ids()}),
         "shrink_warnings": shrink_warnings(
             fetched, {table: len(_rows(snapshot, table)) for table in _TABLE_FIELDS}),
+        "unmapped_ship_groups": unmapped_ship_groups(fetched),
     }

@@ -27,13 +27,38 @@ from .esi_client import OrderStats
 # Sentinel for a tool's hub setting: price every item at its best hub.
 ALL_HUBS = 0
 
-# The four NPC trade hubs, by region id (same list as frontend/src/tradingHubs.ts).
-TRADE_HUBS: dict[int, str] = {
-    10000002: "Jita",
-    10000043: "Amarr",
-    10000032: "Dodixie",
-    10000030: "Rens",
-}
+@dataclass(frozen=True)
+class TradeHub:
+    region_id: int
+    name: str
+    label: str  # "Jita (The Forge)": hub plus its region, for pickers
+    solar_system_id: int
+    station_id: int  # the hub's main NPC station
+
+
+# The four NPC trade hubs: the one list the backend and (through GET
+# /api/hubs) the frontend read. Order matters: Jita is first, and
+# doctrine/engine.py takes the first entry as "the" hub. System ids are checked
+# against sde_solar_systems; own_orders.py reads the system from here.
+HUBS: tuple[TradeHub, ...] = (
+    TradeHub(10000002, "Jita", "Jita (The Forge)", 30000142, 60003760),
+    TradeHub(10000043, "Amarr", "Amarr (Domain)", 30002187, 60008494),
+    TradeHub(10000032, "Dodixie", "Dodixie (Sinq Laison)", 30002659, 60011866),
+    TradeHub(10000030, "Rens", "Rens (Heimatar)", 30002510, 60004588),
+)
+
+# Region -> name, same order and keys as HUBS (existing iterators use it).
+TRADE_HUBS: dict[int, str] = {h.region_id: h.name for h in HUBS}
+
+
+def hub_by_region(region_id: Optional[int]) -> Optional[TradeHub]:
+    return next((h for h in HUBS if h.region_id == region_id), None)
+
+
+def do_list_hubs() -> list[dict]:
+    """The hub list for pickers and labels (GET /api/hubs)."""
+    return [{"region_id": h.region_id, "name": h.name, "label": h.label,
+             "solar_system_id": h.solar_system_id, "station_id": h.station_id} for h in HUBS]
 
 
 def hub_name(region_id: Optional[int]) -> str:
@@ -123,6 +148,13 @@ def do_get_hub_freight(cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
     rates = cfg.hub_freight_cost_per_m3 or {}
     return [{"region_id": rid, "hub": name, "freight_cost_per_m3": rates.get(str(rid))}
             for rid, name in TRADE_HUBS.items()]
+
+
+def do_get_observed_freight() -> list[dict]:
+    """Per hub: the freight rate the tenant's finished courier contracts
+    imply, as a suggestion only (realized/freight_rates.py)."""
+    from .realized import freight_rates  # lazy: the realized package imports hubs
+    return freight_rates.observed_freight_all()
 
 
 def do_update_hub_freight(rates: Mapping[int, Optional[float]],

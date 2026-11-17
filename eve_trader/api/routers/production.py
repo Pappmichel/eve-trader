@@ -472,6 +472,10 @@ class ProductionSettings(BaseModel):
     encryption_skill_level: int
     datacore_skill_1_level: int
     datacore_skill_2_level: int
+    industry_skill_level: int
+    advanced_industry_skill_level: int
+    reactions_skill_level: int
+    specialist_skill_level: int
     reaction_cost_index_override: Optional[float] = None
     component_cost_index_override: Optional[float] = None
     manufacturing_cost_index_override: Optional[float] = None
@@ -770,9 +774,19 @@ def get_esi_sync_time():
     return actions.do_get_esi_sync_time()
 
 
-@router.post("/unlisted-stock/check", response_model=list[schemas.ProductionUnlistedStockRow])
+@router.post("/unlisted-stock/check")
 def check_unlisted_stock():
-    return _wrap(actions.do_unlisted_stock)["rows"]
+    """Starts the check as a background job and returns {run_id, status}
+    (corporation ESI reads can take minutes). Missing location / targets /
+    characters are an immediate 400; a second start while any background job
+    runs is HTTP 409. Poll GET .../check/status; its `result.rows` holds the
+    rows (same fields as schemas.ProductionUnlistedStockRow)."""
+    return _wrap(actions.do_start_unlisted_stock)
+
+
+@router.get("/unlisted-stock/check/status")
+def check_unlisted_stock_status():
+    return _wrap(actions.do_unlisted_stock_status)
 
 
 @router.post("/build-candidates/discover")
