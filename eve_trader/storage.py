@@ -1405,6 +1405,19 @@ def save_tenant_settings(scope: str, updates: dict) -> None:
         )
 
 
+def remove_tenant_settings_keys(scope: str, keys: list[str]) -> None:
+    """Deletes `keys` from the current tenant's stored overrides for `scope`
+    (JSONB `-`), leaving every other key in place. A missing row or key is a
+    no-op."""
+    if not keys:
+        return
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tenant_settings SET overrides = overrides - ?::text[] WHERE scope = ?",
+            (list(keys), scope),
+        )
+
+
 def load_tenant_settings(scope: str) -> dict:
     """Returns the current tenant's stored overrides dict for `scope`, or
     {} if nothing has been saved yet."""

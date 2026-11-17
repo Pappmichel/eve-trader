@@ -11,6 +11,7 @@ from typing import Optional
 import yaml
 
 from .. import storage
+from ..config import warn_unknown_override_keys
 from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
 from .constants import (HANGAR_DIVISION_FLAGS, INVENTION_RIG_TIERS, RIG_TIERS, STRUCTURE_TYPES,
                         THUKKER_TIER)
@@ -420,6 +421,7 @@ def resolve_and_set_production_config(tenant_id: str) -> contextvars.Token:
     cfg = load_production_config()
     overrides = storage.load_tenant_settings("production")
     if overrides:
+        warn_unknown_override_keys("production", ProductionConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _production_config_var.set(cfg)
 

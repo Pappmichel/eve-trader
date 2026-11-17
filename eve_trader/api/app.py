@@ -495,6 +495,12 @@ def _load_default_tenant_config() -> None:
     from ..refining.config import REFINING_CONFIG
     from ..station_trading.config import STATION_TRADING_CONFIG
 
+    # One warning per config.yaml key that several tenant config classes read.
+    from ..config import warn_unknown_override_keys, warn_yaml_key_collisions
+    from ..config_scopes import tenant_config_classes
+
+    warn_yaml_key_collisions(tuple(tenant_config_classes().values()))
+
     # (tenant_settings.scope, shared default instance) - every scope the
     # Settings saves write to.
     scopes = (
@@ -508,8 +514,10 @@ def _load_default_tenant_config() -> None:
     )
     with storage.tenant_context(storage.DEFAULT_TENANT_ID):
         loaded = [(cfg, storage.load_tenant_settings(scope)) for scope, cfg in scopes]
-    for cfg, overrides in loaded:
+    classes = tenant_config_classes()
+    for (scope, _), (cfg, overrides) in zip(scopes, loaded):
         if overrides:
+            warn_unknown_override_keys(scope, classes[scope], overrides)
             apply_config_overrides(cfg, overrides)
 
 

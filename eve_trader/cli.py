@@ -1104,6 +1104,21 @@ def admin_grant_defaults(dry_run: bool):
                + (" (dry run)" if dry_run else ""))
 
 
+@admin_group.command("prune-settings")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="Delete the keys. Without it only the keys that would be deleted are listed.")
+def admin_prune_settings(apply_changes: bool):
+    """Remove stored Settings overrides (tenant_settings) whose key is no
+    longer a field of that scope's config class. Dry run by default; prints
+    key names only, never values."""
+    from . import admin as admin_mod
+    result = admin_mod.do_prune_settings(apply=apply_changes)
+    for row in result["changed"]:
+        click.echo(f"{'removed' if apply_changes else 'would remove'} {row['scope']}: "
+                   f"{', '.join(row['keys'])} (tenant {row['tenant_name']}, {row['tenant_id']})")
+    click.echo(f"{len(result['changed'])} scope(s) with unknown keys" + ("" if apply_changes else " (dry run)"))
+
+
 @main.group("assets")
 def assets_group():
     """Asset Manager (eve_trader/asset_manager/actions.py) - same do_*

@@ -2267,7 +2267,6 @@ export interface ModuleReprocessingSettings {
   min_margin_threshold: number
   ignore_thresholds: boolean
   purchase_region_id: number
-  purchase_structure_id: number | null
   input_hub_region_id: number
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
