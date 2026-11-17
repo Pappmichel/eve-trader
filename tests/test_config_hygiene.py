@@ -1,5 +1,6 @@
 """Config traps: shared YAML keys, market slug and range checks, unknown stored
 override keys and `eve-trader admin prune-settings`."""
+import contextvars
 import logging
 import uuid
 
@@ -211,16 +212,23 @@ def test_prune_dry_run_changes_nothing_and_apply_removes_only_unknown_keys(two_t
     assert not [r for r in again["changed"] if r["tenant_id"] in (a, b)]
 
 
+def _invoke(runner, args):
+    """cli.main sets the Default tenant for the whole process (it is the CLI's
+    one-time setup); run it in a copied context so that ambient tenant and the
+    resolved configs do not leak into later tests on this worker."""
+    return contextvars.copy_context().run(runner.invoke, cli.main, args)
+
+
 @pg_helpers.postgres_required()
 def test_prune_cli_is_dry_run_by_default(two_tenants):
     a, _ = two_tenants
     _seed(a, "pi", {"hub_region_id": 10000002, "obsolete_pi_key": 1})
     runner = CliRunner()
-    result = runner.invoke(cli.main, ["admin", "prune-settings"])
+    result = _invoke(runner, ["admin", "prune-settings"])
     assert result.exit_code == 0, result.output
     assert "would remove pi: obsolete_pi_key" in result.output
     assert "(dry run)" in result.output
     assert "obsolete_pi_key" in _stored(a, "pi")
-    result = runner.invoke(cli.main, ["admin", "prune-settings", "--apply"])
+    result = _invoke(runner, ["admin", "prune-settings", "--apply"])
     assert result.exit_code == 0, result.output
     assert _stored(a, "pi") == {"hub_region_id": 10000002}

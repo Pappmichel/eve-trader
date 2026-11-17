@@ -6,6 +6,7 @@ layer).
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Optional
 
