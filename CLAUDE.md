@@ -146,6 +146,18 @@ covers only a few regions (The Forge, Insmother, Delve); for any other region
 `goonmetrics_client.region_has_goonmetrics_history` is false and
 `price_history` reads ESI daily history instead.
 
+The hub list itself lives once, in `hubs.HUBS` (region, name, label, solar
+system, main station); `hubs.TRADE_HUBS` is derived from it with the same order
+and keys, `own_orders` reads the hub system from it, and the frontend gets it
+from `GET /api/hubs` (`useTradeHubs()`), never from a second hard-coded list.
+`GET /api/hubs/observed-freight` (`realized/freight_rates.py`) suggests a
+freight rate per hub: `sum(reward) / sum(volume)` of the finished couriers to
+the home structure in the last 90 days (`costing.group_shipments`, at least 3
+shipments from that hub's system, owners per D11, aggregates only). Settings
+pages show it under each tool's own freight field and per row of the hub
+freight table with "Use this value" (normal settings save); the five freight
+fields stay separate (PI freight is hub-to-planet and not part of it).
+
 **Price sources matrix** - four different price sources answer four
 different questions, deliberately, not by accident, but nowhere else are
 they laid out side by side:
@@ -340,6 +352,14 @@ nothing changes a setting on its own, because a corporation wallet mixes other
 members' sales into the figure. The broker fee per sale is costing's pro-rata
 attribution (a day's real order fees spread over that day's order-based fills),
 and relist fees count only as far as a sale got them, so the figure is an estimate.
+A second, display-only line shows `upper_bound_quote`: the same numerator plus
+the order fees costing booked to no fill (`prod_fee_lines` `without_sale`) of the
+scope's own wallet owners on the window's days, each owner's fees split across
+channels by that owner's market gross per channel (`db.without_sale_fees_by_owner`,
+`db.market_gross_by_owner_channel`; an owner with no market sale in the window adds
+nothing). It also holds buy-order and unmatched contract broker fees, so it is an
+upper bound; no button, nothing stored. Trading shows it as `1 - upper_bound_quote`
+(`upper_bound_value`, a lower bound for the haircut) next to the fee share.
 
 ## Architecture: actions.py is the one entry point
 

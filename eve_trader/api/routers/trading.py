@@ -135,6 +135,7 @@ def get_price_history(type_id: int):
 class TradingSettings(BaseModel):
     import_cost_per_m3: float
     structure_sell_haircut: float
+    jita_buy_broker_fee: float
     min_profit_threshold: float
     min_margin_threshold: float
     skip_grace_period_days: int

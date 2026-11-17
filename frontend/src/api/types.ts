@@ -133,6 +133,23 @@ export interface HubFreightRow {
   freight_cost_per_m3: number | null
 }
 
+// One hub's freight suggestion (GET /api/hubs/observed-freight): finished courier
+// contracts to the home structure, reward / volume. Aggregates only. No value -> `reason`.
+export interface ObservedFreightRow {
+  region_id: number
+  hub: string
+  source: 'courier_contracts'
+  suggested: number | null
+  shipments: number
+  volume_m3: number
+  window_days: number
+  min_shipments: number
+  start: string
+  end: string
+  reason: 'no_home_structure' | 'no_couriers' | 'too_few_shipments' | null
+  message: string | null
+}
+
 export interface RegionOption {
   region_id: number
   region_name: string
@@ -180,6 +197,9 @@ export interface SparklineSeries {
 // (GET /realized/observed-fees, one per channel). `quote` is the fee share of
 // gross; `suggested` is the value for the setting named by `setting`
 // (Trading's haircut is the share kept, 1 - quote). No value -> `reason`.
+// `upper_bound_quote` also counts order fees of days without a sale (relists,
+// unsold new orders, buy orders); `upper_bound_value` is it in the setting's
+// terms (Trading: 1 - upper_bound_quote). Display only, never applied.
 export interface ObservedSellFees {
   setting: 'market_fees' | 'structure_sell_haircut'
   window_days: number
@@ -189,6 +209,9 @@ export interface ObservedSellFees {
   suggested: number | null
   sales_tax_rate: number | null
   broker_fee_rate: number | null
+  upper_bound_quote: number | null
+  upper_bound_value: number | null
+  order_fees_without_sale: number | null
   reason: 'no_run' | 'needs_rebuild' | 'too_few_sales' | 'no_basis' | null
   message: string | null
   relist_note: string
@@ -197,6 +220,7 @@ export interface ObservedSellFees {
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number
+  jita_buy_broker_fee: number
   min_profit_threshold: number
   min_margin_threshold: number
   skip_grace_period_days: number
@@ -1111,8 +1135,8 @@ export interface ProductionSettings {
   component_overbuild: number
   bpc_inventory: number
   market_fees: number
-  // jita_buy_broker_fee removed 2026-09-26 (T3-04) - TradingConfig's own
-  // copy is the single source of truth now, edited from Trading Settings.
+  // jita_buy_broker_fee is not here: TradingConfig's own copy is the single
+  // source of truth, edited from Trading Settings.
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
@@ -1143,6 +1167,10 @@ export interface ProductionSettings {
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
+  industry_skill_level: number
+  advanced_industry_skill_level: number
+  reactions_skill_level: number
+  specialist_skill_level: number
   reaction_cost_index_override: number | null
   component_cost_index_override: number | null
   manufacturing_cost_index_override: number | null

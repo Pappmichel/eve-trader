@@ -10,6 +10,7 @@ import { HintCard } from '../../components/HintCard'
 import { isk } from '../../format'
 import { COLORS } from '../../theme'
 import { hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 import { normalizeCompare, type CompareRow } from './priceHistoryCompare'
 
 interface ChartRow {
@@ -67,6 +68,7 @@ function coveredDays(histories: (PriceHistoryData | undefined)[]): number {
 
 export default function PriceHistory() {
   const { data: typeIds, isLoading } = useQuery({ queryKey: ['trading', 'history', 'type-ids'], queryFn: tradingApi.historyTypeIds })
+  const { data: tradeHubs } = useTradeHubs()
   const { data: regions } = useQuery({ queryKey: ['sde', 'regions'], queryFn: sdeApi.regions, retry: false })
   const [chosen, setChosen] = useState<string[] | null>(null)
   const [rangeChoice, setRangeChoice] = useState<string | null>(null)
@@ -183,7 +185,7 @@ export default function PriceHistory() {
               stroke={LINE_COLORS[i % LINE_COLORS.length]} dot={false} connectNulls />
           )) : (
             <>
-              <Line type="monotone" dataKey="hub" name={`${hubLabel(hubRegionId)} (buy hub)`}
+              <Line type="monotone" dataKey="hub" name={`${hubLabel(tradeHubs, hubRegionId)} (buy hub)`}
                 stroke={COLORS.accent} dot={false} connectNulls={false} />
               <Line type="monotone" dataKey="reference" name={refLabel}
                 stroke={COLORS.info} dot={false} connectNulls={false} />

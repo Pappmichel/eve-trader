@@ -7,6 +7,7 @@ import TradingSettings from './TradingSettings'
 import { tradingApi, productionApi } from '../../api/client'
 
 vi.mock('../../api/client', () => ({
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS, observedFreight: async () => [{ region_id: 10000002, hub: 'Jita', source: 'courier_contracts', suggested: 686, shipments: 14, volume_m3: 9e4, window_days: 90, min_shipments: 3, start: '', end: '', reason: null, message: null }] },
   tradingApi: {
     settings: vi.fn(),
     updateSettings: vi.fn(),
@@ -22,7 +23,7 @@ vi.mock('../../api/client', () => ({
 
 // Minimal but complete TradingSettings shape - every field the page reads.
 const SETTINGS = {
-  import_cost_per_m3: 1500, structure_sell_haircut: 0.02, min_profit_threshold: 100,
+  import_cost_per_m3: 1500, structure_sell_haircut: 0.02, jita_buy_broker_fee: 0.0147, min_profit_threshold: 100,
   min_margin_threshold: 0.1, skip_grace_period_days: 14, enforce_shortlist_cap: false,
   max_active_shortlist_items: 500, max_shortlist_growth_per_run: 50, min_hit_rate: 0.5,
   min_avg_movement: 10, min_paired_days: 5, excluded_path_prefixes: [], safe_mode_max_ids: 500,
@@ -50,8 +51,8 @@ describe('TradingSettings buy hub labels', () => {
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
     renderPage()
 
-    expect(await screen.findByLabelText(/Buyer name \(Amarr\)/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Freight cost Amarr→structure/)).toBeInTheDocument()
+    expect(await screen.findByLabelText(/Buyer name \(Amarr\)/, {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByLabelText(/Freight cost Amarr→structure/)).toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Buy hub' })).not.toBeInTheDocument()
   })
 })
@@ -59,7 +60,8 @@ describe('TradingSettings buy hub labels', () => {
 describe('TradingSettings observed sell fees', () => {
   const FEES = {
     setting: 'structure_sell_haircut', window_days: 30, min_sales: 20, sales: 25, quote: 0.0537,
-    suggested: 0.9463, sales_tax_rate: 0.036, broker_fee_rate: 0.0177, reason: null, message: null,
+    suggested: 0.9463, sales_tax_rate: 0.036, broker_fee_rate: 0.0177, upper_bound_quote: 0.0737,
+    upper_bound_value: 0.9263, order_fees_without_sale: 500, reason: null, message: null,
     relist_note: 'Relist and order-modification fees are included only as far as they are attributed to a sale.',
   }
 
@@ -70,6 +72,7 @@ describe('TradingSettings observed sell fees', () => {
     renderPage()
 
     expect(await screen.findByText(/Actual last 30 days: 94\.63 % \(25 sales\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Lower bound 92\.63 % - fees up to 7\.37 %/)).toBeInTheDocument()
     expect(tradingApi.updateSettings).not.toHaveBeenCalled()
   })
 
@@ -96,6 +99,43 @@ describe('TradingSettings observed sell fees', () => {
 
     expect(await screen.findByText(/Rebuild the realized-profit ledger first/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('TradingSettings observed freight', () => {
+  it('"Use this value" saves only the freight field through the settings save', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(tradingApi.updateSettings).mockClear()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_ledger_run', message: 'x' } as any)
+    renderPage()
+
+    expect(await screen.findByText(/Actual last 90 days: 686 ISK\/m³ \(14 shipments\)/)).toBeInTheDocument()
+    expect(tradingApi.updateSettings).not.toHaveBeenCalled()
+    const buttons = await screen.findAllByRole('button', { name: 'Use this value' })
+    await userEvent.click(buttons[0])
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ import_cost_per_m3: 686 })
+  })
+})
+
+describe('TradingSettings buy broker fee', () => {
+  it('shows the fee as a percentage and saves a change as a fraction', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(tradingApi.updateSettings).mockClear()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_ledger_run', message: 'x' } as any)
+    renderPage()
+
+    const field = await screen.findByLabelText('Buy broker fee')
+    expect(field).toHaveValue('1.47%')
+    await userEvent.clear(field)
+    await userEvent.type(field, '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ jita_buy_broker_fee: 0.02 })
   })
 })
 

@@ -4,6 +4,7 @@
 // "single process" mode (FastAPI serves the built frontend on the same
 // origin as the API - see api/app.py's StaticFiles mount).
 import type * as T from './types'
+import type { TradeHub } from '../tradingHubs'
 
 // Captured once at module load (page load), not re-read live on every 401 —
 // App.tsx's AuthRedirectHandler clears ?gate= from the URL shortly after
@@ -1011,7 +1012,9 @@ export const charactersApi = {
 // every tenant - unlike adminApi.errors (the list view), it needs no
 // "admin" tool grant (see api/routers/errors.py's own docstring).
 export const hubsApi = {
+  list: () => get<TradeHub[]>('/api/hubs'),
   freight: () => get<T.HubFreightRow[]>('/api/hubs/freight'),
+  observedFreight: () => get<T.ObservedFreightRow[]>('/api/hubs/observed-freight'),
   updateFreight: (rows: { region_id: number; freight_cost_per_m3: number | null }[]) =>
     post<T.HubFreightRow[]>('/api/hubs/freight', rows),
 }

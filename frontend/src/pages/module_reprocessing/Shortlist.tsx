@@ -11,6 +11,7 @@ import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 const ALL_DECISIONS = ['Inactive', 'No market data', 'Skip', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -27,7 +28,8 @@ export default function Shortlist() {
   const { data: settings } = useQuery({
     queryKey: ['module_reprocessing', 'settings'], queryFn: moduleReprocessingApi.settings,
   })
-  const hub = hubLabel(settings?.purchase_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = hubLabel(tradeHubs, settings?.purchase_region_id)
 
   // Reversible (activate below undoes it), so no confirmation prompt - same
   // reasoning as Ore & Minerals' own Ore Shortlist.
