@@ -2,6 +2,7 @@
 HiGHS can ignore its own time limit, and a stuck worker must end in a usable plan."""
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from eve_trader import mineral_supply_lp as supply
@@ -46,7 +47,7 @@ def test_worker_process_returns_the_whole_unit_plan(real_worker):
 
 def test_worker_matches_the_in_process_solve(real_worker, monkeypatch):
     in_child, _ = _solve()
-    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: supply.linprog(**kwargs).x)
+    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: (supply.linprog(**kwargs).x, 0))
     in_process, _ = _solve()
     assert in_child.portions == in_process.portions
     assert in_child.direct == in_process.direct
@@ -78,7 +79,7 @@ def test_every_column_has_a_finite_upper_bound(monkeypatch):
 
     def capture(kwargs):
         seen.update(kwargs)
-        return supply.linprog(**kwargs).x
+        return supply.linprog(**kwargs).x, 0
     monkeypatch.setattr(supply, "_run_mip", capture)
     required = {TRIT: 400_000_000.0, PYE: 200_000_000.0}
     direct = {TRIT: [SupplyTier(unit_cost=9.0, max_units=None)], PYE: [SupplyTier(unit_cost=9.0, max_units=None)]}
@@ -199,3 +200,32 @@ def test_landed_prices_add_up_to_the_plan_cost(credit):
     gross = 2 * 100 * 10.0
     expected = gross - 2 * 500.0 if credit else gross
     assert prices[PYE] * 600 == pytest.approx(expected)
+
+
+def test_time_limited_whole_unit_plan_is_kept_and_marked_approximate(monkeypatch):
+    """HiGHS stopped at its time limit with a feasible whole-unit plan (scipy
+    status 1): the plan is kept as is, only flagged."""
+    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: (supply.linprog(**kwargs).x, 0))
+    exact, required = _solve()
+    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: (supply.linprog(**kwargs).x, 1))
+    limited, _ = _solve()
+    assert not exact.approximate
+    assert limited.approximate
+    assert limited.portions == exact.portions
+    assert limited.direct == exact.direct
+
+
+def test_worker_output_carries_the_solver_status(monkeypatch):
+    import pickle
+
+    class _Done:
+        returncode = 0
+        stderr = b""
+        stdout = pickle.dumps({"x": np.array([1.0, 2.0]), "status": 1, "message": "Time limit reached"})
+
+    monkeypatch.setattr(supply.subprocess, "run", lambda *a, **k: _Done())
+    x, status = supply._solve_mip_in_child({})
+    assert status == 1 and list(x) == [1.0, 2.0]
+
+    _Done.stdout = pickle.dumps({"x": None, "status": 2, "message": "infeasible"})
+    assert supply._solve_mip_in_child({}) is None

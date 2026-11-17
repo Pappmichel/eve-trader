@@ -1982,7 +1982,8 @@ runs in a killable process (`eve_trader/mip_worker.py`,
 `MIP_PROCESS_DEADLINE_SECONDS`). A list needing over about 2B of one mineral can
 still get a bound that large; the killable process covers that. A killed or
 failed solve returns the LP solution rounded up, flagged `approximate` and shown
-as such. `tests/conftest.py` runs this solve in-process,
+as such. A solve that stops at its time limit with a whole-unit solution
+(worker `status` 1) keeps that solution, also flagged `approximate`. `tests/conftest.py` runs this solve in-process,
 `tests/test_mineral_supply_lp.py` tests the real worker.
 
 **The trigger is a large finite integer bound, not a missing one.** On emulated

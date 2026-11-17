@@ -40,8 +40,9 @@ export function ApproximateAlert({ show }: { show: boolean }) {
   if (!show) return null
   return (
     <Alert color="warn" variant="light" title="Approximate plan">
-      The whole-unit optimization did not finish in time, so this plan is the continuous optimum rounded up. It covers
-      the list but can cost slightly more than the best whole-unit plan.
+      The whole-unit optimization did not finish in time, so this plan is either the best whole-unit plan found before
+      the time limit or the continuous optimum rounded up. It covers the list but can cost more than the best
+      whole-unit plan.
     </Alert>
   )
 }

@@ -203,7 +203,7 @@ class ModuleShoppingListPlan:
     savings_vs_all_direct: Optional[float]
     total_volume_m3: float
     shortfall: bool = False              # some requirement could not be fully covered
-    approximate: bool = False            # rounded LP plan, the whole-unit solve gave no answer
+    approximate: bool = False            # not a proven whole-unit optimum (time limit or rounded LP plan)
     # Materials the reprocessing yields that are not on the list (always listed;
     # credited in the objective only with `credit_byproducts`, see the optimizer).
     byproducts: list[Byproduct] = field(default_factory=list)

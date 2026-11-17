@@ -7,7 +7,9 @@ stopped from Python and would hold a CPU until the service restarts, so
 mineral_supply_lp starts this module with a hard deadline instead.
 
 Protocol: pickled linprog keyword arguments on stdin, a pickled
-{"x": ndarray or None, "message": str} on stdout. Trusted input only: the
+{"x": ndarray or None, "status": int, "message": str} on stdout (`status` is
+scipy's: 0 optimal, 1 stopped at the time limit with the best whole-unit
+solution found so far in `x`). Trusted input only: the
 parent process wrote it. Imports nothing from the app beyond this module.
 """
 from __future__ import annotations
@@ -20,7 +22,8 @@ def main() -> None:
     from scipy.optimize import linprog
     kwargs = pickle.load(sys.stdin.buffer)
     result = linprog(**kwargs)
-    pickle.dump({"x": result.x, "message": result.message}, sys.stdout.buffer)
+    pickle.dump({"x": result.x, "status": int(result.status), "message": result.message},
+                sys.stdout.buffer)
     sys.stdout.buffer.flush()
 
 
