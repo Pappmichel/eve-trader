@@ -2950,7 +2950,9 @@ export interface PiPlannerResult {
   }
   evaluation: PiEvaluation
   economics: PiEconomics
-  prices: Record<string, { sell: number | null; buy: number | null }>
+  // side/hub: the hub an import is bought at or an export is valued at
+  // (they differ only with "All hubs").
+  prices: Record<string, { sell: number | null; buy: number | null; side?: 'input' | 'output'; hub?: string | null }>
   trend: PiTrend | null
 }
 

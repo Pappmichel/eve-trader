@@ -70,6 +70,12 @@ class Prices:
     daily_volume: Mapping[int, Optional[float]] = field(default_factory=dict)
     trend: Mapping[int, Optional[dict]] = field(default_factory=dict)
     source_note: Optional[str] = None     # e.g. "fell back to a Goonmetrics snapshot"
+    # Output side for "All hubs": the hub paying the most per type, which is
+    # not the cheapest hub inputs are bought at. None = outputs use
+    # sell/buy/hub_by_type like inputs (single hub, structure market).
+    output_sell: Optional[Mapping[int, Optional[float]]] = None
+    output_buy: Optional[Mapping[int, Optional[float]]] = None
+    output_hub_by_type: Optional[Mapping[int, int]] = None
 
 
 @dataclass(frozen=True)
@@ -86,12 +92,45 @@ class MarketSettings:
     interval_hours: float
 
 
+def _net_output_value(sell: Optional[float], buy: Optional[float], valuation: str,
+                      broker_fee: float, sales_tax: float) -> Optional[float]:
+    if valuation == "buy_orders":
+        return None if buy is None else buy * (1 - sales_tax)
+    return None if sell is None else sell * (1 - broker_fee - sales_tax)
+
+
 def output_unit_value(type_id: int, prices: Prices, m: MarketSettings) -> Optional[float]:
-    if m.valuation == "buy_orders":
-        p = prices.buy.get(type_id)
-        return None if p is None else p * (1 - m.sales_tax)
-    p = prices.sell.get(type_id)
-    return None if p is None else p * (1 - m.broker_fee - m.sales_tax)
+    sell = prices.output_sell if prices.output_sell is not None else prices.sell
+    buy = prices.output_buy if prices.output_buy is not None else prices.buy
+    return _net_output_value(sell.get(type_id), buy.get(type_id), m.valuation,
+                             m.broker_fee, m.sales_tax)
+
+
+def best_output_hubs(stats_by_hub: Mapping[int, Mapping[int, object]], type_ids: Iterable[int],
+                     valuation: str, broker_fee: float, sales_tax: float,
+                     ) -> tuple[dict[int, Optional[float]], dict[int, Optional[float]], dict[int, int]]:
+    """(sell, buy, hub) per type at the hub with the highest net revenue for
+    `valuation` (sell orders: sell percentile x (1 - broker - tax); buy
+    orders: buy percentile x (1 - tax)). PI freight is one rate for every
+    hub, so it does not decide. A type no hub prices has None and no hub."""
+    sell: dict[int, Optional[float]] = {}
+    buy: dict[int, Optional[float]] = {}
+    hub: dict[int, int] = {}
+    for t in type_ids:
+        best: Optional[float] = None
+        sell[t], buy[t] = None, None
+        for region_id in sorted(stats_by_hub):
+            s = stats_by_hub[region_id].get(t)
+            if s is None:
+                continue
+            value = _net_output_value(getattr(s, "sell_percentile", None),
+                                      getattr(s, "buy_percentile", None),
+                                      valuation, broker_fee, sales_tax)
+            if value is not None and (best is None or value > best):
+                best = value
+                sell[t], buy[t] = s.sell_percentile, s.buy_percentile
+                hub[t] = int(region_id)
+    return sell, buy, hub
 
 
 def input_unit_cost(type_id: int, prices: Prices, m: MarketSettings) -> Optional[float]:

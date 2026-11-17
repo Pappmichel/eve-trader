@@ -99,7 +99,10 @@ def _mineral_mip_in_process(monkeypatch):
     brute-force optimizer tests take minutes. test_mineral_supply_lp.py puts
     the real worker back for its own tests."""
     from eve_trader import mineral_supply_lp as supply
-    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: supply.linprog(**kwargs).x)
+    def in_process(kwargs):
+        result = supply.linprog(**kwargs)
+        return None if result.x is None else (result.x, int(result.status))
+    monkeypatch.setattr(supply, "_run_mip", in_process)
 
 
 @pytest.fixture(autouse=True)

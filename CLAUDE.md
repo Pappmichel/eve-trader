@@ -998,7 +998,11 @@ widens the alert type CHECK constraints).
 - **Economics** (`pi/economics.py`): customs = (high-sec NPC 10% - 1% per
   Customs Code Expertise) + owner rate, import x0.5; PI has its own freight
   rate - `hubs.hub_pricing(freight_override=...)`, never the shared hub ->
-  home-structure table. Verdict reasons are a fixed vocabulary.
+  home-structure table. With "All hubs" inputs are bought at the cheapest hub
+  (`hub_pricing`) but outputs are valued at the hub with the highest net
+  revenue for `pi_valuation` (`economics.best_output_hubs`, `Prices.output_*`);
+  the planner response names each import's and export's hub. Verdict reasons
+  are a fixed vocabulary.
 - **Layouts** (`pi/layout/`): `template_io` round-trips EVE templates byte
   for byte (alphabetical keys, La/Lo/Diam floats; pin `S` = product type id,
   `H` = head count, no Command Center pin). Templates are serialized only in
@@ -1684,8 +1688,13 @@ structures without a known system whose name starts with "<system> - ",
 global structure names, and Offices/containers parented there
 (`storage.location_ids_in_systems`). Production's asset, blueprint, formula
 and running-job readers pass it as `exclude_location_ids`; a new Production
-stock or blueprint reader must pass it too. Valuation, the Asset Manager and
-other tools are not affected.
+stock or blueprint reader must pass it too. That includes manual stock,
+manual blueprints and manual jobs (`engine.production_excluded_kwargs()`;
+`location_id = 0` is in no system and always counts), invention jobs by output
+location, and the reaction window: a reaction job delivering into an excluded
+system still takes its slot but adds no stock or incoming. The storage
+parameter defaults to unfiltered, so the manual-stock page, the ledger,
+valuation, the Asset Manager and other tools are not affected.
 
 ## Job-time character-skill bonus (confirmed real gap, fixed 2026-09-27)
 
@@ -2002,7 +2011,8 @@ runs in a killable process (`eve_trader/mip_worker.py`,
 `MIP_PROCESS_DEADLINE_SECONDS`). A list needing over about 2B of one mineral can
 still get a bound that large; the killable process covers that. A killed or
 failed solve returns the LP solution rounded up, flagged `approximate` and shown
-as such. `tests/conftest.py` runs this solve in-process,
+as such. A solve that stops at its time limit with a whole-unit solution
+(worker `status` 1) keeps that solution, also flagged `approximate`. `tests/conftest.py` runs this solve in-process,
 `tests/test_mineral_supply_lp.py` tests the real worker.
 
 **The trigger is a large finite integer bound, not a missing one.** On emulated

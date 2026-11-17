@@ -2389,14 +2389,22 @@ def apply_manual_stock_paste(location_id: int, rows: dict[int, float], mode: str
                 )
 
 
-def load_manual_stock() -> dict[int, float]:
-    """Signature unchanged (decision 16) - totals per type across every
-    location, so every existing caller (_current_stock and friends in
-    production/engine.py) keeps working without knowing locations exist at
-    all. See load_manual_stock_entries for the per-location breakdown and
-    manual_stock_at_location for a single (type, location) lookup."""
+def load_manual_stock(exclude_location_ids: Optional[list[int]] = None) -> dict[int, float]:
+    """Totals per type across every location (decision 16), so every
+    existing caller (_current_stock and friends in production/engine.py)
+    keeps working without knowing locations exist at all. See
+    load_manual_stock_entries for the per-location breakdown and
+    manual_stock_at_location for a single (type, location) lookup.
+
+    `exclude_location_ids`: Production's excluded systems (None = every
+    location). `location_id = 0` (no location) is in no system and stays."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
+    where = f"WHERE TRUE{loc_clause} " if loc_clause else ""
     with connect() as conn:
-        rows = conn.execute("SELECT type_id, SUM(count) FROM manual_stock GROUP BY type_id").fetchall()
+        rows = conn.execute(
+            f"SELECT type_id, SUM(count) FROM manual_stock {where}GROUP BY type_id",
+            loc_params,
+        ).fetchall()
     return {r[0]: r[1] for r in rows}
 
 
@@ -2531,27 +2539,33 @@ def load_manual_owned_blueprints() -> list[tuple]:
         ).fetchall()
 
 
-def manual_bpo_best_me_te(bp_type_id: int) -> Optional[tuple[int, int]]:
+def manual_bpo_best_me_te(bp_type_id: int,
+                          exclude_location_ids: Optional[list[int]] = None) -> Optional[tuple[int, int]]:
     """Best (highest) ME/TE across every manually-registered BPO of
     `bp_type_id` - same "originals only" restriction as storage.
     get_owned_bpo_best_me_te's own ESI-side counterpart."""
-    return manual_bpo_best_me_te_bulk([bp_type_id]).get(bp_type_id)
+    return manual_bpo_best_me_te_bulk(
+        [bp_type_id], exclude_location_ids=exclude_location_ids).get(bp_type_id)
 
 
-def manual_bpo_best_me_te_bulk(bp_type_ids: list[int]) -> dict[int, Optional[tuple[int, int]]]:
+def manual_bpo_best_me_te_bulk(bp_type_ids: list[int],
+                               exclude_location_ids: Optional[list[int]] = None,
+                               ) -> dict[int, Optional[tuple[int, int]]]:
     """Best ME/TE per manually-registered BPO type_id. Missing ids map to
-    None. Empty input is `{}` and opens no connection."""
+    None. Empty input is `{}` and opens no connection.
+    `exclude_location_ids`: Production's excluded systems (None = all)."""
     unique = list(dict.fromkeys(bp_type_ids))
     if not unique:
         return {}
     out: dict[int, Optional[tuple[int, int]]] = {tid: None for tid in unique}
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
     with connect() as conn:
         rows = conn.execute(
             "SELECT blueprint_type_id, MAX(material_efficiency), MAX(time_efficiency) "
             "FROM manual_owned_blueprints "
-            "WHERE blueprint_type_id = ANY(?) AND is_original = ? "
+            f"WHERE blueprint_type_id = ANY(?) AND is_original = ?{loc_clause} "
             "GROUP BY blueprint_type_id",
-            (list(unique), True),
+            (list(unique), True, *loc_params),
         ).fetchall()
     for tid, me, te in rows:
         if tid in out and me is not None and te is not None:
@@ -2559,16 +2573,19 @@ def manual_bpo_best_me_te_bulk(bp_type_ids: list[int]) -> dict[int, Optional[tup
     return out
 
 
-def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None) -> float:
+def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None,
+                    exclude_location_ids: Optional[list[int]] = None) -> float:
     """SUM(runs * quantity) across manually-registered BPCs of `bp_type_id`
     - `location_id=None` sums every location (mirrors storage.
-    available_blueprint_copies' own None branch)."""
+    available_blueprint_copies' own None branch), minus
+    `exclude_location_ids` (Production's excluded systems)."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
     with connect() as conn:
         if location_id is None:
             row = conn.execute(
                 "SELECT SUM(runs * quantity) FROM manual_owned_blueprints "
-                "WHERE blueprint_type_id = ? AND is_original = ?",
-                (bp_type_id, False),
+                f"WHERE blueprint_type_id = ? AND is_original = ?{loc_clause}",
+                (bp_type_id, False, *loc_params),
             ).fetchone()
         else:
             row = conn.execute(
@@ -2638,27 +2655,32 @@ def load_manual_industry_jobs() -> list[tuple]:
         ).fetchall()
 
 
-def manual_incoming_qty(product_type_id: int) -> float:
+def manual_incoming_qty(product_type_id: int,
+                        exclude_location_ids: Optional[list[int]] = None) -> float:
     """SUM(quantity) of every manual job producing `product_type_id` - added
     directly to production/engine.py's _current_stock, not multiplied by a
     product quantity (decision 2), since `quantity` here is already stored
     in finished-product units (see insert_manual_industry_job's own
     docstring/the table's own column comment)."""
-    return manual_incoming_qty_bulk([product_type_id]).get(product_type_id, 0.0)
+    return manual_incoming_qty_bulk(
+        [product_type_id], exclude_location_ids=exclude_location_ids).get(product_type_id, 0.0)
 
 
-def manual_incoming_qty_bulk(product_type_ids: list[int]) -> dict[int, float]:
+def manual_incoming_qty_bulk(product_type_ids: list[int],
+                             exclude_location_ids: Optional[list[int]] = None) -> dict[int, float]:
     """One GROUP BY for every requested product_type_id. Missing ids map to
-    0.0. Empty input is `{}` and opens no connection."""
+    0.0. Empty input is `{}` and opens no connection.
+    `exclude_location_ids`: Production's excluded systems (None = all)."""
     unique = list(dict.fromkeys(product_type_ids))
     if not unique:
         return {}
     totals = {tid: 0.0 for tid in unique}
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
     with connect() as conn:
         rows = conn.execute(
             "SELECT product_type_id, COALESCE(SUM(quantity), 0) FROM manual_industry_jobs "
-            "WHERE product_type_id = ANY(?) GROUP BY product_type_id",
-            (list(unique),),
+            f"WHERE product_type_id = ANY(?){loc_clause} GROUP BY product_type_id",
+            (list(unique), *loc_params),
         ).fetchall()
     for tid, qty in rows:
         if tid in totals:
@@ -6424,13 +6446,16 @@ def started_job_inputs_after_assets(
 def delivered_inventions_after_blueprints(
         product_type_id: int,
         owner_character_ids: Optional[list[int]] = None,
-        owner_corporation_ids: Optional[list[int]] = None) -> float:
+        owner_corporation_ids: Optional[list[int]] = None,
+        exclude_location_ids: Optional[list[int]] = None) -> float:
     """Invented BPCs (successful runs) for `product_type_id` from invention
     jobs delivered after the owner's blueprint snapshot was generated - the
     blueprints kind is synced rarely, so the copies are missing there while
     the job already left the job snapshot. Same rule as
-    `delivered_job_outputs_after_assets`."""
+    `delivered_job_outputs_after_assets`. `exclude_location_ids` drops jobs
+    whose output location is in an excluded system."""
     owner_clause, owner_params = _ledger_owner_clause(owner_character_ids, owner_corporation_ids)
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "j.output_location_id")
     with connect() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(COALESCE(j.successful_runs, 0)), 0) "
@@ -6439,15 +6464,16 @@ def delivered_inventions_after_blueprints(
             "AND f.data_kind = 'blueprints' "
             "WHERE j.activity_id = 8 AND j.product_type_id = ? AND j.status = 'delivered' "
             "AND j.completed_date > COALESCE(f.data_as_of, f.last_success_at)"
-            f"{owner_clause}{_NOT_IN_JOB_SNAPSHOT}",
-            (product_type_id, *owner_params),
+            f"{owner_clause}{loc_clause}{_NOT_IN_JOB_SNAPSHOT}",
+            (product_type_id, *owner_params, *loc_params),
         ).fetchone()
     return float(row[0] or 0)
 
 
 def esi_expected_invention_successes(product_type_id: int, fallback_probability: float,
                                      owner_character_ids: Optional[list[int]] = None,
-                                     owner_corporation_ids: Optional[list[int]] = None) -> float:
+                                     owner_corporation_ids: Optional[list[int]] = None,
+                                     exclude_location_ids: Optional[list[int]] = None) -> float:
     """Expected number of successful inventions (= invented BPCs) still
     outstanding for `product_type_id` (the invented T2/T3 blueprint):
     SUM(runs x probability) over active/paused/ready invention jobs (activity
@@ -6456,8 +6482,10 @@ def esi_expected_invention_successes(product_type_id: int, fallback_probability:
     `fallback_probability`. Turning BPCs into BPC runs needs the decryptor,
     which ESI does not report - done in engine.py.
 
-    Same status set and owner filtering as esi_incoming_industry_qty."""
+    Same status set, owner and output-location filtering as
+    esi_incoming_industry_qty."""
     total = 0.0
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "output_location_id")
     with connect() as conn:
         for table in ("character_industry_jobs", "corp_industry_jobs"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
@@ -6465,8 +6493,8 @@ def esi_expected_invention_successes(product_type_id: int, fallback_probability:
                 f"SELECT COALESCE(SUM(runs * COALESCE(probability, ?)), 0) FROM {table} "
                 "WHERE product_type_id = ? AND activity_id = 8 "
                 "AND status IN ('active', 'paused', 'ready')"
-                f"{id_clause}",
-                (fallback_probability, product_type_id, *id_params),
+                f"{id_clause}{loc_clause}",
+                (fallback_probability, product_type_id, *id_params, *loc_params),
             ).fetchone()
             total += float(row[0])
     return total
@@ -6564,19 +6592,22 @@ def sum_wallet_balances(char_ids: Optional[list[int]] = None,
 
 def load_owned_blueprints(owner_character_ids: Optional[list[int]] = None,
                            owner_corporation_ids: Optional[list[int]] = None,
-                           exclude_hangar: Optional[ExcludedHangar] = None) -> list[tuple]:
+                           exclude_hangar: Optional[ExcludedHangar] = None,
+                           exclude_location_ids: Optional[list[int]] = None) -> list[tuple]:
     """Returns (type_id, quantity, material_efficiency, time_efficiency, runs)
     across character + corp blueprints, for informational display.
 
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
-    both None (the default) is unfiltered."""
+    both None (the default) is unfiltered. `exclude_location_ids`:
+    Production's excluded systems (None = all)."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         rows = []
         for table in ("character_blueprints", "corp_blueprints"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             hangar_clause, hangar_params = _exclude_hangar_blueprint_clause(table, exclude_hangar)
-            id_clause += hangar_clause
-            id_params = (*id_params, *hangar_params)
+            id_clause += loc_clause + hangar_clause
+            id_params = (*id_params, *loc_params, *hangar_params)
             where_clause = f"WHERE {id_clause[5:]}" if id_clause else ""
             rows.extend(conn.execute(
                 f"SELECT type_id, quantity, material_efficiency, time_efficiency, runs FROM {table} {where_clause}",
@@ -7194,10 +7225,11 @@ def list_blueprint_copies(type_id: int,
                 (type_id, *NON_STOCK_LOCATION_FLAGS, *id_params),
             ).fetchall()
             groups.extend((int(me or 0), int(runs), 1) for me, runs in rows)
+        manual_loc, manual_params = _exclude_locations_clause(exclude_location_ids, "location_id")
         rows = conn.execute(
             "SELECT material_efficiency, runs, quantity FROM manual_owned_blueprints "
-            "WHERE blueprint_type_id = ? AND is_original = ? AND runs > 0 AND quantity > 0",
-            (type_id, False),
+            f"WHERE blueprint_type_id = ? AND is_original = ? AND runs > 0 AND quantity > 0{manual_loc}",
+            (type_id, False, *manual_params),
         ).fetchall()
         groups.extend((int(me or 0), int(runs), int(qty)) for me, runs, qty in rows)
     return groups

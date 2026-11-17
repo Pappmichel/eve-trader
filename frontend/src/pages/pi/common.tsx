@@ -178,7 +178,11 @@ export function Bar({ label, used, capacity }: { label: string; used: number; ca
   )
 }
 
-export function RatesTable({ title, rates }: { title: string; rates: PiNamedRate[] }) {
+export function RatesTable({ title, rates, hubs }: {
+  title: string; rates: PiNamedRate[]
+  // Optional hub per type id (imports: bought at, exports: valued at).
+  hubs?: Record<string, string | null | undefined>
+}) {
   if (rates.length === 0) return null
   return (
     <div>
@@ -189,6 +193,7 @@ export function RatesTable({ title, rates }: { title: string; rates: PiNamedRate
             <Table.Tr key={r.type_id}>
               <Table.Td>{r.name}{r.tier !== null && r.tier !== undefined ? ` (P${r.tier})` : ''}</Table.Td>
               <Table.Td ta="right">{num(r.per_hour, 1)} /h</Table.Td>
+              {hubs && <Table.Td c="dimmed">{hubs[String(r.type_id)] ?? '–'}</Table.Td>}
             </Table.Tr>
           ))}
         </Table.Tbody>

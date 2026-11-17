@@ -19,7 +19,7 @@ from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from ..paste_parser import resolve_paste
 from . import dynamic_targets, esi_sync, facility_tax, invention, jobs, order_integrity, pricing, sde
-from .engine import production_excluded_hangar
+from .engine import production_excluded_hangar, production_excluded_location_ids
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_merged, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES, RIG_TIERS, STRUCTURE_TYPES
 from .engine import (
@@ -1705,6 +1705,7 @@ def do_list_owned_blueprints() -> dict:
     for type_id, quantity, material_efficiency, time_efficiency, runs in storage.load_owned_blueprints(
         owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
         exclude_hangar=production_excluded_hangar(),
+        exclude_location_ids=production_excluded_location_ids(),
     ):
         is_original = runs == -1
         key = (type_id, is_original, material_efficiency, time_efficiency, None if is_original else runs)
