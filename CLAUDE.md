@@ -32,7 +32,11 @@ exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
 right after a snapshot write to fill the realized-profit
 archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
 with any realized-profit tool, and never lets an archive error fail the
-snapshot sync. Do not add a second tool import here. Do not put
+snapshot sync. Do not add a second tool import here. A second, deliberate
+exception: `esi_data/actions.py` lazily calls Production's
+`invalidate_shared_production_owner_ids_cache()` after a sharing change, because
+that cache would otherwise go stale. Do not extend this to other tools, and keep
+it a function-level import (a module-level one risks an import cycle). Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
 paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
