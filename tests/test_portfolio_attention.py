@@ -99,3 +99,26 @@ def test_attention_stale_esi_names_only_overdue_portfolio_kinds(monkeypatch):
     assert items[0]["text"] == (
         "ESI data shared with Portfolio is stale: Assets, Contracts."
     )
+
+
+def test_attention_wallet_scope_line_names_five_characters_then_counts_the_rest(monkeypatch):
+    missing = [{"character_id": i, "character_name": f"Pilot {i}"} for i in range(1, 24)]
+    _quiet(monkeypatch, wealth=_wealth(characters_missing_wallet_scope=missing), targets=[(34,)])
+
+    items = portfolio.attention([])["items"]
+    text = {item["key"]: item for item in items}["wallet_scope"]["text"]
+
+    assert text == (
+        "Pilot 1, Pilot 2, Pilot 3, Pilot 4, Pilot 5, ... and 18 more have no wallet scope, "
+        "so their balance is left out of Total Wealth."
+    )
+
+
+def test_attention_wallet_scope_line_lists_exactly_five_without_a_tail(monkeypatch):
+    missing = [{"character_id": i, "character_name": f"Pilot {i}"} for i in range(1, 6)]
+    _quiet(monkeypatch, wealth=_wealth(characters_missing_wallet_scope=missing), targets=[(34,)])
+
+    text = {item["key"]: item for item in portfolio.attention([])["items"]}["wallet_scope"]["text"]
+
+    assert text.startswith("Pilot 1, Pilot 2, Pilot 3, Pilot 4, Pilot 5 have no wallet scope")
+    assert "more" not in text
