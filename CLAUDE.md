@@ -32,7 +32,11 @@ exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
 right after a snapshot write to fill the realized-profit
 archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
 with any realized-profit tool, and never lets an archive error fail the
-snapshot sync. Do not add a second tool import here. Do not put
+snapshot sync. Do not add a second tool import here. A second, deliberate
+exception: `esi_data/actions.py` lazily calls Production's
+`invalidate_shared_production_owner_ids_cache()` after a sharing change, because
+that cache would otherwise go stale. Do not extend this to other tools, and keep
+it a function-level import (a module-level one risks an import cycle). Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
 paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
@@ -146,6 +150,18 @@ covers only a few regions (The Forge, Insmother, Delve); for any other region
 `goonmetrics_client.region_has_goonmetrics_history` is false and
 `price_history` reads ESI daily history instead.
 
+The hub list itself lives once, in `hubs.HUBS` (region, name, label, solar
+system, main station); `hubs.TRADE_HUBS` is derived from it with the same order
+and keys, `own_orders` reads the hub system from it, and the frontend gets it
+from `GET /api/hubs` (`useTradeHubs()`), never from a second hard-coded list.
+`GET /api/hubs/observed-freight` (`realized/freight_rates.py`) suggests a
+freight rate per hub: `sum(reward) / sum(volume)` of the finished couriers to
+the home structure in the last 90 days (`costing.group_shipments`, at least 3
+shipments from that hub's system, owners per D11, aggregates only). Settings
+pages show it under each tool's own freight field and per row of the hub
+freight table with "Use this value" (normal settings save); the five freight
+fields stay separate (PI freight is hub-to-planet and not part of it).
+
 **Price sources matrix** - four different price sources answer four
 different questions, deliberately, not by accident, but nowhere else are
 they laid out side by side:
@@ -158,6 +174,7 @@ they laid out side by side:
 | What would a produced item sold through Doctrine have cost to buy (production saving, informational)? | The buy-list purchase price even when building was cheaper, frozen per (type, sale day) in `ledger_saving_buy_prices` by every rebuild: the planner's live quote for a sale today or yesterday, otherwise The Forge daily average plus buy broker fee and haul cost per packaged m3. Never `ledger_valuation_prices` (that holds the cheaper value, i.e. the build cost). Lines without a price are left out and the priced share is shown | `realized/saving_prices.py`, `doctrine/realized.py` |
 | What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
 | What is an owned item worth (Portfolio Total Wealth and Capital, and Production's `stock_value`)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
+| What does a fee setting cost one character (Settings hints)? | The chosen character's skills and raw standings through the formulas in `fee_skills.py`, or the wallet's observed quote (sell: `sell_fees.observed_quote`; buy: attributed broker fees / price of hub purchases, `realized/buy_fees.py`). Shown only, applied by click | `fee_skill_hints.py`, `realized/buy_fees.py` |
 | What freight did a hub purchase pay? | The courier shipment rate (`sum(reward) / sum(volume)`) when a finished shipment to the home structure was issued at or after the purchase from that station; otherwise the configured hub rate frozen at ingest. Packaged m3 stays the volume frozen at ingest | `realized/costing.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
@@ -200,7 +217,11 @@ reach `/api/production/realized/` unchanged. Freight is the courier
 rate when a shipment covers the purchase, and the configured rate
 otherwise. Both are labeled that way. HTTP recompute is a `pipeline_runner`
 background job; the CLI rebuild calls the same `do_rebuild_realized`
-in-process. A run row is written only after the replace commits. Each run
+in-process. Opening `/production/realized` starts that rebuild once per page open,
+without a click, when the report is `stale` (an archive sync finished after the
+last recompute) or `needs_rebuild` (no run yet, or sharing changed) and an archive
+exists (`cutover_t0` or `archive_since` is set); opening `/admin/sde-preview`
+starts one SDE preview per page entry, unless a preview is already running. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
 for derived rows. Reprocessing detection also covers compressed gas (SDE group 4168): its
@@ -340,6 +361,38 @@ nothing changes a setting on its own, because a corporation wallet mixes other
 members' sales into the figure. The broker fee per sale is costing's pro-rata
 attribution (a day's real order fees spread over that day's order-based fills),
 and relist fees count only as far as a sale got them, so the figure is an estimate.
+A second, display-only line shows `upper_bound_quote`: the same numerator plus
+the order fees costing booked to no fill (`prod_fee_lines` `without_sale`) of the
+scope's own wallet owners on the window's days, each owner's fees split across
+channels by that owner's market gross per channel (`db.without_sale_fees_by_owner`,
+`db.market_gross_by_owner_channel`; an owner with no market sale in the window adds
+nothing). It also holds buy-order and unmatched contract broker fees, so it is an
+upper bound; no button, nothing stored. Trading shows it as `1 - upper_bound_quote`
+(`upper_bound_value`, a lower bound for the haircut) next to the fee share.
+
+**Fees from skills and standings (click to apply, never automatic).**
+`eve_trader/fee_skills.py` (pure) holds the formulas, checked against EVE
+University's "Trading" page: sales tax 7.5 % x (1 - 0.11 x Accounting), NPC
+station broker fee 3 % - 0.3 % x Broker Relations - 0.03 % x faction standing -
+0.02 % x corporation standing (raw standings towards the station owner; no floor
+stated, clamped at 0; Advanced Broker Relations only touches relists). In a player
+structure the owner sets the broker fee, so only the sales tax comes from skills.
+`eve_trader/fee_skill_hints.py` is the I/O half: one character per tool, chosen
+in its Settings (`TradingConfig.fee_skill_character_id`,
+`StationTradingConfig.fee_skill_character_id`, `PiConfig.pi_fee_skill_character_id`,
+confirmed with the user 2026-11-16). Choosing one changes no fee; without one the
+reason is `no_character_selected`. Skills and standings are read only through
+`fields.snapshot` (`not_shared` / `reauth_needed` / `not_synced`; the choice stays
+saved). Standings are on demand: without them (or without an SDE station owner,
+`sde_stations.corporation_id` + `sde_npc_corporations.faction_id`) the broker fee
+is still shown, labeled an upper bound. Routes: `GET /api/trading/fee-suggestions`
+(`jita_buy_broker_fee`: a standing buy order at the hub's main station, plus
+`observed_buy` = attributed broker fees / price of the Trading wallets' market
+buys in the hub system over 30 days, >= 20 buys, `realized/buy_fees.py`; instant
+buys pay no broker fee, so it is usually lower, O3-08), `GET /api/station-trading/
+fee-suggestions` (`broker_fee_rate`, `sales_tax_rate`: skills at `station_id` plus
+the channel's `observed_quote` split), `GET /api/pi/fee-suggestions` (skills only,
+at the price structure or the hub's main station). Field defaults stay unchanged.
 
 ## Architecture: actions.py is the one entry point
 
@@ -441,6 +494,20 @@ changedFields.ts`) and each direct-save site (toggles, hub pickers) sends only
 its own field. The boot load (`api/app.py` `_load_default_tenant_config`)
 applies all seven scopes (trading, production, doctrine, pi, refining,
 station_trading, module_reprocessing) for the default tenant.
+
+config.yaml is flat and every tenant config class reads it by field name, so
+one key can hit several classes (`hub_region_id` sets five hubs).
+`config.warn_yaml_key_collisions` logs one warning per such key at boot
+(class list: `config_scopes.tenant_config_classes()`, the one scope-to-class
+map; behaviour unchanged). The market slug fields (`structure_market_slug`,
+`home_market`, `pi_price_structure_slug`) are checked in
+`validate_config_overrides` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, empty/None
+allowed, case-sensitive) and quoted in the Goonmetrics URL; a stored invalid
+slug is ignored with a warning on tenant load, never a startup failure. A
+stored override key that is no longer a field is ignored and logged once per
+(scope, key) by `warn_unknown_override_keys` (names only); `eve-trader admin
+prune-settings` (dry run by default, `--apply`, per tenant via
+`enter_tenant`) removes them.
 
 If you add a new config field, it's automatically type-checked - no extra
 work needed unless it's an enum-style string field, in which case add it to
@@ -682,6 +749,36 @@ operator, filesystem/SSH only — not a request parameter).
 access request preselects it, and `eve-trader admin grant-defaults` applies
 it to existing tenants.
 
+Every key in `access_gate.ALL_TOOL_KEYS`, with its router prefix (`_TOOL_PATH_PREFIXES`
+in `api/app.py`), its page (`frontend/src/App.tsx`), its default grant
+(`DEFAULT_TOOL_KEYS`), whether it reads ESI data through `esi_data/registry.py`
+(`consuming_tools`, the same set as `frontend/src/toolKeys.ts`'s
+`ESI_CONSUMING_TOOLS`) and where it is documented. `frontend/src/toolKeys.ts`
+mirrors the key list. `tests/test_claude_md_tool_keys.py` fails when a key is
+missing here.
+
+| Key | Router prefix | Page | Default grant | ESI-consuming | Documented in |
+|---|---|---|---|---|---|
+| `trading` | `/api/trading/` | `/trading` | yes | yes | this file, "Two tools, one backend" |
+| `production` | `/api/production/` | `/production` | yes | yes | this file, "Production realized profit" |
+| `doctrine` | `/api/doctrine/` | `/doctrine` | yes | yes | this file, "Strategic reserve", "Contract Market" |
+| `refining` | `/api/refining/` | `/ore` (Ore & Minerals) | yes | no | this file, "Mineral shopping lists" |
+| `station_trading` | `/api/station-trading/` | `/station-trading` | yes | yes | this file, "Two tools, one backend" |
+| `sorting` | `/api/sorting/` | `/sorting` | yes | yes | this file, "Sorting paste" |
+| `portfolio` | `/api/portfolio/` | `/portfolio` | yes | yes | this file, "Two tools, one backend"; `docs/PORTFOLIO_REWORK_PLAN.md` |
+| `admin` | `/api/admin/` | `/admin`, `/admin/sde-preview` | no | no | this file, "Tool permissions & Admin" |
+| `characters` | `/api/characters/` | `/character-management/characters` | yes | no | `docs/ESI_ACCESS_PLAN.md`, `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `module_reprocessing` | `/api/module-reprocessing/` | `/modules` | no | no | this file, "Mineral shopping lists" |
+| `char_info` | `/api/char-info/` | `/character-management/info` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_skills` | `/api/char-skills/` | `/character-management/skills` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_mail` | `/api/char-mail/` | `/character-management/mail` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_notifications` | `/api/char-notifications/` | `/character-management/notifications` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_contacts` | `/api/char-contacts/` | `/character-management/contacts` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_skill_plans` | `/api/char-skill-plans/` | `/character-management/skill-plans` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_alerts` | `/api/char-alerts/` | `/character-management/alerts` | yes | yes | this file, "Discord alerts"; `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `pi` | `/api/pi/` | `/pi` | yes | yes | `docs/PI_PLAN.md` |
+| `asset_manager` | `/api/asset-manager/` | `/assets` | yes | yes | `docs/ASSET_MANAGER_PLAN.md` |
+
 `tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
 RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
 (`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`.
@@ -701,7 +798,7 @@ surface, not a per-tenant self-service page. `"admin"` is a normal grant
 with `eve-trader admin bootstrap` (see `docs/OPERATOR_SECURITY.md`). No
 other character can reach `/api/admin` unless they have that tool_key.
 
-`"characters"` is a normal ninth grant in `ALL_TOOL_KEYS` (no
+`"characters"` is a normal grant in `ALL_TOOL_KEYS` (no
 `DEFAULT_TENANT_ID` bypass). Admin's tool checkboxes auto-tick it when any
 ESI-consuming tool is selected — UI only; `admin.do_set_tool_grants` stays
 replace-not-merge and does not insert `"characters"` on the server. The
@@ -839,7 +936,10 @@ silently retried (a retry after a timeout could double-send).
 `character_slots` row Production/Station Trading already read from the
 same `skills` data kind; same kind, two tools, two row shapes, each under
 its own sharing row (`esi_data/access.py`'s `_read_character_skills` vs.
-`_read_skills`). Needs two new global SDE tables (`sde_skill_requirements`/
+`_read_skills`). `pi` always gets per-skill rows; Production, Trading and Station
+Trading get them with `table="skills"` (Trading/Station Trading for the fee
+hints, which also make `trading`, `station_trading` and `pi` consumers of the
+on-demand `standings` kind). Needs two new global SDE tables (`sde_skill_requirements`/
 `sde_skill_meta`, filled by streaming-filtering `dgmTypeAttributes.csv`
 during an SDE refresh - see `production/sde.py`'s `skill_rows_from_
 attributes`) for skill prerequisites/rank/attributes, used by both Skill
@@ -963,8 +1063,8 @@ history).
 - **Cross-tool reads** (manual stock, "wanted by", Doctrine match in the ship
   view) check the other tool's grant; the Doctrine match uses the pure
   `doctrine.validation` scorer on fittings read through storage.
-- The old Production Asset Search tab stays until existing tenants have the
-  grant (`eve-trader admin grant-defaults`), then plan phase 5 removes it.
+- Production's old Asset Search tab is removed (commit `58c23df1`); the Asset
+  Manager replaces it.
 
 ## Planetary Industry (PI) tool
 
@@ -1003,6 +1103,15 @@ widens the alert type CHECK constraints).
   revenue for `pi_valuation` (`economics.best_output_hubs`, `Prices.output_*`);
   the planner response names each import's and export's hub. Verdict reasons
   are a fixed vocabulary.
+- **Skills drive tax and demand (D3, GH #47).** `actions._skill_defaults(cfg)`
+  gives `cc_level` and `customs_code_expertise` from `skills.load_overview`
+  (highest level over the characters sharing skills with PI, `skill_source`
+  `esi`), else the manual `pi_cc_level` / `pi_customs_code_expertise_level`
+  (`manual`). A request calls it once and passes it on (`_cc_level`, `_market`,
+  `_tax_parts`, `skills=`); an explicit parameter wins. Profitability, planner,
+  chain, ways-to-build, chain plan, system analysis and Production demand all
+  use it and return `skill_source`. The design cache key holds the CC level
+  actually used. Applied automatically (not a fee suggestion).
 - **Layouts** (`pi/layout/`): `template_io` round-trips EVE templates byte
   for byte (alphabetical keys, La/Lo/Diam floats; pin `S` = product type id,
   `H` = head count, no Command Center pin). Templates are serialized only in
@@ -1131,6 +1240,11 @@ streamed; it sits inside `RequestIdMiddleware` and outside
   in `deploy/deploy.sh`'s order - never the `eve_trader` dev database. A test
   must not depend on rows another test left behind (SDE tables, `lru_cache`d
   SDE lookups): xdist runs modules in any order on any worker.
+- Lint: `ruff check eve_trader tests deploy` (CI backend job, one matrix row;
+  version pinned in `requirements-dev.txt`, rules in `pyproject.toml`: `F` and
+  `B904` only, no style rules). Fix findings instead of adding `# noqa`; a
+  `noqa` needs a reason (e.g. a pytest fixture imported only for its name).
+  A `raise` inside `except` takes `from e` (or `from None`).
 - `tests/conftest.py` fails any test that sends a real HTTP request through
   `requests`; mock the ESI/Goonmetrics call instead.
 
@@ -1346,6 +1460,21 @@ them):
   skipped as `REAUTH_NEEDED` gets an attempt stamp via
   `storage.record_esi_attempt` (no error text, no stale clear). Manual syncs
   ignore the backoff.
+- **ESI `Expires` is a lower bound for "due" (audit package M, fix 8).**
+  `esi_client.collect_expires()` collects the `Expires` of every authenticated
+  read next to the `Last-Modified` stamps (same call sites, same page
+  handling in `_get_all_pages`); `_record_success` stores the latest over all
+  pages as `esi_freshness.next_fetch_after` (aware UTC, capped 24 h ahead; a
+  success without a usable header clears it, a failure leaves it).
+  `_kind_is_due` / `pending_due` never call a pair due before it; the tier
+  interval and backoff still apply on top. Manual syncs
+  (`do_sync_for_tool` / `do_sync_all` / `do_sync_kinds`) skip a pair before
+  its `Expires` (confirmed with the user 2026-11-16) and report `unchanged`
+  plus `unchanged_message` ("... unchanged until HH:MM UTC") in the result;
+  the frontend's `useAction` / `useCharacterSync` show it as its own notice.
+  `live_only` kinds and the Contract Market scan do not use it. The Character
+  Management overview responses carry `sync_max_age_hours` (the tenant's normal
+  tier), which `useSyncWhenStale` uses instead of a fixed 6 h.
 - **Idle ticks are free.** `esi_data_sync` starts a job thread (and writes
   `last_run_status`) only when `orchestrator.pending_due()` is non-empty;
   `do_sync_due` uses the same list. Due-ness is one `list_esi_freshness()` read;
@@ -1654,7 +1783,7 @@ readers (`esi_stock_at_location_bulk`, `esi_stock_by_location_bulk`,
 `assets_at_flag`), Doctrine's `esi_stock_from_asset_rows` and Trading's
 `own_orders.py` skip it, and live ESI lists go through
 `storage.mark_assembled_or_fitted`. Deliberately *not* applied to valuation
-(Portfolio's `load_all_assets`), the Asset Search lookup or the Asset
+(Portfolio's `load_all_assets`) or the Asset
 Manager (which badges such rows instead) - an assembled ship still has
 value and still exists. A new stock reader must apply the
 same filter.

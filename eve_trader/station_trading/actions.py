@@ -4,7 +4,6 @@ directly.
 """
 from __future__ import annotations
 
-import datetime as dt
 
 import requests
 
@@ -186,9 +185,9 @@ def do_check_undercut(cfg: StationTradingConfig = STATION_TRADING_CONFIG,
 # ------------------------------------------------------------------ skills
 def do_get_skill_summary(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
     """Live-pulled trade-skill levels per registered trader character, plus
-    the derived order-slot count - informational only (see constants.py's
-    own docstring for why fee/tax discounts are deliberately NOT derived
-    from these levels)."""
+    the derived order-slot count - informational only. Fee and tax rates
+    are never derived from these automatically; do_get_fee_suggestions shows
+    one chosen character's skill-based rates as a click-to-apply hint."""
     tm = TokenManager(oauth_cfg)
     client = ESIClient(tokens=tm)
     summaries = []
@@ -205,6 +204,24 @@ def do_get_skill_summary(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
             "order_slots": order_slots_from_skills(levels),
         })
     return summaries
+
+
+def do_get_fee_suggestions(cfg: StationTradingConfig = STATION_TRADING_CONFIG) -> dict:
+    """Read-only suggestions for `broker_fee_rate` and `sales_tax_rate`:
+    `skills` from the chosen character (`fee_skill_character_id`) at
+    `station_id` (a player structure gets the sales tax only - its owner sets
+    the broker fee), and `observed` from this channel's wallet sales of the
+    last 30 days. Applying one is the user's click through the settings save."""
+    from .. import fee_skill_hints  # lazy: reaches auth/esi_data
+    from . import realized as station_realized  # lazy: realized imports ..actions
+
+    return {
+        "skills": fee_skill_hints.skill_fee_hints(
+            "station_trading", cfg.fee_skill_character_id, location_id=cfg.station_id,
+            sales_tax_setting="sales_tax_rate", broker_setting="broker_fee_rate",
+        ),
+        "observed": station_realized.observed_sell_fees(),
+    }
 
 
 # ----------------------------------------------------------------- settings

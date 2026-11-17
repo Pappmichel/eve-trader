@@ -24,6 +24,17 @@ describe('SdePreviewWarnings', () => {
     expect(screen.getByText(/sde_types: 53,306 → 3/)).toBeInTheDocument()
   })
 
+  it('lists published ship groups without a size class', () => {
+    wrap(
+      <SdePreviewWarnings
+        shrinkWarnings={[]}
+        unmappedShipGroups={[{ group_id: 9999, name: 'Example Hull', published_types: 3 }]}
+      />,
+    )
+    expect(screen.getByText(/Ship groups without a size class/i)).toBeInTheDocument()
+    expect(screen.getByText(/Example Hull \(group 9999\): 3 published types/)).toBeInTheDocument()
+  })
+
   it('lists drifting constants with code and dump values', () => {
     wrap(
       <SdePreviewWarnings

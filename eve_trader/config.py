@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import functools
 import logging
 import os
+import re
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,6 +190,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     # PI tool (eve_trader/pi/config.py); every field is pi_-prefixed because
     # this table is keyed by bare field name across all config dataclasses.
     "pi_price_structure_id": (0, None),
+    "pi_min_isk_per_planet_day": (0, None),
     "pi_broker_fee_rate": (0, 1),
     "pi_sales_tax_rate": (0, 1),
     "pi_owner_tax_rate": (0, 1),
@@ -209,8 +212,6 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "input_hub_region_id": (0, None),
     "reference_region_id": (1, None),
     "structure_id": (1, None),
-    "buyer_character_id": (1, None),
-    "seller_character_id": (1, None),
     "import_cost_per_m3": (0, None),
     "structure_sell_haircut": (0, 1),
     "jita_buy_broker_fee": (0, 1),
@@ -288,7 +289,6 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     # not by dataclass, so no new entry is needed for those two) --
     "freight_cost_per_m3": (0, None),
     "purchase_region_id": (1, None),
-    "purchase_structure_id": (1, None),
     # -- Production: dynamic stock targets (docs/DYNAMIC_STOCK_TARGETS_PLAN.md
     # section 9; window capped at 28 = goonmetrics_client.HISTORY_WINDOW_DAYS) --
     "dynamic_target_window_days": (7, 28),
@@ -309,6 +309,25 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "reaction_formula_payback_cycles": (0.01, None),
     "reaction_next_window_demand_factor": (0, None),
 }
+
+
+# Fields that become a path segment of the appraise.gnf.lt URL. The slugs are
+# case-sensitive (e.g. "C-J6MT"), so uppercase is allowed; "" and None mean
+# "not set" and stay valid.
+_MARKET_SLUG_FIELDS = frozenset({"structure_market_slug", "home_market", "pi_price_structure_slug"})
+_MARKET_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def is_valid_market_slug(value: Any) -> bool:
+    return value is None or value == "" or (isinstance(value, str) and bool(_MARKET_SLUG_RE.match(value)))
+
+
+def _check_market_slug(key: str, value: Any) -> None:
+    if key in _MARKET_SLUG_FIELDS and not is_valid_market_slug(value):
+        raise ConfigError(
+            f"{key}: {value!r} is not a valid market slug "
+            "(letters, digits, '_' and '-', 1-64 characters, starting with a letter or digit)"
+        )
 
 
 def _check_range(key: str, value: Any) -> None:
@@ -350,6 +369,7 @@ def validate_config_overrides(cfg: Any, overrides: dict[str, Any], cfg_type: Opt
         if expected is not None:
             _check_type(key, value, expected)
         _check_range(key, value)
+        _check_market_slug(key, value)
 
 
 def _validate_hub_freight(rates: Any) -> None:
@@ -376,7 +396,97 @@ def apply_config_overrides(cfg: Any, overrides: dict[str, Any]) -> None:
     it assumes that's already been checked."""
     for key, value in overrides.items():
         if hasattr(cfg, key):
+            if key in _MARKET_SLUG_FIELDS and not is_valid_market_slug(value):
+                # A stored value that fails today's check must not break
+                # startup or a tenant load; the default stays in place.
+                log.warning("Ignoring stored %s: not a valid market slug", key)
+                continue
             setattr(cfg, key, value)
+
+
+_warned_unknown_keys: set[tuple[str, str]] = set()
+
+
+@functools.lru_cache(maxsize=None)
+def _field_names(cfg_type: type) -> frozenset[str]:
+    import dataclasses as _dc
+
+    return frozenset(f.name for f in _dc.fields(cfg_type))
+
+
+def unknown_override_keys(cfg_type: type, overrides: dict[str, Any]) -> list[str]:
+    """Keys of `overrides` that are not a dataclass field of `cfg_type`."""
+    names = _field_names(cfg_type)
+    return sorted(k for k in overrides if k not in names)
+
+
+def warn_unknown_override_keys(scope: str, cfg_type: type, overrides: dict[str, Any]) -> None:
+    """One `log.warning` per (scope, key) and process for stored tenant
+    overrides that no longer name a field of `cfg_type` (apply_config_overrides
+    skips them silently). Names only, never values: they can be tenant data.
+    Clean them up with `eve-trader admin prune-settings`."""
+    for key in unknown_override_keys(cfg_type, overrides):
+        if (scope, key) in _warned_unknown_keys:
+            continue
+        _warned_unknown_keys.add((scope, key))
+        log.warning(
+            "tenant_settings scope %r holds key %r, which is not a field of %s (ignored; "
+            "'eve-trader admin prune-settings' removes it)",
+            scope,
+            key,
+            cfg_type.__name__,
+        )
+
+
+# config.yaml is flat and every tenant-facing config class reads it by field
+# name, so one key can land on several classes (`hub_region_id` shifts five
+# hubs at once). That is by design; the warning below only makes it visible.
+# Keys that are meant to hit several classes go here.
+YAML_SHARED_KEY_ALLOWLIST: frozenset[str] = frozenset()
+
+_warned_collision_paths: set[Path] = set()
+
+
+def yaml_key_collisions(keys: typing.Iterable[str], classes: typing.Sequence[type]) -> dict[str, list[str]]:
+    """{yaml key: [class names]} for every key that is a dataclass field of more
+    than one of `classes` (minus YAML_SHARED_KEY_ALLOWLIST)."""
+    import dataclasses as _dc
+
+    fields_by_class = {cls.__name__: {f.name for f in _dc.fields(cls)} for cls in classes}
+    found: dict[str, list[str]] = {}
+    for key in keys:
+        if key in YAML_SHARED_KEY_ALLOWLIST:
+            continue
+        hit = [name for name, names in fields_by_class.items() if key in names]
+        if len(hit) > 1:
+            found[key] = hit
+    return found
+
+
+def warn_yaml_key_collisions(classes: typing.Sequence[type], path: Optional[Path] = None) -> dict[str, list[str]]:
+    """Logs one warning per YAML key of `path` that several config classes
+    read, naming the classes. Once per path and process (a repeat call returns
+    {} without reading the file); behaviour of the loaders is unchanged. The
+    class list is passed in, not imported, because this module must not import
+    the tool config modules (they import it). Returns what was reported."""
+    path = path or DEFAULT_CONFIG_PATH
+    if path in _warned_collision_paths:
+        return {}
+    _warned_collision_paths.add(path)
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        return {}
+    found = yaml_key_collisions(data.keys(), classes)
+    for key, names in sorted(found.items()):
+        log.warning(
+            "config.yaml key %r is read by several config classes (%s); one value sets all of them",
+            key,
+            ", ".join(names),
+        )
+    return found
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -429,7 +539,7 @@ class TradingConfig:
     # fall back to a Goonmetrics current-price snapshot for it when no
     # seller is logged in or the ESI call itself fails - see
     # esi_client.ESIClient.structure_order_stats_bulk_or_goonmetrics.
-    # Deliberately NOT used by own_orders.check_undercut (Undercut Check) -
+    # Deliberately NOT used by own_orders.check_undercut_pooled (Undercut Check) -
     # that function's whole purpose is comparing against real competing
     # orders, which a Goonmetrics snapshot can't answer; a fallback there
     # could silently report "not undercut" when a real order says
@@ -466,6 +576,10 @@ class TradingConfig:
     # one field - read TRADING_CONFIG.jita_buy_broker_fee directly from
     # Production/Doctrine code, don't reintroduce a second copy.
     jita_buy_broker_fee: float = 0.0147
+    # The one character whose Broker Relations skill and standings the
+    # Settings page uses to suggest jita_buy_broker_fee (eve_trader/
+    # fee_skill_hints.py). Choosing it changes no fee; None = no suggestion.
+    fee_skill_character_id: Optional[int] = None
     min_profit_threshold: float = 0.0        # Minimum absolute profit/unit to consider
     min_margin_threshold: float = 0.05       # Minimum margin to mark an item "Import"
     # Grace period before actions.do_refresh_and_prune_candidates deactivates a
@@ -568,10 +682,8 @@ class TradingConfig:
     # identity for each role comes from whichever character you authorize via
     # "auth --role buyer"/"auth --role seller" (see TokenManager), not from
     # these fields. No sane default across installs.
-    buyer_character_id: Optional[int] = None
     buyer_character_name: Optional[str] = None
     seller_character_name: Optional[str] = None
-    seller_character_id: Optional[int] = None
 
     # -- Realized trade history --
     lookback_days: int = 30
@@ -709,7 +821,7 @@ class OAuthConfig:
                                                     # structure_markets. Not on PRODUCTION_SCOPES:
                                                     # Production has no wallet consumer.
         "esi-assets.read_assets.v1",                # ESIClient.character_assets (own_orders.fetch_buyer_already_covered,
-                                                     # own_orders.fetch_seller_stock_without_order)
+                                                     # own_orders.fetch_seller_stock_without_order_pooled)
     )
 
 
@@ -935,6 +1047,7 @@ def resolve_and_set_trading_config(tenant_id: str) -> contextvars.Token:
     cfg = load_trading_config()
     overrides = storage.load_tenant_settings("trading")
     if overrides:
+        warn_unknown_override_keys("trading", TradingConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _trading_config_var.set(cfg)
 

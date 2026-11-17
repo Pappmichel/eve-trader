@@ -9,7 +9,6 @@ planning as not worth a full crawl.
 """
 from __future__ import annotations
 
-from typing import Optional
 
 from .. import storage
 from .constants import ORE_ICE_CATEGORY_ID

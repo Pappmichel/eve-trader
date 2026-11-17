@@ -4,7 +4,7 @@ from eve_trader import actions, storage
 from eve_trader.auth import TokenManager
 from eve_trader.config import TradingConfig
 from eve_trader.models import ShortlistItem
-from eve_trader.own_orders import fetch_seller_stock_without_order
+from eve_trader.own_orders import fetch_seller_stock_without_order_pooled
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def test_finds_shortlist_stock_with_no_sell_order_at_all():
     assets = [_asset(1, 100, cfg.structure_id)]
     client = FakeClient(assets, orders=[])
 
-    rows = fetch_seller_stock_without_order(1, "seller", client, {1}, cfg)
+    rows = fetch_seller_stock_without_order_pooled([(1, "seller")], client, {1}, cfg)
 
     assert rows == [{"type_id": 1, "asset_quantity": 100, "sell_order_remaining": 0.0, "unlisted_quantity": 100.0}]
 
@@ -54,7 +54,7 @@ def test_partially_listed_stock_not_flagged():
     orders = [_sell_order(1, 30, cfg.structure_id)]
     client = FakeClient(assets, orders)
 
-    assert fetch_seller_stock_without_order(1, "seller", client, {1}, cfg) == []
+    assert fetch_seller_stock_without_order_pooled([(1, "seller")], client, {1}, cfg) == []
 
 
 def test_fully_listed_stock_not_flagged():
@@ -63,7 +63,7 @@ def test_fully_listed_stock_not_flagged():
     orders = [_sell_order(1, 100, cfg.structure_id)]
     client = FakeClient(assets, orders)
 
-    assert fetch_seller_stock_without_order(1, "seller", client, {1}, cfg) == []
+    assert fetch_seller_stock_without_order_pooled([(1, "seller")], client, {1}, cfg) == []
 
 
 def test_ignores_assets_at_other_locations():
@@ -71,7 +71,7 @@ def test_ignores_assets_at_other_locations():
     assets = [_asset(1, 100, location_id=999999)]
     client = FakeClient(assets, orders=[])
 
-    assert fetch_seller_stock_without_order(1, "seller", client, {1}, cfg) == []
+    assert fetch_seller_stock_without_order_pooled([(1, "seller")], client, {1}, cfg) == []
 
 
 def test_ignores_assets_not_on_shortlist():
@@ -81,7 +81,7 @@ def test_ignores_assets_not_on_shortlist():
     assets = [_asset(1, 100, cfg.structure_id), _asset(2, 50, cfg.structure_id)]
     client = FakeClient(assets, orders=[])
 
-    rows = fetch_seller_stock_without_order(1, "seller", client, {1}, cfg)
+    rows = fetch_seller_stock_without_order_pooled([(1, "seller")], client, {1}, cfg)
 
     assert rows == [{"type_id": 1, "asset_quantity": 100, "sell_order_remaining": 0.0, "unlisted_quantity": 100.0}]
 
@@ -94,7 +94,7 @@ def test_excludes_non_stock_location_flags():
     ]
     client = FakeClient(assets, orders=[])
 
-    rows = fetch_seller_stock_without_order(1, "seller", client, {1}, cfg)
+    rows = fetch_seller_stock_without_order_pooled([(1, "seller")], client, {1}, cfg)
 
     assert rows == [{"type_id": 1, "asset_quantity": 50, "sell_order_remaining": 0.0, "unlisted_quantity": 50.0}]
 

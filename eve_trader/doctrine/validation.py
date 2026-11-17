@@ -11,8 +11,7 @@ from collections import defaultdict
 from typing import Callable, Optional
 
 from .constants import (
-    AMPEL_GRAY, AMPEL_GREEN, AMPEL_RED, AMPEL_SEVERITY_ORDER, AMPEL_YELLOW, CHARGE_CATEGORY_ID,
-    CONSUME_SECTIONS, DEVIATION_KIND_EQUIVALENT_VARIANT, DEVIATION_KIND_EXTRA, DEVIATION_KIND_MISSING,
+    AMPEL_GRAY, AMPEL_GREEN, AMPEL_RED, AMPEL_SEVERITY_ORDER, AMPEL_YELLOW, CONSUME_SECTIONS, DEVIATION_KIND_EQUIVALENT_VARIANT, DEVIATION_KIND_EXTRA, DEVIATION_KIND_MISSING,
     DEVIATION_KIND_SHORT,
     DEVIATION_KIND_WRONG_VARIANT, EXACT_SECTIONS, MATCH_THRESHOLD, MATCH_WEIGHT_CONSUME, MATCH_WEIGHT_EXACT,
     SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_TOLERABLE, VALIDATION_INVALID, VALIDATION_TOLERABLE,
@@ -311,20 +310,13 @@ def clears_match_threshold(score: float) -> bool:
 
 
 # ---------------------------------------------------------------- Stockpile (C.2/C.3)
-def allocate_stockpile(ordered_fitting_soll: list[tuple[str, dict[int, tuple[float, str]]]],
-                        available_by_type: dict[int, float]) -> dict[str, dict[int, float]]:
-    """C.2: greedy priority allocation - `ordered_fitting_soll` is
-    [(fitting_id, {type_id: (required_total, item_class)}), ...] in
-    doctrine list order (= priority, highest first). Returns
-    {fitting_id: {type_id: allocated_qty}}."""
-    return allocate_stockpile_with_equivalents(ordered_fitting_soll, available_by_type, None)[0]
-
-
 def allocate_stockpile_with_equivalents(
         ordered_fitting_soll: list[tuple[str, dict[int, tuple[float, str]]]],
         available_by_type: dict[int, float], equivalents_of: Optional[EquivalentsOf],
 ) -> tuple[dict[str, dict[int, float]], dict[str, dict[int, dict[int, float]]]]:
-    """allocate_stockpile plus equivalent variants. Pass 1 is the exact
+    """C.2: greedy priority allocation (`ordered_fitting_soll` is
+    [(fitting_id, {type_id: (required_total, item_class)}), ...] in doctrine
+    list order = priority, highest first), plus equivalent variants. Pass 1 is the exact
     allocation (every fitting takes its own types, in priority order); pass 2
     fills what is still short from the leftover stock of equivalent variants,
     again in priority order. Two passes, so a twin's stock goes to another

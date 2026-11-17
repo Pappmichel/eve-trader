@@ -98,6 +98,11 @@ describe('Doctrine realized profit page', () => {
     expect(screen.queryByText('Stabber Fleet')).toBeNull()
   })
 
+  it('names the period selector', async () => {
+    renderPage()
+    expect(await screen.findByLabelText('Period')).toBeInTheDocument()
+  })
+
   it('shows the freight split when the summary carries it', async () => {
     vi.mocked(doctrineApi.realizedSummary).mockResolvedValue(summary({
       freight_from_couriers: 40, freight_configured: 5,

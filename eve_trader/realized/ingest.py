@@ -76,7 +76,6 @@ def _freight_rate_for_forge(cfg) -> float:
 
 def _regions_with_freight(cfg) -> dict[int, float]:
     """Region -> ISK/m3 for every trade hub and every explicit table entry."""
-    table = {}
     from ..config import TRADING_CONFIG
     raw = TRADING_CONFIG.hub_freight_cost_per_m3 or {}
     regions = set(hubs.TRADE_HUBS)

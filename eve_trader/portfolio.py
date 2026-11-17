@@ -405,7 +405,10 @@ def attention(tool_keys, cfg: TradingConfig = TRADING_CONFIG, now: Optional[date
     wealth = total_wealth(cfg)
     missing = wealth.get("characters_missing_wallet_scope") or []
     if missing:
-        names = ", ".join(row["character_name"] for row in missing)
+        shown = [row["character_name"] for row in missing[:_WALLET_SCOPE_NAMES_SHOWN]]
+        if len(missing) > len(shown):
+            shown.append(f"... and {len(missing) - len(shown)} more")
+        names = ", ".join(shown)
         verb = "has" if len(missing) == 1 else "have"
         items.append({
             "key": "wallet_scope",
@@ -651,26 +654,6 @@ def _manual_only_priced(type_ids: set[int]) -> dict[int, float]:
     return {tid: manual[tid] for tid in type_ids if tid in manual}
 
 
-def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float, int, int]:
-    """`rows`: tuples of (type_id, quantity) - the *effective* quantity,
-    already resolved by the caller (see _blueprint_effective_quantity for
-    why load_owned_blueprints' raw quantity is not usable as-is). Unpriced
-    items are excluded from the total, not counted as 0 - same "explicit
-    gap over silent understatement" precedent as
-    production.engine.stock_value."""
-    value = 0.0
-    priced = 0
-    unpriced = 0
-    for type_id, quantity in rows:
-        price = prices.get(type_id)
-        if price is None:
-            unpriced += 1
-            continue
-        value += quantity * price
-        priced += 1
-    return value, priced, unpriced
-
-
 _BPC_CACHE_TTL_SECONDS = 6 * 3600
 _bpc_cache: dict[tuple, Optional[float]] = {}
 _bpc_cache_at: dict[str, float] = {}
@@ -806,6 +789,10 @@ def _blueprint_effective_quantity(quantity: int) -> int:
     return quantity if quantity and quantity > 0 else 1
 
 
+# The attention line names at most this many characters, then "... and N more".
+_WALLET_SCOPE_NAMES_SHOWN = 5
+
+
 def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
     """`character_ids`: every character sharing *any* of assets/blueprints/
     wallet_balance with Portfolio (not just wallet_balance - confirmed real
@@ -832,10 +819,19 @@ def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
             has_scope[rec.character_id] = True
         else:
             has_scope.setdefault(rec.character_id, False)
+    flagged = [cid for cid in sorted(character_ids) if not has_scope.get(cid, False)]
+    unnamed = [cid for cid in flagged if cid not in names]
+    if unnamed:
+        # Names an earlier sync already stored (installer names of synced
+        # industry jobs); no ESI call.
+        try:
+            from .realized.db import stored_owner_names
+            names.update(stored_owner_names(unnamed))
+        except Exception:  # noqa: BLE001 - a name lookup must not fail the wealth view
+            log.warning("portfolio: stored character names unavailable", exc_info=True)
     return [
-        {"character_id": cid, "character_name": names.get(cid, str(cid))}
-        for cid in sorted(character_ids)
-        if not has_scope.get(cid, False)
+        {"character_id": cid, "character_name": names.get(cid, f"Character {cid}")}
+        for cid in flagged
     ]
 
 

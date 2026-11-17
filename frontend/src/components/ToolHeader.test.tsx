@@ -37,6 +37,13 @@ describe('ToolHeader', () => {
     expect(screen.getByText('landing')).toBeInTheDocument()
   })
 
+  it('is the one h1 of the page, named after the tool', () => {
+    renderHeader()
+    const headings = screen.getAllByRole('heading', { level: 1 })
+    expect(headings).toHaveLength(1)
+    expect(headings[0]).toHaveTextContent('Trading')
+  })
+
   it('offers the page jump only when asked, as an icon button with a label for phones', () => {
     renderHeader()
     expect(screen.queryByRole('button', { name: 'Jump to a page' })).not.toBeInTheDocument()

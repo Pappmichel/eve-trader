@@ -1,7 +1,6 @@
 """F-19: OpenAPI/docs are gated when the access gate is on."""
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from eve_trader import access_gate, storage

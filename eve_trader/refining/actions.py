@@ -4,7 +4,6 @@ never storage.py/engine.py directly.
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
 from dataclasses import asdict, dataclass
 from typing import Optional
@@ -20,13 +19,12 @@ from .. import hubs, import_planner, market_depth
 from ..goonmetrics_client import GoonmetricsClient
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
-from ..production.pricing import home_prices
 from .candidate_discovery import build_ore_candidate_universe, ore_ice_families_for_types
 from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
 from .engine import apply_reprocessing_yield, ore_ice_yield
 from .models import MineralOption, MineralRequirement, OreOption, OreShortlistRow, ShoppingListPlan
 from .optimizer import OptimizationError, optimize_shopping_list
-from ..paste_parser import ParsedPasteLine, merge_duplicate_stacks, parse_paste
+from ..paste_parser import merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
 from .pricing import byproduct_values_from_quotes as pricing_byproducts
 from .reprocessing import (

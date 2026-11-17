@@ -75,10 +75,6 @@ def test_default_purchase_region_is_jita():
     assert ModuleReprocessingConfig().purchase_region_id == 10000002
 
 
-def test_purchase_structure_id_defaults_to_none_meaning_region_only():
-    assert ModuleReprocessingConfig().purchase_structure_id is None
-
-
 def test_no_structure_rig_fields_exist():
     """Confirms the deliberate scope decision (confirmed with the user):
     structure/rig/security/implant have zero effect on module/drone

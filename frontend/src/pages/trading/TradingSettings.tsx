@@ -9,18 +9,23 @@ import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
 import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
+import { ObservedFreightHint } from '../../components/ObservedFreightHint'
+import { FeeSkillCharacterSelect, FeeSkillNote, ObservedBuyFeeHint, SkillFeeHint } from '../../components/FeeSkillHints'
 import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
   const { data: observedFees } = useQuery({ queryKey: ['trading', 'realized', 'observed-fees'], queryFn: tradingApi.realizedObservedFees })
+  const { data: feeHints } = useQuery({ queryKey: ['trading', 'fee-suggestions'], queryFn: tradingApi.feeSuggestions })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
-  const save = useAction('Save Settings', tradingApi.updateSettings, [['trading', 'settings']])
+  const { data: tradeHubs } = useTradeHubs()
+  const save = useAction('Save Settings', tradingApi.updateSettings, [['trading', 'settings'], ['trading', 'fee-suggestions']])
 
   // Confirmed real gap: a bare `return null` here rendered a totally blank
   // page during the initial fetch, unlike every other page in the app which
@@ -40,15 +45,36 @@ export default function TradingSettings() {
         Freight and fee rates change with the market/carrier - adjust here if import/sale numbers suddenly look unrealistic.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label={`Freight cost ${hubLabel(form.jita_region_id)}→structure (ISK/m³)`}
-          value={form.import_cost_per_m3} min={0} step={50}
-          onChange={(v) => set('import_cost_per_m3', Number(v))} />
+        <Stack gap={4}>
+          <NumberInput label={`Freight cost ${hubLabel(tradeHubs, form.jita_region_id)}→structure (ISK/m³)`}
+            value={form.import_cost_per_m3} min={0} step={50}
+            onChange={(v) => set('import_cost_per_m3', Number(v))} />
+          <ObservedFreightHint regionId={form.jita_region_id} current={form.import_cost_per_m3} applying={save.isPending}
+            onApply={(v) => { set('import_cost_per_m3', v); save.mutate(changedFields(data, { ...form, import_cost_per_m3: v })) }} />
+        </Stack>
         <Stack gap={4}>
           <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
             value={form.structure_sell_haircut * 100} min={0} max={100} step={1}
             onChange={(v) => set('structure_sell_haircut', Number(v) / 100)} />
           <ObservedSellFeeHint fees={observedFees} current={form.structure_sell_haircut} applying={save.isPending}
             onApply={(v) => { set('structure_sell_haircut', v); save.mutate(changedFields(data, { ...form, structure_sell_haircut: v })) }} />
+        </Stack>
+        <Stack gap={4}>
+          <NumberInput label="Buy broker fee" suffix="%" decimalScale={3}
+            description="Paid when buying at the hub; also used by Production, Doctrine, Ore & Minerals and Module Reprocessing."
+            value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
+            onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
+          <SkillFeeHint testId="skill-buy-broker-fee" kind="broker" hints={feeHints?.skills}
+            part={feeHints?.skills?.broker_fee} label="Standing buy order"
+            current={form.jita_buy_broker_fee} applying={save.isPending}
+            onApply={(v) => { set('jita_buy_broker_fee', v); save.mutate(changedFields(data, { ...form, jita_buy_broker_fee: v })) }} />
+          <ObservedBuyFeeHint fees={feeHints?.observed_buy} current={form.jita_buy_broker_fee} applying={save.isPending}
+            onApply={(v) => { set('jita_buy_broker_fee', v); save.mutate(changedFields(data, { ...form, jita_buy_broker_fee: v })) }} />
+        </Stack>
+        <Stack gap={4}>
+          <FeeSkillCharacterSelect hints={feeHints?.skills} value={form.fee_skill_character_id}
+            onChange={(v) => { set('fee_skill_character_id', v); save.mutate(changedFields(data, { ...form, fee_skill_character_id: v })) }} />
+          <FeeSkillNote />
         </Stack>
         <NumberInput label="Minimum profit/unit (ISK)" value={form.min_profit_threshold} min={0} step={100}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
@@ -94,7 +120,7 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Regions &amp; Structure</Title>
       <Text size="xs" c="dimmed">
-        Only change if your trading location shifts entirely. The buy hub ({hubLabel(form.jita_region_id)}) is
+        Only change if your trading location shifts entirely. The buy hub ({hubLabel(tradeHubs, form.jita_region_id)}) is
         picked on the Shortlist page.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
@@ -112,7 +138,7 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <TextInput label={`Buyer name (${hubLabel(form.jita_region_id)})`} value={form.buyer_character_name ?? ''} autoComplete="off"
+        <TextInput label={`Buyer name (${hubLabel(tradeHubs, form.jita_region_id)})`} value={form.buyer_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('buyer_character_name', e.currentTarget.value)} />
         <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('seller_character_name', e.currentTarget.value)} />

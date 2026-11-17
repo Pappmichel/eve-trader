@@ -1,6 +1,5 @@
 from eve_trader import storage
-from eve_trader.esi_client import ESIClient, ESIError
-from eve_trader.goonmetrics_client import CurrentPrice, GoonmetricsClient
+from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
 

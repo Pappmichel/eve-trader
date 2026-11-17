@@ -1,9 +1,8 @@
 """Startup clears leftover running pipeline_runs for every tenant."""
 from __future__ import annotations
 
-import pytest
 
-from eve_trader import storage, tenant_scope
+from eve_trader import storage
 from eve_trader.api.app import fail_stale_pipeline_runs_on_startup
 from eve_trader.pipeline_runner import JOB_REFRESH_AND_PRUNE
 

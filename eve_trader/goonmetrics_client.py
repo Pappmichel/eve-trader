@@ -23,6 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Collection, Iterable, Optional
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 import requests
@@ -182,7 +183,7 @@ class GoonmetricsClient:
             if failed is not None and (time.time() - failed[0]) < _PRICES_FAILURE_TTL:
                 raise _repeat_failure(failed[1])
 
-            url = f"{APPRAISE_BASE}/market/{market}/prices.json"
+            url = f"{APPRAISE_BASE}/market/{quote(market, safe='')}/prices.json"
             last_exc: Optional[requests.RequestException] = None
             prices: Optional[list[CurrentPrice]] = None
             for attempt in range(1, 4):

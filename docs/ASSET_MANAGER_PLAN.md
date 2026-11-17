@@ -1,10 +1,9 @@
 # Asset Manager - plan
 
-Status: **phases 0-7 implemented on branch `feature/asset-manager`
-(2026-10-25/26, section 14); only the removal of the old Production tab is
-open, after deploy.** Decisions D1-D13 confirmed (section 10), review items
-decided (sections 11 and 13). Server checks (section 12) are open: they tune
-what was built; S-09/S-10 now verify phase 4 (built from the ESI docs
+Status: **phases 0-7 implemented (2026-10-25 to 2026-10-27, section 14). The
+old Production Asset Search tab is removed (commit `58c23df1`, 2026-10-26).** Decisions D1-D13 confirmed (section 10), review items
+decided (sections 11 and 13). Server checks (section 12) have their results
+recorded; S-09/S-10 verify phase 4 (built from the ESI docs
 before they ran) instead of gating it.
 
 Goal: turn Production's "Asset Search" tab (one exact item name -> where is

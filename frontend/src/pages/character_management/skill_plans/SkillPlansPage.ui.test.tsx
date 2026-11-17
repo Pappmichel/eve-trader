@@ -30,10 +30,16 @@ function plan(overrides: Partial<SkillPlan> = {}): SkillPlan {
   }
 }
 
+// env="test" makes Mantine skip its transition timers (Modal 200 ms, Popover/
+// Autocomplete dropdown 150 ms). Without it these tests act while a modal or
+// dropdown is still entering or leaving on a real setTimeout - e.g. clicking
+// Delete right after Escape closed the export modal, or the confirm modal
+// opening while the first one unmounts - so the outcome depended on how loaded
+// the machine was. No retries or longer timeouts needed.
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MantineProvider>
+    <MantineProvider env="test">
       <Notifications />
       <QueryClientProvider client={client}>
         <MemoryRouter><SkillPlansPage /></MemoryRouter>

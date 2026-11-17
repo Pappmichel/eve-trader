@@ -4,7 +4,7 @@ from eve_trader.goonmetrics_client import HISTORY_WINDOW_DAYS, HistoryPoint
 from eve_trader.models import ShortlistItem
 from eve_trader.shortlist import (audit_shortlist, average_market_daily_isk_volume, average_market_daily_volume,
                                    evaluate_shortlist, evaluate_shortlist_item,
-                                   summary_counts, top_imports_by_daily_profit)
+                                   top_imports_by_daily_profit)
 
 
 def test_profitable_item_is_recommended_for_import():
@@ -221,7 +221,6 @@ def test_evaluate_shortlist_passes_isk_volume_through():
 
 
 def test_summary_counts_and_audit():
-    cfg = TradingConfig()
     items = [
         ShortlistItem(item="A", item_id=1, category="Module/Rig", volume_m3=0.1),
         ShortlistItem(item="B", item_id=1, category="Module/Rig", volume_m3=0.1),  # duplicate id

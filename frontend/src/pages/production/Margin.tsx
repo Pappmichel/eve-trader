@@ -12,6 +12,7 @@ import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, pct } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 function MarginDetailCard({ row, hub }: { row: ShipMarginRow; hub: string }) {
   return (
@@ -63,7 +64,8 @@ function ItemSearch() {
   const [itemId, setItemId] = useState<string | null>(null)
   const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
   // Margins are a reference view (Production never sells at a hub): Best hub mode still shows Jita.
-  const hub = settings?.hub_region_id === ALL_HUBS ? 'Jita' : hubLabel(settings?.hub_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = settings?.hub_region_id === ALL_HUBS ? 'Jita' : hubLabel(tradeHubs, settings?.hub_region_id)
   const search = useAction('Search Item Margin', (name: string) => productionApi.itemMargin(name), [],
     { tier: 'live', effect: 'Prices this item at the current Home price (live ESI) and Jita price (cached with live fallback).' })
 
@@ -87,7 +89,8 @@ export default function Margin() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
   const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
   // Margins are a reference view (Production never sells at a hub): Best hub mode still shows Jita.
-  const hub = settings?.hub_region_id === ALL_HUBS ? 'Jita' : hubLabel(settings?.hub_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = settings?.hub_region_id === ALL_HUBS ? 'Jita' : hubLabel(tradeHubs, settings?.hub_region_id)
 
   const columns = useMemo<ColumnDef<ShipMarginRow, any>[]>(() => [
     { header: 'Ship', accessorKey: 'type_name', size: 240, meta: { copyable: true } },

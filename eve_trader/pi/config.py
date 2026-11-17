@@ -14,10 +14,12 @@ from __future__ import annotations
 import contextvars
 import copy
 from dataclasses import dataclass
+from typing import Optional
 
 import yaml
 
 from .. import storage
+from ..config import warn_unknown_override_keys
 from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
 from . import constants as C
 
@@ -38,6 +40,10 @@ class PiConfig:
     # -- Market fees (the defaults are placeholders, check your own skills) --
     pi_broker_fee_rate: float = 0.03          # buying inputs / listing outputs
     pi_sales_tax_rate: float = 0.045          # selling outputs
+    # The one character whose skills and standings suggest the two fees above
+    # on the Settings page (eve_trader/fee_skill_hints.py). Choosing it
+    # changes no fee; None = no suggestion.
+    pi_fee_skill_character_id: Optional[int] = None
     # How outputs are valued: "sell_orders" (list them, minus broker fee and
     # sales tax) or "buy_orders" (sell instantly into buy orders, minus sales
     # tax). Inputs are always bought from sell orders.
@@ -138,6 +144,7 @@ def resolve_and_set_pi_config(tenant_id: str) -> contextvars.Token:
     cfg = load_pi_config()
     overrides = storage.load_tenant_settings("pi")
     if overrides:
+        warn_unknown_override_keys("pi", PiConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _pi_config_var.set(cfg)
 

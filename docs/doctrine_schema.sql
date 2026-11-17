@@ -378,6 +378,10 @@ CREATE TABLE IF NOT EXISTS doctrine_market_contract_items (
     is_singleton BOOLEAN NOT NULL DEFAULT false,
     PRIMARY KEY (tenant_id, contract_id, record_id)
 );
+-- Last time the list belonged to a contract seen open; a scan that could not
+-- read every enabled source prunes lists older than 35 days by it.
+ALTER TABLE doctrine_market_contract_items
+    ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_doctrine_market_items_contract
     ON doctrine_market_contract_items (tenant_id, contract_id);
 ALTER TABLE doctrine_market_contract_items ENABLE ROW LEVEL SECURITY;

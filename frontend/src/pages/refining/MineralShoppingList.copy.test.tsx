@@ -24,7 +24,8 @@ vi.mock('../../api/client', () => {
     settings: async () => ({ hub_region_id: 10000002 }),
     optimizeShoppingList: async () => PLAN,
   }
-  return { refiningApi: api, moduleReprocessingApi: api, productionApi: { plan: async () => null } }
+  return { refiningApi: api, moduleReprocessingApi: api, productionApi: { plan: async () => null },
+    hubsApi: { list: async () => [] } }
 })
 
 describe.each([

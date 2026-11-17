@@ -61,7 +61,7 @@ def test_installed_itsdangerous_is_the_pinned_session_version():
 
 
 # Pins that were in the Phase-4 lockfile (commit 2a49819) and require
-# Python >=3.12. CI runs 3.10 and 3.11; pyproject declares >=3.10. A lockfile
+# Python >=3.12. CI runs 3.11 and 3.12; pyproject declares >=3.11. A lockfile
 # containing these cannot be installed in CI or on Ubuntu 22.04.
 _PHASE4_PYTHON312_ONLY_PINS = (
     "numpy==2.5.3",
@@ -80,7 +80,7 @@ def test_lockfile_does_not_pin_phase4_python312_only_wheels():
 
 def test_pyproject_bounds_keep_the_declared_python_matrix():
     text = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'requires-python = ">=3.10"' in text
+    assert 'requires-python = ">=3.11"' in text
     assert "numpy>=1.26,<2.3" in text
     assert "pandas>=2.0,<3" in text
     assert "scipy>=1.11,<1.16" in text

@@ -54,7 +54,7 @@ export function ErrorsSection() {
         with ids and numbers ignored counts once. Each tenant keeps its latest 500 reports.
       </Text>
       <SegmentedControl
-        size="xs" mb="sm" value={view} onChange={(v) => setView(v as 'grouped' | 'raw')}
+        aria-label="Error list view" size="xs" mb="sm" value={view} onChange={(v) => setView(v as 'grouped' | 'raw')}
         data={[{ value: 'grouped', label: 'Grouped' }, { value: 'raw', label: 'Latest 200' }]}
       />
       {!isLoading && count === 0 && <Text c="dimmed" size="sm">No errors reported yet.</Text>}

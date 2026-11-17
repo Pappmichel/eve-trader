@@ -10,6 +10,7 @@ import { useSolarSystemOptions, useStructureNameOptions } from '../../hooks/useS
 import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
 import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
+import { ObservedFreightHint } from '../../components/ObservedFreightHint'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { DynamicTargetSettingsCard } from './DynamicTargetSettingsCard'
@@ -108,8 +109,12 @@ export default function ProductionSettings() {
           onChange={(v) => set('component_overbuild', Number(v) / 100)} />
         <HubSelect label="Market hub" description="Region Production prices its 'Jita' side against (independent of Trading's). Best hub buys each item where it lands cheapest; margins and listings keep using Jita."
           allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
-        <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
-          onChange={(v) => set('haul_cost_per_m3', Number(v))} />
+        <Stack gap={4}>
+          <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
+            onChange={(v) => set('haul_cost_per_m3', Number(v))} />
+          <ObservedFreightHint regionId={form.hub_region_id} current={form.haul_cost_per_m3} applying={save.isPending}
+            onApply={(v) => { set('haul_cost_per_m3', v); save.mutate(changedFields(data, { ...form, haul_cost_per_m3: v })) }} />
+        </Stack>
         <Stack gap={4}>
           <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
             onChange={(v) => set('market_fees', Number(v) / 100)} />
@@ -219,6 +224,19 @@ export default function ProductionSettings() {
           onChange={(v) => set('datacore_skill_1_level', Number(v))} />
         <NumberInput label="Datacore skill 2" value={form.datacore_skill_2_level} min={0} max={5} step={1}
           onChange={(v) => set('datacore_skill_2_level', Number(v))} />
+      </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Industry Skills</Title>
+      <Text size="xs" c="dimmed">Job duration only. Levels apply to every job of the tenant.</Text>
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 4 }}>
+        <NumberInput label="Industry" value={form.industry_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('industry_skill_level', Number(v))} />
+        <NumberInput label="Advanced Industry" value={form.advanced_industry_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('advanced_industry_skill_level', Number(v))} />
+        <NumberInput label="Reactions" value={form.reactions_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('reactions_skill_level', Number(v))} />
+        <NumberInput label="Blueprint specialist skill" value={form.specialist_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('specialist_skill_level', Number(v))} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Reactions</Title>

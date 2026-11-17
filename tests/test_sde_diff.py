@@ -218,6 +218,7 @@ _OTHER_TABLES = (
     "sde_solar_systems",
     "sde_regions",
     "sde_stations",
+    "sde_npc_corporations",
     "sde_categories",
     "sde_type_slots",
     "sde_type_equivalents",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Optional, Union
 
 import pandas as pd
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
@@ -61,7 +61,7 @@ def check_bounded_json(value: Any, max_bytes: int, max_depth: int = JSON_MAX_DEP
     try:
         size = len(json.dumps(value, separators=(",", ":"), default=str))
     except (TypeError, ValueError, RecursionError):
-        raise ValueError("not valid JSON data")
+        raise ValueError("not valid JSON data") from None
     if size > max_bytes:
         raise ValueError(f"larger than {max_bytes} bytes")
     return value
@@ -329,6 +329,18 @@ class DistributionRow(_Base):
     volume_m3: float = 0.0
 
 
+class LogisticsResponse(_Base):
+    """`computed` is false while no cached plan exists for the scope (a normal
+    state after a restart: the plans live in memory); `rows` is then empty."""
+    computed: bool
+    rows: list[LogisticsRow]
+
+
+class DistributionResponse(_Base):
+    computed: bool
+    rows: list[DistributionRow]
+
+
 class MarketRestockRow(_Base):
     type_id: int
     type_name: str
@@ -452,6 +464,11 @@ class T1BpcInventionNeedRow(_Base):
     missing: int
     bpo_present: bool
     stockpile_pct: float
+
+
+class T1BpcInventionNeedsResponse(_Base):
+    computed: bool
+    rows: list[T1BpcInventionNeedRow]
 
 
 class IndustryJobRow(_Base):
@@ -745,6 +762,7 @@ class StationTradingSettings(_Base):
     hub_region_id: int = 10000002
     broker_fee_rate: float
     sales_tax_rate: float
+    fee_skill_character_id: Optional[int] = None
     min_spread_threshold: float
     min_daily_volume: float
     enforce_shortlist_cap: bool
@@ -1431,7 +1449,6 @@ class ModuleReprocessingSettings(_Base):
     min_margin_threshold: float
     ignore_thresholds: bool
     purchase_region_id: int
-    purchase_structure_id: Optional[int] = None
     input_hub_region_id: int = 10000002
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int
@@ -1494,3 +1511,86 @@ class ImportPlan(_Base):
     candidates: int
     profitable_candidates: int
     home_listed_known: bool = True
+
+
+# ------------------------------------------------- money endpoints (S2-09, step 1)
+# Response models for the Portfolio / hub-freight / realized-profit summary
+# endpoints. They only describe what the actions already return: `extra="allow"`
+# keeps every field a model does not name (flags, warnings, fees_missing_*),
+# numbers are `Number` (int stays int, float stays float: a plain `float` field
+# would turn 5 into 5.0 and change the bytes), and the routes use
+# `response_model_exclude_unset` so no default is ever added to a response.
+Number = Union[int, float]
+
+
+class _Open(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class PortfolioRealizedCardRow(_Open):
+    tool: str
+    profit: Optional[Number] = None
+    revenue: Optional[Number] = None
+    margin: Optional[Number] = None
+    coverage: Optional[Number] = None
+    estimated: Optional[bool] = None
+    empty: Optional[bool] = None
+    sales_count: Optional[int] = None
+    fees_missing_sales: Optional[int] = None
+    fees_missing_revenue: Optional[Number] = None
+    link: Optional[str] = None
+
+
+class PortfolioRealizedCards(_Open):
+    rows: list[PortfolioRealizedCardRow]
+    unreported_sales: Optional[Number] = None
+    unreported_revenue: Optional[Number] = None
+    unreported_profit: Optional[Number] = None
+    total: Optional[Number] = None
+    fees_missing_sales: Optional[int] = None
+    fees_missing_revenue: Optional[Number] = None
+    period: Optional[str] = None
+    freight: Optional[dict[str, Any]] = None
+
+
+class PortfolioRealizedHistoryRow(_Open):
+    date: str
+    total: Number
+    cumulative: Number
+
+
+class PortfolioRealizedHistory(_Open):
+    bucket: str
+    channels: list[str]
+    period: str
+    rows: list[PortfolioRealizedHistoryRow]
+
+
+class PortfolioAttentionItem(_Open):
+    key: str
+    text: str
+    link: str
+
+
+class PortfolioAttention(_Open):
+    items: list[PortfolioAttentionItem]
+
+
+class HubFreightEntry(_Open):
+    region_id: int
+    hub: str
+    freight_cost_per_m3: Optional[Number] = None
+
+
+class RealizedChannelSummary(_Open):
+    """Summary of the Trading / Station Trading / Doctrine realized-profit
+    channels. Only what every variant (including the empty one) carries is
+    named; flags and the fees_missing_* figures pass through unchanged."""
+    period: Optional[dict[str, Any]] = None
+    status: Optional[dict[str, Any]] = None
+    realized_profit: Optional[Number] = None
+    revenue: Optional[Number] = None
+    margin: Optional[Number] = None
+    coverage: Optional[Number] = None
+    estimated: Optional[bool] = None
+    flags: Optional[dict[str, Any]] = None

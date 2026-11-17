@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ... import hubs
+from .. import schemas
 from ...actions import ActionError
 
 router = APIRouter()
@@ -23,14 +24,28 @@ class HubFreightRow(BaseModel):
     freight_cost_per_m3: Optional[float] = None
 
 
-@router.get("/freight")
+@router.get("")
+def list_hubs():
+    """The four trade hubs (region, name, label, system, main station) - the
+    one list the pickers and labels read. Static, tenant-independent."""
+    return hubs.do_list_hubs()
+
+
+@router.get("/freight", response_model=list[schemas.HubFreightEntry], response_model_exclude_unset=True)
 def get_hub_freight():
     return hubs.do_get_hub_freight()
 
 
-@router.post("/freight")
+@router.get("/observed-freight")
+def get_observed_freight():
+    """Suggested freight rate per hub from finished courier contracts
+    (aggregates only; never applied automatically)."""
+    return hubs.do_get_observed_freight()
+
+
+@router.post("/freight", response_model=list[schemas.HubFreightEntry], response_model_exclude_unset=True)
 def update_hub_freight(rows: Annotated[list[HubFreightRow], Field(max_length=1_000)]):
     try:
         return hubs.do_update_hub_freight({r.region_id: r.freight_cost_per_m3 for r in rows})
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

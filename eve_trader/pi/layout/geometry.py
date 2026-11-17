@@ -15,10 +15,6 @@ def central_angle(la1: float, lo1: float, la2: float, lo2: float) -> float:
     return math.acos(max(-1.0, min(1.0, cos_d)))
 
 
-def distance_km(la1: float, lo1: float, la2: float, lo2: float, radius_km: float) -> float:
-    return central_angle(la1, lo1, la2, lo2) * radius_km
-
-
 def offset(la: float, lo: float, d_polar: float, d_east: float) -> tuple[float, float]:
     """A point d_polar (towards larger La) and d_east (radians of arc, along
     the local parallel) away from (la, lo). Exact enough for the small

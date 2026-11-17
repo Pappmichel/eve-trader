@@ -154,7 +154,8 @@ def do_chain_plan(product_type_id: int, solar_system_id: Optional[int] = None,
         virtual = True
 
     a = actions._assumptions(cfg, zone)
-    m = actions._market(cfg, zone, owner_tax_rate, assumptions=a)
+    sk = actions._skill_defaults(cfg)
+    m = actions._market(cfg, zone, owner_tax_rate, assumptions=a, skills=sk)
     prices = actions._prices(static, cfg, with_history=False)
     factory_limit = None if virtual else max((s.planets for s in specs), default=1)
     options = cp.build_options(static, product, planets, sorted({s.cc_level for s in specs}), a, prices, m,
@@ -171,7 +172,7 @@ def do_chain_plan(product_type_id: int, solar_system_id: Optional[int] = None,
         result["notes"].append("No system chosen: one virtual planet per type (median radius, any number of "
                                "planets) - pick a system for a real plan.")
     result.update({
-        "system": system_info, "zone": zone, "allow_buy": bool(allow_buy),
+        "skill_source": sk["source"], "system": system_info, "zone": zone, "allow_buy": bool(allow_buy),
         "planets": [{"planet_id": None if virtual else p.planet_id, "name": p.name,
                      "planet_type_id": p.planet_type_id, "planet_type": C.PLANET_TYPES.get(p.planet_type_id),
                      "radius_km": p.radius_km} for p in planets],

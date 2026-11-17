@@ -4,7 +4,7 @@ the cheap-page consumers and the invalidation allowlist of review finding
 V-01."""
 import ast
 import inspect
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -483,12 +483,6 @@ def test_recalculate_recomputes_today_through_the_same_freeze(tenant, monkeypatc
     monkeypatch.setattr(dt, "_gather_signals", _Gather(_signals(velocity=2.0)))
     assert actions.do_recalculate_dynamic_targets(_cfg()) == {"written": 1}
     assert storage.load_dynamic_values_for_day(TODAY())[10]["effective_qty"] == 22.0
-
-
-def test_history_action_serialises_days(tenant):
-    storage.freeze_dynamic_values(TODAY(), [_frozen(1, 4)])
-    out = actions.do_dynamic_target_history(1, days=5000)
-    assert out["rows"][0]["day"] == TODAY().isoformat() and isinstance(out["rows"][0]["computed_at"], str)
 
 
 def test_preview_covers_fixed_rows_too_and_writes_nothing(tenant, monkeypatch):

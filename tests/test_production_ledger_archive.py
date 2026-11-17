@@ -56,6 +56,12 @@ def _wipe(_apply_production_ledger_schema):
     yield
 
 
+def _gaps(owner_type: str, owner_id: int) -> list[tuple]:
+    """(data_kind, gap_start, gap_end) of one owner's archive gaps, oldest first."""
+    return [(kind, start, end) for o_type, o_id, kind, start, end in ledger_db.list_all_archive_gaps()
+            if (o_type, o_id) == (owner_type, owner_id)]
+
+
 def _share(owner_id: int, data_kind: str, tool_key: str = "production"):
     with storage.connect() as conn:
         conn.execute(
@@ -237,7 +243,7 @@ def test_quiet_period_without_new_rows_is_not_a_gap(tenant):
     later = T0 + timedelta(days=10)
     ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
                                  journal_raw=_journal(100, 1, later), now=later)
-    assert ledger_db.list_archive_gaps("character", ALICE) == []
+    assert _gaps("character", ALICE) == []
 
 
 def test_sync_older_than_the_wallet_window_records_a_gap(tenant):
@@ -248,7 +254,7 @@ def test_sync_older_than_the_wallet_window_records_a_gap(tenant):
     later = T0 + timedelta(days=45)
     ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
                                  journal_raw=_journal(100, 1, later), now=later)
-    gaps = {g[0]: (g[1], g[2]) for g in ledger_db.list_archive_gaps("character", ALICE)}
+    gaps = {g[0]: (g[1], g[2]) for g in _gaps("character", ALICE)}
     assert set(gaps) == {"wallet_transactions", "wallet_journal"}
     assert gaps["wallet_journal"] == (T0, later - timedelta(days=30))
 
@@ -265,7 +271,7 @@ def test_capped_journal_records_a_gap_only_when_the_cap_is_hit(tenant):
         journal_raw=_journal(1000, ledger_ingest.JOURNAL_ENTRY_CAP - 1, newer),
         now=newer + timedelta(hours=1),
     )
-    assert ledger_db.list_archive_gaps("character", ALICE) == []
+    assert _gaps("character", ALICE) == []
 
     newest = T0 + timedelta(days=4)
     ledger_ingest.archive_wallet(
@@ -273,7 +279,7 @@ def test_capped_journal_records_a_gap_only_when_the_cap_is_hit(tenant):
         journal_raw=_journal(50_000, ledger_ingest.JOURNAL_ENTRY_CAP, newest),
         now=newest + timedelta(hours=1),
     )
-    gaps = ledger_db.list_archive_gaps("character", ALICE)
+    gaps = _gaps("character", ALICE)
     assert [(g[0], g[2]) for g in gaps] == [("wallet_journal", newest)]
 
 
@@ -294,7 +300,7 @@ def test_capped_corp_jobs_record_a_gap(tenant, monkeypatch):
     jobs = [job(10 + i, newer + timedelta(seconds=i)) for i in range(ledger_ingest.INDUSTRY_JOBS_ROW_CAP)]
     ledger_ingest.archive_industry_jobs(owner_type="corporation", owner_id=corp, jobs=jobs,
                                         now=newer + timedelta(hours=1))
-    gaps = ledger_db.list_archive_gaps("corporation", corp)
+    gaps = _gaps("corporation", corp)
     assert [(g[0], g[1], g[2]) for g in gaps] == [("industry_jobs", T0, newer)]
     assert ledger_db.count_ledger_rows("ledger_industry_jobs", "corporation", corp) == 2001
 
@@ -623,14 +629,14 @@ def test_full_transaction_page_without_overlap_records_a_gap(tenant, monkeypatch
     cap = ledger_ingest.WALLET_TRANSACTIONS_PAGE_SIZE
     ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
                                  txn_rows=_txns(1, cap, T0), journal_raw=[], now=T0)
-    assert ledger_db.list_archive_gaps("character", ALICE) == []
+    assert _gaps("character", ALICE) == []
 
     newer = T0 + timedelta(days=2)
     rows = _txns(10_000, cap, newer)
     ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=rows,
                                  journal_raw=[], now=newer + timedelta(hours=1))
     oldest_new = newer - timedelta(seconds=cap - 1)
-    assert [(g[0], g[1], g[2]) for g in ledger_db.list_archive_gaps("character", ALICE)] == [
+    assert [(g[0], g[1], g[2]) for g in _gaps("character", ALICE)] == [
         ("wallet_transactions", T0, oldest_new),
     ]
 
@@ -645,13 +651,13 @@ def test_overlapping_or_short_transaction_lists_record_no_gap(tenant, monkeypatc
     ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
                                  txn_rows=_txns(100, cap - 1, newer), journal_raw=[],
                                  now=newer + timedelta(hours=1))
-    assert ledger_db.list_archive_gaps("character", ALICE) == []
+    assert _gaps("character", ALICE) == []
     # A full page that reaches back into the archive overlaps it.
     newest = T0 + timedelta(days=2)
     overlap = _txns(20_000, cap - 1, newest) + [_txns(1, 1, T0)[0]]
     ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=overlap,
                                  journal_raw=[], now=newest + timedelta(hours=1))
-    assert ledger_db.list_archive_gaps("character", ALICE) == []
+    assert _gaps("character", ALICE) == []
 
 
 def test_corp_transaction_gap_is_checked_per_division(tenant, monkeypatch):
@@ -668,7 +674,7 @@ def test_corp_transaction_gap_is_checked_per_division(tenant, monkeypatch):
     ledger_ingest.archive_corp_wallet(owner_id=corp, txn_rows=rows,
                                       journal_entries_by_division={1: [], 2: []},
                                       now=newer + timedelta(hours=1))
-    gaps = ledger_db.list_archive_gaps("corporation", corp)
+    gaps = _gaps("corporation", corp)
     assert [(g[0], g[1], g[2]) for g in gaps] == [
         ("wallet_transactions", T0, newer - timedelta(seconds=cap - 1)),
     ]

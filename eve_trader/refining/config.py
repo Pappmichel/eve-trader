@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import yaml
 
 from .. import storage
+from ..config import warn_unknown_override_keys
 from ..config import (
     ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides,
 )
@@ -161,6 +162,7 @@ def resolve_and_set_refining_config(tenant_id: str) -> contextvars.Token:
     cfg = load_refining_config()
     overrides = storage.load_tenant_settings("refining")
     if overrides:
+        warn_unknown_override_keys("refining", RefiningConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _refining_config_var.set(cfg)
 

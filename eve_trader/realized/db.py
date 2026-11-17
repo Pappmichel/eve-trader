@@ -129,22 +129,6 @@ def upsert_ledger_industry_jobs(rows: list[tuple]) -> int:
     return len(rows)
 
 
-def job_ids_already_archived(
-    owner_type: str, owner_id: int, job_ids: Iterable[int],
-) -> set[int]:
-    ids = [int(j) for j in job_ids]
-    if not ids:
-        return set()
-    placeholders = ",".join("?" * len(ids))
-    with storage.connect() as conn:
-        rows = conn.execute(
-            f"SELECT job_id FROM ledger_industry_jobs "
-            f"WHERE owner_type = ? AND owner_id = ? AND job_id IN ({placeholders})",
-            (owner_type, int(owner_id), *ids),
-        ).fetchall()
-    return {int(r[0]) for r in rows}
-
-
 def insert_ledger_job_inputs(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, job_id, type_id, quantity, blueprint_me,
     material_multiplier, decryptor_type_id, encryption_skill_level,
@@ -502,17 +486,6 @@ def list_ledger_job_inputs(
             "WHERE owner_type = ? AND owner_id = ? AND job_id = ? "
             "ORDER BY type_id",
             (owner_type, int(owner_id), int(job_id)),
-        ).fetchall()
-
-
-def list_archive_gaps(owner_type: str, owner_id: int) -> list[tuple]:
-    with storage.connect() as conn:
-        return conn.execute(
-            "SELECT data_kind, gap_start, gap_end, detected_at "
-            "FROM ledger_archive_gaps "
-            "WHERE owner_type = ? AND owner_id = ? "
-            "ORDER BY gap_start",
-            (owner_type, int(owner_id)),
         ).fetchall()
 
 
@@ -1157,19 +1130,6 @@ def outstanding_priced_contract_items(owners: list[tuple[str, int]]) -> list[tup
         (int(contract_id), int(type_id), float(quantity), None if price is None else float(price))
         for contract_id, type_id, quantity, price in rows
     ]
-
-
-def oldest_wallet_transaction_date(
-    owners: list[tuple[str, int]],
-) -> Optional[datetime]:
-    """Cutover T0 candidate: oldest archived wallet tx among these owners."""
-    where, params = _owner_in_clause(owners)
-    with storage.connect() as conn:
-        row = conn.execute(
-            f"SELECT MIN(date) FROM ledger_wallet_transactions WHERE {where}",
-            tuple(params),
-        ).fetchone()
-    return row[0] if row and row[0] is not None else None
 
 
 def list_cached_reference_prices(
@@ -1819,6 +1779,95 @@ def sell_fee_totals(
     return (int(row[0]), float(row[1]), float(row[2]), float(row[3]))
 
 
+def bought_market_fee_totals(
+    start: datetime, end: datetime, *, wallet_owners: list, location_ids: list[int],
+) -> tuple[int, float, float]:
+    """(buys, materials, fees) over the market buy fills of `wallet_owners` at
+    `location_ids` in [start, end), from the derived cost layers.
+
+    A buy fill's layer carries its price (`cost_materials_bought`) and the
+    broker fee costing attributed to it (`cost_fees`, D12), both per unit. A
+    layer still in stock is one row (weighted by its original quantity); a
+    layer fully consumed is gone from `prod_cost_layers`, so its draws stand
+    in for it (their components are totals). The fee share is constant within
+    a layer, so either view gives the same quote for it. A layer moved between
+    own owners (`source = 'transfer'`) is not a purchase and does not count.
+    The archived transaction (`source_ref` = `tx:<type>:<id>:<division>:<tx>`)
+    supplies the place and owner."""
+    if not wallet_owners or not location_ids:
+        return 0, 0.0, 0.0
+    match, match_params = _owner_match_sql(wallet_owners, "")
+    sql = (
+        "WITH tx AS ("
+        " SELECT 'tx:' || owner_type || ':' || owner_id || ':' || division || ':' || transaction_id AS ref"
+        " FROM ledger_wallet_transactions"
+        " WHERE is_buy AND date >= ? AND date < ? AND location_id = ANY(?) AND " + match +
+        "), layer_part AS ("
+        " SELECT l.logical_layer_id, l.source_ref,"
+        " l.cost_materials_bought * COALESCE(l.quantity_original, l.quantity_left) AS mat,"
+        " l.cost_fees * COALESCE(l.quantity_original, l.quantity_left) AS fee"
+        " FROM prod_cost_layers l JOIN tx ON tx.ref = l.source_ref"
+        " WHERE l.origin = 'bought' AND l.source = 'market'"
+        "), draw_part AS ("
+        " SELECT d.source_ref, d.cost_materials_bought AS mat, d.cost_fees AS fee"
+        " FROM prod_cost_draws d JOIN tx ON tx.ref = d.source_ref"
+        " WHERE d.origin = 'bought' AND d.source = 'market'"
+        " AND NOT EXISTS (SELECT 1 FROM layer_part lp WHERE lp.logical_layer_id = d.logical_layer_id)"
+        ") SELECT COUNT(DISTINCT source_ref), COALESCE(SUM(mat), 0), COALESCE(SUM(fee), 0) FROM ("
+        " SELECT source_ref, mat, fee FROM layer_part UNION ALL SELECT source_ref, mat, fee FROM draw_part"
+        ") p"
+    )
+    params = (start, end, sorted({int(i) for i in location_ids}), *match_params)
+    with storage.connect() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return int(row[0]), float(row[1]), float(row[2])
+
+
+def without_sale_fees_by_owner(start_day, end_day, owners: Optional[list]) -> dict:
+    """{(owner_type, owner_id): amount} of the order fees costing could not
+    attribute to a fill (`prod_fee_lines` kind `without_sale`) on UTC days in
+    [start_day, end_day). `owners` None means every owner, an empty list none:
+    unlike `fee_totals_between`, a report reads only its own wallet owners."""
+    if owners is not None and not owners:
+        return {}
+    sql = (
+        "SELECT owner_type, owner_id, COALESCE(SUM(amount), 0) FROM prod_fee_lines "
+        "WHERE kind = 'without_sale' AND fee_date >= ? AND fee_date < ?"
+    )
+    params: list = [start_day, end_day]
+    if owners is not None:
+        match, match_params = _owner_match_sql(owners, "")
+        sql += " AND " + match
+        params.extend(match_params)
+    sql += " GROUP BY owner_type, owner_id"
+    with storage.connect() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return {(str(r[0]), int(r[1])): float(r[2]) for r in rows}
+
+
+def market_gross_by_owner_channel(start: datetime, end: datetime, owners: list) -> dict:
+    """{(owner_type, owner_id): {channel: gross}} over the market sales of
+    `owners` in [start, end), every channel. Used to split an owner's fees that
+    belong to no fill across the channels that owner sold in."""
+    if not owners:
+        return {}
+    match, match_params = _owner_match_sql(owners, "")
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, channel, COALESCE(SUM(gross), 0) "
+            "FROM prod_realized_results "
+            "WHERE source = 'market' AND gross IS NOT NULL AND gross > 0 "
+            "AND channel IS NOT NULL AND owner_id IS NOT NULL "
+            "AND sale_date >= ? AND sale_date < ? AND " + match
+            + " GROUP BY owner_type, owner_id, channel",
+            (start, end, *match_params),
+        ).fetchall()
+    out: dict = {}
+    for owner_type, owner_id, channel, gross in rows:
+        out.setdefault((str(owner_type), int(owner_id)), {})[str(channel)] = float(gross)
+    return out
+
+
 def realized_by_type(
     start: datetime,
     end: datetime,
@@ -2415,26 +2464,6 @@ def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
             f"WHERE {where} AND type = 'courier' "
             "ORDER BY contract_id, (volume IS NULL), date_issued NULLS LAST",
             tuple(params),
-        ).fetchall()
-
-
-def list_forge_home_couriers(
-    owners: list[tuple[str, int]], home_location_id: int,
-) -> list[tuple]:
-    """Finished courier contracts this tenant issued, from The Forge to the
-    home structure, deduped by contract_id.
-    (contract_id, date_completed, volume, reward)."""
-    if not owners:
-        return []
-    where, params = _owner_in_clause(owners)
-    with storage.connect() as conn:
-        return conn.execute(
-            "SELECT DISTINCT ON (contract_id) contract_id, date_completed, volume, reward "
-            "FROM ledger_contracts "
-            f"WHERE {where} AND type = 'courier' AND status = 'finished' "
-            "AND date_completed IS NOT NULL AND region_id = ? AND end_location_id = ? "
-            "ORDER BY contract_id, date_completed",
-            (*params, THE_FORGE_REGION_ID, int(home_location_id)),
         ).fetchall()
 
 

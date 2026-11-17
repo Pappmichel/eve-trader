@@ -99,6 +99,30 @@ def do_grant_default_tools(dry_run: bool = False) -> dict:
     return {"changed": changed, "unchanged": unchanged, "dry_run": dry_run}
 
 
+def do_prune_settings(apply: bool = False) -> dict:
+    """Finds (and with `apply=True` removes) stored Settings-page overrides
+    that no longer name a field of their scope's config class, per tenant
+    (`tenant_scope.enter_tenant`, so every read and write stays RLS-scoped).
+    Only keys without a field are touched; valid keys and other tenants'
+    rows are never changed. Returns names only, never values. Dry run by
+    default."""
+    from .config import unknown_override_keys
+    from .config_scopes import tenant_config_classes
+
+    classes = tenant_config_classes()
+    changed = []
+    for tenant_id, name, _created in storage.list_tenants():
+        with tenant_scope.enter_tenant(str(tenant_id)):
+            for scope, cls in classes.items():
+                unknown = unknown_override_keys(cls, storage.load_tenant_settings(scope))
+                if not unknown:
+                    continue
+                if apply:
+                    storage.remove_tenant_settings_keys(scope, unknown)
+                changed.append({"tenant_id": str(tenant_id), "tenant_name": name, "scope": scope, "keys": unknown})
+    return {"changed": changed, "applied": apply}
+
+
 def _delete_tenant_credentials(tenant_id: str) -> dict:
     """Deletes every stored SSO token and the Discord link (which also turns
     every alert subscription off) of one tenant, and returns the refresh
@@ -676,10 +700,6 @@ def do_list_access_requests(status: str | None = None) -> list[dict]:
     if status is not None and status not in ("pending", "approved", "rejected"):
         raise ActionError("status must be pending, approved, or rejected.")
     return storage.list_access_requests(status)
-
-
-def do_count_pending_access_requests() -> dict:
-    return {"pending": storage.count_pending_access_requests()}
 
 
 def do_approve_access_request(character_id: int, tool_keys: list[str],

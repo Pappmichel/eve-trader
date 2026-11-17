@@ -3,7 +3,6 @@ section 5) - real Postgres, since these are plain SQL upsert/read wrappers
 with no business logic worth mocking."""
 from datetime import date
 
-import pytest
 
 from eve_trader import storage
 

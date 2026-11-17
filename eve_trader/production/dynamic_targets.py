@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Iterable, Optional
 

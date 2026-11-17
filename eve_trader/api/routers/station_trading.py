@@ -25,7 +25,7 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ------------------------------------------------------------------- reads
@@ -89,6 +89,14 @@ def remove_trader_character(role_key: str):
     return _wrap(actions.do_remove_trader_character, role_key=role_key)
 
 
+@router.get("/fee-suggestions")
+def get_fee_suggestions():
+    """Suggested broker fee and sales tax from the chosen character's skills
+    and standings, plus the channel's observed wallet quote. Never applied
+    automatically."""
+    return _wrap(actions.do_get_fee_suggestions)
+
+
 StationTradingSettingsUpdate = partial_model(schemas.StationTradingSettings, "StationTradingSettingsUpdate")
 
 
@@ -98,7 +106,7 @@ def update_settings(updates: StationTradingSettingsUpdate):  # type: ignore[vali
 
 
 # ------------------------------------------------------------- realized profit
-@router.get("/realized/summary")
+@router.get("/realized/summary", response_model=schemas.RealizedChannelSummary, response_model_exclude_unset=True)
 def station_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
                              end: Optional[str] = None, since_t0: bool = False):
     return _wrap(

@@ -435,24 +435,6 @@ def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
     return rank(results, reducible_material_cost_per_run)
 
 
-def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
-                             cfg: ProductionConfig = PRODUCTION_CONFIG,
-                             reducible_material_cost_per_run: Optional[float] = 0.0,
-                             rates=FETCH_RATES) -> Optional[InventionResult]:
-    """The single cheapest (net cost per run) decryptor choice for ONE fixed
-    invention-source candidate (t1_blueprint_type_id), or None if no
-    invention recipe/probability data exists for it. For Tech III, the
-    caller decides which of the (up to 3) relic-grade candidates this
-    compares decryptors within - see best_recipe_and_decryptor below to also
-    let the grade itself vary, which is what Tech III actually needs."""
-    try:
-        results = compare_decryptors(t1_blueprint_type_id, home, jita, cfg, reducible_material_cost_per_run,
-                                     rates=rates)
-    except ValueError:
-        return None
-    return results[0] if results else None
-
-
 def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, jita: dict,
                                     cfg: ProductionConfig = PRODUCTION_CONFIG,
                                     reducible_material_cost_per_run: Optional[float] = 0.0,

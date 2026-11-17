@@ -132,7 +132,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .. import hubs, storage, tenant_eligibility
 from ..actions import _emit_progress
@@ -160,6 +160,9 @@ from .models import (
     InventionResult, InventoryRow, LogisticsRow, MarketRestockRow, MarketStatusRow, PullFromStop, SpecialOrderLineItem, StockOverlapWarningRow,
     T1BpcInventionNeedRow,
 )
+
+if TYPE_CHECKING:  # the client is imported lazily where it is built
+    from ..goonmetrics_client import GoonmetricsClient
 
 log = logging.getLogger("eve_trader.production.engine")
 

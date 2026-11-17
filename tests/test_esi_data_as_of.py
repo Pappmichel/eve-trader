@@ -102,7 +102,7 @@ def test_success_records_oldest_last_modified_and_failed_member_adds_nothing(mon
     orchestrator._record_success("corporation", 9, "assets", ages)
 
     assert wrote == 3
-    assert stored == [("corporation", 9, "assets", {"success": True, "data_as_of": old})]
+    assert stored == [("corporation", 9, "assets", {"success": True, "data_as_of": old, "next_fetch_after": None})]
 
 
 def test_success_without_header_stores_no_data_age(monkeypatch):
@@ -112,7 +112,7 @@ def test_success_without_header_stores_no_data_age(monkeypatch):
         lambda owner_type, owner_id, kind, **kw: stored.append(kw),
     )
     orchestrator._record_success("character", 1, "wallet_balance", [])
-    assert stored == [{"success": True, "data_as_of": None}]
+    assert stored == [{"success": True, "data_as_of": None, "next_fetch_after": None}]
 
 
 def test_portfolio_sync_times_show_data_age_not_fetch_time(monkeypatch):

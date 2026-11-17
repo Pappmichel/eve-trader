@@ -535,7 +535,7 @@ def do_type_detail(type_id: int) -> dict:
 
 
 def _price_history(type_id: int) -> dict:
-    from datetime import date, timedelta
+    from datetime import timedelta
 
     from ..goonmetrics_client import GoonmetricsClient
     from ..production.config import PRODUCTION_CONFIG
@@ -563,7 +563,6 @@ _history_empty_day: dict[str, object] = {}
 
 
 def history_snapshot_due() -> bool:
-    from datetime import date
     today = timeutil.utc_today()
     if _history_empty_day.get(storage.get_current_tenant()) == today:
         return False
@@ -575,7 +574,7 @@ def take_history_snapshot() -> dict:
     """Writes today's per-owner/location/type ESI quantities and prunes days
     older than `asset_history_retention_days`. Called by the scheduler's
     asset_history job and lazily by the first history read of the day."""
-    from datetime import date, timedelta
+    from datetime import timedelta
 
     from ..config import TRADING_CONFIG
 

@@ -13,10 +13,19 @@ over that day's order-based fills, buys and sells alike), so the quote is an
 estimate, and relist or order-modification fees count only as far as costing
 attributed them to a sale. No value is returned without a trustworthy basis;
 the caller gets a reason instead.
+
+`upper_bound_quote` adds the order fees costing attributed to no fill (a day
+with order fees but no order-based fill: relists, new orders that did not sell
+that day, buy orders) to the same numerator. Each wallet owner's fees are
+split across channels by that owner's share of market gross in this channel
+among all channels in the window, so an owner selling in one channel gives all
+of them to it and an owner with no market sale in the window gives none. It is
+an upper bound, not a sell fee: buy-order fees and stock built up for later
+sales push it up. It is shown only, never offered as a value to apply.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from . import db
@@ -70,6 +79,8 @@ def observed_quote(
         "quote": None,
         "sales_tax_rate": None,
         "broker_fee_rate": None,
+        "upper_bound_quote": None,
+        "order_fees_without_sale": None,
         "reason": None,
         "message": None,
         "start": start.isoformat(),
@@ -103,4 +114,33 @@ def observed_quote(
     out["quote"] = quote
     out["sales_tax_rate"] = sales_tax / gross
     out["broker_fee_rate"] = broker_fee / gross
+    extra = _without_sale_share(start, end, scope)
+    upper = (sales_tax + broker_fee + extra) / gross
+    out["order_fees_without_sale"] = extra
+    out["upper_bound_quote"] = upper if 0.0 < upper < 1.0 else None
     return out
+
+
+def _fee_days(start: datetime, end: datetime) -> tuple[date, date]:
+    """[first, last) UTC days that overlap [start, end)."""
+    last = (end - timedelta(microseconds=1)).astimezone(timezone.utc).date()
+    return start.astimezone(timezone.utc).date(), last + timedelta(days=1)
+
+
+def _without_sale_share(start: datetime, end: datetime, scope: dict) -> float:
+    """This channel's share of the scope's wallet owners' unattributed order
+    fees in the window (see the module docstring)."""
+    channel = scope.get("channel")
+    first_day, end_day = _fee_days(start, end)
+    fees = db.without_sale_fees_by_owner(first_day, end_day, scope.get("wallet_owners"))
+    fees = {owner: amount for owner, amount in fees.items() if amount > 0}
+    if not fees or not channel:
+        return 0.0
+    gross = db.market_gross_by_owner_channel(start, end, list(fees))
+    total = 0.0
+    for owner, amount in fees.items():
+        by_channel = gross.get(owner, {})
+        all_channels = sum(by_channel.values())
+        if all_channels > 0:
+            total += amount * by_channel.get(channel, 0.0) / all_channels
+    return total

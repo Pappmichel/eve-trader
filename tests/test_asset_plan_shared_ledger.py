@@ -11,7 +11,6 @@ import math
 
 import pytest
 
-from eve_trader import storage
 from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.constants import ACTIVITY_MANUFACTURING

@@ -71,9 +71,9 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ------------------------------------------------------------------- reads
@@ -472,6 +472,10 @@ class ProductionSettings(BaseModel):
     encryption_skill_level: int
     datacore_skill_1_level: int
     datacore_skill_2_level: int
+    industry_skill_level: int
+    advanced_industry_skill_level: int
+    reactions_skill_level: int
+    specialist_skill_level: int
     reaction_cost_index_override: Optional[float] = None
     component_cost_index_override: Optional[float] = None
     manufacturing_cost_index_override: Optional[float] = None
@@ -622,33 +626,39 @@ def get_category_cost_index_overrides():
 LogisticsScope = Literal["build_list", "asset_ready"]
 
 
-def _logistics_jobs_kwargs(scope: LogisticsScope) -> dict:
+def _logistics_jobs_kwargs(scope: LogisticsScope) -> Optional[dict]:
     """Which cached plan the Logistics material tables read
     (docs/LOGISTICS_SCOPE_TOGGLE_PLAN.md). "build_list" needs a non-empty
     Build List, as before. "asset_ready" needs a computed asset plan, but an
     empty jobs list is a valid state (nothing to build) - the action then
-    returns no rows."""
+    returns no rows. None means "not computed yet": a normal state (the plans
+    live in memory, so every restart starts there), answered as 200
+    `{computed: false, rows: []}` rather than an error."""
     if scope == "asset_ready":
         asset = _last_asset_plan.get(_tenant_key())
         if asset is None:
-            raise HTTPException(
-                status_code=400,
-                detail="No asset-optimized build list computed yet. Run 'Refresh Asset Build List' first.")
+            return None
         return {"asset_jobs": asset.get("jobs") or []}
     plan = _last_plan.get(_tenant_key())
     if not plan or not plan.get("build_list"):
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
+        return None
     return {"build_list": plan["build_list"]}
 
 
-@router.get("/logistics", response_model=list[schemas.LogisticsRow])
+@router.get("/logistics", response_model=schemas.LogisticsResponse)
 def get_logistics_status(scope: LogisticsScope = "build_list"):
-    return _wrap(actions.do_get_logistics_status, **_logistics_jobs_kwargs(scope))
+    kwargs = _logistics_jobs_kwargs(scope)
+    if kwargs is None:
+        return {"computed": False, "rows": []}
+    return {"computed": True, "rows": _wrap(actions.do_get_logistics_status, **kwargs)}
 
 
-@router.get("/logistics/distribution", response_model=list[schemas.DistributionRow])
+@router.get("/logistics/distribution", response_model=schemas.DistributionResponse)
 def get_distribution_recommendations(scope: LogisticsScope = "build_list"):
-    return _wrap(actions.do_get_distribution_recommendations, **_logistics_jobs_kwargs(scope))
+    kwargs = _logistics_jobs_kwargs(scope)
+    if kwargs is None:
+        return {"computed": False, "rows": []}
+    return {"computed": True, "rows": _wrap(actions.do_get_distribution_recommendations, **kwargs)}
 
 
 @router.get("/logistics/market-restock", response_model=list[schemas.MarketRestockRow])
@@ -657,26 +667,28 @@ def get_market_restock():
     return _wrap(actions.do_get_market_restock)
 
 
-@router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
+@router.get("/logistics/invention", response_model=schemas.LogisticsResponse)
 def get_invention_logistics():
     # Deliberately only checks plan is None (not invention_list's own
     # truthiness, unlike the sibling endpoints above) - an empty
     # invention_list is a real, valid "nothing needs inventing right now"
-    # state (no Tech II stock targets configured), not an error.
+    # state (no Tech II stock targets configured): computed true, no rows.
     plan = _last_plan.get(_tenant_key())
     if plan is None:
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_invention_logistics, invention_list=plan.get("invention_list") or [])
+        return {"computed": False, "rows": []}
+    return {"computed": True,
+            "rows": _wrap(actions.do_get_invention_logistics, invention_list=plan.get("invention_list") or [])}
 
 
-@router.get("/invention/t1-bpc-needs", response_model=list[schemas.T1BpcInventionNeedRow])
+@router.get("/invention/t1-bpc-needs", response_model=schemas.T1BpcInventionNeedsResponse)
 def get_t1_bpc_invention_needs():
     # Same "plan is None, not invention_list's own truthiness" rule as
     # get_invention_logistics above - an empty list is a valid state.
     plan = _last_plan.get(_tenant_key())
     if plan is None:
-        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=plan.get("invention_list") or [])
+        return {"computed": False, "rows": []}
+    return {"computed": True,
+            "rows": _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=plan.get("invention_list") or [])}
 
 
 @router.get("/logistics/structure-names")
@@ -762,9 +774,19 @@ def get_esi_sync_time():
     return actions.do_get_esi_sync_time()
 
 
-@router.post("/unlisted-stock/check", response_model=list[schemas.ProductionUnlistedStockRow])
+@router.post("/unlisted-stock/check")
 def check_unlisted_stock():
-    return _wrap(actions.do_unlisted_stock)["rows"]
+    """Starts the check as a background job and returns {run_id, status}
+    (corporation ESI reads can take minutes). Missing location / targets /
+    characters are an immediate 400; a second start while any background job
+    runs is HTTP 409. Poll GET .../check/status; its `result.rows` holds the
+    rows (same fields as schemas.ProductionUnlistedStockRow)."""
+    return _wrap(actions.do_start_unlisted_stock)
+
+
+@router.get("/unlisted-stock/check/status")
+def check_unlisted_stock_status():
+    return _wrap(actions.do_unlisted_stock_status)
 
 
 @router.post("/build-candidates/discover")
@@ -789,11 +811,6 @@ def get_build_candidates(top_n: int = 200):
     this tenant, without triggering a scan - empty until the background job
     above has completed at least once."""
     return _wrap(actions.do_get_build_candidates, top_n=top_n)["rows"]
-
-
-@router.get("/alchemy-compare/{product_name}")
-def alchemy_compare(product_name: str):
-    return _wrap(actions.do_compare_alchemy, product_name=product_name)
 
 
 @router.get("/margins", response_model=list[schemas.ShipMarginRow])
@@ -864,17 +881,6 @@ def set_stock_target_mode(type_id: int, req: StockTargetModeRequest):
 @router.post("/stock-targets/recalculate")
 def recalculate_dynamic_targets():
     return _wrap(actions.do_recalculate_dynamic_targets)
-
-
-@router.post("/stock-targets/dynamic-preview")
-def preview_dynamic_targets():
-    """Dry run for every row with a home target; writes nothing."""
-    return _wrap(actions.do_preview_dynamic_targets)
-
-
-@router.get("/stock-targets/{type_id}/dynamic-history")
-def get_dynamic_target_history(type_id: int, days: int = 30):
-    return _wrap(actions.do_dynamic_target_history, type_id=type_id, days=days)
 
 
 class ManualStockRequest(BaseModel):

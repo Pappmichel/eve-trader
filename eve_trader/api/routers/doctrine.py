@@ -24,9 +24,9 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ------------------------------------------------------------------- doctrines
@@ -353,7 +353,7 @@ def get_hangar_division_options():
 
 
 # ------------------------------------------------------------- realized profit
-@router.get("/realized/summary")
+@router.get("/realized/summary", response_model=schemas.RealizedChannelSummary, response_model_exclude_unset=True)
 def doctrine_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
                               end: Optional[str] = None, since_t0: bool = False):
     return _wrap(

@@ -951,7 +951,8 @@ def test_plan_is_isolated_per_tenant(monkeypatch):
     assert client.get("/api/production/plan").json() is None
     # tenant-b's own logistics reads must also not see tenant-a's build_list.
     resp = client.get("/api/production/logistics")
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    assert resp.json() == {"computed": False, "rows": []}
 
 
 def test_logistics_scope_asset_ready_reads_asset_plan(monkeypatch):
@@ -974,21 +975,27 @@ def test_logistics_scope_asset_ready_reads_asset_plan(monkeypatch):
     monkeypatch.setattr(production_actions, "do_get_distribution_recommendations", fake_distribution)
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-logistics-scope")
 
+    # No asset plan yet is a normal state, not an error.
     resp = client.get("/api/production/logistics?scope=asset_ready")
-    assert resp.status_code == 400
-    assert "asset-optimized" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.json() == {"computed": False, "rows": []}
+    resp = client.get("/api/production/logistics/distribution?scope=asset_ready")
+    assert resp.status_code == 200
+    assert resp.json() == {"computed": False, "rows": []}
+    assert "status" not in seen and "distribution" not in seen
 
     monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
                         lambda: {"jobs": 1, "plan": {"jobs": [job], "order_progress": []}})
     assert client.post("/api/production/asset-plan/refresh").status_code == 200
 
-    assert client.get("/api/production/logistics?scope=asset_ready").json() == []
-    assert client.get("/api/production/logistics/distribution?scope=asset_ready").json() == []
+    assert client.get("/api/production/logistics?scope=asset_ready").json() == {"computed": True, "rows": []}
+    assert client.get("/api/production/logistics/distribution?scope=asset_ready").json() == {
+        "computed": True, "rows": []}
     assert seen["status"][0] is None and [j.type_id for j in seen["status"][1]] == [10]
     assert seen["distribution"][0] is None and [j.type_id for j in seen["distribution"][1]] == [10]
 
     # Default scope is unchanged: no Build List computed for this tenant.
-    assert client.get("/api/production/logistics").status_code == 400
+    assert client.get("/api/production/logistics").json() == {"computed": False, "rows": []}
     assert client.get("/api/production/logistics?scope=bogus").status_code == 422
 
 
@@ -1001,7 +1008,51 @@ def test_logistics_scope_asset_ready_empty_plan_is_not_an_error(monkeypatch):
     monkeypatch.setattr(production_actions, "do_get_logistics_status",
                         lambda build_list=None, asset_jobs=None: [] if asset_jobs == [] else None)
     resp = client.get("/api/production/logistics?scope=asset_ready")
-    assert resp.status_code == 200 and resp.json() == []
+    assert resp.status_code == 200 and resp.json() == {"computed": True, "rows": []}
+
+
+def test_invention_endpoints_distinguish_no_plan_from_an_empty_invention_list(monkeypatch):
+    """No cached plan is `computed: false`; a plan with nothing to invent is
+    `computed: true` with no rows (docs: an empty invention_list is valid)."""
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-invention-empty-state")
+    for path in ("/api/production/logistics/invention", "/api/production/invention/t1-bpc-needs"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert resp.json() == {"computed": False, "rows": []}
+
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": [],
+                 "adjusted_prices_available": True},
+        "stock_targets": 0, "missing_types": 0, "buy_entries": 0, "build_jobs": 0,
+    })
+    monkeypatch.setattr(production_actions, "do_get_invention_logistics", lambda invention_list=None: [])
+    monkeypatch.setattr(production_actions, "do_get_t1_bpc_invention_needs", lambda invention_list=None: [])
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    for path in ("/api/production/logistics/invention", "/api/production/invention/t1-bpc-needs"):
+        assert client.get(path).json() == {"computed": True, "rows": []}
+
+
+def test_invention_endpoints_return_the_action_rows(monkeypatch):
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-invention-rows")
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": [],
+                 "adjusted_prices_available": True},
+        "stock_targets": 0, "missing_types": 0, "buy_entries": 0, "build_jobs": 0,
+    })
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    monkeypatch.setattr(production_actions, "do_get_invention_logistics", lambda invention_list=None: [{
+        "category": "Ships", "location_id": 5, "type_id": 7, "type_name": "Datacore", "needed": 4.0,
+        "available": 1.0, "missing": 3.0, "pull_from": [{"location_id": 9, "quantity": 1.0}], "volume_m3": 0.1,
+    }])
+    monkeypatch.setattr(production_actions, "do_get_t1_bpc_invention_needs", lambda invention_list=None: [{
+        "type_id": 8, "name": "Blueprint", "needed": 3, "available": 1, "missing": 2,
+        "bpo_present": True, "stockpile_pct": 33.0,
+    }])
+
+    logistics = client.get("/api/production/logistics/invention").json()
+    assert logistics["computed"] is True and logistics["rows"][0]["missing"] == 3.0
+    needs = client.get("/api/production/invention/t1-bpc-needs").json()
+    assert needs["computed"] is True and needs["rows"][0]["bpo_present"] is True
 
 
 def test_plan_serializes_special_order_fields(monkeypatch):
@@ -1467,20 +1518,45 @@ def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch
     }]
 
 
-def test_production_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
-    # GitHub issue #56 - same regression, Production side.
-    from eve_trader.production.models import UnlistedStockRow as ProductionUnlistedStockRow
-    monkeypatch.setattr(production_actions, "do_unlisted_stock", lambda: {"rows": [
-        ProductionUnlistedStockRow(type_id=205, type_name="Nova Cruise Missile", stock_quantity=50.0,
-                                    sell_volume=12.0, margin=0.25, production_needed=7.0),
-    ]})
+def test_production_unlisted_stock_check_starts_background_job(monkeypatch):
+    # The check is a pipeline_runner job now: the route answers {run_id, status}
+    # and the rows live in the status's result (the old response_model-based
+    # field-preservation check moved to tests/test_unlisted_stock_job.py, where
+    # the rows are serialized with asdict).
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", lambda: {
+        "run_id": "unlisted-1", "status": "running", "job_name": "unlisted_stock", "tool": "production"})
     resp = client.post("/api/production/unlisted-stock/check")
     assert resp.status_code == 200
-    assert resp.json() == [{
-        "type_id": 205, "type_name": "Nova Cruise Missile", "stock_quantity": 50.0,
-        "sell_volume": 12.0, "margin": 0.25, "doctrine_shortfall": None, "doctrine_names": [],
-        "production_needed": 7.0,
-    }]
+    assert resp.json() == {"run_id": "unlisted-1", "status": "running",
+                           "job_name": "unlisted_stock", "tool": "production"}
+
+
+def test_production_unlisted_stock_check_conflict_maps_to_409(monkeypatch):
+    def _raise():
+        raise ConflictError("Rebuild Realized Profit is already running.")
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", _raise)
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 409
+
+
+def test_production_unlisted_stock_check_early_validation_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("No stock targets configured.")
+    monkeypatch.setattr(production_actions, "do_start_unlisted_stock", _raise)
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "No stock targets configured."}
+
+
+def test_production_unlisted_stock_check_status_returns_rows(monkeypatch):
+    status = {"run_id": "unlisted-1", "status": "succeeded", "job_name": "unlisted_stock",
+              "tool": "production", "result": {"rows": [{"type_id": 205, "type_name": "Nova Cruise Missile",
+                                                          "stock_quantity": 50.0, "sell_volume": 12.0,
+                                                          "margin": 0.25, "production_needed": 7.0}]}}
+    monkeypatch.setattr(production_actions, "do_unlisted_stock_status", lambda: status)
+    resp = client.get("/api/production/unlisted-stock/check/status")
+    assert resp.status_code == 200
+    assert resp.json() == status
 
 
 def test_get_sde_freshness(monkeypatch):
@@ -1588,50 +1664,6 @@ def test_get_build_candidates_empty_when_no_scan_yet(monkeypatch):
     assert resp.json() == []
 
 
-def test_alchemy_compare_passes_product_name(monkeypatch):
-    captured = {}
-
-    def _capture(product_name, **kwargs):
-        captured["product_name"] = product_name
-        return {
-            "product_type_id": 16675,
-            "product_type_name": "Caesarium Cadmide",
-            "normal_isk_per_hour": 200000.0,
-            "alchemy_isk_per_hour": 4166.67,
-            "alchemy_unrefined_type_id": 32824,
-            "alchemy_unrefined_type_name": "Unrefined Caesarium Cadmide",
-            "scrapmetal_yield_pct": 0.55,
-        }
-    monkeypatch.setattr(production_actions, "do_compare_alchemy", _capture)
-
-    resp = client.get("/api/production/alchemy-compare/Caesarium%20Cadmide")
-
-    assert resp.status_code == 200
-    assert captured["product_name"] == "Caesarium Cadmide"
-    assert resp.json()["product_type_id"] == 16675
-    assert resp.json()["normal_isk_per_hour"] == 200000.0
-
-
-def test_alchemy_compare_action_error_maps_to_400(monkeypatch):
-    def _raise(*args, **kwargs):
-        raise ActionError("No exact SDE match for 'Nope'.")
-    monkeypatch.setattr(production_actions, "do_compare_alchemy", _raise)
-
-    resp = client.get("/api/production/alchemy-compare/Nope")
-
-    assert resp.status_code == 400
-    assert "No exact SDE match" in resp.json()["detail"]
-
-
-def test_alchemy_compare_none_serializes_as_null(monkeypatch):
-    monkeypatch.setattr(production_actions, "do_compare_alchemy", lambda **kwargs: None)
-
-    resp = client.get("/api/production/alchemy-compare/Rifter")
-
-    assert resp.status_code == 200
-    assert resp.json() is None
-
-
 def test_get_ship_margins_serializes_action_result(monkeypatch):
     monkeypatch.setattr(production_actions, "do_get_ship_margins", lambda **kwargs: {"rows": [
         ShipMarginRow(type_id=1, type_name="Rifter", activity="Tech I", home_price=1000.0, jita_price=900.0,
@@ -1732,7 +1764,6 @@ def test_get_material_tree_action_error_maps_to_400(monkeypatch):
 
 # ------------------------------------------------------------------ portfolio
 def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkeypatch):
-    from datetime import date
 
     from eve_trader import portfolio
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: utc_today())
@@ -1771,7 +1802,6 @@ def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypa
 
 
 def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypatch):
-    from datetime import date
 
     from eve_trader import portfolio
     latest = [None]
@@ -2318,7 +2348,7 @@ def test_price_history_is_split_by_region(monkeypatch):
 
 
 def test_history_sparklines_shape_and_calendar_cutoff(monkeypatch):
-    from datetime import date, timedelta
+    from datetime import timedelta
     from eve_trader.config import TRADING_CONFIG
 
     calls = []
@@ -2788,3 +2818,47 @@ def test_category_facilities_list_and_clear(monkeypatch):
     monkeypatch.setattr(production_actions, "do_clear_category_facility", lambda category: {"category": category})
     assert client.get("/api/production/logistics/facilities").json() == {"categories": []}
     assert client.delete("/api/production/logistics/facilities/Large Ships").json() == {"category": "Large Ships"}
+
+
+def test_hub_list_route_returns_the_four_hubs_with_systems():
+    resp = client.get("/api/hubs")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["name"] for r in rows] == ["Jita", "Amarr", "Dodixie", "Rens"]
+    assert [r["solar_system_id"] for r in rows] == [30000142, 30002187, 30002659, 30002510]
+    assert all(r["label"] and r["station_id"] for r in rows)
+
+
+def test_observed_freight_route_returns_the_hub_rows(monkeypatch):
+    from eve_trader import hubs
+
+    row = {"region_id": 10000002, "hub": "Jita", "suggested": 686, "shipments": 14}
+    monkeypatch.setattr(hubs, "do_get_observed_freight", lambda: [row])
+    resp = client.get("/api/hubs/observed-freight")
+    assert resp.status_code == 200
+    assert resp.json() == [row]
+
+
+def test_fee_suggestion_routes_call_the_read_only_actions(monkeypatch):
+    from eve_trader.pi import actions as pi_actions
+    from eve_trader.station_trading import actions as station_actions
+
+    monkeypatch.setattr(actions, "do_get_fee_suggestions",
+                        lambda: {"hub": "Jita", "skills": {"reason": "no_character_selected"},
+                                 "observed_buy": {"suggested": 0.0062}})
+    monkeypatch.setattr(station_actions, "do_get_fee_suggestions",
+                        lambda: {"skills": {"reason": "not_shared"}, "observed": {"sales": 3}})
+    monkeypatch.setattr(pi_actions, "do_get_fee_suggestions",
+                        lambda: {"skills": {"reason": "reauth_needed"}})
+    trade = client.get("/api/trading/fee-suggestions").json()
+    assert trade["observed_buy"]["suggested"] == 0.0062
+    assert client.get("/api/station-trading/fee-suggestions").json()["skills"]["reason"] == "not_shared"
+    assert client.get("/api/pi/fee-suggestions").json()["skills"]["reason"] == "reauth_needed"
+
+
+def test_trading_settings_route_saves_the_fee_skills_character(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(actions, "do_update_settings", lambda updates: seen.update(updates) or updates)
+    assert client.post("/api/trading/settings", json={"fee_skill_character_id": 930001}).status_code == 200
+    assert seen == {"fee_skill_character_id": 930001}
+    assert "fee_skill_character_id" in client.get("/api/trading/settings").json()

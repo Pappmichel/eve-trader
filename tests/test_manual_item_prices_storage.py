@@ -1,7 +1,6 @@
 """storage.py's manual_item_prices functions (PORTFOLIO_REWORK_PLAN.md
 section 7) - real Postgres, plain CRUD with no business logic worth
 mocking."""
-import pytest
 
 from eve_trader import storage
 

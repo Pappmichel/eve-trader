@@ -3,7 +3,7 @@ around eve_trader/pi/design_actions.py. Gated on the `pi` grant through the
 /api/pi/ path prefix."""
 from __future__ import annotations
 
-from typing import Annotated, Any, Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 class PlanetBody(BaseModel):

@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from eve_trader import portfolio, storage
-from eve_trader.realized import access
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401

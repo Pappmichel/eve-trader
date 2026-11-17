@@ -46,6 +46,16 @@ _last_modified_seen: ContextVar[Optional[list[datetime]]] = ContextVar(
 )
 storage.register_thread_local_contextvar(_last_modified_seen, None)
 
+# `Expires` of authenticated reads while `collect_expires()` is active: the
+# moment ESI's cache for that response ends. Collected exactly like the
+# `Last-Modified` stamps (same call sites, same page handling); the
+# orchestrator stores the latest one per (owner, kind) as the earliest time
+# a refetch can return anything new.
+_expires_seen: ContextVar[Optional[list[datetime]]] = ContextVar(
+    "esi_expires_seen", default=None,
+)
+storage.register_thread_local_contextvar(_expires_seen, None)
+
 
 @contextmanager
 def collect_last_modified() -> Iterator[list[datetime]]:
@@ -60,22 +70,43 @@ def collect_last_modified() -> Iterator[list[datetime]]:
 
 
 @contextmanager
+def collect_expires() -> Iterator[list[datetime]]:
+    """Collects the `Expires` of every authenticated ESI read made in this
+    context (and of every page `_get_all_pages` fetched for it)."""
+    seen: list[datetime] = []
+    token = _expires_seen.set(seen)
+    try:
+        yield seen
+    finally:
+        _expires_seen.reset(token)
+
+
+@contextmanager
 def ignore_last_modified() -> Iterator[None]:
     """Reads in this block do not count toward the collector's data age:
     for side reads such as the realized-profit archive's order history,
     whose own cache window says nothing about the snapshot being synced."""
     token = _last_modified_seen.set(None)
+    token_exp = _expires_seen.set(None)
     try:
         yield
     finally:
+        _expires_seen.reset(token_exp)
         _last_modified_seen.reset(token)
 
 
 def _note_last_modified(resp: requests.Response) -> None:
-    seen = _last_modified_seen.get()
+    """Records the response's `Last-Modified` and `Expires` in whichever
+    collectors are active (one call site for both)."""
+    _note_http_date(resp, "Last-Modified", _last_modified_seen.get())
+    _note_http_date(resp, "Expires", _expires_seen.get())
+
+
+def _note_http_date(resp: requests.Response, header: str,
+                    seen: Optional[list[datetime]]) -> None:
     if seen is None:
         return
-    raw = resp.headers.get("Last-Modified")
+    raw = resp.headers.get(header)
     if not raw:
         return
     try:
@@ -220,6 +251,14 @@ def resolve_effective_volume_bulk(items: list[tuple[int, Optional[float], Option
     results: dict[int, Optional[float]] = {}
     sde_volume_by_id: dict[int, Optional[float]] = {}
     to_fetch: list[int] = []
+    # Two bulk reads instead of one query per type: categories only for
+    # triples that carry none, cached packaged volumes for every Ship/Module
+    # type at once. A type without a cache row stays "never looked up" and
+    # takes the ESI path below (missing is not 0).
+    no_category = [t for t, v, c in items if v is not None and c is None]
+    if no_category:
+        storage.prefetch_type_categories(no_category)
+    candidates: list[int] = []
     for type_id, sde_volume, category_id in items:
         sde_volume_by_id[type_id] = sde_volume
         if sde_volume is None:
@@ -230,11 +269,14 @@ def resolve_effective_volume_bulk(items: list[tuple[int, Optional[float], Option
         if category_id not in (_SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID):
             results[type_id] = sde_volume
             continue
-        cached = storage.get_cached_packaged_volume(type_id)
+        candidates.append(type_id)
+    cached_volumes = storage.get_cached_packaged_volumes_bulk(candidates)
+    for type_id in dict.fromkeys(candidates):
+        cached = cached_volumes.get(type_id)
         if cached is not None:
             results[type_id] = cached
-            continue
-        to_fetch.append(type_id)
+        else:
+            to_fetch.append(type_id)
 
     if not to_fetch:
         return results
@@ -797,24 +839,29 @@ class ESIClient:
         latency-bound" situation. Results are reassembled in page order
         before returning, matching the old sequential call's ordering."""
         collector = _last_modified_seen.get()
+        expires_collector = _expires_seen.get()
         problem = ""
         for attempt in (1, 2):
             # The collector is bypassed while the pages are read: a rejected
             # pass must not leave its (older cache state) stamps behind. The
             # accepted pass reports its own stamps below.
             token = _last_modified_seen.set(None)
+            token_exp = _expires_seen.set(None)
             try:
                 out, responses, problem = self._get_all_pages_once(
                     path, params, auth_role, max_workers)
             finally:
+                _expires_seen.reset(token_exp)
                 _last_modified_seen.reset(token)
             if not problem:
-                if auth_role and collector is not None:
+                if auth_role and (collector is not None or expires_collector is not None):
                     for page_resp in responses:
                         token = _last_modified_seen.set(collector)
+                        token_exp = _expires_seen.set(expires_collector)
                         try:
                             _note_last_modified(page_resp)
                         finally:
+                            _expires_seen.reset(token_exp)
                             _last_modified_seen.reset(token)
                 return out
             if attempt == 1:
@@ -1072,7 +1119,7 @@ class ESIClient:
     def structure_orders_raw(self, structure_id: int, auth_role: str) -> list[dict]:
         """The structure's full, unsummarized order book (every order, every
         type_id) - shared raw fetch behind structure_order_stats_bulk and
-        own_orders.check_undercut, both of which need the whole book anyway
+        own_orders.check_undercut_pooled, both of which need the whole book anyway
         (ESI's /markets/structures/{id}/ endpoint has no type_id filter) and
         would otherwise each re-download it separately.
 
@@ -1135,7 +1182,7 @@ class ESIClient:
         sell_volume/buy_volume are always 0.0 since Goonmetrics' current-
         price endpoint carries no order-book depth at all. Good enough for
         "roughly what's this worth" (Shortlist/Ore Shortlist/Reprocessing
-        Quote); deliberately NOT used by own_orders.check_undercut, whose
+        Quote); deliberately NOT used by own_orders.check_undercut_pooled, whose
         entire purpose is comparing against real competing orders - a
         fallback there could silently report "not undercut" when a real
         order says otherwise, worse than a hard failure.

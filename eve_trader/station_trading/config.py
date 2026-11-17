@@ -10,10 +10,12 @@ from __future__ import annotations
 import contextvars
 import copy
 from dataclasses import dataclass
+from typing import Optional
 
 import yaml
 
 from .. import storage
+from ..config import warn_unknown_override_keys
 from ..config import (
     ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides,
 )
@@ -47,6 +49,10 @@ class StationTradingConfig:
     # is correct.
     broker_fee_rate: float = 0.05
     sales_tax_rate: float = 0.075
+    # The one character whose skills and standings the Settings page uses to
+    # suggest the two rates above (eve_trader/fee_skill_hints.py). Choosing it
+    # changes no rate; None = no suggestion.
+    fee_skill_character_id: Optional[int] = None
 
     # Candidate-discovery gates (candidate_discovery.discover_candidates).
     # min_daily_volume's real-world shape was checked live against Jita's
@@ -108,6 +114,7 @@ def resolve_and_set_station_trading_config(tenant_id: str) -> contextvars.Token:
     cfg = load_station_trading_config()
     overrides = storage.load_tenant_settings("station_trading")
     if overrides:
+        warn_unknown_override_keys("station_trading", StationTradingConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _station_trading_config_var.set(cfg)
 

@@ -13,6 +13,7 @@ from typing import Optional
 import yaml
 
 from .. import storage
+from ..config import warn_unknown_override_keys
 from ..config import (
     ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, TRADING_CONFIG, apply_config_overrides,
     validate_config_overrides,
@@ -228,6 +229,7 @@ def resolve_and_set_doctrine_config(tenant_id: str) -> contextvars.Token:
     cfg = load_doctrine_config()
     overrides = storage.load_tenant_settings("doctrine")
     if overrides:
+        warn_unknown_override_keys("doctrine", DoctrineConfig, overrides)
         apply_config_overrides(cfg, overrides)
     return _doctrine_config_var.set(cfg)
 

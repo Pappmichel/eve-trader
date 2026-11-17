@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
 
 from eve_trader import storage
 from eve_trader.esi_data import fetchers

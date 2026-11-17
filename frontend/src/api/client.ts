@@ -4,6 +4,7 @@
 // "single process" mode (FastAPI serves the built frontend on the same
 // origin as the API - see api/app.py's StaticFiles mount).
 import type * as T from './types'
+import type { TradeHub } from '../tradingHubs'
 
 // Captured once at module load (page load), not re-read live on every 401 —
 // App.tsx's AuthRedirectHandler clears ?gate= from the URL shortly after
@@ -151,6 +152,7 @@ export const tradingApi = {
   startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
   realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
+  feeSuggestions: () => get<T.TradingFeeSuggestions>('/api/trading/fee-suggestions'),
   updateSettings: (s: Partial<T.TradingSettings>) => post<T.TradingSettings>('/api/trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
@@ -202,7 +204,11 @@ export const productionApi = {
   assetPlan: () => get<T.AssetPlan | null>('/api/production/asset-plan'),
   marketStatus: () => get<T.MarketStatusRow[]>('/api/production/market-status'),
   stockValue: () => get<{ total_value: number; priced_items: number; unpriced_items: number }>('/api/production/stock-value'),
-  checkUnlistedStock: () => post<T.ProductionUnlistedStockRow[]>('/api/production/unlisted-stock/check'),
+  // Background job: the check reads corporation assets/orders live from ESI
+  // and can take minutes. Start returns {run_id, status}; the rows arrive in
+  // the status's result.rows (also after a page reload, from the last run).
+  checkUnlistedStock: () => post<T.PipelineRunStatus>('/api/production/unlisted-stock/check'),
+  checkUnlistedStockStatus: () => get<T.PipelineRunStatus>('/api/production/unlisted-stock/check/status'),
   // Background job (2026-09-13, Phase 2 of the button-transparency pass) -
   // the scan can walk up to ~19,400 SDE items on a cold cache, genuinely
   // slow enough to warrant progress reporting instead of a blocking
@@ -335,12 +341,12 @@ export const productionApi = {
   removeCategoryLocationOption: (category: string, locationId: number) =>
     del(`/api/production/logistics/location-options/${encodeURIComponent(category)}/${locationId}`),
   logisticsStatus: (scope: T.LogisticsScope = 'build_list') =>
-    get<T.LogisticsRow[]>(`/api/production/logistics?scope=${scope}`),
+    get<T.Computed<T.LogisticsRow>>(`/api/production/logistics?scope=${scope}`),
   distributionRecommendations: (scope: T.LogisticsScope = 'build_list') =>
-    get<T.DistributionRow[]>(`/api/production/logistics/distribution?scope=${scope}`),
+    get<T.Computed<T.DistributionRow>>(`/api/production/logistics/distribution?scope=${scope}`),
   marketRestock: () => get<T.MarketRestockRow[]>('/api/production/logistics/market-restock'),
-  inventionLogistics: () => get<T.LogisticsRow[]>('/api/production/logistics/invention'),
-  t1BpcInventionNeeds: () => get<T.T1BpcInventionNeedRow[]>('/api/production/invention/t1-bpc-needs'),
+  inventionLogistics: () => get<T.Computed<T.LogisticsRow>>('/api/production/logistics/invention'),
+  t1BpcInventionNeeds: () => get<T.Computed<T.T1BpcInventionNeedRow>>('/api/production/invention/t1-bpc-needs'),
   structureNames: () => get<Record<string, string | null>>('/api/production/logistics/structure-names'),
   structureSystemIds: () => get<Record<string, number | null>>('/api/production/logistics/structure-system-ids'),
   resolveStructureName: (locationId: number, force = false) =>
@@ -716,6 +722,7 @@ export const stationTradingApi = {
   checkUndercut: () => post<T.StationTradingUndercutCheckResult>('/api/station-trading/undercut/check'),
   skills: () => get<T.SkillSummary[]>('/api/station-trading/skills'),
   settings: () => get<T.StationTradingSettings>('/api/station-trading/settings'),
+  feeSuggestions: () => get<T.StationTradingFeeSuggestions>('/api/station-trading/fee-suggestions'),
   updateSettings: (s: Partial<T.StationTradingSettings>) =>
     post<T.StationTradingSettings>('/api/station-trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/station-trading/esi/sync-time'),
@@ -1011,7 +1018,9 @@ export const charactersApi = {
 // every tenant - unlike adminApi.errors (the list view), it needs no
 // "admin" tool grant (see api/routers/errors.py's own docstring).
 export const hubsApi = {
+  list: () => get<TradeHub[]>('/api/hubs'),
   freight: () => get<T.HubFreightRow[]>('/api/hubs/freight'),
+  observedFreight: () => get<T.ObservedFreightRow[]>('/api/hubs/observed-freight'),
   updateFreight: (rows: { region_id: number; freight_cost_per_m3: number | null }[]) =>
     post<T.HubFreightRow[]>('/api/hubs/freight', rows),
 }
@@ -1098,6 +1107,7 @@ export const piApi = {
   updatePlan: (id: number, plan: Record<string, unknown>) => put<T.PiPlan>(`/api/pi/plans/${id}`, plan),
   deletePlan: (id: number) => del<{ deleted: number }>(`/api/pi/plans/${id}`),
   settings: () => get<T.PiSettings>('/api/pi/settings'),
+  feeSuggestions: () => get<T.PiFeeSuggestions>('/api/pi/fee-suggestions'),
   updateSettings: (updates: Partial<T.PiSettings>) => put<T.PiSettings>('/api/pi/settings', updates),
   characters: () => get<T.PiCharacters>('/api/pi/characters'),
   colonies: () => get<T.PiColonies>('/api/pi/colonies'),

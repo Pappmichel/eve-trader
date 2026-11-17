@@ -2,7 +2,7 @@
 (do_*), same pattern as api/routers/refining.py - no business logic here."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 class PlannerBody(BaseModel):
@@ -92,6 +92,13 @@ def delete_plan(plan_id: int):
 @router.get("/settings")
 def get_settings():
     return _wrap(pi_actions.do_get_settings)
+
+
+@router.get("/fee-suggestions")
+def get_fee_suggestions():
+    """Suggested broker fee and sales tax from the chosen character's skills
+    and standings. Never applied automatically."""
+    return _wrap(pi_actions.do_get_fee_suggestions)
 
 
 @router.put("/settings")

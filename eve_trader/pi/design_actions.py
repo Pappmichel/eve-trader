@@ -21,9 +21,10 @@ def _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg, yield_pe
     static = base._static()
     planet, planet_zone, _system = base._planet_from(static, planet_id, planet_type_id, radius_km)
     z = base._zone_or_default(zone or planet_zone, cfg)
-    lv = base._cc_level(cc_level, cfg)
+    sk = base._skill_defaults(cfg)
+    lv = base._cc_level(cc_level, cfg, sk)
     a = base._assumptions(cfg, z, yield_per_head, program_hours, interval_hours)
-    return static, planet, z, lv, a
+    return static, planet, z, lv, a, sk
 
 
 def _with_economics(static, ev, prices, m) -> Optional[dict]:
@@ -38,11 +39,11 @@ def do_ways_to_build(product_type_id: int, planet_id: Optional[int] = None, plan
                      cfg: PiConfig = PI_CONFIG) -> dict:
     """Every split of the product's inputs into made here / hauled in, plus
     (for a P2) partial sourcing with one P1 extracted - each costed."""
-    static, planet, z, lv, a = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg)
+    static, planet, z, lv, a, sk = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg)
     product = int(product_type_id)
     if product not in static.commodities or (static.tier(product) or 0) < 2:
         raise ActionError("Choose a P2-P4 product")
-    m = base._market(cfg, z, assumptions=a)
+    m = base._market(cfg, z, assumptions=a, skills=sk)
     prices = base._prices(static, cfg)
     rows = []
     for v in variants.ways_to_build(static, planet, product, lv, a):
@@ -61,14 +62,14 @@ def do_ways_to_build(product_type_id: int, planet_id: Optional[int] = None, plan
     if not rows and not partial:
         raise ActionError("This planet type cannot build that product")
     rows.sort(key=lambda r: -((r.get("economics") or {}).get("profit_per_day") or -1e18))
-    return {"product": {"type_id": product, "name": static.name(product)}, "zone": z, "cc_level": lv,
+    return {"product": {"type_id": product, "name": static.name(product)}, "zone": z, "cc_level": lv, "skill_source": sk["source"],
             "variants": rows, "partial": partial}
 
 
 def do_mixed_p2(assignments: dict, planet_id: Optional[int] = None, planet_type_id: Optional[int] = None,
                 radius_km: Optional[float] = None, zone: Optional[str] = None, cc_level: Optional[int] = None,
                 launchpads: int = 1, storages: int = 0, cfg: PiConfig = PI_CONFIG) -> dict:
-    static, planet, z, lv, a = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg)
+    static, planet, z, lv, a, sk = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg)
     try:
         parsed = {int(k): int(v) for k, v in (assignments or {}).items()}
         if sum(parsed.values()) > 60 or not (1 <= int(launchpads) <= 10) or not (0 <= int(storages) <= 10):
@@ -76,8 +77,8 @@ def do_mixed_p2(assignments: dict, planet_id: Optional[int] = None, planet_type_
         ev = variants.mixed_p2(static, planet, parsed, lv, a, int(launchpads), int(storages))
     except ValueError as e:
         raise ActionError(str(e)) from e
-    m = base._market(cfg, z, assumptions=a)
-    return {"zone": z, "cc_level": lv, **_with_economics(static, ev, base._prices(static, cfg), m)}
+    m = base._market(cfg, z, assumptions=a, skills=sk)
+    return {"zone": z, "cc_level": lv, "skill_source": sk["source"], **_with_economics(static, ev, base._prices(static, cfg), m)}
 
 
 def _design(static, planet, chain, product, lv, design: Optional[dict], a):
@@ -96,7 +97,7 @@ def do_storage_suggestion(chain: str, product_type_id: int, planet_id: Optional[
                           zone: Optional[str] = None, cc_level: Optional[int] = None,
                           interval_hours: Optional[float] = None, design: Optional[dict] = None,
                           cfg: PiConfig = PI_CONFIG) -> dict:
-    static, planet, z, lv, a = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg,
+    static, planet, z, lv, a, sk = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg,
                                         interval_hours=interval_hours)
     d = _design(static, planet, chain, product_type_id, lv, design, a)
     return {"interval_hours": a.interval_hours, **variants.storage_suggestion(static, planet, d, a)}
@@ -107,7 +108,7 @@ def do_grow_to_supply(chain: str, product_type_id: int, planet_id: Optional[int]
                       zone: Optional[str] = None, cc_level: Optional[int] = None,
                       yield_per_head: Optional[float] = None, design: Optional[dict] = None,
                       cfg: PiConfig = PI_CONFIG) -> dict:
-    static, planet, z, lv, a = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg,
+    static, planet, z, lv, a, sk = _context(planet_id, planet_type_id, radius_km, zone, cc_level, cfg,
                                         yield_per_head=yield_per_head)
     d = _design(static, planet, chain, product_type_id, lv, design, a)
     ev = variants.grow_to_supply(static, planet, d, a)

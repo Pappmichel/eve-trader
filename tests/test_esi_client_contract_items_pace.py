@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from eve_trader.esi_client import ESIClient, ESIError, ESIRateLimited, ESIStatusError, MAX_RETRY_AFTER_WAIT_SECONDS
+from eve_trader.esi_client import ESIClient, ESIRateLimited, ESIStatusError, MAX_RETRY_AFTER_WAIT_SECONDS
 
 
 @pytest.fixture(autouse=True)

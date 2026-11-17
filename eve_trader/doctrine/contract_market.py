@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import storage
@@ -55,6 +55,11 @@ MAX_READS_PER_CHARACTER = 200
 _MAX_FAILED_ITEM_SHARE = 0.2
 _VOLUME_MARGIN = 0.9
 _MIN_FAILED_ITEMS_TO_ABORT = 5
+
+
+# A stored item list is kept without a source read only while the contract can
+# still be open: a contract lasts at most 30 days, plus a reserve.
+ITEM_LIST_MAX_AGE_DAYS = 35
 
 
 def _now_iso() -> str:
@@ -423,7 +428,7 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
                 client, tm, _system_id, min_volume, progress_callback, open_ids)
         except _NoAllianceSource:
             if not cfg.contract_market_include_public:
-                raise ActionError(_NO_ALLIANCE_SOURCE_MSG)
+                raise ActionError(_NO_ALLIANCE_SOURCE_MSG) from None
             alliance_skipped = True
             scan_alliance = False
 
@@ -440,6 +445,8 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     })
 
     known_items = storage.load_all_doctrine_market_items()
+    known_seen = storage.load_doctrine_market_item_seen_at()
+    run_started = datetime.now(timezone.utc)
     item_rows: list[tuple] = []
     hits: list[tuple] = []
     new_fetches = failed_items = items_pending = asks_for_items = 0
@@ -470,9 +477,10 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
                 failure_reasons[str(e).split(" for ")[0][:60]] += 1
                 log.info("contract market items for %s failed: %s", cid, e)
                 continue
+        # Open in this run: its list is fresh again (seen_at = now).
         for it in items:
             item_rows.append((cid, it.record_id, it.type_id, it.quantity,
-                              it.is_included, it.is_singleton))
+                              it.is_included, it.is_singleton, run_started))
         # The price of a contract that also demands items from the buyer says
         # nothing about the fit: "1 ISK" plus 500 PLEX would win every minimum.
         if any(not it.is_included for it in items):
@@ -501,12 +509,21 @@ def scan_contract_market(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     # alliance items that open_ids never saw.
     sources_fully_read = not (bool(cfg.contract_market_include_alliance) and alliance_skipped)
     already = {int(r[0]) for r in item_rows}
+    oldest_kept = run_started - timedelta(days=ITEM_LIST_MAX_AGE_DAYS)
     for cid, items in known_items.items():
         if cid in already:
             continue
-        if (cid in open_ids and cid not in combined) or not sources_fully_read:
+        seen_at = known_seen.get(cid)
+        open_elsewhere = cid in open_ids and cid not in combined
+        # Without a full read a list may belong to an alliance contract this
+        # run could not see, but not forever: older than a contract can live
+        # it is dropped (a list that was never dated counts as old).
+        young_enough = seen_at is not None and seen_at >= oldest_kept
+        if open_elsewhere or (not sources_fully_read and young_enough):
+            # A carried list keeps its old seen_at (open elsewhere: just seen).
+            stamp = run_started if open_elsewhere else seen_at
             item_rows.extend((cid, it.record_id, it.type_id, it.quantity,
-                              it.is_included, it.is_singleton) for it in items)
+                              it.is_included, it.is_singleton, stamp) for it in items)
             already.add(cid)
 
     seller_ids = sorted({sid for sid in (_seller_id(h[2]) for h in hits) if sid is not None})
@@ -572,10 +589,38 @@ def _empty_market_fitting(row: tuple, hull_names: dict[int, Optional[str]]) -> d
         "hull_type_id": hull_type_id,
         "hull_name": hull_name,
         "count": 0,
+        "own_count": 0,
         "min_price": None,
         "avg_price": None,
         "contracts": [],
     }
+
+
+def _price_summary(listings: list[dict]) -> dict:
+    """count / own_count / min / avg for one fitting's listings. The count
+    covers every listing so it matches the list; min and avg look at foreign
+    listings only (an own contract is not a competitor), None when there are
+    none. One function for a fitting, a pooled identity and Other."""
+    foreign = [c["price"] for c in listings if not c["own"] and c["price"] is not None]
+    return {
+        "count": len(listings),
+        "own_count": sum(1 for c in listings if c["own"]),
+        "min_price": min(foreign) if foreign else None,
+        "avg_price": (sum(foreign) / len(foreign)) if foreign else None,
+        "contracts": sorted(listings, key=lambda c: (c["price"] is None, c["price"] or 0)),
+    }
+
+
+def _own_identity() -> tuple[frozenset[int], frozenset[int], frozenset[int]]:
+    """(character ids, corporation ids, own Doctrine contract ids) of this
+    tenant, read fresh on every call and never stored, so a change of the
+    characters shows at once. Same definition as the ledger. A corporation
+    without a share is not recognisable, so its contract counts as foreign."""
+    from ..realized import loader as realized_loader
+    chars = realized_loader._tenant_character_ids()
+    corps = realized_loader._tenant_corporation_ids()
+    contract_ids = frozenset(int(r[0]) for r in storage.load_doctrine_contracts())
+    return chars, corps, contract_ids
 
 
 def _market_doctrine_skeleton() -> tuple[dict[str, dict], dict[str, dict]]:
@@ -653,6 +698,7 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     same_fit: dict[tuple, list[str]] = {}
     for fitting_key, identity in identity_of.items():
         same_fit.setdefault(identity, []).append(fitting_key)
+    own_chars, own_corps, own_contract_ids = _own_identity()
     # fitting_id -> contracts
     by_fitting: dict[str, list[dict]] = {}
     for row in contracts:
@@ -677,6 +723,9 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             "date_expired": date_expired.isoformat() if hasattr(date_expired, "isoformat") else date_expired,
             "match_score": match_score,
             "validation_status": validation_status,
+            # By id only, never by the seller's name.
+            "own": (int(cid) in own_contract_ids or (issuer_id is not None and (
+                int(issuer_id) in own_chars or int(issuer_id) in own_corps))),
         }
         for target in same_fit.get(identity_of.get(fid), [fid]):
             by_fitting.setdefault(target, []).append(listing)
@@ -685,7 +734,6 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         entry = fittings_by_id.get(fid)
         if entry is None:
             # Truly deleted fitting: only show under Other when it has hits.
-            prices = [c["price"] for c in clist if c["price"] is not None]
             group = doctrine_groups.setdefault("_other", {
                 "doctrine_id": None,
                 "doctrine_name": "Other",
@@ -696,17 +744,10 @@ def market_results(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
                 "fitting_name": "Deleted fitting",
                 "hull_type_id": None,
                 "hull_name": None,
-                "count": len(clist),
-                "min_price": min(prices) if prices else None,
-                "avg_price": (sum(prices) / len(prices)) if prices else None,
-                "contracts": sorted(clist, key=lambda c: (c["price"] is None, c["price"] or 0)),
+                **_price_summary(clist),
             })
             continue
-        prices = [c["price"] for c in clist if c["price"] is not None]
-        entry["count"] = len(clist)
-        entry["min_price"] = min(prices) if prices else None
-        entry["avg_price"] = (sum(prices) / len(prices)) if prices else None
-        entry["contracts"] = sorted(clist, key=lambda c: (c["price"] is None, c["price"] or 0))
+        entry.update(_price_summary(clist))
 
     scan_view = None
     if scan is not None:

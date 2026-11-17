@@ -23,9 +23,9 @@ def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
     except actions.ConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ActionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ------------------------------------------------------------------- reads
@@ -105,7 +105,7 @@ def get_history_sparklines(type_ids: str = ""):
     try:
         ids = sorted({int(t) for t in type_ids.split(",") if t.strip()})
     except ValueError:
-        raise HTTPException(status_code=400, detail="type_ids must be a comma-separated list of integers.")
+        raise HTTPException(status_code=400, detail="type_ids must be a comma-separated list of integers.") from None
     if len(ids) > SPARKLINE_MAX_IDS:
         raise HTTPException(status_code=400, detail=f"At most {SPARKLINE_MAX_IDS} type_ids per request.")
     since = (timeutil.utc_today() - timedelta(days=SPARKLINE_DAYS)).isoformat()
@@ -135,6 +135,8 @@ def get_price_history(type_id: int):
 class TradingSettings(BaseModel):
     import_cost_per_m3: float
     structure_sell_haircut: float
+    jita_buy_broker_fee: float
+    fee_skill_character_id: Optional[int] = None
     min_profit_threshold: float
     min_margin_threshold: float
     skip_grace_period_days: int
@@ -175,6 +177,14 @@ TradingSettingsUpdate = partial_model(TradingSettings, "TradingSettingsUpdate")
 @router.post("/settings")
 def update_settings(updates: TradingSettingsUpdate):  # type: ignore[valid-type]
     return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
+
+
+@router.get("/fee-suggestions")
+def get_fee_suggestions():
+    """Suggested buy broker fee: standing buy order from the chosen
+    character's skills and standings, and the wallet's observed buy quote.
+    Never applied automatically."""
+    return _wrap(actions.do_get_fee_suggestions)
 
 
 @router.get("/esi/sync-time")
@@ -259,7 +269,7 @@ def check_undercut():
     return _wrap(actions.do_check_undercut)["rows"]
 
 
-@router.get("/realized/summary")
+@router.get("/realized/summary", response_model=schemas.RealizedChannelSummary, response_model_exclude_unset=True)
 def trading_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
                              end: Optional[str] = None, since_t0: bool = False):
     return _wrap(
