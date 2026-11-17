@@ -40,7 +40,8 @@ const SETTINGS = {
 
 const FEES: ObservedSellFees = {
   setting: 'market_fees', window_days: 30, min_sales: 20, sales: 25, quote: 0.0537, suggested: 0.0537,
-  sales_tax_rate: 0.036, broker_fee_rate: 0.0177, reason: null, message: null,
+  sales_tax_rate: 0.036, broker_fee_rate: 0.0177, upper_bound_quote: null, upper_bound_value: null,
+  order_fees_without_sale: null, reason: null, message: null,
   relist_note: 'Relist and order-modification fees are included only as far as they are attributed to a sale.',
 }
 

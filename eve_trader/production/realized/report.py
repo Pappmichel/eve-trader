@@ -304,6 +304,9 @@ def observed_sell_fees() -> dict:
         run=run, sharing_changed=sharing_changed, scope=_production_scope())
     data["setting"] = "market_fees"
     data["suggested"] = None if data["quote"] is None else round(data["quote"], 4)
+    # Display only, never applied: in the same terms as `suggested`.
+    upper = data["upper_bound_quote"]
+    data["upper_bound_value"] = None if upper is None else round(upper, 4)
     data["relist_note"] = RELIST_NOTE
     return data
 

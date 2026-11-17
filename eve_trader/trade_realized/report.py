@@ -126,6 +126,10 @@ def observed_sell_fees() -> dict:
     data = sell_fees.observed_quote(run=run, sharing_changed=sharing_changed, scope=_scope())
     data["setting"] = "structure_sell_haircut"
     data["suggested"] = None if data["quote"] is None else round(1.0 - data["quote"], 4)
+    # Display only, never applied: the kept share with the order fees of days
+    # without a sale, i.e. a lower bound for the haircut.
+    upper = data["upper_bound_quote"]
+    data["upper_bound_value"] = None if upper is None else round(1.0 - upper, 4)
     data["relist_note"] = RELIST_NOTE
     return data
 

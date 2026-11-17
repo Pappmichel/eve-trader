@@ -60,7 +60,8 @@ describe('TradingSettings buy hub labels', () => {
 describe('TradingSettings observed sell fees', () => {
   const FEES = {
     setting: 'structure_sell_haircut', window_days: 30, min_sales: 20, sales: 25, quote: 0.0537,
-    suggested: 0.9463, sales_tax_rate: 0.036, broker_fee_rate: 0.0177, reason: null, message: null,
+    suggested: 0.9463, sales_tax_rate: 0.036, broker_fee_rate: 0.0177, upper_bound_quote: 0.0737,
+    upper_bound_value: 0.9263, order_fees_without_sale: 500, reason: null, message: null,
     relist_note: 'Relist and order-modification fees are included only as far as they are attributed to a sale.',
   }
 
@@ -71,6 +72,7 @@ describe('TradingSettings observed sell fees', () => {
     renderPage()
 
     expect(await screen.findByText(/Actual last 30 days: 94\.63 % \(25 sales\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Lower bound 92\.63 % - fees up to 7\.37 %/)).toBeInTheDocument()
     expect(tradingApi.updateSettings).not.toHaveBeenCalled()
   })
 

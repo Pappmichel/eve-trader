@@ -24,6 +24,9 @@ export interface ObservedRateHintProps {
   headlineExtra?: string
   // Dimmed explanation under a value.
   detail?: string
+  // A second, display-only line under the headline (no button), e.g. an
+  // upper bound that is not meant to be applied.
+  secondary?: string | null
   // Shown after "no value (" ... ")" when value is null, plus the message.
   emptyText: string
   emptyMessage?: string | null
@@ -55,6 +58,7 @@ export function ObservedRateHint(p: ObservedRateHintProps) {
           Use this value
         </Button>
       </Group>
+      {p.secondary && <Text size="xs" data-testid={`${p.testId}-secondary`}>{p.secondary}</Text>}
       {p.detail && <Text size="xs" c="dimmed">{p.detail}</Text>}
     </Stack>
   )

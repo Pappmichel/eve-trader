@@ -197,6 +197,9 @@ export interface SparklineSeries {
 // (GET /realized/observed-fees, one per channel). `quote` is the fee share of
 // gross; `suggested` is the value for the setting named by `setting`
 // (Trading's haircut is the share kept, 1 - quote). No value -> `reason`.
+// `upper_bound_quote` also counts order fees of days without a sale (relists,
+// unsold new orders, buy orders); `upper_bound_value` is it in the setting's
+// terms (Trading: 1 - upper_bound_quote). Display only, never applied.
 export interface ObservedSellFees {
   setting: 'market_fees' | 'structure_sell_haircut'
   window_days: number
@@ -206,6 +209,9 @@ export interface ObservedSellFees {
   suggested: number | null
   sales_tax_rate: number | null
   broker_fee_rate: number | null
+  upper_bound_quote: number | null
+  upper_bound_value: number | null
+  order_fees_without_sale: number | null
   reason: 'no_run' | 'needs_rebuild' | 'too_few_sales' | 'no_basis' | null
   message: string | null
   relist_note: string

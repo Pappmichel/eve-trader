@@ -352,6 +352,14 @@ nothing changes a setting on its own, because a corporation wallet mixes other
 members' sales into the figure. The broker fee per sale is costing's pro-rata
 attribution (a day's real order fees spread over that day's order-based fills),
 and relist fees count only as far as a sale got them, so the figure is an estimate.
+A second, display-only line shows `upper_bound_quote`: the same numerator plus
+the order fees costing booked to no fill (`prod_fee_lines` `without_sale`) of the
+scope's own wallet owners on the window's days, each owner's fees split across
+channels by that owner's market gross per channel (`db.without_sale_fees_by_owner`,
+`db.market_gross_by_owner_channel`; an owner with no market sale in the window adds
+nothing). It also holds buy-order and unmatched contract broker fees, so it is an
+upper bound; no button, nothing stored. Trading shows it as `1 - upper_bound_quote`
+(`upper_bound_value`, a lower bound for the haircut) next to the fee share.
 
 ## Architecture: actions.py is the one entry point
 
