@@ -381,7 +381,7 @@ export default function SkillsPage() {
   // `on_demand`), so opening the page with an old queue syncs it once.
   useSyncWhenStale({
     ready: overview.isSuccess,
-    stale: isStale(characters.map((c) => newestStamp(QUEUE_KINDS.map((k) => c.freshness[k]?.last_attempt_at)))),
+    stale: isStale(characters.map((c) => newestStamp(QUEUE_KINDS.map((k) => c.freshness[k]?.last_attempt_at))), overview.data?.sync_max_age_hours),
     sync: charSkillsApi.sync,
     invalidateKeys: AUTO_SYNC_KEYS,
   })

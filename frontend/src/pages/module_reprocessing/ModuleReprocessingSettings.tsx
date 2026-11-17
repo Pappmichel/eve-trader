@@ -8,6 +8,7 @@ import type { ModuleReprocessingSettings as ModuleReprocessingSettingsT } from '
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
 import { HubSelect } from '../../components/HubSelect'
+import { ObservedFreightHint } from '../../components/ObservedFreightHint'
 import { RegionSelect } from '../../components/RegionSelect'
 
 export default function ModuleReprocessingSettings() {
@@ -49,8 +50,12 @@ export default function ModuleReprocessingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label="Freight cost per m³" value={form.freight_cost_per_m3} min={0} step={10}
-          onChange={(v) => set('freight_cost_per_m3', Number(v))} />
+        <Stack gap={4}>
+          <NumberInput label="Freight cost per m³" value={form.freight_cost_per_m3} min={0} step={10}
+            onChange={(v) => set('freight_cost_per_m3', Number(v))} />
+          <ObservedFreightHint regionId={form.input_hub_region_id} current={form.freight_cost_per_m3} applying={save.isPending}
+            onApply={(v) => { set('freight_cost_per_m3', v); save.mutate(changedFields(data, { ...form, freight_cost_per_m3: v })) }} />
+        </Stack>
         <NumberInput label="Minimum profit / unit" value={form.min_profit_threshold} min={0} step={100}
           disabled={form.ignore_thresholds}
           onChange={(v) => set('min_profit_threshold', Number(v))} />

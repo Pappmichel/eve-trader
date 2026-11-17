@@ -73,7 +73,7 @@ export default function NotificationsPage() {
   // `on_demand`), so opening the page with an old list syncs it once.
   useSyncWhenStale({
     ready: !!data,
-    stale: isStale((data?.characters ?? []).map((c) => c.synced_at)),
+    stale: isStale((data?.characters ?? []).map((c) => c.synced_at), data?.sync_max_age_hours),
     sync: charNotificationsApi.sync,
     invalidateKeys: [KEY],
   })

@@ -279,7 +279,7 @@ def test_do_preview_sde_wraps_network_error():
 
 
 def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
-    """Track A: each of the 18 sequential CSV fetches, plus the streamed
+    """Track A: each of the 19 sequential CSV fetches, plus the streamed
     dgmTypeAttributes.csv (Character Management) and mapDenormalize.csv (PI
     planets), reports batch/total_batches."""
     fetched = []
@@ -305,11 +305,11 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
     seen = []
     result = admin.do_preview_sde(progress_callback=seen.append)
 
-    assert len(sde._SDE_CSV_FILES) == 18
+    assert len(sde._SDE_CSV_FILES) == 19
     assert fetched == list(sde._SDE_CSV_FILES)
-    assert [p["batch"] for p in seen] == list(range(1, 21))
+    assert [p["batch"] for p in seen] == list(range(1, 22))
     assert all(p["phase"] == "run" for p in seen)
-    assert all(p["total_batches"] == 20 for p in seen)
+    assert all(p["total_batches"] == 21 for p in seen)
     assert seen[0]["message"] == "Fetching invTypes.csv"
     assert seen[-3]["message"] == f"Fetching {sde._SDE_CSV_FILES[-1]}"
     assert seen[-2]["message"].startswith("Fetching dgmTypeAttributes.csv")

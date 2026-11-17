@@ -3,6 +3,7 @@ filter, match reuse, and never writing doctrine_contracts.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -1215,3 +1216,218 @@ def test_tied_match_prefers_active_candidate_order(monkeypatch):
     fid2, _, _, _ = match_and_validate_contract(
         1, None, items, [c_inactive, c_active], DoctrineConfig())
     assert fid2 == INACTIVE_FIT  # documents that order is the tiebreak
+
+
+# ------------------------------------------------------------- own contracts (PR-432-14)
+OTHER_FIT = "22222222-2222-2222-2222-222222222222"
+OWN_CHAR = 5001
+OWN_CORP = 98000777
+
+
+def _listing(cid, issuer_id, price, fitting=FAKE_FITTING, name="Seller"):
+    return (cid, "public", issuer_id, name, STRUCTURE_IN_SYSTEM, SYSTEM_ID,
+            "outstanding", "Fit", price, None, FUTURE,
+            fitting, 1.0, "valid", "2026-01-01T00:00:00Z")
+
+
+def _own_results(monkeypatch, listings, *, fittings=None, same_identity=False):
+    """market_results over stored listings, with OWN_CHAR / OWN_CORP as the
+    tenant's own characters / corporations."""
+    from eve_trader.realized import loader as realized_loader
+    _seed_system_and_station()
+    storage.replace_doctrine_market_snapshot(
+        listings, [], scanned_at="2026-01-01T00:00:00Z", system_id=SYSTEM_ID,
+        include_public=True, include_alliance=False,
+        public_candidates=len(listings), alliance_candidates=0, matched=len(listings),
+    )
+    monkeypatch.setattr(realized_loader, "_tenant_character_ids", lambda: frozenset({OWN_CHAR}))
+    monkeypatch.setattr(realized_loader, "_tenant_corporation_ids", lambda: frozenset({OWN_CORP}))
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [])
+    fittings = fittings if fittings is not None else [FAKE_FITTING]
+    monkeypatch.setattr(contract_market.engine, "load_all_match_candidates",
+                        lambda: [_Cand(f) for f in fittings])
+    monkeypatch.setattr(contract_market.engine, "_fit_identity",
+                        (lambda c: "same") if same_identity else (lambda c: c.fitting.fitting_id))
+    monkeypatch.setattr(storage, "list_all_fittings", lambda: [
+        _fit_row(f, f"d{i}", f"Fit {i}") for i, f in enumerate(fittings)])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [
+        (f"d{i}", f"Doc {i}", None, True) for i in range(len(fittings))])
+    monkeypatch.setattr(storage, "get_sde_types_bulk", lambda ids: {t: (t, 1, "Rifter") for t in ids})
+    return contract_market.market_results(DoctrineConfig())
+
+
+def _fit_by_name(out, name):
+    return next(f for d in out["doctrines"] for f in d["fittings"] if f["fitting_name"] == name)
+
+
+def _doctrine_contract_row(cid):
+    return (cid, "doctrine:1", False, 1, STRUCTURE_IN_SYSTEM, "outstanding", "Own",
+            1.0, None, None, None, "unmatched", "2026-01-01T00:00:00Z")
+
+
+def test_own_character_contract_is_left_out_of_min_and_avg(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, OWN_CHAR, 5.0), _listing(2, 111, 10.0),
+                                     _listing(3, 222, 20.0)])
+    fit = _fit_by_name(out, "Fit 0")
+    assert (fit["count"], fit["own_count"]) == (3, 1)
+    assert fit["min_price"] == 10.0 and fit["avg_price"] == 15.0
+    assert [c["own"] for c in fit["contracts"]] == [True, False, False]  # sorted as before
+
+
+def test_own_corporation_contract_is_own(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, OWN_CORP, 5.0), _listing(2, 111, 10.0)])
+    fit = _fit_by_name(out, "Fit 0")
+    assert fit["own_count"] == 1 and fit["min_price"] == 10.0
+
+
+def test_contract_in_doctrine_contracts_is_own(monkeypatch):
+    storage.replace_doctrine_sync_snapshot(
+        [_doctrine_contract_row(1)], [], [], owner_character_id=1, owner_name="doctrine:1")
+    out = _own_results(monkeypatch, [_listing(1, 111, 5.0), _listing(2, 222, 10.0)])
+    fit = _fit_by_name(out, "Fit 0")
+    assert fit["own_count"] == 1 and fit["min_price"] == 10.0
+
+
+def test_only_own_contracts_leave_min_and_avg_empty(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, OWN_CHAR, 5.0), _listing(2, OWN_CORP, 6.0)])
+    fit = _fit_by_name(out, "Fit 0")
+    assert (fit["count"], fit["own_count"]) == (2, 2)
+    assert fit["min_price"] is None and fit["avg_price"] is None
+
+
+def test_seller_name_never_decides_ownership(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, 111, 5.0, name="Me"),
+                                     _listing(2, OWN_CHAR, 7.0, name="Somebody else")])
+    fit = _fit_by_name(out, "Fit 0")
+    assert [c["own"] for c in fit["contracts"]] == [False, True]
+    assert fit["min_price"] == 5.0
+
+
+def test_unrecognised_corporation_counts_as_foreign(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, 98000999, 5.0)])
+    assert _fit_by_name(out, "Fit 0")["own_count"] == 0
+
+
+def test_identical_fits_in_two_doctrines_share_the_own_rule(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, OWN_CHAR, 5.0), _listing(2, 111, 10.0)],
+                       fittings=[FAKE_FITTING, OTHER_FIT], same_identity=True)
+    for name in ("Fit 0", "Fit 1"):
+        fit = _fit_by_name(out, name)
+        assert (fit["count"], fit["own_count"], fit["min_price"], fit["avg_price"]) == (2, 1, 10.0, 10.0)
+
+
+def test_deleted_fitting_under_other_uses_the_same_rule(monkeypatch):
+    out = _own_results(monkeypatch, [_listing(1, OWN_CHAR, 5.0, fitting=DELETED_FIT),
+                                     _listing(2, 111, 10.0, fitting=DELETED_FIT)], fittings=[])
+    other = next(d for d in out["doctrines"] if d["doctrine_name"] == "Other")
+    fit = other["fittings"][0]
+    assert (fit["count"], fit["own_count"], fit["min_price"]) == (2, 1, 10.0)
+
+
+def test_ownership_is_per_tenant(monkeypatch):
+    """Another tenant's doctrine_contracts row does not make a listing own."""
+    other = "99999999-9999-9999-9999-999999999999"
+    with storage.tenant_context(other):
+        storage.replace_doctrine_sync_snapshot(
+            [_doctrine_contract_row(1)], [], [], owner_character_id=1, owner_name="doctrine:1")
+    try:
+        out = _own_results(monkeypatch, [_listing(1, 111, 5.0)])
+        assert _fit_by_name(out, "Fit 0")["own_count"] == 0
+    finally:
+        with storage.tenant_context(other):
+            pg_helpers.wipe_tables("doctrine_contract_items", "doctrine_contract_deviations",
+                                   "doctrine_contracts")
+
+
+# ------------------------------------------------------------- item list pruning (seen_at)
+def _store_items(cid, days_old):
+    seen = datetime.now(timezone.utc) - timedelta(days=days_old)
+    storage.upsert_doctrine_market_contract_items([(cid, 1, 587, 1.0, True, True, seen)])
+
+
+def _recent(value):
+    return value > datetime.now(timezone.utc) - timedelta(minutes=5)
+
+
+def _skipped_scan(monkeypatch, cfg):
+    client = MagicMock()
+    client.public_contracts.return_value = []
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = True
+    monkeypatch.setattr(contract_market, "shared_owner_ids", lambda *a, **k: [CORP_ID])
+    monkeypatch.setattr(contract_market, "_corp_readers", lambda *a: ([], None))
+    return contract_market.scan_contract_market(cfg)
+
+
+def _stored_contract_ids():
+    return set(storage.load_all_doctrine_market_items())
+
+
+def test_alliance_skipped_drops_lists_older_than_the_limit(monkeypatch, cfg):
+    _store_items(CONTRACT_ALLIANCE, contract_market.ITEM_LIST_MAX_AGE_DAYS + 1)
+    _store_items(CONTRACT_ALLIANCE + 1, contract_market.ITEM_LIST_MAX_AGE_DAYS - 1)
+    assert _skipped_scan(monkeypatch, cfg)["alliance_skipped"] is True
+    assert _stored_contract_ids() == {CONTRACT_ALLIANCE + 1}
+
+
+def test_alliance_skipped_keeps_the_age_of_a_carried_list(monkeypatch, cfg):
+    _store_items(CONTRACT_ALLIANCE, 20)
+    before = storage.load_doctrine_market_item_seen_at()[CONTRACT_ALLIANCE]
+    _skipped_scan(monkeypatch, cfg)
+    assert storage.load_doctrine_market_item_seen_at()[CONTRACT_ALLIANCE] == before
+
+
+def test_many_skipped_scans_keep_the_table_bounded(monkeypatch, cfg):
+    sizes = []
+    for n in range(30):
+        # Every "day" one more unreadable alliance list appears, 1 day older each.
+        _store_items(CONTRACT_ALLIANCE + n, 30 + n)
+        _skipped_scan(monkeypatch, cfg)
+        sizes.append(len(_stored_contract_ids()))
+    assert max(sizes) <= 5  # only lists under the limit survive (30..34 days old)
+    assert sizes[-1] <= 5
+
+
+def test_open_public_contract_outside_the_system_is_kept_without_age_limit(monkeypatch, cfg):
+    far = CONTRACT_PUBLIC + 500
+    _store_items(far, 200)
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw(contract_id=far, start_location_id=STRUCTURE_OTHER)]
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = False
+    monkeypatch.setattr(contract_market, "_known_location_systems",
+                        lambda ids: {STRUCTURE_OTHER: 30000001})
+    contract_market.scan_contract_market(cfg)
+    assert far in _stored_contract_ids()
+    assert _recent(storage.load_doctrine_market_item_seen_at()[far])
+
+
+def test_lists_of_contracts_seen_open_get_a_fresh_seen_at(monkeypatch, cfg):
+    _store_items(CONTRACT_PUBLIC, 20)
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw()]
+    client.public_contract_items.side_effect = AssertionError("items should be carried")
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = False
+    contract_market.scan_contract_market(cfg)
+    assert _recent(storage.load_doctrine_market_item_seen_at()[CONTRACT_PUBLIC])
+
+
+def test_readable_sources_lose_no_open_list(monkeypatch, cfg):
+    """All sources read: a stored list of a contract still on the list stays
+    however old it is (the age limit only applies to the carry branch)."""
+    _store_items(CONTRACT_PUBLIC, 100)
+    client = MagicMock()
+    client.public_contracts.return_value = [_raw()]
+    client.public_contract_items.side_effect = AssertionError("items should be carried")
+    _scan_setup(monkeypatch, cfg, client)
+    cfg.contract_market_include_alliance = False
+    result = contract_market.scan_contract_market(cfg)
+    assert result["alliance_skipped"] is False
+    assert CONTRACT_PUBLIC in _stored_contract_ids()
+
+
+def test_abort_path_upsert_dates_the_list():
+    storage.upsert_doctrine_market_contract_items([(CONTRACT_PUBLIC, 1, 587, 1.0, True, True)])
+    assert _recent(storage.load_doctrine_market_item_seen_at()[CONTRACT_PUBLIC])
+    assert CONTRACT_PUBLIC in _stored_contract_ids()

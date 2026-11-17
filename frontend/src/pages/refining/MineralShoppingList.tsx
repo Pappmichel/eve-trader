@@ -17,6 +17,7 @@ import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, iskUnit, qty } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 export default function MineralShoppingList() {
   const { data: minerals } = useQuery({ queryKey: ['refining', 'refinable-minerals'], queryFn: refiningApi.refinableMinerals })
@@ -24,7 +25,8 @@ export default function MineralShoppingList() {
 
   const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
   const allHubs = settings?.hub_region_id === ALL_HUBS
-  const hub = hubLabel(settings?.hub_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = hubLabel(tradeHubs, settings?.hub_region_id)
 
   const [rows, setRows] = useState<MineralRequirement[]>([])
   useEffect(() => { if (saved) setRows(saved) }, [saved])

@@ -11,6 +11,7 @@ import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 
 const ALL_DECISIONS = ['Inactive', 'No market data', 'Skip', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -26,7 +27,8 @@ export default function OreShortlist() {
   })
 
   const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
-  const hub = hubLabel(settings?.hub_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = hubLabel(tradeHubs, settings?.hub_region_id)
   const allHubs = settings?.hub_region_id === ALL_HUBS
 
   // Reversible (activate below undoes it), so no confirmation prompt - same

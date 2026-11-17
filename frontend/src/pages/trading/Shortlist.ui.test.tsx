@@ -9,6 +9,7 @@ import type { ShortlistRow } from '../../api/types'
 
 vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/client')>()),
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
   tradingApi: {
     shortlistSnapshot: vi.fn(),
     shortlistTrends: vi.fn(),

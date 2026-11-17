@@ -67,15 +67,19 @@ def characters_overview(cfg: PiConfig, token_characters: list[dict], esi_rows: l
     if characters:
         slots = sum(c["planets"] for c in characters)
         max_cc = max(c["cc_level"] for c in characters)
+        max_cce = max(c["customs_code_expertise"] for c in characters)
         count = len(characters)
     else:
         slots = int(cfg.pi_characters) * int(cfg.pi_planets_per_character)
         max_cc = int(cfg.pi_cc_level)
+        max_cce = int(cfg.pi_customs_code_expertise_level)
         count = int(cfg.pi_characters)
     return {
         "characters": characters,
         "total_slots": slots,
         "max_cc_level": max_cc,
+        "max_customs_code_expertise": max_cce,
+        "skill_source": "esi" if characters else "manual",
         "character_count": count,
     }
 

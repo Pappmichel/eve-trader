@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextvars
 import copy
 from dataclasses import dataclass
+from typing import Optional
 
 import yaml
 
@@ -47,6 +48,10 @@ class StationTradingConfig:
     # is correct.
     broker_fee_rate: float = 0.05
     sales_tax_rate: float = 0.075
+    # The one character whose skills and standings the Settings page uses to
+    # suggest the two rates above (eve_trader/fee_skill_hints.py). Choosing it
+    # changes no rate; None = no suggestion.
+    fee_skill_character_id: Optional[int] = None
 
     # Candidate-discovery gates (candidate_discovery.discover_candidates).
     # min_daily_volume's real-world shape was checked live against Jita's

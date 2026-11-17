@@ -1788,7 +1788,7 @@ def replace_sde_data(
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
     pi_schematics: list[tuple] = (), pi_schematic_types: list[tuple] = (),
     pi_schematic_pins: list[tuple] = (), pi_type_attributes: list[tuple] = (),
-    pi_planets: list[tuple] = (),
+    pi_planets: list[tuple] = (), npc_corporations: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1817,7 +1817,13 @@ def replace_sde_data(
 
     `pi_*` are the PI tool's tables (docs/pi_schema.sql): schematics and their
     inputs/outputs/allowed pins, PI dogma attributes (+ basePrice as pseudo
-    attribute -1) and every planet of the 8 PI planet types (~68k rows)."""
+    attribute -1) and every planet of the 8 PI planet types (~68k rows).
+
+    `stations` rows are (station_id, solar_system_id, name, corporation_id);
+    a 3-tuple leaves the owner corporation NULL. `npc_corporations` is
+    (corporation_id, faction_id) from crpNPCCorporations.csv - both feed the
+    standings part of the broker fee (eve_trader/fee_skills.py)."""
+    stations = [tuple(r) + (None,) * (4 - len(r)) for r in stations]
     with connect() as conn:
         conn.execute("DELETE FROM sde_pi_schematics")
         conn.execute("DELETE FROM sde_pi_schematic_types")
@@ -1839,6 +1845,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_solar_systems")
         conn.execute("DELETE FROM sde_regions")
         conn.execute("DELETE FROM sde_stations")
+        conn.execute("DELETE FROM sde_npc_corporations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
         conn.execute("DELETE FROM sde_type_equivalents")
@@ -1855,7 +1862,10 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_invention_probability VALUES (?,?,?)", invention_probability)
         conn.executemany("INSERT INTO sde_solar_systems VALUES (?,?,?,?)", solar_systems)
         conn.executemany("INSERT INTO sde_regions VALUES (?,?)", regions)
-        conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
+        conn.executemany(
+            "INSERT INTO sde_stations (station_id, solar_system_id, station_name, corporation_id) "
+            "VALUES (?,?,?,?)", stations)
+        conn.executemany("INSERT INTO sde_npc_corporations VALUES (?,?)", npc_corporations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
         conn.executemany("INSERT INTO sde_type_equivalents VALUES (?,?)", type_equivalents)
@@ -1891,7 +1901,8 @@ SDE_TABLES = (
     "sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
     "sde_blueprint_skills",
-    "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
+    "sde_solar_systems", "sde_regions", "sde_stations", "sde_npc_corporations",
+    "sde_categories", "sde_type_slots",
     "sde_type_equivalents", "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
     "sde_pi_schematics", "sde_pi_schematic_types", "sde_pi_schematic_pins",
@@ -2024,6 +2035,26 @@ def get_station_ids_in_system(system_id: int) -> frozenset:
             "SELECT station_id FROM sde_stations WHERE solar_system_id = ?", (system_id,)
         ).fetchall()
     return frozenset(r[0] for r in rows)
+
+
+def npc_station_owner(station_id: int) -> Optional[dict]:
+    """The SDE owner of an NPC station: {station_name, corporation_id,
+    faction_id}, either id None when the SDE has no value (applied before the
+    column existed, or an NPC corporation without a faction). None when the id
+    is not an SDE station at all. Not cached: one read per Settings hint."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT s.station_name, s.corporation_id, c.faction_id FROM sde_stations s "
+            "LEFT JOIN sde_npc_corporations c ON c.corporation_id = s.corporation_id "
+            "WHERE s.station_id = ?", (int(station_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "station_name": row[0],
+        "corporation_id": None if row[1] is None else int(row[1]),
+        "faction_id": None if row[2] is None else int(row[2]),
+    }
 
 
 @lru_cache(maxsize=8)
@@ -4176,6 +4207,17 @@ def list_esi_freshness() -> list[tuple]:
     ]
 
 
+def list_esi_next_fetch_after() -> dict[tuple[str, int, str], datetime]:
+    """`{(owner_type, owner_id, data_kind): next_fetch_after}` (aware UTC) for
+    rows that carry an `Expires` lower bound."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, next_fetch_after "
+            "FROM esi_freshness WHERE next_fetch_after IS NOT NULL"
+        ).fetchall()
+    return {(r[0], int(r[1]), r[2]): r[3] for r in rows}
+
+
 def list_esi_failure_counts() -> dict[tuple[str, int, str], int]:
     """`{(owner_type, owner_id, data_kind): consecutive_failures}` for rows with
     at least one transient failure in a row."""
@@ -4244,6 +4286,7 @@ def upsert_esi_freshness(
     now: Optional[str] = None,
     data_as_of: Optional[datetime] = None,
     transient: bool = False,
+    next_fetch_after: Optional[datetime] = None,
 ) -> None:
     """Per-(owner, kind) freshness (decision 5). `transient` marks a failure
     as a short-lived ESI problem: it adds one to `consecutive_failures`; any
@@ -4254,7 +4297,11 @@ def upsert_esi_freshness(
 
     `data_as_of` is when ESI generated the fetched data (its `Last-Modified`).
     A success without one stores the fetch time; it is never later than the
-    fetch time. A failure leaves it unchanged."""
+    fetch time. A failure leaves it unchanged.
+
+    `next_fetch_after` is the latest `Expires` of that fetch. A success
+    replaces it (None = no usable header, so the old value must not keep
+    blocking); a failure leaves it unchanged."""
     ts = now or datetime.now(timezone.utc).isoformat()
     last_success = ts if success else None
     last_error = None if success else (error or "fetch failed")
@@ -4266,18 +4313,21 @@ def upsert_esi_freshness(
         conn.execute(
             "INSERT INTO esi_freshness "
             "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, "
-            "data_as_of, consecutive_failures) "
-            "VALUES (?,?,?,?,?,?,?,?) "
+            "data_as_of, consecutive_failures, next_fetch_after) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
             "last_attempt_at = excluded.last_attempt_at, "
             "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
             "last_error = excluded.last_error, "
             "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of), "
             "consecutive_failures = CASE WHEN ? THEN esi_freshness.consecutive_failures + 1 "
-            "ELSE 0 END",
+            "ELSE 0 END, "
+            "next_fetch_after = CASE WHEN ? THEN excluded.next_fetch_after "
+            "ELSE esi_freshness.next_fetch_after END",
             (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of,
              1 if (transient and not success) else 0,
-             bool(transient and not success)),
+             next_fetch_after if success else None,
+             bool(transient and not success), bool(success)),
         )
 
 
@@ -9301,6 +9351,31 @@ def load_all_doctrine_market_items() -> dict[int, list]:
     return out
 
 
+def load_doctrine_market_item_seen_at() -> dict[int, datetime]:
+    """contract_id -> when its stored item list was last seen on an open
+    contract (the newest row of the list). Kept apart from
+    load_all_doctrine_market_items so ContractItemRow stays unchanged."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, MAX(seen_at) FROM doctrine_market_contract_items "
+            "GROUP BY contract_id"
+        ).fetchall()
+    return {int(cid): seen for cid, seen in rows}
+
+
+def _market_item_params(row: tuple) -> tuple:
+    """(contract_id, record_id, type_id, quantity, is_included, is_singleton,
+    seen_at) - a six-column row has no date yet and gets now() in SQL."""
+    return tuple(row[:6]) + ((row[6] if len(row) > 6 else None),)
+
+
+_MARKET_ITEM_INSERT = (
+    "INSERT INTO doctrine_market_contract_items "
+    "(contract_id, record_id, type_id, quantity, is_included, is_singleton, seen_at) "
+    "VALUES (?,?,?,?,?,?, COALESCE(?, now()))"
+)
+
+
 def list_doctrine_market_contracts() -> list[tuple]:
     """Current Contract Market snapshot rows matching _MARKET_CONTRACT_COLUMNS."""
     with connect() as conn:
@@ -9314,7 +9389,8 @@ def upsert_doctrine_market_contract_items(items: list[tuple]) -> None:
     """Insert or replace item rows without touching contracts or the scan
     row. A contract's item list never changes, so a scan that aborts after
     some successful fetches can still keep those lists for the next run.
-    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton
+    [, seen_at]); without seen_at the list is dated now.
     No FK to doctrine_market_contracts - unmatched candidates are stored too."""
     if not items:
         return
@@ -9327,12 +9403,7 @@ def upsert_doctrine_market_contract_items(items: list[tuple]) -> None:
                 "DELETE FROM doctrine_market_contract_items WHERE contract_id = ?",
                 (cid,),
             )
-            conn.executemany(
-                "INSERT INTO doctrine_market_contract_items "
-                "(contract_id, record_id, type_id, quantity, is_included, is_singleton) "
-                "VALUES (?,?,?,?,?,?)",
-                rows,
-            )
+            conn.executemany(_MARKET_ITEM_INSERT, [_market_item_params(r) for r in rows])
 
 
 def replace_doctrine_market_snapshot(
@@ -9355,7 +9426,8 @@ def replace_doctrine_market_snapshot(
     """Wholesale-replace the Contract Market snapshot for this tenant.
 
     contracts: rows matching _MARKET_CONTRACT_COLUMNS.
-    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton
+    [, seen_at]); a carried list passes its old seen_at, without one it is now.
     Never touches doctrine_contracts.
     """
     with connect() as conn:
@@ -9382,12 +9454,7 @@ def replace_doctrine_market_snapshot(
                 contracts,
             )
         if items:
-            conn.executemany(
-                "INSERT INTO doctrine_market_contract_items "
-                "(contract_id, record_id, type_id, quantity, is_included, is_singleton) "
-                "VALUES (?,?,?,?,?,?)",
-                items,
-            )
+            conn.executemany(_MARKET_ITEM_INSERT, [_market_item_params(r) for r in items])
 
 
 def load_doctrine_contract_history() -> list[tuple]:

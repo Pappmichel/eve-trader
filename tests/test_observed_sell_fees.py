@@ -46,7 +46,7 @@ def _apply_ledger_schema(_apply_phase1_schema, _apply_phase2_schema, _apply_esi_
 
 @pytest.fixture(autouse=True)
 def _wipe(_apply_ledger_schema):
-    pg_helpers.wipe_tables("prod_realized_results", "prod_ledger_runs", "esi_sharing")
+    pg_helpers.wipe_tables("prod_realized_results", "prod_ledger_runs", "prod_fee_lines", "esi_sharing")
     yield
 
 
@@ -78,6 +78,16 @@ def _sale(n: int, *, gross=1000.0, tax=36.0, broker=17.7, channel="production",
             "owner_type, owner_id) VALUES (?, 34, 1, ?, 0, 0, 1, ?, ?, ?, ?, ?, ?, 'character', ?)",
             (f"{channel}-{source}-{owner}-{n}-{days_ago}", gross - tax, NOW - timedelta(days=days_ago),
              gross, tax if tax_known else None, broker, channel, source, owner),
+        )
+
+
+def _fee_without_sale(amount: float, *, owner=ALICE, days_ago=3):
+    """An order fee costing attributed to no fill (a day without a sale)."""
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO prod_fee_lines (kind, owner_type, owner_id, fee_date, amount) "
+            "VALUES ('without_sale', 'character', ?, ?, ?)",
+            (owner, (NOW - timedelta(days=days_ago)).date(), amount),
         )
 
 
@@ -252,3 +262,79 @@ def test_applying_the_trading_value_goes_through_the_normal_settings_save(tenant
         assert storage.load_tenant_settings("trading")["structure_sell_haircut"] == pytest.approx(0.9463)
     finally:
         apply_config_overrides(TRADING_CONFIG, {"structure_sell_haircut": original})
+
+
+# ------------------------------------------------- upper bound with relist fees
+def test_fee_on_a_day_without_a_fill_raises_only_the_upper_bound(tenant):
+    _prod_ready(25)                                     # gross 25,000, fees 1,342.50
+    out = production_report.observed_sell_fees()
+    assert out["upper_bound_quote"] == pytest.approx(out["quote"])
+    _fee_without_sale(500.0)
+    out = production_report.observed_sell_fees()
+    assert out["quote"] == pytest.approx(0.0537)        # the value to apply is unchanged
+    assert out["suggested"] == pytest.approx(0.0537)
+    assert out["order_fees_without_sale"] == pytest.approx(500.0)
+    assert out["upper_bound_quote"] == pytest.approx(1842.5 / 25000.0)
+    assert out["upper_bound_value"] == pytest.approx(0.0737)
+
+
+def test_fee_outside_the_window_does_not_count(tenant):
+    _prod_ready(25)
+    _fee_without_sale(500.0, days_ago=45)
+    out = production_report.observed_sell_fees()
+    assert out["upper_bound_quote"] == pytest.approx(0.0537)
+
+
+def test_owner_selling_in_two_channels_splits_by_market_gross(tenant):
+    _share(ALICE, "wallet", "production")
+    _share(ALICE, "wallet", "trading")
+    _run()
+    _sales(20, gross=1000.0, tax=36.0, broker=17.7)                     # production gross 20,000
+    _sales(20, channel="trading", gross=3000.0, tax=36.0, broker=17.7)  # trading gross 60,000
+    _sales(5, source="contract", gross=50000.0)        # contract gross takes no share
+    _fee_without_sale(800.0)
+    prod = production_report.observed_sell_fees()
+    trade = trade_report.observed_sell_fees()
+    assert prod["order_fees_without_sale"] == pytest.approx(200.0)
+    assert trade["order_fees_without_sale"] == pytest.approx(600.0)
+    assert prod["upper_bound_quote"] == pytest.approx((1074.0 + 200.0) / 20000.0)
+    assert trade["upper_bound_quote"] == pytest.approx((1074.0 + 600.0) / 60000.0)
+    # Trading shows its own field's terms: the kept share, a lower bound.
+    assert trade["upper_bound_value"] == pytest.approx(round(1.0 - 1674.0 / 60000.0, 4))
+    assert trade["suggested"] == pytest.approx(round(1.0 - 1074.0 / 60000.0, 4))
+
+
+def test_owner_outside_the_scope_does_not_count(tenant):
+    _prod_ready(25)
+    _sales(25, owner=BOB)                               # BOB shares nothing with Production
+    _fee_without_sale(5000.0, owner=BOB)
+    out = production_report.observed_sell_fees()
+    assert out["order_fees_without_sale"] == pytest.approx(0.0)
+    assert out["upper_bound_quote"] == pytest.approx(0.0537)
+
+
+def test_owner_without_a_market_sale_in_the_window_adds_nothing(tenant):
+    _share(BOB, "wallet", "production")
+    _prod_ready(25)
+    _fee_without_sale(5000.0, owner=BOB)
+    out = production_report.observed_sell_fees()
+    assert out["upper_bound_quote"] == pytest.approx(0.0537)
+
+
+def test_upper_bound_outside_zero_to_one_gives_no_value(tenant):
+    _prod_ready(25)
+    _fee_without_sale(30000.0)                          # more than the whole gross
+    out = production_report.observed_sell_fees()
+    assert out["quote"] == pytest.approx(0.0537)
+    assert out["upper_bound_quote"] is None
+    assert out["upper_bound_value"] is None
+    trade_out = trade_report.observed_sell_fees()       # nothing shared with Trading
+    assert trade_out["upper_bound_value"] is None
+
+
+def test_upper_bound_is_absent_when_the_quote_has_no_basis(tenant):
+    _prod_ready(19)
+    _fee_without_sale(500.0)
+    out = production_report.observed_sell_fees()
+    assert out["quote"] is None and out["upper_bound_quote"] is None
+    assert out["upper_bound_value"] is None

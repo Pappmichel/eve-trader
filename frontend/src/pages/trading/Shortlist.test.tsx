@@ -7,6 +7,7 @@ import Shortlist from './Shortlist'
 import { tradingApi } from '../../api/client'
 
 vi.mock('../../api/client', () => ({
+  hubsApi: { list: async () => (await import('../../testHubs')).TEST_HUBS },
   tradingApi: {
     shortlistSnapshot: vi.fn(),
     shortlistTrends: vi.fn(),
@@ -63,7 +64,7 @@ describe('Shortlist breakeven price column', () => {
     // whether it's sortable (role="button" then overrides the implicit
     // "columnheader" role - see DataTable.test.tsx) - title is the stable,
     // role-independent way to find a specific column header in a test.
-    const breakevenHeader = within(table).getByTitle('Breakeven Buy (Jita)')
+    const breakevenHeader = await within(table).findByTitle('Breakeven Buy (Jita)')
     const headerRow = breakevenHeader.closest('tr') as HTMLElement
     const headerIdx = Array.from(headerRow.children).indexOf(breakevenHeader)
 

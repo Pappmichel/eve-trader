@@ -223,9 +223,11 @@ def test_system_analysis_errors(monkeypatch):
 
 def test_system_analysis_uses_characters_overview_when_unset(monkeypatch):
     _fake_system(monkeypatch, [(1, "x", 2016, 3000.0)])
-    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: {"total_slots": 3, "character_count": 1, "max_cc_level": 4})
+    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: {
+        "characters": [{"character_id": 1}], "total_slots": 3, "character_count": 1, "max_cc_level": 4,
+        "max_customs_code_expertise": 4})
     r = pa.do_system_analysis(1, cfg=_cfg())
-    assert (r["slots"], r["characters"], r["cc_level"]) == (3, 1, 4)
+    assert (r["slots"], r["characters"], r["cc_level"], r["skill_source"]) == (3, 1, 4, "esi")
 
     def boom(cfg=None):
         raise RuntimeError("no token store")
@@ -349,3 +351,107 @@ def test_generate_can_skip_references(sd, monkeypatch):
     monkeypatch.setattr(reference, "from_references", lambda *a, **kw: pytest.fail("references used"))
     assert _gen(sd, use_references=False)["source"] == "generator"
     assert _gen(sd, shape="star")["source"] == "generator"
+
+
+# ------------------------------------------------------------ skills drive tax and demand (#47)
+_SHARED = {"characters": [{"character_id": 1, "cc_level": 3, "customs_code_expertise": 2},
+                          {"character_id": 2, "cc_level": 4, "customs_code_expertise": 4}],
+           "total_slots": 12, "character_count": 2, "max_cc_level": 4, "max_customs_code_expertise": 4,
+           "skill_source": "esi"}
+_NONE_SHARED = {"characters": [], "total_slots": 10, "character_count": 2, "max_cc_level": 2,
+                "max_customs_code_expertise": 1, "skill_source": "manual"}
+
+
+def _manual_cfg():
+    return _cfg(pi_cc_level=2, pi_customs_code_expertise_level=1, pi_owner_tax_rate=0.0, pi_zone="highsec")
+
+
+def test_skill_defaults_use_the_highest_shared_level_else_manual(monkeypatch):
+    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: _SHARED)
+    assert pa._skill_defaults(_manual_cfg()) == {"cc_level": 4, "customs_code_expertise": 4, "source": "esi"}
+    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: _NONE_SHARED)
+    assert pa._skill_defaults(_manual_cfg()) == {"cc_level": 2, "customs_code_expertise": 1, "source": "manual"}
+
+    def boom(cfg=None):
+        raise RuntimeError("no token store")
+
+    monkeypatch.setattr(pa, "do_characters", boom)
+    assert pa._skill_defaults(_manual_cfg())["source"] == "manual"
+
+
+def test_shared_customs_expertise_sets_the_npc_tax_on_every_path(sd, monkeypatch):
+    calls = []
+
+    def shared(cfg=None):
+        calls.append(1)
+        return _SHARED
+
+    monkeypatch.setattr(pa, "do_characters", shared)
+    cfg = _manual_cfg()
+    assert pa._market(cfg, "highsec").tax_rate == pytest.approx(0.06)
+    assert pa._tax_parts(cfg, "highsec")["npc_tax_rate"] == pytest.approx(0.06)
+
+    prof = pa.do_profitability(cfg=cfg)
+    assert prof["skill_source"] == "esi" and prof["cc_level"] == 4
+    assert prof["assumptions"]["npc_tax_rate"] == pytest.approx(0.06)
+    assert prof["assumptions"]["tax_rate"] == pytest.approx(0.06)
+
+    calls.clear()
+    plan = pa.do_planner("P1-P2", _id(sd, "Coolant"), planet_type_id=2016, radius_km=5000, cfg=cfg)
+    assert len(calls) == 1  # once per request
+    assert plan["skill_source"] == "esi" and plan["cc_level"] == 4
+    assert plan["assumptions"]["npc_tax_rate"] == pytest.approx(0.06)
+
+    chain = pa.do_chain(_id(sd, "Coolant"), cfg=cfg)
+    assert chain["skill_source"] == "esi" and chain["cc_level"] == 4
+
+    from eve_trader.pi import design_actions as da
+    ways = da.do_ways_to_build(_id(sd, "Coolant"), planet_type_id=2016, radius_km=5000, cfg=cfg)
+    assert ways["skill_source"] == "esi" and ways["cc_level"] == 4
+
+    _fake_system(monkeypatch, [(1, "x", 2016, 3000.0)])
+    analysis = pa.do_system_analysis(1, cfg=cfg)
+    assert analysis["skill_source"] == "esi" and analysis["assumptions"]["tax_rate"] == pytest.approx(0.06)
+
+    # An explicit parameter still wins over the skills.
+    assert pa._market(cfg, "highsec", customs_code_expertise=0).tax_rate == pytest.approx(0.10)
+    assert pa.do_profitability(cc_level=1, cfg=cfg)["cc_level"] == 1
+
+
+def test_without_sharing_the_manual_customs_expertise_applies(sd, monkeypatch):
+    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: _NONE_SHARED)
+    cfg = _manual_cfg()
+    assert pa._market(cfg, "highsec").tax_rate == pytest.approx(0.09)
+    prof = pa.do_profitability(cfg=cfg)
+    assert prof["skill_source"] == "manual" and prof["cc_level"] == 2
+    assert prof["assumptions"]["npc_tax_rate"] == pytest.approx(0.09)
+    plan = pa.do_planner("P1-P2", _id(sd, "Coolant"), planet_type_id=2016, radius_km=5000, cfg=cfg)
+    assert plan["skill_source"] == "manual" and plan["assumptions"]["npc_tax_rate"] == pytest.approx(0.09)
+
+
+def test_production_demand_uses_the_shared_max_cc_level_and_tax(sd, monkeypatch):
+    p1 = _id(sd, "Water")
+    monkeypatch.setattr(pa.storage, "load_latest_buy_list", lambda: {p1: 1000.0})
+    used = {}
+    real = engine.best_design
+
+    def spy(static_, planet, chain, product, cc_level, a, exact_radius=False):
+        used["cc"] = cc_level
+        return real(static_, planet, chain, product, cc_level, a, exact_radius)
+
+    monkeypatch.setattr(engine, "best_design", spy)
+    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: _SHARED)
+    r = pa.do_production_demand(_manual_cfg())
+    assert used["cc"] == 4 and r["cc_level"] == 4 and r["skill_source"] == "esi"
+    monkeypatch.setattr(pa, "do_characters", lambda cfg=None: _NONE_SHARED)
+    r = pa.do_production_demand(_manual_cfg())
+    assert used["cc"] == 2 and r["skill_source"] == "manual"
+
+
+def test_characters_overview_reports_highest_customs_expertise_and_source():
+    rows = [{"owner_id": 1, "skill_id": 33467, "active_level": 2}, {"owner_id": 2, "skill_id": 33467, "active_level": 4}]
+    out = skills.characters_overview(PiConfig(), [{"character_id": 1, "character_name": "A"},
+                                                  {"character_id": 2, "character_name": "B"}], rows)
+    assert out["max_customs_code_expertise"] == 4 and out["skill_source"] == "esi"
+    manual = skills.characters_overview(PiConfig(pi_customs_code_expertise_level=3), [], [])
+    assert manual["max_customs_code_expertise"] == 3 and manual["skill_source"] == "manual"

@@ -8,6 +8,7 @@ import type { ShoppingListRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { qty, isk, pct } from '../../format'
 import { ALL_HUBS, hubLabel } from '../../tradingHubs'
+import { useTradeHubs } from '../../hooks/useTradeHubs'
 import { ReserveHint } from './ReserveHint'
 
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
@@ -25,7 +26,8 @@ export default function ShoppingList() {
     return [...all.filter((r) => !covered(r)), ...all.filter(covered)]
   }, [data])
   const { data: settings } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
-  const hub = hubLabel(settings?.hub_region_id)
+  const { data: tradeHubs } = useTradeHubs()
+  const hub = hubLabel(tradeHubs, settings?.hub_region_id)
   const allHubs = settings?.hub_region_id === ALL_HUBS
 
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
