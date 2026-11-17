@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import storage
-from ..realized import access, db, names as display_names, sell_fees
+from ..realized import access, buy_fees, db, names as display_names, sell_fees
 from ..realized.sell_fees import RELIST_NOTE
 from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 
@@ -131,6 +131,21 @@ def observed_sell_fees() -> dict:
     upper = data["upper_bound_quote"]
     data["upper_bound_value"] = None if upper is None else round(1.0 - upper, 4)
     data["relist_note"] = RELIST_NOTE
+    return data
+
+
+def observed_buy_fees(location_ids) -> dict:
+    """The broker fee share Trading's wallets actually paid on market
+    purchases at the hub system (`location_ids`) in the last 30 days, as a
+    value for `jita_buy_broker_fee`. Instant buys pay no broker fee, so this
+    is usually below the standing-buy-order rate (O3-08). Same report checks
+    as the sell-fee quote; applying it is the user's click."""
+    run, _t0, sharing_changed = _run_state()
+    data = buy_fees.observed_buy_quote(
+        run=run, sharing_changed=sharing_changed,
+        wallet_owners=_scope()["wallet_owners"], location_ids=location_ids,
+    )
+    data["setting"] = "jita_buy_broker_fee"
     return data
 
 

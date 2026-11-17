@@ -1788,7 +1788,7 @@ def replace_sde_data(
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
     pi_schematics: list[tuple] = (), pi_schematic_types: list[tuple] = (),
     pi_schematic_pins: list[tuple] = (), pi_type_attributes: list[tuple] = (),
-    pi_planets: list[tuple] = (),
+    pi_planets: list[tuple] = (), npc_corporations: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1817,7 +1817,13 @@ def replace_sde_data(
 
     `pi_*` are the PI tool's tables (docs/pi_schema.sql): schematics and their
     inputs/outputs/allowed pins, PI dogma attributes (+ basePrice as pseudo
-    attribute -1) and every planet of the 8 PI planet types (~68k rows)."""
+    attribute -1) and every planet of the 8 PI planet types (~68k rows).
+
+    `stations` rows are (station_id, solar_system_id, name, corporation_id);
+    a 3-tuple leaves the owner corporation NULL. `npc_corporations` is
+    (corporation_id, faction_id) from crpNPCCorporations.csv - both feed the
+    standings part of the broker fee (eve_trader/fee_skills.py)."""
+    stations = [tuple(r) + (None,) * (4 - len(r)) for r in stations]
     with connect() as conn:
         conn.execute("DELETE FROM sde_pi_schematics")
         conn.execute("DELETE FROM sde_pi_schematic_types")
@@ -1839,6 +1845,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_solar_systems")
         conn.execute("DELETE FROM sde_regions")
         conn.execute("DELETE FROM sde_stations")
+        conn.execute("DELETE FROM sde_npc_corporations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
         conn.execute("DELETE FROM sde_type_equivalents")
@@ -1855,7 +1862,10 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_invention_probability VALUES (?,?,?)", invention_probability)
         conn.executemany("INSERT INTO sde_solar_systems VALUES (?,?,?,?)", solar_systems)
         conn.executemany("INSERT INTO sde_regions VALUES (?,?)", regions)
-        conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
+        conn.executemany(
+            "INSERT INTO sde_stations (station_id, solar_system_id, station_name, corporation_id) "
+            "VALUES (?,?,?,?)", stations)
+        conn.executemany("INSERT INTO sde_npc_corporations VALUES (?,?)", npc_corporations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
         conn.executemany("INSERT INTO sde_type_equivalents VALUES (?,?)", type_equivalents)
@@ -1891,7 +1901,8 @@ SDE_TABLES = (
     "sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
     "sde_blueprint_skills",
-    "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
+    "sde_solar_systems", "sde_regions", "sde_stations", "sde_npc_corporations",
+    "sde_categories", "sde_type_slots",
     "sde_type_equivalents", "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
     "sde_pi_schematics", "sde_pi_schematic_types", "sde_pi_schematic_pins",
@@ -2024,6 +2035,26 @@ def get_station_ids_in_system(system_id: int) -> frozenset:
             "SELECT station_id FROM sde_stations WHERE solar_system_id = ?", (system_id,)
         ).fetchall()
     return frozenset(r[0] for r in rows)
+
+
+def npc_station_owner(station_id: int) -> Optional[dict]:
+    """The SDE owner of an NPC station: {station_name, corporation_id,
+    faction_id}, either id None when the SDE has no value (applied before the
+    column existed, or an NPC corporation without a faction). None when the id
+    is not an SDE station at all. Not cached: one read per Settings hint."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT s.station_name, s.corporation_id, c.faction_id FROM sde_stations s "
+            "LEFT JOIN sde_npc_corporations c ON c.corporation_id = s.corporation_id "
+            "WHERE s.station_id = ?", (int(station_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "station_name": row[0],
+        "corporation_id": None if row[1] is None else int(row[1]),
+        "faction_id": None if row[2] is None else int(row[2]),
+    }
 
 
 @lru_cache(maxsize=8)

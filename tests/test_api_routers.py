@@ -2807,3 +2807,28 @@ def test_observed_freight_route_returns_the_hub_rows(monkeypatch):
     resp = client.get("/api/hubs/observed-freight")
     assert resp.status_code == 200
     assert resp.json() == [row]
+
+
+def test_fee_suggestion_routes_call_the_read_only_actions(monkeypatch):
+    from eve_trader.pi import actions as pi_actions
+    from eve_trader.station_trading import actions as station_actions
+
+    monkeypatch.setattr(actions, "do_get_fee_suggestions",
+                        lambda: {"hub": "Jita", "skills": {"reason": "no_character_selected"},
+                                 "observed_buy": {"suggested": 0.0062}})
+    monkeypatch.setattr(station_actions, "do_get_fee_suggestions",
+                        lambda: {"skills": {"reason": "not_shared"}, "observed": {"sales": 3}})
+    monkeypatch.setattr(pi_actions, "do_get_fee_suggestions",
+                        lambda: {"skills": {"reason": "reauth_needed"}})
+    trade = client.get("/api/trading/fee-suggestions").json()
+    assert trade["observed_buy"]["suggested"] == 0.0062
+    assert client.get("/api/station-trading/fee-suggestions").json()["skills"]["reason"] == "not_shared"
+    assert client.get("/api/pi/fee-suggestions").json()["skills"]["reason"] == "reauth_needed"
+
+
+def test_trading_settings_route_saves_the_fee_skills_character(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(actions, "do_update_settings", lambda updates: seen.update(updates) or updates)
+    assert client.post("/api/trading/settings", json={"fee_skill_character_id": 930001}).status_code == 200
+    assert seen == {"fee_skill_character_id": 930001}
+    assert "fee_skill_character_id" in client.get("/api/trading/settings").json()

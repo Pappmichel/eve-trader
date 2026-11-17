@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MantineProvider } from '@mantine/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -12,6 +12,7 @@ vi.mock('../../api/client', () => ({
     settings: vi.fn(),
     updateSettings: vi.fn(),
     realizedObservedFees: vi.fn(),
+    feeSuggestions: vi.fn().mockResolvedValue({ hub: 'Jita', skills: null, observed_buy: null }),
   },
   productionApi: {
     structureNames: vi.fn(),
@@ -31,7 +32,7 @@ const SETTINGS = {
   structure_id: null, structure_market_slug: null, buyer_character_name: null,
   seller_character_name: null, esi_frequent_interval_hours: 1,
   esi_normal_interval_hours: 6, esi_rare_interval_hours: 24, esi_stale_clear_multiples: 3,
-  scheduler_enabled: false,
+  scheduler_enabled: false, fee_skill_character_id: null,
 }
 
 function renderPage() {
@@ -154,5 +155,64 @@ describe('TradingSettings save payload', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
     await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
     expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ min_profit_threshold: 250 })
+  })
+})
+
+const SKILLS = {
+  tool_key: 'trading', character_id: 930001, character_name: 'Alice',
+  candidates: [{ character_id: 930001, character_name: 'Alice', shares_standings: true }],
+  reason: null, message: null, skills_as_of: null, skill_levels: { accounting: 4, broker_relations: 5 },
+  location: { location_id: 60003760, kind: 'npc_station', name: 'Jita IV - Moon 4', corporation_id: 1000035, faction_id: 500001 },
+  sales_tax: null,
+  broker_fee: {
+    setting: 'jita_buy_broker_fee', source: 'skills_standings', suggested: 0.0134, rate: 0.0134, characters: 1,
+    upper_bound: false, reason: null, message: null, upper_bound_reason: null, upper_bound_message: null,
+    standings: { faction_id: 500001, faction_standing: 2, corporation_id: 1000035, corporation_standing: 5, as_of: null },
+  },
+}
+const OBSERVED_BUY = {
+  setting: 'jita_buy_broker_fee', source: 'wallet_purchases', window_days: 30, min_buys: 20, buys: 7378,
+  purchase_value: 8.9e10, quote: 0.0062, suggested: 0.0062, reason: null, message: null,
+}
+
+describe('TradingSettings fee hints from skills and the wallet', () => {
+  it('shows both buy broker lines and saves only the clicked value', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue({ ...SETTINGS, fee_skill_character_id: 930001 } as any)
+    vi.mocked(tradingApi.updateSettings).mockClear()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_run', message: 'x' } as any)
+    vi.mocked(tradingApi.feeSuggestions).mockResolvedValue({ hub: 'Jita', skills: SKILLS, observed_buy: OBSERVED_BUY } as any)
+    renderPage()
+
+    const skill = await screen.findByTestId('skill-buy-broker-fee')
+    expect(within(skill).getByText(/Standing buy order \(Alice\): 1\.340 % \(skills \+ standings\)/)).toBeInTheDocument()
+    const observed = screen.getByTestId('observed-buy-fees')
+    expect(within(observed).getByText(/Actual buys last 30 days: 0\.620 % \(7378 buys\)/)).toBeInTheDocument()
+    expect(tradingApi.updateSettings).not.toHaveBeenCalled()
+
+    await userEvent.click(within(observed).getByRole('button', { name: 'Use this value' }))
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ jita_buy_broker_fee: 0.0062 })
+  })
+
+  it('without a chosen character shows the reason and no button', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_run', message: 'x' } as any)
+    vi.mocked(tradingApi.feeSuggestions).mockResolvedValue({
+      hub: 'Jita',
+      skills: {
+        ...SKILLS, character_id: null, character_name: null, reason: 'no_character_selected', skill_levels: null,
+        broker_fee: { ...SKILLS.broker_fee, suggested: null, rate: null, reason: 'no_character_selected',
+          message: 'Choose the character whose skills count.' },
+      },
+      observed_buy: { ...OBSERVED_BUY, suggested: null, quote: null, reason: 'no_run', message: 'Not built.' },
+    } as any)
+    renderPage()
+
+    const skill = await screen.findByTestId('skill-buy-broker-fee')
+    expect(within(skill).getByText(/no value \(no character chosen\)/)).toBeInTheDocument()
+    expect(within(skill).queryByRole('button')).not.toBeInTheDocument()
   })
 })

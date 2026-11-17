@@ -10,6 +10,7 @@ import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
 import { ObservedSellFeeHint } from '../../components/ObservedSellFeeHint'
 import { ObservedFreightHint } from '../../components/ObservedFreightHint'
+import { FeeSkillCharacterSelect, FeeSkillNote, ObservedBuyFeeHint, SkillFeeHint } from '../../components/FeeSkillHints'
 import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { hubLabel } from '../../tradingHubs'
@@ -18,12 +19,13 @@ import { useTradeHubs } from '../../hooks/useTradeHubs'
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
   const { data: observedFees } = useQuery({ queryKey: ['trading', 'realized', 'observed-fees'], queryFn: tradingApi.realizedObservedFees })
+  const { data: feeHints } = useQuery({ queryKey: ['trading', 'fee-suggestions'], queryFn: tradingApi.feeSuggestions })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
   const { data: tradeHubs } = useTradeHubs()
-  const save = useAction('Save Settings', tradingApi.updateSettings, [['trading', 'settings']])
+  const save = useAction('Save Settings', tradingApi.updateSettings, [['trading', 'settings'], ['trading', 'fee-suggestions']])
 
   // Confirmed real gap: a bare `return null` here rendered a totally blank
   // page during the initial fetch, unlike every other page in the app which
@@ -57,10 +59,23 @@ export default function TradingSettings() {
           <ObservedSellFeeHint fees={observedFees} current={form.structure_sell_haircut} applying={save.isPending}
             onApply={(v) => { set('structure_sell_haircut', v); save.mutate(changedFields(data, { ...form, structure_sell_haircut: v })) }} />
         </Stack>
-        <NumberInput label="Buy broker fee" suffix="%" decimalScale={2}
-          description="Paid when buying at the hub; also used by Production, Doctrine, Ore & Minerals and Module Reprocessing."
-          value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
-          onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
+        <Stack gap={4}>
+          <NumberInput label="Buy broker fee" suffix="%" decimalScale={3}
+            description="Paid when buying at the hub; also used by Production, Doctrine, Ore & Minerals and Module Reprocessing."
+            value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
+            onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
+          <SkillFeeHint testId="skill-buy-broker-fee" kind="broker" hints={feeHints?.skills}
+            part={feeHints?.skills?.broker_fee} label="Standing buy order"
+            current={form.jita_buy_broker_fee} applying={save.isPending}
+            onApply={(v) => { set('jita_buy_broker_fee', v); save.mutate(changedFields(data, { ...form, jita_buy_broker_fee: v })) }} />
+          <ObservedBuyFeeHint fees={feeHints?.observed_buy} current={form.jita_buy_broker_fee} applying={save.isPending}
+            onApply={(v) => { set('jita_buy_broker_fee', v); save.mutate(changedFields(data, { ...form, jita_buy_broker_fee: v })) }} />
+        </Stack>
+        <Stack gap={4}>
+          <FeeSkillCharacterSelect hints={feeHints?.skills} value={form.fee_skill_character_id}
+            onChange={(v) => { set('fee_skill_character_id', v); save.mutate(changedFields(data, { ...form, fee_skill_character_id: v })) }} />
+          <FeeSkillNote />
+        </Stack>
         <NumberInput label="Minimum profit/unit (ISK)" value={form.min_profit_threshold} min={0} step={100}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
         <NumberInput label="Minimum margin for 'Import'" suffix="%" decimalScale={2}

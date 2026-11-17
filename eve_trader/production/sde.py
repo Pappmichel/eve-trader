@@ -81,6 +81,10 @@ _SDE_CSV_FILES = (
     "planetSchematics.csv",
     "planetSchematicsTypeMap.csv",
     "planetSchematicsPinMap.csv",
+    # The faction of each NPC corporation: a station's broker fee drops with
+    # the standings towards its owner corporation and that corporation's
+    # faction (eve_trader/fee_skills.py).
+    "crpNPCCorporations.csv",
 )
 
 
@@ -107,13 +111,14 @@ _CSV_SPEC: dict[str, tuple[tuple[str, ...], int]] = {
     "industryActivityProbabilities.csv": (("typeID", "activityID", "productTypeID", "probability"), 1000),
     "mapSolarSystems.csv": (("solarSystemID", "solarSystemName", "security"), 4000),
     "mapRegions.csv": (("regionID", "regionName"), 50),
-    "staStations.csv": (("stationID", "solarSystemID"), 2000),
+    "staStations.csv": (("stationID", "solarSystemID", "corporationID"), 2000),
     "dgmTypeEffects.csv": (("typeID", "effectID"), 10000),
     "invTypeMaterials.csv": (("typeID", "materialTypeID", "quantity"), 2000),
     "industryActivitySkills.csv": (("typeID", "activityID", "skillID", "level"), 3000),
     "planetSchematics.csv": (("schematicID", "schematicName", "cycleTime"), 30),
     "planetSchematicsTypeMap.csv": (("schematicID", "typeID", "quantity", "isInput"), 100),
     "planetSchematicsPinMap.csv": (("schematicID", "pinTypeID"), 200),
+    "crpNPCCorporations.csv": (("corporationID", "factionID"), 100),
 }
 
 # Fewest rows kept after filtering the two streamed files (see fetch_sde).
@@ -486,6 +491,8 @@ class FetchedSde:
     solar_systems: list[tuple] = field(default_factory=list)
     regions: list[tuple] = field(default_factory=list)
     stations: list[tuple] = field(default_factory=list)
+    # (corporation_id, faction_id) from crpNPCCorporations.csv.
+    npc_corporations: list[tuple] = field(default_factory=list)
     categories: list[tuple] = field(default_factory=list)
     type_slots: list[tuple] = field(default_factory=list)
     # (type_id, class_id): functionally identical variants (sde_equivalence).
@@ -658,8 +665,13 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     ]
     region_rows = region_rows_from_csv(regions)
     station_rows = [
-        (int(r["stationID"]), int(r["solarSystemID"]), r.get("stationName"))
+        (int(r["stationID"]), int(r["solarSystemID"]), r.get("stationName"),
+         _int_or_none(r.get("corporationID")))
         for r in stations if r.get("solarSystemID") not in (None, "")
+    ]
+    npc_corporation_rows = [
+        (int(r["corporationID"]), _int_or_none(r.get("factionID")))
+        for r in fetched["crpNPCCorporations.csv"] if r.get("corporationID") not in (None, "")
     ]
     _SLOT_EFFECT_IDS = {11: "low", 13: "med", 12: "high", 2663: "rig", 3772: "subsystem", 6306: "service"}
     type_slot_by_id: dict[int, str] = {}
@@ -685,6 +697,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         blueprint_time=time_rows, blueprint_materials=material_rows,
         blueprint_products=product_rows, invention_probability=probability_rows,
         solar_systems=solar_system_rows, regions=region_rows, stations=station_rows,
+        npc_corporations=npc_corporation_rows,
         categories=category_rows, type_slots=type_slot_rows,
         type_equivalents=type_equivalent_rows,
         type_materials=type_materials_rows, blueprint_skills=blueprint_skill_rows,
@@ -743,6 +756,7 @@ def apply_sde(fetched: FetchedSde) -> dict:
         types=fetched.types, groups=fetched.groups, market_groups=fetched.market_groups,
         blueprint_time=fetched.blueprint_time, blueprint_materials=fetched.blueprint_materials,
         blueprint_products=fetched.blueprint_products, stations=fetched.stations,
+        npc_corporations=fetched.npc_corporations,
         invention_probability=fetched.invention_probability, solar_systems=fetched.solar_systems,
         regions=fetched.regions,
         categories=fetched.categories, type_slots=fetched.type_slots,

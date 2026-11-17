@@ -12,6 +12,7 @@ from eve_trader.character_management import info_actions
 from eve_trader.esi_data import orchestrator
 from eve_trader.esi_data.access import read_esi
 from eve_trader.esi_data.orchestrator import do_sync_for_tool
+from eve_trader.esi_client import ESIError
 from eve_trader.esi_data.stale import clear_stale_owner_kind
 
 from . import pg_helpers
@@ -27,7 +28,7 @@ pytestmark = pg_helpers.postgres_required()
 SCOPES = "esi-clones.read_clones.v1 esi-clones.read_implants.v1"
 _TABLES = (
     "character_clone_meta", "character_jump_clones", "character_jump_clone_implants",
-    "character_implants", "esi_sharing", "esi_freshness", "tenant_tokens",
+    "character_implants", "character_skills", "esi_sharing", "esi_freshness", "tenant_tokens",
 )
 
 RAW_CLONES = {
@@ -184,3 +185,63 @@ def test_detail_fields_are_gated_like_every_other_kind(tenant, fake):
     _token(ALICE, "Alice", scopes=SCOPES)
     detail = info_actions.do_character_detail(ALICE)
     assert detail["clones"]["state"] == "not_synced" and detail["implants"]["state"] == "not_synced"
+
+
+# ----------------------------------------------------- clone jump cooldown
+INFOMORPH_SYNCHRONIZING = 33399
+SKILLS_SCOPE = "esi-skills.read_skills.v1"
+
+
+class CooldownClient(ClonesClient):
+    """ClonesClient plus a skill block: `level` 0 means the skill is untrained."""
+
+    def __init__(self, level: int):
+        super().__init__()
+        self.level = level
+
+    def character_skills(self, cid, auth_role):
+        self._rec("skills", cid)
+        skills = []
+        if self.level:
+            skills.append({"skill_id": INFOMORPH_SYNCHRONIZING, "active_skill_level": self.level,
+                           "trained_skill_level": self.level, "skillpoints_in_skill": 1000})
+        return {"skills": skills, "total_sp": 1000, "unallocated_sp": 0}
+
+    def character_attributes(self, cid, auth_role):
+        raise ESIError("attributes not needed for the cooldown test")
+
+
+def _cooldown_detail(monkeypatch):
+    monkeypatch.setattr(storage, "get_location_names", lambda ids: {})
+    monkeypatch.setattr(storage, "get_sde_types_bulk", lambda ids: {})
+    return info_actions.do_character_detail(ALICE)["clones"]["value"]
+
+
+@pytest.mark.parametrize("level,hours", [(0, 24), (5, 19)])
+def test_clone_cooldown_is_computed_from_the_infomorph_level(tenant, fake, monkeypatch, level, hours):
+    _token(ALICE, "Alice", scopes=f"{SCOPES} {SKILLS_SCOPE}")
+    _share(ALICE, "clones")
+    _share(ALICE, "implants")
+    _share(ALICE, "skills")
+    _sync(CooldownClient(level))
+    clones = _cooldown_detail(monkeypatch)
+    assert clones["clone_jump_cooldown"] == {
+        "hours": hours, "basis": "skill", "skill_level": level, "reason": None,
+        "available_at": clones["clone_jump_available_at"],
+    }
+    last_jump = dt.datetime(2026, 9, 28, 10, 0, tzinfo=dt.timezone.utc)
+    assert clones["clone_jump_available_at"] == (last_jump + dt.timedelta(hours=hours)).isoformat()
+
+
+def test_clone_cooldown_without_a_skill_share_is_the_latest_bound(tenant, fake, monkeypatch):
+    _token(ALICE, "Alice", scopes=SCOPES)
+    _share(ALICE, "clones")
+    _share(ALICE, "implants")
+    _sync()
+    clones = _cooldown_detail(monkeypatch)
+    assert clones["clone_jump_cooldown"]["hours"] == 24
+    assert clones["clone_jump_cooldown"]["basis"] == "latest"
+    assert clones["clone_jump_cooldown"]["skill_level"] is None
+    assert clones["clone_jump_cooldown"]["reason"] == "not_shared"
+    last_jump = dt.datetime(2026, 9, 28, 10, 0, tzinfo=dt.timezone.utc)
+    assert clones["clone_jump_available_at"] == (last_jump + dt.timedelta(hours=24)).isoformat()

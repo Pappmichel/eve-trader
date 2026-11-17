@@ -6,6 +6,7 @@ import { piApi } from '../../api/client'
 import type { PiSettings as PiSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
+import { FeeSkillCharacterSelect, FeeSkillNote, SkillFeeHint } from '../../components/FeeSkillHints'
 import { hubSelectData } from '../../tradingHubs'
 import { useTradeHubs } from '../../hooks/useTradeHubs'
 import { CC_OPTIONS, QueryError, ZONE_OPTIONS } from './common'
@@ -18,11 +19,12 @@ export default function PiSettings() {
   const { data, error } = useQuery({ queryKey: ['pi', 'settings'], queryFn: piApi.settings })
   const { data: chars, error: charsError } = useQuery({ queryKey: ['pi', 'characters'], queryFn: piApi.characters })
   const { data: meta } = useQuery({ queryKey: ['pi', 'meta'], queryFn: piApi.meta })
+  const { data: fees } = useQuery({ queryKey: ['pi', 'fee-suggestions'], queryFn: piApi.feeSuggestions })
   const { data: tradeHubs } = useTradeHubs()
   const [form, setForm] = useState<PiSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
   const save = useAction('Save Settings', (s: PiSettingsT) => piApi.updateSettings(s), [
-    ['pi', 'settings'], ['pi', 'profitability'], ['pi', 'demand'], ['pi', 'characters'],
+    ['pi', 'settings'], ['pi', 'profitability'], ['pi', 'demand'], ['pi', 'characters'], ['pi', 'fee-suggestions'],
   ])
 
   if (error) return <QueryError error={error} />
@@ -30,6 +32,11 @@ export default function PiSettings() {
 
   const set = <K extends keyof PiSettingsT>(key: K, value: PiSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
+  // A hint's "Use this value" / the fee character: the normal save.
+  const apply = <K extends keyof PiSettingsT>(key: K, value: PiSettingsT[K]) => {
+    set(key, value)
+    save.mutate({ ...form, [key]: value })
+  }
 
   const num = (key: NumKey, label: string, opts: { min?: number; max?: number; step?: number; description?: string; decimals?: number } = {}) => (
     <NumberInput label={label} description={opts.description} value={form[key]} min={opts.min ?? 0} max={opts.max}
@@ -42,7 +49,7 @@ export default function PiSettings() {
 
   return (
     <Stack maw={900}>
-      <HintCard>Changes apply to every PI page once saved. Fee and skill values are entered manually.</HintCard>
+      <HintCard>Changes apply to every PI page once saved. Fee values are entered manually; the hints under them show what the chosen character's skills imply.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Market hub</Title>
       <Select label="Market" allowDeselect={false}
@@ -69,11 +76,26 @@ export default function PiSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Fees and valuation</Title>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
-        {percent('pi_broker_fee_rate', 'Broker fee')}
-        {percent('pi_sales_tax_rate', 'Sales tax')}
+        <Stack gap={4}>
+          {percent('pi_broker_fee_rate', 'Broker fee')}
+          <SkillFeeHint testId="skill-pi-broker-fee" kind="broker" hints={fees?.skills} part={fees?.skills?.broker_fee}
+            label="From skills" current={form.pi_broker_fee_rate} applying={save.isPending}
+            onApply={(v) => apply('pi_broker_fee_rate', v)} />
+        </Stack>
+        <Stack gap={4}>
+          {percent('pi_sales_tax_rate', 'Sales tax')}
+          <SkillFeeHint testId="skill-pi-sales-tax" kind="tax" hints={fees?.skills} part={fees?.skills?.sales_tax}
+            label="From skills" current={form.pi_sales_tax_rate} applying={save.isPending}
+            onApply={(v) => apply('pi_sales_tax_rate', v)} />
+        </Stack>
         <Select label="Valuation" allowDeselect={false} value={form.pi_valuation}
           data={[{ value: 'sell_orders', label: 'Sell orders (list outputs)' }, { value: 'buy_orders', label: 'Buy orders (sell instantly)' }]}
           onChange={(v) => v && set('pi_valuation', v as PiSettingsT['pi_valuation'])} />
+      </SimpleGrid>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <FeeSkillCharacterSelect hints={fees?.skills} value={form.pi_fee_skill_character_id}
+          onChange={(v) => apply('pi_fee_skill_character_id', v)} />
+        <FeeSkillNote />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Freight and customs</Title>
@@ -151,7 +173,7 @@ export default function PiSettings() {
               )}
             </Table.Tbody>
           </Table>
-          <Text size="sm">Total planet slots: <b>{chars.total_slots}</b> (highest CC level {chars.max_cc_level})</Text>
+          <Text size="sm">Total planet slots: <b>{chars.total_slots}</b> (highest CC level {chars.max_cc_level}, highest Customs Code Expertise {chars.max_customs_code_expertise}; {chars.skill_source === 'esi' ? 'from shared skills' : 'from the manual values above'})</Text>
         </>
       )}
     </Stack>

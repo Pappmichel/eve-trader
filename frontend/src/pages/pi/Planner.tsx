@@ -251,7 +251,7 @@ export default function Planner() {
             Assumptions: yield {num(result.assumptions.yield_per_head, 0)}/head/h
             (effective {num(result.assumptions.effective_yield_per_head, 0)}),
             program {num(result.assumptions.program_hours, 0)} h, interval {num(result.assumptions.interval_hours, 0)} h,
-            customs tax {pct(result.assumptions.tax_rate)}{result.assumptions.npc_tax_rate !== undefined && <> (NPC {pct(result.assumptions.npc_tax_rate)} + owner {pct(result.assumptions.owner_tax_rate ?? 0)}, {result.zone})</>}, freight {isk(result.assumptions.freight_per_m3)}/m³.
+            customs tax {pct(result.assumptions.tax_rate)}{result.assumptions.npc_tax_rate !== undefined && <> (NPC {pct(result.assumptions.npc_tax_rate)} + owner {pct(result.assumptions.owner_tax_rate ?? 0)}, {result.zone}; Customs Code Expertise from {result.skill_source === 'esi' ? 'shared skills' : 'Settings'})</>}, freight {isk(result.assumptions.freight_per_m3)}/m³.
           </Text>
 
           <SectionTitle>Design</SectionTitle>

@@ -143,6 +143,15 @@ CREATE TABLE IF NOT EXISTS sde_stations (
     solar_system_id INTEGER,
     station_name TEXT
 );
+-- Owner corporation of an NPC station (staStations.csv corporationID) and
+-- the faction of each NPC corporation (crpNPCCorporations.csv): the
+-- standings that lower a station's broker fee (eve_trader/fee_skills.py).
+ALTER TABLE sde_stations ADD COLUMN IF NOT EXISTS corporation_id INTEGER;
+
+CREATE TABLE IF NOT EXISTS sde_npc_corporations (
+    corporation_id INTEGER PRIMARY KEY,
+    faction_id INTEGER
+);
 
 CREATE TABLE IF NOT EXISTS sde_refresh_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1018,6 +1027,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     sde_solar_systems,
     sde_regions,
     sde_stations,
+    sde_npc_corporations,
     sde_refresh_state,
     goonmetrics_history,
     stock_targets,

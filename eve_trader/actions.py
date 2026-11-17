@@ -334,6 +334,30 @@ def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> di
     return updates
 
 
+def do_get_fee_suggestions(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Read-only: two suggestions for `jita_buy_broker_fee` (O3-08). `skills`
+    is a standing buy order's fee at the hub's main station from the chosen
+    character's Broker Relations and standings (`fee_skill_character_id`);
+    `observed_buy` is what the wallet actually paid on hub purchases in the
+    last 30 days (instant buys pay none). Neither changes the setting: the
+    user applies one through the normal settings save."""
+    from . import fee_skill_hints, hubs  # lazy: fee_skill_hints reaches auth/esi_data
+    from .trade_realized import report as trade_report
+
+    hub = hubs.hub_by_region(cfg.jita_region_id)
+    skills = fee_skill_hints.skill_fee_hints(
+        "trading", cfg.fee_skill_character_id,
+        location_id=None if hub is None else hub.station_id,
+        broker_setting="jita_buy_broker_fee",
+    )
+    locations = None if hub is None else storage.location_ids_in_systems([hub.solar_system_id])
+    return {
+        "hub": None if hub is None else hub.name,
+        "skills": skills,
+        "observed_buy": trade_report.observed_buy_fees(locations),
+    }
+
+
 def do_build_universe(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     client = ESIClient(cfg)
     candidates = candidate_discovery.build_candidate_universe(client)

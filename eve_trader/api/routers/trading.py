@@ -136,6 +136,7 @@ class TradingSettings(BaseModel):
     import_cost_per_m3: float
     structure_sell_haircut: float
     jita_buy_broker_fee: float
+    fee_skill_character_id: Optional[int] = None
     min_profit_threshold: float
     min_margin_threshold: float
     skip_grace_period_days: int
@@ -176,6 +177,14 @@ TradingSettingsUpdate = partial_model(TradingSettings, "TradingSettingsUpdate")
 @router.post("/settings")
 def update_settings(updates: TradingSettingsUpdate):  # type: ignore[valid-type]
     return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
+
+
+@router.get("/fee-suggestions")
+def get_fee_suggestions():
+    """Suggested buy broker fee: standing buy order from the chosen
+    character's skills and standings, and the wallet's observed buy quote.
+    Never applied automatically."""
+    return _wrap(actions.do_get_fee_suggestions)
 
 
 @router.get("/esi/sync-time")
