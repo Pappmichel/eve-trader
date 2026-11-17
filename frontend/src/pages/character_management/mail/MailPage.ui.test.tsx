@@ -177,7 +177,8 @@ describe('Mail page', () => {
       const picker = screen.getByRole('button', { name: /Folder: Inbox/ })
       expect(screen.getByLabelText('Folders')).not.toBeVisible()
       await user.click(picker)
-      expect(screen.getByLabelText('Folders')).toBeVisible()
+      // Mantine's Collapse opens over a transition on real timers: wait for it
+      await waitFor(() => expect(screen.getByLabelText('Folders')).toBeVisible())
       await user.click(picker)
       expect(screen.queryByRole('button', { name: /Back to list/ })).not.toBeInTheDocument()
       await user.click(item)
@@ -186,7 +187,7 @@ describe('Mail page', () => {
       expect(item).not.toBeVisible()                       // the list is out of the way, not below the fold
       expect(scrollTo).toHaveBeenCalled()
       await user.click(screen.getByRole('button', { name: /Back to list/ }))
-      expect(item).toBeVisible()
+      await waitFor(() => expect(item).toBeVisible())
       expect(screen.queryByTestId('mail-body')).not.toBeInTheDocument()
     } finally {
       window.matchMedia = realMatchMedia
