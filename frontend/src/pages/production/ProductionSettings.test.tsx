@@ -32,6 +32,7 @@ const SETTINGS = {
   component_rig_tier: 'T2', supercapital_structure_type: 'Citadel (no bonuses)',
   supercapital_rig_tier: 'No Rig', manufacturing_structure_type: 'Azbel', manufacturing_rig_tier: 'T2',
   encryption_skill_level: 5, datacore_skill_1_level: 5, datacore_skill_2_level: 5,
+  industry_skill_level: 5, advanced_industry_skill_level: 4, reactions_skill_level: 5, specialist_skill_level: 5,
   reaction_cost_index_override: null, component_cost_index_override: null,
   manufacturing_cost_index_override: null, alchemy_reactions_enabled: false,
 } as unknown as ProductionSettingsT
@@ -89,6 +90,20 @@ describe('ProductionSettings observed sell fees', () => {
     })
     expect(await screen.findByText(/no value \(4 of 20 sales needed\)/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('ProductionSettings industry skills', () => {
+  it('shows the four levels and saves a changed one as its own field', async () => {
+    setup(FEES)
+    const adv = await screen.findByLabelText('Advanced Industry')
+    expect(adv).toHaveValue('4')
+    expect(screen.getByLabelText('Industry')).toHaveValue('5')
+    await userEvent.clear(adv)
+    await userEvent.type(adv, '5')
+    await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(productionApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(productionApi.updateSettings).mock.calls[0][0]).toEqual({ advanced_industry_skill_level: 5 })
   })
 })
 

@@ -50,6 +50,10 @@ export default function TradingSettings() {
           <ObservedSellFeeHint fees={observedFees} current={form.structure_sell_haircut} applying={save.isPending}
             onApply={(v) => { set('structure_sell_haircut', v); save.mutate(changedFields(data, { ...form, structure_sell_haircut: v })) }} />
         </Stack>
+        <NumberInput label="Buy broker fee" suffix="%" decimalScale={2}
+          description="Paid when buying at the hub; also used by Production, Doctrine, Ore & Minerals and Module Reprocessing."
+          value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
+          onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
         <NumberInput label="Minimum profit/unit (ISK)" value={form.min_profit_threshold} min={0} step={100}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
         <NumberInput label="Minimum margin for 'Import'" suffix="%" decimalScale={2}

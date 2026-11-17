@@ -221,6 +221,19 @@ export default function ProductionSettings() {
           onChange={(v) => set('datacore_skill_2_level', Number(v))} />
       </SimpleGrid>
 
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Industry Skills</Title>
+      <Text size="xs" c="dimmed">Job duration only. Levels apply to every job of the tenant.</Text>
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 4 }}>
+        <NumberInput label="Industry" value={form.industry_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('industry_skill_level', Number(v))} />
+        <NumberInput label="Advanced Industry" value={form.advanced_industry_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('advanced_industry_skill_level', Number(v))} />
+        <NumberInput label="Reactions" value={form.reactions_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('reactions_skill_level', Number(v))} />
+        <NumberInput label="Blueprint specialist skill" value={form.specialist_skill_level} min={0} max={5} step={1}
+          onChange={(v) => set('specialist_skill_level', Number(v))} />
+      </SimpleGrid>
+
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Reactions</Title>
       <Switch label="Consider Alchemy reaction alternatives (Reaction Formulas that substitute a cheaper moon material)"
         checked={form.alchemy_reactions_enabled}

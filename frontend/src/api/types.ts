@@ -197,6 +197,7 @@ export interface ObservedSellFees {
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number
+  jita_buy_broker_fee: number
   min_profit_threshold: number
   min_margin_threshold: number
   skip_grace_period_days: number
@@ -1111,8 +1112,8 @@ export interface ProductionSettings {
   component_overbuild: number
   bpc_inventory: number
   market_fees: number
-  // jita_buy_broker_fee removed 2026-09-26 (T3-04) - TradingConfig's own
-  // copy is the single source of truth now, edited from Trading Settings.
+  // jita_buy_broker_fee is not here: TradingConfig's own copy is the single
+  // source of truth, edited from Trading Settings.
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
@@ -1143,6 +1144,10 @@ export interface ProductionSettings {
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
+  industry_skill_level: number
+  advanced_industry_skill_level: number
+  reactions_skill_level: number
+  specialist_skill_level: number
   reaction_cost_index_override: number | null
   component_cost_index_override: number | null
   manufacturing_cost_index_override: number | null

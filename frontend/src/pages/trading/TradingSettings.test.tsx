@@ -22,7 +22,7 @@ vi.mock('../../api/client', () => ({
 
 // Minimal but complete TradingSettings shape - every field the page reads.
 const SETTINGS = {
-  import_cost_per_m3: 1500, structure_sell_haircut: 0.02, min_profit_threshold: 100,
+  import_cost_per_m3: 1500, structure_sell_haircut: 0.02, jita_buy_broker_fee: 0.0147, min_profit_threshold: 100,
   min_margin_threshold: 0.1, skip_grace_period_days: 14, enforce_shortlist_cap: false,
   max_active_shortlist_items: 500, max_shortlist_growth_per_run: 50, min_hit_rate: 0.5,
   min_avg_movement: 10, min_paired_days: 5, excluded_path_prefixes: [], safe_mode_max_ids: 500,
@@ -96,6 +96,25 @@ describe('TradingSettings observed sell fees', () => {
 
     expect(await screen.findByText(/Rebuild the realized-profit ledger first/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use this value' })).not.toBeInTheDocument()
+  })
+})
+
+describe('TradingSettings buy broker fee', () => {
+  it('shows the fee as a percentage and saves a change as a fraction', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(tradingApi.updateSettings).mockClear()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
+    vi.mocked(productionApi.structureNames).mockResolvedValue({})
+    vi.mocked(tradingApi.realizedObservedFees).mockResolvedValue({ reason: 'no_ledger_run', message: 'x' } as any)
+    renderPage()
+
+    const field = await screen.findByLabelText('Buy broker fee')
+    expect(field).toHaveValue('1.47%')
+    await userEvent.clear(field)
+    await userEvent.type(field, '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toEqual({ jita_buy_broker_fee: 0.02 })
   })
 })
 

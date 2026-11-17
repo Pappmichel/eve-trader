@@ -326,6 +326,11 @@ def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> di
         # Switching off needs no stop: every tick checks the switch again.
         from . import scheduler  # lazy: scheduler imports this module
         scheduler.start()
+    if "jita_buy_broker_fee" in updates:
+        # Production prices its buy list with this field too, and its discover
+        # cache would otherwise serve the old fee until the TTL runs out.
+        from .production import engine as production_engine  # lazy: layering
+        production_engine.invalidate_discover_cache()
     return updates
 
 
