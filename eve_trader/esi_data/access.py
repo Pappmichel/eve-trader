@@ -151,9 +151,11 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
             rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
         elif tool_key == "production" and filters.get("table") in ("skills", "attributes"):
             rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
-        elif tool_key in ("trading", "station_trading") and filters.get("table") == "skills":
+        elif tool_key in ("trading", "station_trading", "char_info") and filters.get("table") == "skills":
             # Fee hints (eve_trader/fee_skills.py): Accounting and Broker
-            # Relations. Station Trading without `table` keeps its slot rows.
+            # Relations. Character Info reads Infomorph Synchronizing for the
+            # clone jump cooldown. Station Trading without `table` keeps its
+            # slot rows.
             rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
         else:
             rows.extend(_read_skills(tool_key, owner_id_filter))

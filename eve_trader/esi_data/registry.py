@@ -214,8 +214,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # rows from `character_slots` under their own sharing rows.
         # "trading" / "station_trading" / "pi" also read per-skill rows
         # (table="skills") for the fee hints (eve_trader/fee_skills.py).
+        # "char_info" reads the Infomorph Synchronizing level for the clone
+        # jump cooldown (character_management/info_actions.py).
         consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans", "pi",
-                         "trading"),
+                         "trading", "char_info"),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(

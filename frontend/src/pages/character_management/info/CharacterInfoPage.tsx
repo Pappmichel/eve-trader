@@ -8,7 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { charInfoApi } from '../../../api/client'
-import type { CharInfoCharacter, CharInfoImplant, CharInfoStandingRow } from '../../../api/types'
+import type { CharInfoCharacter, CharInfoCloneCooldown, CharInfoImplant, CharInfoStandingRow } from '../../../api/types'
 import { Countdown } from '../../../components/Countdown'
 import { DataTable } from '../../../components/DataTable'
 import { FieldState } from '../../../components/FieldState'
@@ -98,6 +98,16 @@ function WalletJournal({ characterId }: { characterId: number }) {
       )}
     </FieldState>
   )
+}
+
+/** Tooltip for the clone jump countdown: computed from the skill level, or the
+ *  24 h latest bound while the Skills share is missing. */
+function cooldownHint(cd: CharInfoCloneCooldown | undefined): string {
+  if (!cd) return '24 h after the last jump. Infomorph Synchronizing can make it sooner.'
+  if (cd.basis === 'skill') {
+    return `${cd.hours} h after the last jump: 24 h less 1 h per Infomorph Synchronizing level (level ${cd.skill_level}).`
+  }
+  return '24 h after the last jump, the latest it can be. Infomorph Synchronizing can make it sooner; share Skills with Character Info to compute it.'
 }
 
 function CharacterDetail({ characterId }: { characterId: number }) {
@@ -190,7 +200,7 @@ function CharacterDetail({ characterId }: { characterId: number }) {
                 </Text>
                 <Text size="sm">
                   Next clone jump in{' '}
-                  <Tooltip label="24 h after the last jump. Infomorph Synchronizing can shorten this by up to 4 h, so it may be ready sooner." multiline w={260}>
+                  <Tooltip label={cooldownHint(c.clone_jump_cooldown)} multiline w={260}>
                     <span><Countdown until={c.clone_jump_available_at} doneLabel="available now" /></span>
                   </Tooltip>
                 </Text>

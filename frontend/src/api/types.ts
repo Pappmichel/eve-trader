@@ -2452,8 +2452,17 @@ export interface CharInfoClones {
   jump_clones: CharInfoJumpClone[]
   last_clone_jump_date: string | null
   last_station_change_date: string | null
-  /** last_clone_jump_date + 24 h (the base cooldown; skills can shorten it) */
+  /** last_clone_jump_date + clone_jump_cooldown.hours */
   clone_jump_available_at: string | null
+  clone_jump_cooldown?: CharInfoCloneCooldown
+}
+/** basis 'skill': hours = 24 less 1 per Infomorph Synchronizing level (skill_level).
+ *  basis 'latest': the 24 h bound; reason says why the level is unknown. */
+export interface CharInfoCloneCooldown {
+  hours: number
+  basis: 'skill' | 'latest'
+  skill_level: number | null
+  reason: string | null
 }
 export interface CharInfoCorpHistoryRow { corporation_id: number; corporation_name: string; start_date: string | null }
 

@@ -126,6 +126,7 @@ def test_character_management_kinds():
     assert by_key["standings"].consuming_tools == ("char_info", "trading", "station_trading", "pi")
     assert by_key["standings"].schedule_mode == "on_demand"
     assert "trading" in by_key["skills"].consuming_tools
+    assert "char_info" in by_key["skills"].consuming_tools
     # Live-only kinds: the three location kinds, plus mail (own code path,
     # phase 3 - never an orchestrator kind, so the stale clear cannot reach it).
     assert {k.key for k in OWNED_DATA_KINDS if k.live_only} == {"location", "ship", "online", "mail", "fatigue", "contacts", "calendar"}
