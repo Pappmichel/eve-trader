@@ -682,6 +682,36 @@ operator, filesystem/SSH only — not a request parameter).
 access request preselects it, and `eve-trader admin grant-defaults` applies
 it to existing tenants.
 
+Every key in `access_gate.ALL_TOOL_KEYS`, with its router prefix (`_TOOL_PATH_PREFIXES`
+in `api/app.py`), its page (`frontend/src/App.tsx`), its default grant
+(`DEFAULT_TOOL_KEYS`), whether it reads ESI data through `esi_data/registry.py`
+(`consuming_tools`, the same set as `frontend/src/toolKeys.ts`'s
+`ESI_CONSUMING_TOOLS`) and where it is documented. `frontend/src/toolKeys.ts`
+mirrors the key list. `tests/test_claude_md_tool_keys.py` fails when a key is
+missing here.
+
+| Key | Router prefix | Page | Default grant | ESI-consuming | Documented in |
+|---|---|---|---|---|---|
+| `trading` | `/api/trading/` | `/trading` | yes | yes | this file, "Two tools, one backend" |
+| `production` | `/api/production/` | `/production` | yes | yes | this file, "Production realized profit" |
+| `doctrine` | `/api/doctrine/` | `/doctrine` | yes | yes | this file, "Strategic reserve", "Contract Market" |
+| `refining` | `/api/refining/` | `/ore` (Ore & Minerals) | yes | no | this file, "Mineral shopping lists" |
+| `station_trading` | `/api/station-trading/` | `/station-trading` | yes | yes | this file, "Two tools, one backend" |
+| `sorting` | `/api/sorting/` | `/sorting` | yes | yes | this file, "Sorting paste" |
+| `portfolio` | `/api/portfolio/` | `/portfolio` | yes | yes | this file, "Two tools, one backend"; `docs/PORTFOLIO_REWORK_PLAN.md` |
+| `admin` | `/api/admin/` | `/admin`, `/admin/sde-preview` | no | no | this file, "Tool permissions & Admin" |
+| `characters` | `/api/characters/` | `/character-management/characters` | yes | no | `docs/ESI_ACCESS_PLAN.md`, `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `module_reprocessing` | `/api/module-reprocessing/` | `/modules` | no | no | this file, "Mineral shopping lists" |
+| `char_info` | `/api/char-info/` | `/character-management/info` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_skills` | `/api/char-skills/` | `/character-management/skills` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_mail` | `/api/char-mail/` | `/character-management/mail` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_notifications` | `/api/char-notifications/` | `/character-management/notifications` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_contacts` | `/api/char-contacts/` | `/character-management/contacts` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_skill_plans` | `/api/char-skill-plans/` | `/character-management/skill-plans` | yes | yes | `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `char_alerts` | `/api/char-alerts/` | `/character-management/alerts` | yes | yes | this file, "Discord alerts"; `docs/CHARACTER_MANAGEMENT_PLAN.md` |
+| `pi` | `/api/pi/` | `/pi` | yes | yes | `docs/PI_PLAN.md` |
+| `asset_manager` | `/api/asset-manager/` | `/assets` | yes | yes | `docs/ASSET_MANAGER_PLAN.md` |
+
 `tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
 RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
 (`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`.
