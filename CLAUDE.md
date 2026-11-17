@@ -2169,6 +2169,11 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
   full history and every PR description were already scrubbed of these once
   (2026-08-24, ahead of making the repo public) - don't reintroduce the
   pattern going forward.
+- **Hooks, fonts, notices.** `git config core.hooksPath .githooks` enables the
+  `commit-msg` hook that rejects AI attribution lines (CI checks a pull
+  request's commits the same way). Fonts are bundled via `@fontsource` (no
+  Google hosts, the CSP allows none); the CCP notice is the one `CcpNotice`
+  component; licenses of data and dependencies are in `THIRD_PARTY_NOTICES.md`.
 - **Everything that goes into the repo is written in English (confirmed
   2026-10-01).** Code, comments, docs, plan files, commit messages, PR and
   issue text - regardless of the language the conversation with the user is
