@@ -1,7 +1,7 @@
 import { notify } from '../notify'
 
 import type { CharInfoSyncResult } from '../api/types'
-import { useAction } from './useAction'
+import { notifyIfUnchanged, useAction } from './useAction'
 
 // Refresh button for a Character Management page. `in_flight` (another sync
 // pass already running for an owner) is neither success nor failure
@@ -16,6 +16,7 @@ export function useCharacterSync(
     label,
     async () => {
       const result = await sync()
+      notifyIfUnchanged(result)
       if (result.in_flight.length > 0) {
         notify({
           title: 'Sync already running',

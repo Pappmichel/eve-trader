@@ -71,6 +71,12 @@ ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS data_as_of TIMESTAMPTZ;
 -- a re-auth skip, which keep the long backoff.
 ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
 
+-- Earliest time a refetch can return anything new: the latest `Expires` of
+-- the last successful fetch's authenticated responses (aware UTC). A lower
+-- bound for "due" (the tier interval still applies) and the point before
+-- which a manual sync skips the pair. NULL = ESI sent no usable header.
+ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS next_fetch_after TIMESTAMPTZ;
+
 -- ====================================================== per-tenant: group-3 capabilities
 -- On/off per character, no tool_key. Presence of a row means the
 -- capability is ticked. Not a sharing row.

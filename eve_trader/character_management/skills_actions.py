@@ -143,7 +143,7 @@ def do_skills_overview() -> dict:
     queue summary."""
     characters = _token_characters()
     if not characters:
-        return {"characters": []}
+        return {"characters": [], "sync_max_age_hours": fields.sync_max_age_hours()}
     tokens = TokenManager(OAUTH_CONFIG)
     now = datetime.now(timezone.utc)
 
@@ -176,7 +176,7 @@ def do_skills_overview() -> dict:
             "queue": fields.snapshot("skillqueue", TOOL_KEY, cid, tokens, freshness, queue_shape),
             "freshness": {k: freshness[k] for k in ("skills", "skillqueue") if k in freshness},
         })
-    return {"characters": out}
+    return {"characters": out, "sync_max_age_hours": fields.sync_max_age_hours()}
 
 
 def _group_skills(skill_rows: list[dict], catalog: dict[int, dict]) -> list[dict]:

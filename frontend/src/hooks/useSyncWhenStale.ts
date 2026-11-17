@@ -7,8 +7,10 @@ import type { CharInfoSyncResult } from '../api/types'
 // Character Management pages whose snapshot kinds the scheduler no longer
 // refreshes in the background (esi_data registry `schedule_mode = "on_demand"`,
 // docs/SCHEDULER_REWORK_PLAN.md) sync themselves when opened with old data.
-// 6 h = the default "normal" freshness tier; a fixed value because the tier
-// settings live behind the Trading grant, which these pages' users may lack.
+// The age limit is the tenant's "normal" freshness tier: each page's overview
+// response carries it as `sync_max_age_hours` (the tier setting itself lives
+// behind the Trading grant, which these pages' users may lack). 6 h, the
+// tier's default, is only the fallback while that response loads.
 export const AUTO_SYNC_MAX_AGE_HOURS = 6
 
 // `stamps` holds one entry per shown character: the newest attempt (or
@@ -19,13 +21,14 @@ export const AUTO_SYNC_MAX_AGE_HOURS = 6
 // page open.
 export function isStale(
   stamps: ReadonlyArray<string | null | undefined>,
-  maxAgeHours: number = AUTO_SYNC_MAX_AGE_HOURS,
+  maxAgeHours: number | null | undefined = AUTO_SYNC_MAX_AGE_HOURS,
   now: number = Date.now(),
 ): boolean {
+  const limit = maxAgeHours ?? AUTO_SYNC_MAX_AGE_HOURS
   return stamps.some((s) => {
     if (!s) return true
     const t = Date.parse(s)
-    return Number.isNaN(t) || now - t > maxAgeHours * 3_600_000
+    return Number.isNaN(t) || now - t > limit * 3_600_000
   })
 }
 

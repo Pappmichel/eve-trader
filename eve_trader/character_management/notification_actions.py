@@ -216,6 +216,7 @@ def do_list_notifications(
             for c in chars
         ],
         "hidden_characters": hidden,
+        "sync_max_age_hours": fields.sync_max_age_hours(),
     }
 
 

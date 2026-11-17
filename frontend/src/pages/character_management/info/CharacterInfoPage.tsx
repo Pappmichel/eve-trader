@@ -352,7 +352,7 @@ export default function CharacterInfoPage() {
   // `on_demand`), so opening the page with old data syncs them once.
   useSyncWhenStale({
     ready: overview.isSuccess,
-    stale: isStale(characters.map((c) => newestStamp(SNAPSHOT_KINDS.map((k) => c.freshness[k]?.last_attempt_at)))),
+    stale: isStale(characters.map((c) => newestStamp(SNAPSHOT_KINDS.map((k) => c.freshness[k]?.last_attempt_at))), overview.data?.sync_max_age_hours),
     sync: charInfoApi.sync,
     invalidateKeys: AUTO_SYNC_KEYS,
   })

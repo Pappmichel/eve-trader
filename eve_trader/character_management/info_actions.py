@@ -302,7 +302,7 @@ def do_list_character_overview() -> dict:
     """One row per registered ESI character (any character with a token)."""
     token_chars = esi_actions.do_list_token_characters()
     if not token_chars:
-        return {"characters": []}
+        return {"characters": [], "sync_max_age_hours": fields.sync_max_age_hours()}
     client, tokens = _client_and_tokens()
 
     # ThreadPoolExecutor workers do not inherit contextvars (CLAUDE.md).
@@ -311,7 +311,7 @@ def do_list_character_overview() -> dict:
     )
     with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(token_chars))) as pool:
         rows = list(pool.map(work, token_chars))
-    return {"characters": rows}
+    return {"characters": rows, "sync_max_age_hours": fields.sync_max_age_hours()}
 
 
 def do_character_detail(character_id: int) -> dict:
