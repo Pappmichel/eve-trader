@@ -15,6 +15,7 @@ import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { JobProgress } from '../../components/JobProgress'
 import { dateTime } from '../../format'
 import { ToolHeader } from '../../components/ToolHeader'
+import CcpNotice from '../../components/CcpNotice'
 
 // The four Daily-Workflow/Candidate-Setup buttons below all run through
 // useTradingPipelineJob's shared background-job lock, not useAction, so
@@ -221,10 +222,7 @@ export default function TradingLayout() {
 
           <Divider />
 
-          <Text size="xs" c="dimmed">
-            Unofficial third-party tool, not affiliated with or endorsed by CCP hf. EVE, EVE Online, CCP, and
-            all related logos/trademarks are property of CCP hf.
-          </Text>
+          <CcpNotice />
         </Stack>
       </AppShell.Navbar>
 

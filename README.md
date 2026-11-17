@@ -250,6 +250,11 @@ at a glance.
 
 ## License
 
-[MIT](LICENSE). EVE Trader is an unofficial third-party tool, not affiliated
-with or endorsed by CCP hf. EVE, EVE Online, CCP, and all related logos and
-trademarks are the property of CCP hf.
+[MIT](LICENSE). Third-party data and dependency licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights
+are reserved worldwide. All other trademarks are the property of their
+respective owners. EVE Online, the EVE logo, EVE and all associated logos and
+designs are the intellectual property of CCP hf. EVE Trader is an unofficial
+third-party tool, not affiliated with or endorsed by CCP hf.

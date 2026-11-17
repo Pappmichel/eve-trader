@@ -9,6 +9,7 @@ import { useAction } from '../../hooks/useAction'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 import { ToolHeader } from '../../components/ToolHeader'
+import CcpNotice from '../../components/CcpNotice'
 
 const TABS = [
   { path: '/station-trading', label: 'Overview' },
@@ -74,10 +75,7 @@ export default function StationTradingLayout() {
 
             <Divider />
 
-            <Text size="xs" c="dimmed">
-              Unofficial third-party tool, not affiliated with or endorsed by CCP hf. EVE, EVE Online, CCP, and
-              all related logos/trademarks are property of CCP hf.
-            </Text>
+            <CcpNotice />
           </Stack>
         </ScrollArea>
       </AppShell.Navbar>

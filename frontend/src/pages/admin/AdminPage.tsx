@@ -23,6 +23,7 @@ import type {
 import { DataTable } from '../../components/DataTable'
 import { ErrorsSection } from './ErrorsSection'
 import { PurgeTenantDialog } from './PurgeTenantDialog'
+import CcpNotice from '../../components/CcpNotice'
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
 // previewing/applying it is a cross-tenant-impacting action - moved here from
@@ -812,6 +813,7 @@ export default function AdminPage() {
         <Divider />
         <ErrorsSection />
       </Stack>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

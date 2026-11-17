@@ -8,6 +8,7 @@ import { ToolCard } from '../components/ToolCard'
 import { useAction } from '../hooks/useAction'
 import { openGateAccessConfirmModal } from '../roleAccessDescriptions'
 import { CHARACTER_MANAGEMENT_TOOL_KEYS } from '../toolKeys'
+import CcpNotice from '../components/CcpNotice'
 
 // Browser-local acknowledgement for the identity-only gate login. Before a
 // first gate login there's no tenant yet to attach a server-side record
@@ -135,10 +136,7 @@ export default function Landing() {
           } />
       </SimpleGrid>
 
-      <Text size="xs" c="dimmed" ta="center" mt="xl">
-        EVE Trader is an unofficial third-party tool, not affiliated with or endorsed by CCP hf.
-        EVE, EVE Online, CCP, and all related logos and trademarks are the property of CCP hf.
-      </Text>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }
