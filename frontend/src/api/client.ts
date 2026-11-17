@@ -747,7 +747,11 @@ export const adminApi = {
     post<{ character_id: number; character_name: string; tenant_id: string }>(
       '/api/admin/users', { character_name: characterName },
     ),
-  removeUser: (characterId: number) => del(`/api/admin/users/${characterId}`),
+  removeUser: (characterId: number) => del<T.RemoveUserResult>(`/api/admin/users/${characterId}`),
+  purgeTenantPreview: (tenantId: string) =>
+    get<T.TenantPurgePreview>(`/api/admin/tenants/${tenantId}/purge-preview`),
+  purgeTenant: (tenantId: string, confirmName: string) =>
+    post<T.TenantPurgeResult>(`/api/admin/tenants/${tenantId}/purge`, { confirm_name: confirmName }),
   setToolGrants: (characterId: number, toolKeys: string[]) =>
     put<{ character_id: number; tool_keys: string[] }>(
       `/api/admin/users/${characterId}/tools`, { tool_keys: toolKeys },
