@@ -259,7 +259,7 @@ def check_undercut():
     return _wrap(actions.do_check_undercut)["rows"]
 
 
-@router.get("/realized/summary")
+@router.get("/realized/summary", response_model=schemas.RealizedChannelSummary, response_model_exclude_unset=True)
 def trading_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
                              end: Optional[str] = None, since_t0: bool = False):
     return _wrap(

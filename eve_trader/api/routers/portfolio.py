@@ -44,21 +44,21 @@ def get_wealth_change():
     return _wrap(portfolio.do_get_wealth_change)
 
 
-@router.get("/realized-cards")
+@router.get("/realized-cards", response_model=schemas.PortfolioRealizedCards, response_model_exclude_unset=True)
 def get_realized_cards(request: Request, period: str = "30"):
     """Cards for the tools this session holds. The total is already summed."""
     keys = getattr(request.state, "tool_keys", ())
     return _wrap(portfolio.realized_cards, tool_keys=keys, period=period)
 
 
-@router.get("/attention")
+@router.get("/attention", response_model=schemas.PortfolioAttention, response_model_exclude_unset=True)
 def get_portfolio_attention(request: Request):
     """Actions for this session: scope, recompute, unpriced, stale ESI, stock targets."""
     keys = getattr(request.state, "tool_keys", ())
     return _wrap(portfolio.attention, tool_keys=keys)
 
 
-@router.get("/realized-history")
+@router.get("/realized-history", response_model=schemas.PortfolioRealizedHistory, response_model_exclude_unset=True)
 def get_realized_history(request: Request, period: str = "30", bucket: Optional[str] = None):
     """Stacked realized profit for the tools this session holds."""
     keys = getattr(request.state, "tool_keys", ())
