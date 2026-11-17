@@ -1416,6 +1416,14 @@ export interface SdeDiff {
   shrink_warnings?: SdeShrinkWarning[]
   // Hard-coded industry constants compared with the dump's dogma.
   constant_drift?: SdeConstantDrift
+  // Published ship groups missing from SHIP_SIZE_GROUP_IDS (no rig tier).
+  unmapped_ship_groups?: SdeUnmappedShipGroup[]
+}
+
+export interface SdeUnmappedShipGroup {
+  group_id: number
+  name: string
+  published_types: number
 }
 
 export interface SdeShrinkWarning {
