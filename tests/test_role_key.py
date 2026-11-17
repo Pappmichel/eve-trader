@@ -28,7 +28,7 @@ from .pg_helpers import (  # noqa: F401
 
 VALID = (
     "buyer:1",
-    "seller:2112625428",
+    "seller:1234567891",
     "producer:42",
     "doctrine:99",
     "doctrine-assets:99",
@@ -93,7 +93,7 @@ def test_tool_role_prefix_mapping_is_the_login_vocabulary():
 
 @pytest.mark.parametrize("key,tool", [
     ("buyer:1", "trading"),
-    ("seller:2112625428", "trading"),
+    ("seller:1234567891", "trading"),
     ("producer:42", "production"),
     ("doctrine:99", "doctrine"),
     ("doctrine-assets:99", "doctrine"),

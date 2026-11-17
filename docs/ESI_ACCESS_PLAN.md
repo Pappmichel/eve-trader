@@ -30,7 +30,7 @@ three independent questions with one string:
 `eve_trader/auth.py`'s `ROLE_PREFIX_TOOL` / `TOOL_ROLE_PREFIXES` and
 `api/routers/auth.py`'s `_scopes_for` are the live encoding of that
 collapse: a prefix is a fixed scope bundle *and* a tool namespace
-(`"producer:2112625428"` is both "this character" and "Production's
+(`"producer:1234567891"` is both "this character" and "Production's
 token"). `TokenManager` persists one row per prefix-key in `tenant_tokens`
 (`docs/phase2_schema.sql`: PK `(tenant_id, role)`). The frontend repeats
 the same idea per tool: `useRoleCharacters.ts` + each layout's "Add

@@ -25,12 +25,12 @@ def test_get_shortlist_calls_action(monkeypatch):
 
 def test_get_trader_characters(monkeypatch):
     monkeypatch.setattr(station_trading_actions, "do_list_trader_characters",
-                         lambda: [("trader:2112625428", 2112625428, "Some Character")])
+                         lambda: [("trader:1234567891", 1234567891, "Some Character")])
 
     resp = client.get("/api/station-trading/trader-characters")
 
     assert resp.status_code == 200
-    assert resp.json() == [{"role_key": "trader:2112625428", "character_id": 2112625428,
+    assert resp.json() == [{"role_key": "trader:1234567891", "character_id": 1234567891,
                              "character_name": "Some Character"}]
 
 
@@ -130,10 +130,10 @@ def test_remove_trader_character_calls_action(monkeypatch):
         return {"removed": role_key}
     monkeypatch.setattr(station_trading_actions, "do_remove_trader_character", _remove)
 
-    resp = client.delete("/api/station-trading/auth/character/trader:2112625428")
+    resp = client.delete("/api/station-trading/auth/character/trader:1234567891")
 
     assert resp.status_code == 200
-    assert captured["role_key"] == "trader:2112625428"
+    assert captured["role_key"] == "trader:1234567891"
 
 
 def test_update_settings_passes_body_to_action(monkeypatch):
