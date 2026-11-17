@@ -14,10 +14,10 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from . import storage, wealth_cache
+from . import storage, timeutil, wealth_cache
 from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
-from .portfolio_wealth import assemble
+from .portfolio_wealth import assemble, top_types
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +138,37 @@ def _card_readers(tool_keys):
     return readers
 
 
+def _card_scopes(tool_keys) -> list[tuple]:
+    """(channel, wallet_owners, contract_owners) of each granted tool's own
+    report scope, the same owner filters its `summary` reads by."""
+    keys = {str(key) for key in (tool_keys or ())}
+    scopes = []
+    if "production" in keys:
+        from .production.realized.report import production_scope
+        scopes.append(production_scope())
+    if "trading" in keys:
+        from .trade_realized import report as trading_report
+        scopes.append(trading_report._scope())
+    if "doctrine" in keys:
+        from .doctrine import realized as doctrine_realized
+        scopes.append(doctrine_realized._scope())
+    if "station_trading" in keys:
+        from .station_trading import realized as station_realized
+        scopes.append(station_realized._scope())
+    return [(s["channel"], s["wallet_owners"], s["contract_owners"]) for s in scopes]
+
+
+def _unreported_sales(tool_keys, window: dict) -> tuple[int, float, float]:
+    """Sales in the period that belong to a granted channel but sit outside
+    that channel's own report scope (for example a Trading sale of a wallet
+    that is only shared with Production), so no card shows them."""
+    from .realized import db as realized_db
+
+    return realized_db.unreported_results(
+        _card_scopes(tool_keys), window["start"], window["end"],
+    )
+
+
 def _sales_count(data: dict):
     if "sale_count" in data:
         return data["sale_count"]
@@ -184,8 +215,10 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
     courier = 0.0
     configured = 0.0
     saw_figure = False
+    needs_rebuild = False
     for tool, reader in _card_readers(tool_keys):
         data = reader(**window)
+        needs_rebuild = needs_rebuild or bool(data["status"]["needs_rebuild"])
         empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
         if not empty:
             saw_figure = True
@@ -208,8 +241,14 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
         })
     rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
     ready = [row["profit"] for row in rows if row["profit"] is not None]
+    unreported = None
+    if saw_figure and not needs_rebuild:
+        unreported = _unreported_sales(tool_keys, window)
     return {
         "rows": rows,
+        "unreported_sales": None if unreported is None else unreported[0],
+        "unreported_revenue": None if unreported is None else unreported[1],
+        "unreported_profit": None if unreported is None else unreported[2],
         "total": sum(ready) if ready else None,
         "fees_missing_sales": sum(row["fees_missing_sales"] for row in rows),
         "fees_missing_revenue": sum(row["fees_missing_revenue"] for row in rows),
@@ -242,7 +281,7 @@ def _history_bucket(period: str, bucket: Optional[str], summaries: list[dict]) -
             starts.append(_day(start))
     if not starts:
         return "day"
-    return "week" if (date.today() - min(starts)).days > 90 else "day"
+    return "week" if (timeutil.utc_today() - min(starts)).days > 90 else "day"
 
 
 def realized_history(tool_keys, period: str = "30", bucket: Optional[str] = None) -> dict:
@@ -415,7 +454,7 @@ def wealth_change(today: Optional[date] = None) -> dict:
     NULL, is None for that horizon. Percent is None when the earlier
     wealth is 0. The page shows these numbers as returned.
     """
-    today = today or date.today()
+    today = today or timeutil.utc_today()
     rows = storage.load_portfolio_snapshots(since=today - timedelta(days=30))
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     by_date = {row[0]: dict(zip(columns, row)) for row in rows}
@@ -429,7 +468,51 @@ def wealth_change(today: Optional[date] = None) -> dict:
         isk = current - earlier
         return {"isk": isk, "pct": None if earlier == 0 else isk / earlier}
 
-    return {"d1": point(1), "d7": point(7), "d30": point(30)}
+    return {
+        "d1": point(1), "d7": point(7), "d30": point(30),
+        "price_jumps": _price_jumps(by_date.get(today), by_date.get(today - timedelta(days=1))),
+    }
+
+
+PRICE_JUMP_RATIO = 2.0
+PRICE_JUMP_MIN_SHARE = 0.01
+
+
+def _price_jumps(current: Optional[dict], previous: Optional[dict]) -> list[dict]:
+    """Types in both days' top lists whose unit price doubled or halved and
+    whose value moved by at least 1 % of today's total. A change of quantity
+    alone is not a jump. Empty when either snapshot has no top list (rows from
+    before it was stored) or today has no total."""
+    if not current or not previous:
+        return []
+    now_rows, before_rows = current.get("top_positions"), previous.get("top_positions")
+    total = current.get("total_wealth")
+    if not isinstance(now_rows, list) or not isinstance(before_rows, list) or not total:
+        return []
+    before = {int(row["type_id"]): row for row in before_rows}
+    jumps = []
+    for row in now_rows:
+        old = before.get(int(row["type_id"]))
+        if old is None or not old.get("unit_price") or row.get("unit_price") is None:
+            continue
+        ratio = float(row["unit_price"]) / float(old["unit_price"])
+        if not (ratio >= PRICE_JUMP_RATIO or ratio <= 1.0 / PRICE_JUMP_RATIO):
+            continue
+        change = float(row["value"]) - float(old["value"])
+        if abs(change) < PRICE_JUMP_MIN_SHARE * abs(float(total)):
+            continue
+        jumps.append({
+            "type_id": int(row["type_id"]),
+            "previous_price": float(old["unit_price"]),
+            "price": float(row["unit_price"]),
+            "value_change": change,
+        })
+    if jumps:
+        names = storage.sde_type_names([jump["type_id"] for jump in jumps])
+        for jump in jumps:
+            jump["type_name"] = names.get(jump["type_id"])
+    jumps.sort(key=lambda jump: (-abs(jump["value_change"]), jump["type_id"]))
+    return jumps
 
 
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -615,8 +698,19 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
     each compare every decryptor, and Total Wealth is read several times
     per page load. Tenant-keyed because skills, structure and fees are
     tenant settings."""
+    values, _complete = bpc_run_values_with_status(type_ids)
+    return {tid: value for tid, value in values.items() if value is not None}
+
+
+def bpc_run_values_with_status(type_ids: set[int]) -> tuple[dict[int, Optional[float]], bool]:
+    """`_bpc_run_values` plus whether every value came from a complete
+    computation: ({type_id: value or None}, complete). `complete` is False
+    when this call computed something during a quote or fee-rate outage;
+    a caller that freezes the values (the realized-profit ledger) must then
+    store nothing. A None value under `complete` means the copy has no
+    per-run value (faction/officer copy, unpriced input)."""
     if not type_ids:
-        return {}
+        return {}, True
     tenant = str(storage.get_current_tenant())
     with _bpc_lock:
         now = time.time()
@@ -625,27 +719,28 @@ def _bpc_run_values(type_ids: set[int]) -> dict[int, float]:
                 del _bpc_cache[key]
             _bpc_cache_at[tenant] = now
         missing = [tid for tid in type_ids if (tenant, tid) not in _bpc_cache]
-        if missing:
-            computed, cacheable = _compute_bpc_run_values(missing)
-            if cacheable:
-                for tid, value in computed.items():
-                    _bpc_cache[(tenant, tid)] = value
-            # Always return cached values plus this call's computed ones.
-            # Only the write above depends on cacheable - otherwise a partial
-            # outage would drop already-known BPC values from Total Wealth.
-            out = {
-                tid: _bpc_cache[(tenant, tid)]
-                for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-            }
-            if not cacheable:
-                for tid, value in computed.items():
-                    if value is not None and tid in type_ids:
-                        out[tid] = value
-            return out
-        return {
-            tid: _bpc_cache[(tenant, tid)]
-            for tid in type_ids if _bpc_cache.get((tenant, tid)) is not None
-        }
+        cached = {tid: _bpc_cache.get((tenant, tid)) for tid in type_ids if (tenant, tid) in _bpc_cache}
+        if not missing:
+            return cached, True
+        computed, cacheable = _compute_bpc_run_values(missing)
+        if cacheable:
+            for tid, value in computed.items():
+                _bpc_cache[(tenant, tid)] = value
+        # Always return cached values plus this call's computed ones. Only
+        # the write above depends on cacheable - otherwise a partial outage
+        # would drop already-known BPC values from Total Wealth.
+        out = dict(cached)
+        for tid in missing:
+            out[tid] = computed.get(tid)
+        return out, bool(cacheable)
+
+
+def bpc_run_value_source(type_id: int) -> str:
+    """How `_compute_bpc_run_values` values a copy of this blueprint:
+    "invention" for an invented blueprint, else "copy"."""
+    if storage.find_invention_recipe_candidates_by_product_type_id(int(type_id)):
+        return "invention"
+    return "copy"
 
 
 def _original_on_market(type_id: int) -> bool:
@@ -762,6 +857,7 @@ _EMPTY_WEALTH = {
     "wealth_unpriced_items": 0,
     "characters_missing_wallet_scope": [],
     "sync": dict(_EMPTY_SYNC),
+    "top_positions": None,
 }
 _EMPTY_BREAKDOWN = {
     "total": None, "by_owner": [], "by_location": [], "by_category": [], "top": [],
@@ -989,6 +1085,7 @@ def _wealth_from(collected: dict) -> dict:
         "wealth_unpriced_items": built["unpriced_items"],
         "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),
         "sync": _sync_times(collected["shares"], collected["escrow_known"]),
+        "top_positions": top_types(collected["items"]),
         "_built": built,
     }
 
@@ -1097,15 +1194,23 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     Owners are the union of realized-tool shares, not the Portfolio share.
     Prices are the same manual / home sell / Jita sell function as Total Wealth.
     """
-    from .portfolio_capital import report
-    from .realized.access import shared_item_exchange_owners, shared_owners
+    from .portfolio_capital import needs_rebuild, report
+    from .realized.access import owner_scope_hash, shared_item_exchange_owners, shared_owners
     from .realized import db as ledger_db
+
+    # Same check as the realized reports: layers built from other owners
+    # than the ones shared now must not be shown (D11).
+    run = ledger_db.latest_ledger_run()
+    if run is None:
+        return needs_rebuild("Recompute realized profit to build capital from the archive.")
+    if run[4] is None or run[4] != owner_scope_hash():
+        return needs_rebuild("Sharing changed since the last recompute. Recompute realized profit to update.")
 
     order_owners = shared_owners("market_orders")
     contract_owners = shared_item_exchange_owners()
     layers = [
         {
-            "type_id": row[0], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
+            "type_id": row[0], "unit": row[1], "quantity": row[2], "unit_cost": row[3], "origin": row[4],
             "assumed_me": row[5], "assumed_decryptor": row[6], "estimated_origin": row[7],
             "price_missing": row[8],
         }
@@ -1121,13 +1226,17 @@ def do_get_portfolio_capital(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     ]
     escrow_rows = ledger_db.open_buy_escrow_by_owner(order_owners)
     escrow = None if escrow_rows is None else sum(amount for _ot, _oid, amount in escrow_rows)
-    type_ids = {int(layer["type_id"]) for layer in layers}
+    # Copy runs are valued per run like Total Wealth's copies, never at the
+    # original's quote; a manual price is per copy, so it does not apply.
+    run_type_ids = {int(layer["type_id"]) for layer in layers if layer["unit"] == "bpc_run"}
+    type_ids = {int(layer["type_id"]) for layer in layers if layer["unit"] != "bpc_run"}
     type_ids.update(int(row["type_id"]) for row in listed)
     type_ids.update(int(row["type_id"]) for row in contracts)
     prices = _priced(type_ids)
+    run_prices = _bpc_run_values(run_type_ids)
     count, cost = ledger_db.running_job_cost()
     in_production = {"count": int(count or 0), "cost": float(cost or 0)}
-    return report(layers, listed, contracts, escrow, prices, in_production)
+    return report(layers, listed, contracts, escrow, prices, in_production, bpc_run_prices=run_prices)
 
 
 def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -1154,7 +1263,7 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     overview = portfolio_overview(cfg)
     with wealth_cache.bypassed():
         wealth = total_wealth(cfg)
-    storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
+    storage.upsert_portfolio_snapshot(timeutil.utc_today(), {**overview, **wealth})
     return {**overview, **wealth}
 
 
@@ -1171,7 +1280,7 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     If quotes are down, fall back to a live portfolio_overview so the page
     stays 200; a later call the same day can still write the snapshot.
     """
-    if storage.latest_portfolio_snapshot_date() != date.today():
+    if storage.latest_portfolio_snapshot_date() != timeutil.utc_today():
         try:
             overview = take_portfolio_snapshot(cfg)
         except MarketQuotesUnavailable:
@@ -1192,7 +1301,7 @@ def do_get_wealth_change(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     If quotes are down, return wealth_change() without writing a snapshot
     so the page stays 200.
     """
-    if storage.latest_portfolio_snapshot_date() != date.today():
+    if storage.latest_portfolio_snapshot_date() != timeutil.utc_today():
         try:
             take_portfolio_snapshot(cfg)
         except MarketQuotesUnavailable:
@@ -1208,7 +1317,7 @@ def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
     the *future* for a non-positive `days`, which filtered out every row
     including today's (confirmed real bug in review), rather than a
     reasonable "just today" reading."""
-    since = date.today() - timedelta(days=max(days, 1) - 1) if days is not None else None
+    since = timeutil.utc_today() - timedelta(days=max(days, 1) - 1) if days is not None else None
     rows = storage.load_portfolio_snapshots(since=since)
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     return [dict(zip(columns, row)) for row in rows]

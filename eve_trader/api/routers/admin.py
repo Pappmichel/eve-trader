@@ -6,6 +6,7 @@ a normal grant (CLI bootstrap or another admin); there is no DEFAULT_TENANT_ID
 bypass. Nothing in this router itself re-checks that."""
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException
@@ -15,6 +16,7 @@ from .. import schemas
 from ... import admin, error_log
 from ...access_gate import SESSION_COOKIE_NAME, authorize_session_cookie
 from ...actions import ActionError, ConflictError
+from ..schemas import NameText, ShortTextList
 
 router = APIRouter()
 
@@ -39,10 +41,31 @@ def _actor_character_id(
     return None if session is None else session.character_id
 
 
+@router.get("/health")
+def get_health_detail():
+    return _wrap(admin.do_get_health_detail)
+
+
 @router.get("/tenants", response_model=list[schemas.AdminTenant])
 def list_tenants():
     # Registry read (connect_unscoped) - no live ESI/Goonmetrics.
     return admin.do_list_tenants()
+
+
+@router.get("/tenants/{tenant_id}/purge-preview")
+def purge_tenant_preview(tenant_id: uuid.UUID, actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(admin.do_purge_tenant_preview, tenant_id=str(tenant_id), actor_character_id=actor)
+
+
+class PurgeTenantRequest(BaseModel):
+    confirm_name: NameText
+
+
+@router.post("/tenants/{tenant_id}/purge")
+def purge_tenant(tenant_id: uuid.UUID, req: PurgeTenantRequest,
+                 actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(admin.do_purge_tenant, tenant_id=str(tenant_id),
+                 confirm_name=req.confirm_name, actor_character_id=actor)
 
 
 @router.get("/users", response_model=list[schemas.AdminUser])
@@ -52,7 +75,7 @@ def list_users():
 
 
 class AddUserRequest(BaseModel):
-    character_name: str
+    character_name: NameText
 
 
 @router.post("/users")
@@ -71,7 +94,7 @@ def remove_user(character_id: int):
 
 
 class SetToolGrantsRequest(BaseModel):
-    tool_keys: list[str]
+    tool_keys: ShortTextList
 
 
 @router.put("/users/{character_id}/tools")
@@ -104,7 +127,7 @@ def allowlist_impact(entry_type: str, entry_id: int, action: str,
 
 
 class AllowlistEntryRequest(BaseModel):
-    entry_type: str
+    entry_type: NameText
     entry_id: int
 
 
@@ -133,7 +156,7 @@ def list_access_requests(status: Optional[str] = None):
 
 
 class ApproveAccessRequest(BaseModel):
-    tool_keys: list[str]
+    tool_keys: ShortTextList
 
 
 @router.post("/access-requests/{character_id}/approve")
@@ -173,9 +196,13 @@ def sde_preview_status():
     return _wrap(admin.do_sde_preview_status)
 
 
+class ApplySdeRequest(BaseModel):
+    confirm_shrink: bool = False
+
+
 @router.post("/sde/apply")
-def apply_sde():
-    return _wrap(admin.do_apply_sde)
+def apply_sde(req: Optional[ApplySdeRequest] = None):
+    return _wrap(admin.do_apply_sde, confirm_shrink=bool(req and req.confirm_shrink))
 
 
 # Same "cross-tenant-impacting cache, not a per-tenant Production button"
@@ -190,11 +217,17 @@ def refresh_jita_price_cache():
 # portfolio.py/admin.py's own docstring on cross-cutting concerns), not
 # folded into admin.py, since /api/errors' *report* endpoint (api/routers/
 # errors.py) needs to stay reachable by every tenant's frontend, unlike
-# every other route in this admin-gated router.
+# every other route in this admin-gated router (it needs a session, no grant).
 @router.get("/errors", response_model=list[schemas.ErrorLogRow])
 def list_errors(limit: int = 200):
     # In-process error_log ring buffer - no live ESI/Goonmetrics.
     return error_log.do_list_errors(limit=limit)
+
+
+@router.get("/errors/groups", response_model=list[schemas.ErrorLogGroup])
+def list_error_groups(limit: int = 1000):
+    # Same rows as /errors, grouped by source and normalized message.
+    return error_log.do_list_error_groups(limit=limit)
 
 
 # Moved from api/routers/portfolio.py (confirmed real misplacement

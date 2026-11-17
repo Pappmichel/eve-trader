@@ -32,7 +32,10 @@ from .constants import (
 
 
 def ore_ice_base_yield(cfg: RefiningConfig) -> float:
-    """(50 + Rig points) x (1 + Security modifier) x (1 + Structure modifier)
+    """(50 + Rig points) x (1 + Security modifier) x (1 + Structure modifier),
+    where the security modifier exists only with a rig (it is a rig
+    attribute, a structure without a rig has none, so "No Rig" gives
+    50 x (1 + Structure modifier) in every security class)
     - the one component of the real reprocessing formula that isn't a flat
     per-level skill/implant bonus (see constants.py's module docstring for
     the full formula and how this was confirmed live). The security modifier
@@ -42,7 +45,10 @@ def ore_ice_base_yield(cfg: RefiningConfig) -> float:
     Complex's own ME/TE rig bonus (see security_yield_modifier's own
     docstring)."""
     base_points = BASE_YIELD_POINTS + RIG_YIELD_BONUS_POINTS[cfg.rig_tier]
-    sec_modifier = security_yield_modifier(cfg.security_status)
+    # lowSecModifier / nullSecModifier belong to the rig, not the structure.
+    sec_modifier = (
+        security_yield_modifier(cfg.security_status) if cfg.rig_tier != "No Rig" else 0.0
+    )
     structure_modifier = STRUCTURE_YIELD_MODIFIER[cfg.structure_type]
     return (base_points / 100) * (1 + sec_modifier) * (1 + structure_modifier)
 

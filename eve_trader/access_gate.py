@@ -84,6 +84,9 @@ class AuthorizedSession:
     alliance_id: Optional[int] = None
     affiliation_checked_at: Optional[datetime] = None
     allowlist_active: bool = False
+    # When this login was issued (millisecond precision for cookies that carry
+    # `iat_ms`, whole seconds for older ones).
+    issued_at: Optional[datetime] = None
 
 
 def _serializer(cfg: OAuthConfig) -> URLSafeTimedSerializer:
@@ -99,7 +102,8 @@ def _serializer(cfg: OAuthConfig) -> URLSafeTimedSerializer:
 def create_session_token(character_id: int, character_name: str, tenant_id: str,
                           cfg: OAuthConfig = OAUTH_CONFIG) -> str:
     return _serializer(cfg).dumps(
-        {"character_id": character_id, "character_name": character_name, "tenant_id": tenant_id}
+        {"character_id": character_id, "character_name": character_name, "tenant_id": tenant_id,
+         "iat_ms": int(time.time() * 1000)}
     )
 
 
@@ -195,13 +199,18 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
         sva = sessions_valid_after
         if getattr(sva, "tzinfo", None) is None:
             sva = sva.replace(tzinfo=timezone.utc)
-        # itsdangerous 2.2 records whole seconds. Comparing that to a
-        # microsecond TIMESTAMPTZ would reject a legitimate new cookie
-        # issued in the same second as revocation (logout then re-login).
-        # Cookies whose whole-second timestamp is strictly before
-        # sessions_valid_after are revoked; same-second is the signer’s
-        # resolution limit.
-        if issued_at < sva.replace(microsecond=0):
+        iat_ms = payload.get("iat_ms") if isinstance(payload, dict) else None
+        if isinstance(iat_ms, int) and not isinstance(iat_ms, bool):
+            # Millisecond issue time: revoked when strictly before the
+            # revocation instant (floored to ms). The same millisecond stays
+            # valid so a re-login right after a logout works.
+            if iat_ms < int(sva.timestamp() * 1000):
+                return None
+        elif issued_at < sva.replace(microsecond=0):
+            # Older cookies only have itsdangerous' whole-second stamp.
+            # Comparing that to a microsecond TIMESTAMPTZ would reject a
+            # legitimate new cookie issued in the revocation second, so
+            # the same second stays valid for them.
             return None
     return AuthorizedSession(
         character_id=int(character_id),
@@ -213,7 +222,18 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
         alliance_id=authz.alliance_id,
         affiliation_checked_at=authz.affiliation_checked_at,
         allowlist_active=authz.allowlist_active,
+        issued_at=_session_issued_at(payload, issued_at),
     )
+
+
+def _session_issued_at(payload, fallback: datetime) -> datetime:
+    iat_ms = payload.get("iat_ms") if isinstance(payload, dict) else None
+    if isinstance(iat_ms, int) and not isinstance(iat_ms, bool):
+        try:
+            return datetime.fromtimestamp(iat_ms / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return fallback
+    return fallback
 
 
 def set_session_cookie(response: "Response", character_id: int, character_name: str, tenant_id: str,

@@ -426,6 +426,8 @@ export interface BuildJobEntry {
   reaction_runs_per_job?: number | null
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** Material multiplier the plan applied to this job's direct materials. */
+  material_mult?: number | null
   /** C-J sell quote and profit per unit after market fees. */
   home_sell_price?: number | null
   profit_per_unit?: number | null
@@ -518,6 +520,11 @@ export interface ReactionCapacityStatus {
 // only the ready-now runs of the Asset-Optimized plan.
 export type LogisticsScope = 'build_list' | 'asset_ready'
 
+export interface PullFromStop {
+  location_id: number
+  quantity: number
+}
+
 export interface LogisticsRow {
   category: string
   location_id: number
@@ -526,8 +533,7 @@ export interface LogisticsRow {
   needed: number
   available: number
   missing: number
-  pull_from_location_id: number | null
-  pull_from_available: number | null
+  pull_from: PullFromStop[]
   volume_m3: number
 }
 
@@ -632,6 +638,8 @@ export interface AssetPlanJob {
   doctrine_ready_runs?: number
   formulas_owned?: number | null
   formulas_needed?: number | null
+  /** Material multiplier the plan applied to this job's direct materials. */
+  material_mult?: number | null
   /** C-J sell quote and profit per unit after market fees. */
   home_sell_price?: number | null
   profit_per_unit?: number | null
@@ -652,6 +660,8 @@ export interface AssetPlan {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -702,6 +712,8 @@ export interface SpecialOrderComputeResult {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
 }
 
 export interface SpecialOrderDetail {
@@ -916,10 +928,19 @@ export interface WealthDelta {
   pct: number | null
 }
 
+export interface PriceJump {
+  type_id: number
+  type_name: string | null
+  previous_price: number
+  price: number
+  value_change: number
+}
+
 export interface WealthChange {
   d1: WealthDelta | null
   d7: WealthDelta | null
   d30: WealthDelta | null
+  price_jumps?: PriceJump[]
 }
 
 export interface PortfolioOverview {
@@ -1023,6 +1044,9 @@ export interface CapitalBucket {
 
 export interface PortfolioCapital {
   source: string
+  // No ledger run, or sharing changed since it: no buckets, total null.
+  needs_rebuild?: boolean
+  hint?: string | null
   buckets: CapitalBucket[]
   total: {
     cost_basis: number | null
@@ -1065,6 +1089,8 @@ export interface ProductionPlan {
   cost_indices_available?: boolean
   prices_available?: boolean
   price_data_stale_hours?: number | null
+  // Recipe materials ESI has no adjusted price for (Job Cost understated).
+  adjusted_prices_missing?: number[]
   order_progress?: OrderProgressRow[]
   // See AssetPlan.stale.
   stale?: boolean
@@ -1106,6 +1132,14 @@ export interface ProductionSettings {
   supercapital_rig_tier: string
   manufacturing_structure_type: string
   manufacturing_rig_tier: string
+  // Time-efficiency rig per profile; null = same tier as the ME rig.
+  reaction_te_rig_tier?: string | null
+  component_te_rig_tier?: string | null
+  supercapital_te_rig_tier?: string | null
+  manufacturing_te_rig_tier?: string | null
+  invention_rig_tier?: string
+  // Link to the shared rig sheet (docs.google.com spreadsheet); empty = no sheet source.
+  rig_sheet_url?: string
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
@@ -1136,6 +1170,9 @@ export interface SdeFreshness {
   local_refreshed_at: string | null
   remote_check_succeeded: boolean
   newer_sde_available: boolean
+  // When the daily check job last saw the remote dump (set only when the
+  // live check failed and its stored result was used).
+  remote_checked_at?: string | null
   trading_universe_stale: boolean
   trading_universe_built_at: string | null
 }
@@ -1238,6 +1275,8 @@ export interface EsiTokenCharacter {
   character_name: string
   write_role: string
   character_has_token_pool: boolean
+  /** SSO rejected the stored refresh token(s); the character must be re-authorized. Optional for older payloads. */
+  refresh_rejected?: boolean
   roles: string[]
   /** Known gap 2 (docs/ESI_ACCESS_PLAN.md) - null if the live lookup failed. */
   corporation_id: number | null
@@ -1265,6 +1304,36 @@ export interface CorporationRoleCheck {
 
 export interface CorporationRoleCheckResult {
   corporations: CorporationRoleCheck[]
+}
+
+export interface RemoveUserResult {
+  removed: number
+  tokens_deleted: number
+  revoked: number
+  revoke_failed: number
+  revoke_skipped: boolean
+  discord_unlinked: boolean
+}
+
+export interface TenantPurgeTable { table: string; rows: number }
+
+export interface TenantPurgePreview {
+  tenant_id: string
+  name: string
+  total_rows: number
+  tables: TenantPurgeTable[]
+}
+
+export interface TenantPurgeResult {
+  purged: string
+  tokens_deleted: number
+  revoked: number
+  revoke_failed: number
+  revoke_skipped: boolean
+  discord_unlinked: boolean
+  name: string
+  rows_deleted: number
+  tables: TenantPurgeTable[]
 }
 
 export interface AdminTenant {
@@ -1342,6 +1411,33 @@ export interface SdeDiff {
   changed_items: SdeChangedItem[]
   changed_blueprints: SdeChangedBlueprint[]
   other_tables: Record<string, SdeTableRowDiff>
+  // Tables that would lose more than 20 % of their rows. Apply needs an
+  // explicit confirmation while this is not empty.
+  shrink_warnings?: SdeShrinkWarning[]
+  // Hard-coded industry constants compared with the dump's dogma.
+  constant_drift?: SdeConstantDrift
+}
+
+export interface SdeShrinkWarning {
+  table: string
+  old: number
+  new: number
+  drop_percent: number
+}
+
+export interface SdeConstantDriftRow {
+  constant: string
+  type_id: number
+  type_name: string | null
+  attribute: string
+  expected: number
+  actual: number
+}
+
+export interface SdeConstantDrift {
+  checked: number
+  drifts: SdeConstantDriftRow[]
+  unchecked: string[]
 }
 
 export type SdeApplyResult = Record<string, number>
@@ -1354,6 +1450,17 @@ export interface ErrorLogRow {
   detail: string | null
   path: string | null
   created_at: string | null
+}
+
+export interface ErrorLogGroup {
+  source: string
+  message: string
+  count: number
+  tenant_count: number
+  first_seen: string | null
+  last_seen: string | null
+  detail: string | null
+  path: string | null
 }
 
 export interface BackupInfo {
@@ -2690,6 +2797,8 @@ export interface AlertSettings {
   bot_configured: boolean
   link_configured: boolean
   linked: boolean
+  // A logout since the link: mail text stays out of DMs until Discord is linked again.
+  mail_content_paused?: boolean
   // The Doctrine contract filters need the doctrine grant.
   doctrine_granted?: boolean
   characters: Array<{
@@ -2849,7 +2958,9 @@ export interface PiPlannerResult {
   }
   evaluation: PiEvaluation
   economics: PiEconomics
-  prices: Record<string, { sell: number | null; buy: number | null }>
+  // side/hub: the hub an import is bought at or an export is valued at
+  // (they differ only with "All hubs").
+  prices: Record<string, { sell: number | null; buy: number | null; side?: 'input' | 'output'; hub?: string | null }>
   trend: PiTrend | null
 }
 
@@ -3669,6 +3780,9 @@ export interface RealizedToolCards {
   total: number | null
   fees_missing_sales?: number
   fees_missing_revenue?: number
+  unreported_sales?: number | null
+  unreported_revenue?: number | null
+  unreported_profit?: number | null
   period: string
   freight: RealizedFreight | null
 }
@@ -4377,13 +4491,18 @@ export interface LocationReport {
 }
 
 // Per-category structure type and ME rigs (Logistics page).
-export type FacilitySource = 'set' | 'name' | 'global'
+export type FacilitySource = 'set' | 'sheet' | 'name' | 'global'
+// A time-efficiency rig tier follows the ME tier unless one is set.
+export type TeFacilitySource = 'set' | 'global' | 'same as ME'
 
 export interface CategoryFacilityUpdate {
   category: string
   structure_type: string | null
   rig_tier_basic: string | null
   rig_tier_advanced: string | null
+  // Time-efficiency rig tiers; null/absent = same tier as the ME rig.
+  te_rig_tier_basic?: string | null
+  te_rig_tier_advanced?: string | null
   // Facility tax override as a fraction (0.0025 = 0.25%); null = last observed, then Settings.
   facility_tax_rate: number | null
 }
@@ -4409,6 +4528,19 @@ export interface CategoryFacilityTax {
   settings_rate: number
 }
 
+// State of the tenant's rig sheet (Production settings link); what the planners read is the last good fetch.
+export interface RigSheetStatus {
+  configured: boolean
+  fetched_at: string | null
+  age_hours: number | null
+  system_count: number
+  duplicates: string[]
+  error: string | null
+  error_at: string | null
+  // Only on the reload response: whether this fetch succeeded.
+  ok?: boolean
+}
+
 export interface CategoryFacilityRow {
   category: string
   profile: string
@@ -4419,6 +4551,8 @@ export interface CategoryFacilityRow {
   split_by_tech: boolean
   saved: Omit<CategoryFacilityUpdate, 'category'>
   from_name: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
+  // What the rig sheet states for the category structure's system (null = no value).
+  from_sheet?: { rig_tier_basic: string | null; rig_tier_advanced: string | null }
   tax: CategoryFacilityTax
   effective: {
     structure_type: string
@@ -4427,7 +4561,12 @@ export interface CategoryFacilityRow {
     rig_source_basic: FacilitySource
     rig_tier_advanced: string | null
     rig_source_advanced: FacilitySource | null
+    te_rig_tier_basic?: string
+    te_rig_source_basic?: TeFacilitySource
+    te_rig_tier_advanced?: string | null
+    te_rig_source_advanced?: TeFacilitySource | null
     security_multiplier: number
+    te_security_multiplier?: number
   }
 }
 
@@ -4435,6 +4574,7 @@ export interface CategoryFacilities {
   categories: CategoryFacilityRow[]
   structure_types: string[]
   rig_tiers: string[]
+  rig_sheet?: RigSheetStatus
 }
 
 // ------------------------------------------- Import tab (import_planner.py)

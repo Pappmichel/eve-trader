@@ -16,10 +16,12 @@ def cfg():
 
 
 def test_create_and_read_session_token_round_trips(cfg):
-    token = access_gate.create_session_token(2112625428, "Some Character", "tenant-abc", cfg)
+    token = access_gate.create_session_token(1234567891, "Some Character", "tenant-abc", cfg)
     data = access_gate.read_session_token(token, cfg)
 
-    assert data == {"character_id": 2112625428, "character_name": "Some Character", "tenant_id": "tenant-abc"}
+    # The payload also carries a millisecond issue time (`iat_ms`).
+    assert isinstance(data.pop("iat_ms"), int)
+    assert data == {"character_id": 1234567891, "character_name": "Some Character", "tenant_id": "tenant-abc"}
 
 
 def test_read_session_token_rejects_tampered_token(cfg):

@@ -9,13 +9,14 @@ tool_key `char_mail` via `_TOOL_PATH_PREFIXES` (api/app.py).
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...actions import ActionError
 from ...character_management import mail_actions, mail_write
+from ..schemas import IdList, LongText, NameText, ShortText
 
 router = APIRouter()
 
@@ -38,16 +39,16 @@ class RefreshRequest(BaseModel):
 
 
 class RecipientIn(BaseModel):
-    type: Optional[str] = None
+    type: Optional[NameText] = None
     id: Optional[int] = None
-    name: Optional[str] = None
+    name: Optional[NameText] = None
 
 
 class SendRequest(BaseModel):
     from_character_id: int
-    recipients: list[RecipientIn]
-    subject: str
-    body: str = ""
+    recipients: Annotated[list[RecipientIn], Field(max_length=100)]
+    subject: ShortText
+    body: LongText = ""
     approved_cost: int = 0
 
 
@@ -56,13 +57,13 @@ class ReadRequest(BaseModel):
 
 
 class LabelsRequest(BaseModel):
-    labels: list[int]
+    labels: IdList
 
 
 class CreateLabelRequest(BaseModel):
     character_id: int
-    name: str
-    color: Optional[str] = None
+    name: NameText
+    color: Optional[NameText] = None
 
 
 @router.get("/folders")

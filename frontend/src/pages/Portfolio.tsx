@@ -21,6 +21,7 @@ import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
 import type { AttentionItem, ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
+import CcpNotice from '../components/CcpNotice'
 
 const PERIOD_KEY = 'portfolio-realized-period'
 const TAB_KEY = 'portfolio-wealth-tab'
@@ -80,6 +81,12 @@ function WealthChanges({ change }: { change: WealthChange | undefined }) {
       {rows.map((row) => (
         <Text key={row.label} size="xs" c="dimmed">
           {row.label}: {row.point ? `${isk(row.point.isk)} (${pct(row.point.pct)})` : '–'}
+        </Text>
+      ))}
+      {(change?.price_jumps ?? []).slice(0, 3).map((jump) => (
+        <Text key={jump.type_id} size="xs" c="warn">
+          Price jump since yesterday: {jump.type_name ?? `type ${jump.type_id}`}{' '}
+          {isk(jump.previous_price)} to {isk(jump.price)} ({isk(jump.value_change)} of value)
         </Text>
       ))}
     </Stack>
@@ -493,6 +500,14 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
 
 function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) {
   if (!capital) return null
+  if (capital.needs_rebuild) {
+    return (
+      <Stack gap="sm">
+        <Title order={4}>Capital</Title>
+        <Text size="sm" c="dimmed">{capital.hint ?? 'Recompute realized profit to update capital.'}</Text>
+      </Stack>
+    )
+  }
   return (
     <Stack gap="sm">
       <Title order={4}>Capital</Title>
@@ -511,6 +526,11 @@ function CapitalSection({ capital }: { capital: PortfolioCapital | undefined }) 
           </Group>
           {row.comparison_value != null && (
             <Text size="xs" c="dimmed" mt={4}>Wealth price {isk(row.comparison_value)}</Text>
+          )}
+          {row.key === 'bpc_runs' && row.quantity != null && (
+            <Text size="xs" c="dimmed" mt={4}>
+              {Math.round(row.quantity).toLocaleString()} runs, valued at copy or invention cost per run
+            </Text>
           )}
         </Card>
       ))}
@@ -658,6 +678,12 @@ export default function Portfolio() {
               hint="Tools this session holds" />
           )}
         </SimpleGrid>
+        {(cards.data?.unreported_sales ?? 0) > 0 && (
+          <Text size="sm" c="dimmed">
+            {qty(cards.data?.unreported_sales ?? 0)} sales ({isk(cards.data?.unreported_profit ?? 0)} profit) are in no tool:
+            their wallet is not shared with the matching tool.
+          </Text>
+        )}
         {cards.data?.freight && (
           <Text size="sm">
             Freight from couriers {isk(cards.data.freight.courier)} · configured rate {isk(cards.data.freight.configured)}
@@ -677,6 +703,7 @@ export default function Portfolio() {
         <Divider />
         <ManualPricesSection />
       </Stack>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

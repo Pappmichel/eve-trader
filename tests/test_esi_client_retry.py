@@ -183,6 +183,9 @@ def test_get_response_converts_dead_refresh_token_to_esierror(monkeypatch):
     # get_token re-calls _load() after the refresh lock; skip storage so
     # this file stays Postgres-free while still exercising real _refresh.
     monkeypatch.setattr(tm, "_load", lambda: None)
+    # A rejected refresh is now remembered on the stored record; keep that
+    # write out of this Postgres-free test.
+    monkeypatch.setattr(tm, "_save_record_with_retry", lambda role: None)
 
     try:
         ESIClient(tokens=tm)._get_response(

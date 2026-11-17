@@ -77,7 +77,10 @@ def env(monkeypatch):
 def _cfgs():
     trading = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0, structure_sell_haircut=1.0,
                             min_margin_threshold=0.0, min_profit_threshold=0.0)
-    refining = RefiningConfig(refining_tax_rate=0.0)
+    # A T1 rig: the security yield factor only exists with a rig (no-rig
+    # yields are 50% x family skill), and these fixtures need Veldspar to be
+    # worth about 63 ISK per unit so only the 50 ISK orders clear the cap.
+    refining = RefiningConfig(refining_tax_rate=0.0, rig_tier="T1-Rig")
     return trading, refining
 
 

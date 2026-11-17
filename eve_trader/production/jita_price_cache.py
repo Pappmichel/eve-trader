@@ -51,11 +51,55 @@ _last_doctrine_extra_count: int = 0
 _last_doctrine_extra_skipped: bool = False
 
 
+# A snapshot older than this many refresh intervals is still served but
+# flagged as stale; older than _MAX_AGE_SECONDS it is not served at all.
+_STALE_INTERVAL_MULTIPLE = 2
+_MAX_AGE_SECONDS = 24 * 3600
+
+
+def _age_seconds() -> Optional[float]:
+    if _updated_at is None:
+        return None
+    try:
+        return (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(_updated_at)).total_seconds()
+    except ValueError:
+        return None
+
+
+def _refresh_interval_seconds() -> float:
+    """The operator's refresh interval (Default tenant's setting, same source
+    as the scheduler job)."""
+    from .. import tenant_scope
+    from ..config import TRADING_CONFIG
+
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        return float(TRADING_CONFIG.jita_price_cache_interval_hours) * 3600.0
+
+
+def stale_age_seconds() -> Optional[float]:
+    """Age of the snapshot when it is older than twice the refresh interval
+    (a refresh job that keeps failing), else None."""
+    age = _age_seconds()
+    if age is None:
+        return None
+    try:
+        limit = _STALE_INTERVAL_MULTIPLE * _refresh_interval_seconds()
+    except Exception:  # noqa: BLE001 - no config to read: no stale flag
+        return None
+    return age if limit > 0 and age > limit else None
+
+
 def get_cached_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
     """Whichever of `type_ids` are currently cached - callers (pricing.
-    jita_prices) fetch the rest live. Empty (not stale-but-served) until the
-    first refresh has actually run, e.g. right after a fresh deploy/restart -
-    self-healing, since jita_prices' own live fallback covers that case."""
+    jita_prices) fetch the rest live. Empty until the first refresh has
+    actually run, e.g. right after a fresh deploy/restart - self-healing,
+    since jita_prices' own live fallback covers that case. A snapshot older
+    than 24 h is not served either (the live fallback takes over); between
+    twice the refresh interval and 24 h it is served and flagged through
+    stale_age_seconds()."""
+    age = _age_seconds()
+    if age is not None and age > _MAX_AGE_SECONDS:
+        return {}
     with _lock:
         return {tid: _cache[tid] for tid in type_ids if tid in _cache}
 

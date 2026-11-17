@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from . import auth
 from ...esi_data import actions as esi_actions
 from ...esi_data.actions import ActionError
+from ..schemas import NameText
 
 router = APIRouter()
 
@@ -51,10 +52,10 @@ def remove_owner(character_id: int, delete_mail_archive: bool = False):
 
 
 class SetSharingRequest(BaseModel):
-    owner_type: str
+    owner_type: NameText
     owner_id: int
-    data_kind: str
-    tool_key: str
+    data_kind: NameText
+    tool_key: NameText
     enabled: bool
 
 
@@ -72,7 +73,7 @@ def set_sharing(req: SetSharingRequest):
 
 class SetCapabilityRequest(BaseModel):
     character_id: int
-    capability_key: str
+    capability_key: NameText
     enabled: bool
 
 

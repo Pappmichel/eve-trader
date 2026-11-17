@@ -70,8 +70,13 @@ def test_deploy_and_setup_rewrite_legacy_false():
     deploy = (_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
     for text in (setup, deploy):
         assert "access_gate_enabled: false" in text
-        assert "access_gate_enabled: true" in text
         assert "EVE_TRADER_ALLOW_GATE_OFF" in text
+    assert "access_gate_enabled: true" in setup
+    # deploy.sh only warns: config.yaml is ACL-managed on a server and an
+    # in-place rewrite would lose its ACL and owner (the runtime forces the
+    # gate on regardless).
+    assert "access_gate_enabled: true" not in deploy
+    assert "WARNING" in deploy
 
 
 def test_env_allows_gate_off_helper():

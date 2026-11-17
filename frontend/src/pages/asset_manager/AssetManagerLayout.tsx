@@ -9,6 +9,7 @@ import { JobProgress } from '../../components/JobProgress'
 import { ToolHeader } from '../../components/ToolHeader'
 import { dateTime } from '../../format'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
+import CcpNotice from '../../components/CcpNotice'
 
 const TABS = [
   { path: '/assets', label: 'Inventory' },
@@ -100,10 +101,7 @@ export default function AssetManagerLayout() {
           <Divider />
           <Freshness />
           <Divider />
-          <Text size="xs" c="dimmed">
-            Unofficial third-party tool, not affiliated with or endorsed by CCP hf. EVE, EVE Online, CCP, and
-            all related logos/trademarks are property of CCP hf.
-          </Text>
+          <CcpNotice />
         </Stack>
       </AppShell.Navbar>
 

@@ -45,14 +45,14 @@ def test_save_record_round_trips_through_a_fresh_instance(tenant):
     # has its own dedicated tests). Keeps this test about round-tripping,
     # not migration.
     tm = TokenManager(OAuthConfig())
-    tm._tokens["buyer:42"] = _record("buyer:42", character_id=42, character_name="Jason Andven")
+    tm._tokens["buyer:42"] = _record("buyer:42", character_id=42, character_name="Example Buyer")
     tm._save_record("buyer:42")
 
     fresh = TokenManager(OAuthConfig())
     assert fresh.has_token("buyer:42")
     record = fresh.get_record("buyer:42")
     assert record.character_id == 42
-    assert record.character_name == "Jason Andven"
+    assert record.character_name == "Example Buyer"
 
 
 @pg_helpers.postgres_required()
@@ -260,3 +260,123 @@ def test_load_migrates_a_bare_role_for_a_different_character_without_colliding(t
     assert sorted(tm.list_roles("seller")) == ["seller:42", "seller:99"]
     assert tm.get_record("seller:42").character_name == "Legacy Seller"
     assert tm.get_record("seller:99").character_name == "New Seller"
+
+
+# --------------------------------------------------- refresh token handling
+import time as _time
+
+import requests as _requests
+
+from eve_trader.auth import RefreshTokenRejected
+
+
+class _Resp:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise _requests.HTTPError(f"{self.status_code}", response=self)
+
+
+def _expired(role="producer:1", refresh="old-refresh"):
+    return TokenRecord(
+        role=role, character_id=1, character_name="Test Char", access_token="stale",
+        refresh_token=refresh, expires_at=0.0, scopes="s1 s2",
+    )
+
+
+def test_refresh_without_a_new_refresh_token_keeps_the_old_one(tenant, monkeypatch):
+    tm = TokenManager(OAuthConfig())
+    tm._tokens["producer:1"] = _expired()
+    tm._loaded = True
+    tm._save_record("producer:1")
+    monkeypatch.setattr(_requests, "post", lambda *a, **k: _Resp(200, {"access_token": "new", "expires_in": 1200}))
+    rec = tm.get_token("producer:1")
+    assert rec.access_token == "new" and rec.refresh_token == "old-refresh"
+    assert TokenManager(OAuthConfig()).get_record("producer:1").refresh_token == "old-refresh"
+
+
+def test_invalid_grant_is_remembered_and_not_retried(tenant, monkeypatch):
+    storage.save_tenant_token("producer:1", asdict(_expired()))
+    calls = []
+
+    def post(*a, **k):
+        calls.append(1)
+        return _Resp(400, {"error": "invalid_grant"})
+    monkeypatch.setattr(_requests, "post", post)
+    with pytest.raises(RefreshTokenRejected):
+        TokenManager(OAuthConfig()).get_token("producer:1")
+    assert len(calls) == 1
+    assert TokenManager(OAuthConfig()).get_record("producer:1").refresh_rejected_at is not None
+    for method in ("get_token", "ensure_fresh"):
+        with pytest.raises(RefreshTokenRejected):
+            getattr(TokenManager(OAuthConfig()), method)("producer:1")
+    assert len(calls) == 1
+    assert issubclass(RefreshTokenRejected, _requests.RequestException)
+
+
+def test_ensure_fresh_with_rejected_token_still_valid_returns_it_without_a_call(tenant, monkeypatch):
+    rec = _expired()
+    rec.expires_at = _time.time() + 120
+    rec.refresh_rejected_at = _time.time()
+    storage.save_tenant_token("producer:1", asdict(rec))
+    monkeypatch.setattr(_requests, "post", lambda *a, **k: pytest.fail("no SSO call expected"))
+    assert TokenManager(OAuthConfig()).ensure_fresh("producer:1").access_token == "stale"
+
+
+@pytest.mark.parametrize("failure", ["5xx", "timeout", "other400"])
+def test_transient_refresh_failures_do_not_mark_the_record(tenant, monkeypatch, failure):
+    storage.save_tenant_token("producer:1", asdict(_expired()))
+
+    def post(*a, **k):
+        if failure == "timeout":
+            raise _requests.Timeout("slow")
+        if failure == "5xx":
+            return _Resp(503, {})
+        return _Resp(400, {"error": "invalid_request"})
+    monkeypatch.setattr(_requests, "post", post)
+    with pytest.raises(_requests.RequestException) as exc:
+        TokenManager(OAuthConfig()).get_token("producer:1")
+    assert not isinstance(exc.value, RefreshTokenRejected)
+    assert TokenManager(OAuthConfig()).get_record("producer:1").refresh_rejected_at is None
+
+
+def test_fresh_authorization_writes_a_record_without_the_rejection(tenant):
+    tm = TokenManager(OAuthConfig())
+    old = _expired()
+    old.refresh_rejected_at = 5.0
+    tm._tokens["producer:1"] = old
+    new = tm._to_record("producer:1", {"access_token": "a", "refresh_token": "r"}, "s",
+                        character_id=1, character_name="Test Char")
+    assert new.refresh_rejected_at is None
+
+
+def test_load_accepts_records_without_and_with_unknown_fields(tenant):
+    base = asdict(_expired())
+    del base["refresh_rejected_at"]
+    storage.save_tenant_token("producer:1", base)
+    assert TokenManager(OAuthConfig()).get_record("producer:1").refresh_rejected_at is None
+    newer = dict(asdict(_expired("producer:2")), future_field="x")
+    storage.save_tenant_token("producer:2", newer)
+    assert TokenManager(OAuthConfig()).get_record("producer:2").role == "producer:2"
+
+
+def test_token_character_list_flags_a_rejected_refresh(tenant, monkeypatch):
+    from eve_trader.esi_data import actions as esi_actions
+    monkeypatch.setattr(esi_actions, "_cached_corporation_id", lambda client, cid: None)
+    rejected = _expired("esi:1")
+    rejected.refresh_rejected_at = 5.0
+    storage.save_tenant_token("esi:1", asdict(rejected))
+    ok = _expired("esi:2")
+    ok.character_id = 2
+    storage.save_tenant_token("esi:2", asdict(ok))
+    rows = {r["character_id"]: r for r in esi_actions.do_list_token_characters()}
+    assert rows[1]["refresh_rejected"] is True
+    assert rows[2]["refresh_rejected"] is False

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from ...actions import ActionError
 from ...pi import actions as pi_actions
+from ..schemas import BoundedDesign, BoundedTemplate, NameText, BoundedPiSettings, BoundedPlan
 
 router = APIRouter()
 
@@ -21,19 +22,19 @@ def _wrap(fn, **kwargs):
 
 
 class PlannerBody(BaseModel):
-    chain: str
+    chain: NameText
     product_type_id: int
     planet_id: Optional[int] = None
     planet_type_id: Optional[int] = None
     radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
     cc_level: Optional[int] = Field(default=None, ge=0, le=5)
-    zone: Optional[str] = None
+    zone: Optional[NameText] = None
     owner_tax_rate: Optional[float] = Field(default=None, ge=0, le=1)
     freight_per_m3: Optional[float] = Field(default=None, ge=0)
     yield_per_head: Optional[float] = Field(default=None, ge=0)
     program_hours: Optional[float] = Field(default=None, gt=0, le=336)
     interval_hours: Optional[float] = Field(default=None, gt=0, le=336)
-    design: Optional[dict[str, Any]] = None
+    design: Optional[BoundedDesign] = None
 
 
 @router.get("/meta")
@@ -74,12 +75,12 @@ def list_plans():
 
 
 @router.post("/plans")
-def create_plan(plan: dict[str, Any]):
+def create_plan(plan: BoundedPlan):
     return _wrap(pi_actions.do_save_plan, plan=plan)
 
 
 @router.put("/plans/{plan_id}")
-def update_plan(plan_id: int, plan: dict[str, Any]):
+def update_plan(plan_id: int, plan: BoundedPlan):
     return _wrap(pi_actions.do_save_plan, plan=plan, plan_id=plan_id)
 
 
@@ -94,7 +95,7 @@ def get_settings():
 
 
 @router.put("/settings")
-def put_settings(updates: dict[str, Any]):
+def put_settings(updates: BoundedPiSettings):
     return _wrap(pi_actions.do_update_settings, updates=updates)
 
 
@@ -127,7 +128,7 @@ def get_production_demand(request: Request):
 
 
 class LayoutBody(BaseModel):
-    template: Any
+    template: BoundedTemplate
     planet_id: Optional[int] = None
     radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
     yield_per_head: Optional[float] = Field(default=None, ge=0)
@@ -140,7 +141,7 @@ def post_validate_layout(body: LayoutBody):
 
 
 class GenerateBody(PlannerBody):
-    shape: Optional[str] = None
+    shape: Optional[NameText] = None
     comment: Optional[str] = Field(default=None, max_length=200)
     # Start from a community reference layout when it does as well as the
     # generator (standard shape only).
@@ -156,7 +157,7 @@ def post_generate_layout(body: GenerateBody):
 
 
 class RetargetBody(BaseModel):
-    template: Any
+    template: BoundedTemplate
     planet_type_id: Optional[int] = None
     product_type_id: Optional[int] = None
     planet_id: Optional[int] = None
@@ -179,9 +180,9 @@ def get_template(template_id: int, planet_id: Optional[int] = None, radius_km: O
 
 
 class TemplateBody(BaseModel):
-    template: Any
+    template: BoundedTemplate
     name: Optional[str] = Field(default=None, max_length=100)
-    source: str = "paste"
+    source: NameText = "paste"
 
 
 @router.post("/templates")

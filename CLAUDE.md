@@ -24,7 +24,10 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 `do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
-`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
+`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. The live reaction activity id 9 -> SDE 11 conversion is one helper,
+`eve_trader/industry_activity.py` (`normalize_activity_id`), imported by the
+fetchers, `production/esi_sync.py` and the realized ledger; do not write
+another inline `== 9` conversion. One deliberate
 exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
 right after a snapshot write to fill the realized-profit
 archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
@@ -87,12 +90,25 @@ excluded and are listed. The page
 (`GET /api/portfolio/wealth`, `/wealth/breakdown`, `/realized-cards`,
 `/realized-history`, `/capital`, `/attention`) shows the breakdown,
 realized profit for every granted channel, capital at FIFO cost from the
-realized-profit ledger (labeled as such), and an attention list. The
-frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
+realized-profit ledger (labeled as such), and an attention list. Capital
+keeps blueprint-copy run layers in their own "Blueprint copies" bucket
+(quantity in runs, market value = the per-run copy value x runs, a copy
+without one left out of both sides); sell orders and contracts draw only
+item layers. Like the realized reports, Capital compares the last run's
+owner fingerprint (`access.owner_scope_hash`): without a run or after a
+sharing change it returns `needs_rebuild` with a hint, no buckets and no
+total. The frontend displays those numbers. `/wealth`, `/wealth/breakdown` and
 `/attention` share one priced computation per tenant for 120 s
 (`eve_trader/wealth_cache.py`; freshness lines stay live, a sync, sharing or
 price-setting change, manual price, or SDE apply drops it at once, nothing is
 cached while quotes are down, and the snapshot write always computes fresh).
+The snapshot also stores `portfolio_snapshots.top_positions` (JSONB): the 20
+largest priced types, one row per type (`type_id`, `quantity`, `unit_price`,
+`value`, `component`), taken from the same priced rows as the total
+(`portfolio_wealth.top_types`). `/wealth-change` returns `price_jumps` against
+yesterday's snapshot: a type in both top lists whose unit price doubled or
+halved and whose value moved by at least 1 % of today's total (a quantity
+change alone is no jump); the page shows a short hint.
 
 All tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
 one Postgres store (`eve_trader/storage.py`, multi-tenant - see
@@ -136,12 +152,12 @@ they laid out side by side:
 | Question | Source | Where |
 |---|---|---|
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
-| What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
-| What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
-| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `realized/loader.py` |
+| What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th percentile weighted by listed volume, `volume_remain`; one tiny order cannot set it) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
+| What's a Production build/buy decision worth? | ESI order-book quotes first (home structure, Jita through the cross-tenant Jita price cache); Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets only as the fallback | `production/pricing.py` |
+| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price. A miss is cached (`ledger_reference_prices`, source `none`) only for a type ESI, the last source, actually answered for (404 counts); an outage of either source never stores a zero price, the next rebuild asks again. Blueprint-copy runs without a cost layer are not priced from the original: they take the per-run value Total Wealth uses (`portfolio.bpc_run_values_with_status`: invention cost per run, or the copy job fee per run for a Tech I copy), frozen per (blueprint type, day) in `ledger_bpc_run_prices` only when that computation ran completely, and stay `estimated` (warning `bpc_run_estimated`); a faction/officer copy stays `price_missing` | `realized/loader.py` |
 | What would a produced item sold through Doctrine have cost to buy (production saving, informational)? | The buy-list purchase price even when building was cheaper, frozen per (type, sale day) in `ledger_saving_buy_prices` by every rebuild: the planner's live quote for a sale today or yesterday, otherwise The Forge daily average plus buy broker fee and haul cost per packaged m3. Never `ledger_valuation_prices` (that holds the cheaper value, i.e. the build cost). Lines without a price are left out and the priced share is shown | `realized/saving_prices.py`, `doctrine/realized.py` |
 | What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
-| What is an owned item worth (Portfolio Total Wealth and Capital)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
+| What is an owned item worth (Portfolio Total Wealth and Capital, and Production's `stock_value`)? | Manual price first; else the buy list's rule on Goonmetrics quotes: the cheaper of home sell and Jita sell plus `haul_cost_per_m3` x packaged m3, without broker fee. A lone overpriced home sell order cannot set the value. A blueprint copy without a manual price is its invention cost per run (cheapest relic grade and decryptor, no ME credit) x remaining runs; a copy that cannot be invented but whose original is on the market (Tech I) is its copy job fee per run (2% manufacturing EIV x copying rate) x runs, never its original's quote; a faction/officer copy stays unpriced | `portfolio._priced`, `portfolio._bpc_run_values` |
 | What freight did a hub purchase pay? | The courier shipment rate (`sum(reward) / sum(volume)`) when a finished shipment to the home structure was issued at or after the purchase from that station; otherwise the configured hub rate frozen at ingest. Packaged m3 stays the volume frozen at ingest | `realized/costing.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
@@ -162,7 +178,12 @@ and Station Trading (`eve_trader/station_trading/realized.py`) read the
 same derived rows and keep their own channel. Portfolio shows one card per
 granted tool and a total from `GET /api/portfolio/realized-cards` when at
 least one of those tools has a figure. That response also carries the
-period's freight, courier and configured rate, summed over those tools.
+period's freight, courier and configured rate, summed over those tools, and
+`unreported_sales` / `unreported_revenue` / `unreported_profit`: results of a
+granted channel whose owner lies outside that tool's own report scope (for
+example a Trading sale from a wallet shared only with Production), counted by
+`realized.db.unreported_results` and shown as one "in no tool" line under the
+cards. They are null while any channel needs a recompute.
 The wallet / jobs /
 orders / contracts **archive** is the source of truth. Derived tables
 (`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
@@ -193,15 +214,39 @@ before the series began is still detected.
 Ledger stock (opening and inventory drift) counts items waiting in
 Deliveries / CorpDeliveries, unlike the planners: a contract buy is booked
 on completion and the reprocessing observations count them too.
-The tenant's characters are the registry entry plus every character
-holding a token in the tenant (the registry alone has one character per
-tenant). Opening quantities are frozen per type
+The tenant's own characters (`loader._tenant_character_ids`, read once per
+rebuild) are the registry entry, every character holding a token in the
+tenant, and every character with an `esi_sharing` row or an Access
+capability, except one removed on the Characters page
+(`esi_removed_characters`, written by `do_remove_token_character`, which
+keeps the sharing rows) that holds no token; a token always wins
+(confirmed with the user 2026-11-15/16). Corporation sharing rows are not
+characters. A character that owns archive rows in a rebuild but is not own
+gets the run warning `foreign_character_with_archive` (contracts with it
+count as sales). A market fill between two own owners (ESI `client_id`,
+archived on `ledger_wallet_transactions`) is a transfer, not a result: the
+sale draws its layers, the buyer's archived purchase of the same fill gets
+layers with that cost plus the fill's tax and broker fees (`source =
+'transfer'`) and is not booked or freighted again; without that purchase
+the sale stays a result warned `internal_trade_unmatched`. Rows archived
+without `client_id` are booked as before. Wallet transactions get the
+journal's gap rule too: a full 2,500-row page newer than the archive is an
+archive gap. Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 6). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 7). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
+
+**Fees are negative journal entries.** Broker fee, market tax, reprocessing tax
+and contract broker fee count a journal entry as cost only when its amount is
+negative (cost = -amount). A positive entry (income of a structure-owning
+corporation wallet) is ignored and reported once per run as
+`fee_income_ignored: <ref_type> <owner> <ISK>`. Days are UTC everywhere:
+`eve_trader/timeutil.py` (`utc_now`, `utc_today`, `utc_now_naive` for stored
+naive ISO strings) replaces `date.today()` and `datetime.utcnow()`, and aware
+timestamps are converted to UTC before they are bucketed by day.
 
 **T0 and fee coverage are separate (confirmed with the user 2026-11-07).**
 Cutover T0 is the oldest archived transaction of any shared wallet and stays
@@ -230,7 +275,10 @@ acceptance, D7 revision 2026-11-14), origin stays `bought` and `source` is `cont
 the price is split by reference value at that date (D4) and the shares sum
 exactly to the price. The tenant as issuer books Production-type items it
 gives as sales under the same FIFO order as market sales, with no sales tax
-and no broker fee. A contract that both gives and receives items is booked
+and no broker fee. A given blueprint line gets no result; the share of the
+price split onto it (by quantity, blueprints have no reference value) is not
+booked and is warned `contract_blueprint_share_unbooked` with its amount.
+A contract that both gives and receives items is booked
 on both sides and warned `contract_item_swap`. Freight on a contract buy
 is the courier rate when a shipment covers that purchase, otherwise the
 configured rate times packaged m3. The packaged m3 stays frozen on
@@ -256,8 +304,14 @@ outputs by reference value (`origin = reprocessed`). A raw deficit next to a
 compressed surplus is a compression (`origin = compressed`, ratio from SDE
 materials). A surplus within 14 days undoes an earlier deficit and the other
 way round (couriers, moves between owners). Yields come from Ore & Minerals /
-Module Reprocessing settings, so outputs are estimates; a wrong yield shows as
-inventory drift. Detection is switched off (warning `reprocess_detection_off`)
+Module Reprocessing settings (a refinery without a rig gets no security yield
+factor, it is a rig attribute), so outputs are estimates; a wrong yield shows as
+inventory drift. A reprocess candidate or pending surplus detected while a courier issued by an own
+character was in transit counts its 14-day undo window from that courier's
+completion (`CourierContract.date_completed`; warning
+`reprocess_undo_window_extended`). The archive keeps only finished and failed
+couriers, so a courier that is still open extends nothing until it completes
+and the next rebuild runs. Detection is switched off (warning `reprocess_detection_off`)
 while a wallet owner does not also share assets and market orders, or a
 contracts owner its assets. Opening is re-derived once when the first
 observation is used (`prod_ledger_runs.reprocess_baseline_at`). Other modules
@@ -375,6 +429,19 @@ is what actually resolves and `.set()`s that per-request/per-job-tick (see
 tenant's Settings-page save into every other tenant's live config, since
 they'd all be reading/writing the exact same object.
 
+**Settings saves are partial.** The six settings routes (Trading, Production,
+Station Trading, Ore & Minerals, Module Reprocessing, Doctrine) take an update
+model built by `api/partial.py` (`partial_model`: every field optional, same
+types) and save `model_dump(exclude_unset=True)`: only fields the client sent
+change, an explicit null on a nullable field is a value. Validation that spans
+fields runs on stored values plus the update (`validate_production_merged`,
+Doctrine's hangar groups via `_with_saved_hangar_fields`). The settings pages
+send only the fields changed against the loaded data (`frontend/src/api/
+changedFields.ts`) and each direct-save site (toggles, hub pickers) sends only
+its own field. The boot load (`api/app.py` `_load_default_tenant_config`)
+applies all seven scopes (trading, production, doctrine, pi, refining,
+station_trading, module_reprocessing) for the default tenant.
+
 If you add a new config field, it's automatically type-checked - no extra
 work needed unless it's an enum-style string field, in which case add it to
 `validate_production_overrides` (Production-specific checks stay out of the
@@ -412,10 +479,39 @@ function or table after that migration (all 5 of its phases are done).
   adding a user, there's no "assign to an existing tenant" flow anymore -
   `admin.do_create_tenant`/the standalone "Create Tenant" UI were removed
   for the same reason. `admin.do_remove_user` deliberately does *not*
-  delete the now-permanently-orphaned tenant or its data - it just
-  deregisters the character, leaving the tenant's data intact/recoverable
-  (matches this app's general preference for reversible over destructive
-  admin operations).
+  delete the now-permanently-orphaned tenant or its data - it deregisters
+  the character and leaves the tenant's data intact, with one deliberate
+  exception: the tenant's stored SSO tokens (every role, alts included) and its
+  Discord link are deleted at once (`storage.delete_all_tenant_tokens`,
+  `delete_alert_destination`), and the refresh tokens are then revoked at SSO
+  on a best-effort basis (`auth.revoke_refresh_tokens`; a failure is only
+  counted, the local deletion never waits for it, and an undecryptable row is
+  deleted without a revoke). The result carries `tokens_deleted`, `revoked`,
+  `revoke_failed`, `revoke_skipped`, `discord_unlinked`. A second, separate
+  exception to "reversible over destructive": `admin.do_purge_tenant`
+  (preview first, `GET/POST /api/admin/tenants/{id}/purge[-preview]`, CLI
+  `eve-trader admin purge-tenant ID --confirm NAME`) deletes an orphaned
+  tenant and all its rows for good. It is refused for the default tenant, the
+  acting admin's own tenant, a tenant with any registry entry (remove the user
+  first) and a wrong confirmation name. Tables come from the catalog (every
+  public base table with a `tenant_id` column), so new tables are covered
+  without a list; RLS tables go in one transaction, the unscoped ones and the
+  `tenants` row after it, so running it again finishes an interrupted purge.
+  Rolling backups keep the data until they rotate out.
+- **Stored SSO tokens are encrypted** (`eve_trader/token_crypto.py`, key list
+  `TOKEN_ENCRYPTION_KEY` in `.env`, first key encrypts, all decrypt). The
+  encryption happens inside `storage.save_tenant_token` /
+  `load_all_tenant_tokens`, so every caller is covered; the stored form is
+  `{"v": 1, "ct": ...}` and the ciphertext carries the tenant id and role, both
+  checked on read. It fails closed: no key, a bad key, a plaintext row or a
+  failed decryption raise `TokenCryptoError` (never skipped, never plaintext),
+  and that error is deliberately neither a dead owner nor a transient ESI
+  failure (no stale clear). The app refuses to start without a key and, outside
+  pytest, when any row is not decryptable (counts only in the log). Operator
+  commands: `eve-trader tenant encrypt-tokens [--check]`, `rotate-token-key`,
+  `decrypt-tokens --write-plaintext` (rollback only); `deploy.sh` stops the
+  service, encrypts and starts it. See `docs/RUNBOOK.md` section 5. Do not add a
+  `CHECK (record ? 'ct')` constraint while a rollback to older code is possible.
 - **Two Postgres roles, never conflate them.** `eve_trader_app`
   (`storage.PG_DSN`) is what the app itself connects as for every real
   query - `NOSUPERUSER NOBYPASSRLS`, so it can *never* accidentally see
@@ -426,6 +522,30 @@ function or table after that migration (all 5 of its phases are done).
   bypasses RLS - see "Backup" above). Never give the app role `BYPASSRLS`
   or run app queries as the owner "to make something easier" - that defeats
   the entire isolation guarantee this migration exists for.
+- **No database credentials in code.** `storage.PG_DSN` is
+  `EVE_TRADER_PG_DSN` (read after `load_dotenv()`) with no default: the
+  module imports without it (CLI `--help`, tests that never touch the
+  database), but `_get_pool()` raises `RuntimeError`. `phase1_schema.sql`
+  creates `eve_trader_app` with no password; every install sets one with
+  `ALTER ROLE`. `tests/conftest.py` sets a local-dev DSN with `setdefault`
+  before any `eve_trader` import and `tests/pg_helpers.py` sets the role's
+  password to match, so tests need no manual setup. `phase1_schema.sql`
+  grants on an explicit table list (no `ON ALL TABLES`, which re-widened
+  narrowed tables on every deploy); each later schema file grants on its own
+  tables, and `tests/test_db_credentials_timeout.py` fails when a table in
+  `public` is not selectable by the app role. `error_log` has no `UPDATE`
+  (`observability_schema.sql` revokes it).
+- **Statement timeout.** App connections carry `statement_timeout` 60 s
+  (`EVE_TRADER_STATEMENT_TIMEOUT_MS`, `0` = off; skipped when the DSN has its
+  own `options`). `storage.long_running()` (a plain `ContextVar`, inherited by
+  `with_current_tenant` workers and `copy_context` threads) makes
+  `connect()`, `connect_own_transaction()`, `batch_session()` (after its
+  isolation statement, which must stay first) and `connect_unscoped()` run
+  `set_config('statement_timeout', '0', true)`. It is enabled in
+  `pipeline_runner._execute`, the scheduler's job worker, the mail archive
+  thread, the startup warm-up threads, `admin.do_apply_sde` and the CLI
+  (`storage.enable_long_running()`). A new background entry point or a
+  synchronous route that runs a long single statement must enable it too.
 - **Every real query goes through `storage.connect()`/`storage.
   batch_session()`.** These are the only two places that check out a pooled
   connection and set `app.tenant_id` (via `SELECT set_config(...)`, the
@@ -436,6 +556,11 @@ function or table after that migration (all 5 of its phases are done).
   `storage.py` or elsewhere in the app - doing so would silently bypass
   this entirely, and nothing would catch it (Postgres itself only enforces
   RLS based on `app.tenant_id` actually being set on *that* connection).
+  `batch_session(isolation="repeatable read")` runs the whole batch on one
+  snapshot (the realized ledger loader reads the archive that way so a sync
+  committing mid-load cannot give a rebuild rows of two moments); nothing in
+  such a block may write what a sync also writes, and a nested batch asking
+  for it inside a weaker one raises `RuntimeError`.
   `storage.connect_unscoped()` is a narrow, deliberate exception for the
   handful of genuinely tenant-independent tables (`tenants`,
   `tenant_registry_entries`) - don't reach for it for anything else.
@@ -488,6 +613,25 @@ function or table after that migration (all 5 of its phases are done).
   it only trades connection-pool cold-start latency for idle-connection
   overhead on Postgres's side, not something to guess at without a measured
   problem.
+- **`storage.with_current_tenant(fn)` carries the whole context.** It snapshots
+  `contextvars.copy_context()` on the calling thread when it wraps and runs
+  every call in its own `ctx.copy()` (one Context cannot be entered by two
+  threads), so the tenant id *and* the per-tenant `TRADING_CONFIG` /
+  `PRODUCTION_CONFIG` values travel into worker threads. The snapshot is
+  taken at wrap time: wrap after `enter_tenant`, not before. Per-thread state
+  (`production/engine._planner_reads_var`, `esi_client._last_modified_seen`) is
+  registered with `storage.register_thread_local_contextvar` and starts at its
+  default in the worker; register any new per-run memo or collector the same way.
+- **Refresh tokens before a batch, not inside it.** `orchestrator.
+  _run_character_owner` / `_run_corporation_kinds_for_members` call
+  `TokenManager.ensure_fresh(role)` (refreshes below 300 s of validity) for
+  every role they will use *before* `storage.batch_session()` opens: a refresh
+  inside the batch needs a second pooled connection for `save_tenant_token`
+  and ten such owners exhausted the pool of 10. A failing pre-refresh is only
+  logged; the lazy refresh in the fetch stays as the fallback. The save after
+  a successful SSO refresh retries `PoolTimeout`/`OperationalError` 3 times and
+  then keeps the new record in memory (SSO may already have rotated the
+  refresh token). Pool size stays 10.
 - **`ThreadPoolExecutor`/raw `threading.Thread` don't inherit contextvars**
   from the thread that spawned them (confirmed live, twice, in this
   migration - `production/esi_sync.py`'s `sync_esi` and `esi_client.py`'s
@@ -511,7 +655,23 @@ an old cookie). The
 character must still belong to the cookie's tenant, the itsdangerous issue
 timestamp must not precede `sessions_valid_after`, and the required
 `tool_key` must be in that tenant-scoped grant list. Missing registry row
-→ 401; registered but missing grant → 403. `/api/gate/status`'s own
+→ 401; registered but missing grant → 403. The session cookie payload also
+carries `iat_ms` (issue time in milliseconds): with it a cookie is revoked
+when `iat_ms` is before `sessions_valid_after` (floored to ms, the same ms
+stays valid); cookies without it keep the old whole-second rule.
+`AuthorizedSession.issued_at` exposes the issue time. `/docs`, `/redoc` and
+`/openapi.json` need a valid session **and** the `admin` grant while the gate
+is on. SSO callback redirects carry only fixed error codes in `?message=`
+(`sso_error`, `state_expired_or_unknown`, `nonce_mismatch`, ...); details go
+to the log, never the URL. The pending-login `state` is random, an entry is
+consumed only when the browser nonce matches, and the per-IP limit groups
+IPv6 by /64. A Characters SSO round without a captured tenant fails with
+`session_lost`; only the `gate` and `reauth` flows exist. A refresh rejected
+by SSO (`invalid_grant`) is stored as `TokenRecord.refresh_rejected_at`; the
+token manager then raises `RefreshTokenRejected` without calling SSO again,
+the ESI client maps it to the 400 "Token refresh failed" status error (dead
+owner, stale clear unchanged), and the Characters list reports
+`refresh_rejected`. `/api/gate/status`'s own
 `tools` field uses the same `authorize_session_cookie` chokepoint so the
 Landing cards and the middleware cannot disagree. Both layers are no-ops
 while `AccessConfig.access_gate_enabled` is `False` (trusted local
@@ -554,6 +714,16 @@ there, since the scope-less write would clobber the key
 `reauth_write_role` reuses). Token *storage* still
 uses prefix keys (`producer:<id>`, …); `ROLE_PREFIX_TOOL` /
 `validate_role_key_for_tool` still own those namespaces for DELETE.
+
+**SSO identity.** The login identity is the access token's JWT, verified locally
+(`TokenManager._identity`: RS256 against the JWKS cached class-wide for 1 h,
+one reload on an unknown `kid`, issuer, both audiences, 60 s leeway). A key
+endpoint outage fails the login as `identity_failed`; token refresh never
+verifies a JWT. Stored scopes are the granted `scp`, not the requested ones.
+The character owner hash is stored on `tenant_registry_entries.owner_hash`
+(first gate login) and on token records; a changed hash is only logged
+(`storage.record_owner_hash`), it never blocks a login or overwrites the stored
+value (a lock-out waits for confirmation that transfers change the hash).
 
 `AccessGate` is character-only (`tenant_registry_entries.entry_type`
 CHECK-constrained to `'character'`, `docs/admin_schema.sql`) - corp/alliance
@@ -694,6 +864,12 @@ runs only with the operator switch `alerts_job_enabled`, independent of every
 tenant's `scheduler_enabled` and of tenant inactivity
 (`tenant_eligibility.alerts_allowed`: gate on -> registered, not suspended,
 holds `char_alerts`). Frontend: `/character-management/alerts`.
+Failed attempts are stamped with the failure time (`runner._failure_time()`), not
+the run's start `now`; three ESI failures in a row (`_RunHealth`) abort the
+subscription loop (`{"ran": True, "aborted": "esi_failures"}`, the rest stays
+unstamped). The alerts job runs via `_run_job(..., wait=False)`: the tick never
+waits for it, the worker writes the status itself, and the per-(tenant, job)
+guard holds until the thread ends.
 `runner.run_for_tenant` guards itself per tenant (`_try_begin_tenant`/
 `_end_tenant`, same shape as `esi_data.orchestrator`'s own per-owner
 `_try_begin_owner`/`_end_owner`, one level up) - confirmed real gap fixed
@@ -702,6 +878,19 @@ holds `char_alerts`). Frontend: `/character-management/alerts`.
 mid-flight when the next 5-minute tick started a second one for the same
 tenant, and both would read `alert_state` before either wrote it - a real
 double-DM risk, not just a wasted ESI call.
+
+Link, logout and text safety. Linking a Discord account needs a login younger
+than 10 minutes (`DISCORD_LINK_FRESH_LOGIN_SECONDS`, gate on only; the gate puts
+`session_issued_at`, `character_id` and `character_name` on `request.state`);
+otherwise `fresh_login_required` (start 400, callback redirect
+`?discord=fresh_login_required`). Moving the link to another Discord account
+first DMs the old one (failure only logged). After a logout/revocation newer
+than `alert_destinations.linked_at` (`storage.latest_session_revocation`) mail
+text is left out of DMs - sender and subject still go out - until Discord is
+linked again; `deliver(..., has_content=True)` refuses content while paused and
+the settings carry `mail_content_paused`. Every third-party string (names,
+subjects, titles, places, mail text) goes through `logic.md_escape` after
+shortening and before composing; `send_dm` sets `flags: 4` (no embeds).
 
 Operator setup: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`
 and optionally `DISCORD_REDIRECT_URI` (see `.env.example`); the redirect URI
@@ -809,7 +998,11 @@ widens the alert type CHECK constraints).
 - **Economics** (`pi/economics.py`): customs = (high-sec NPC 10% - 1% per
   Customs Code Expertise) + owner rate, import x0.5; PI has its own freight
   rate - `hubs.hub_pricing(freight_override=...)`, never the shared hub ->
-  home-structure table. Verdict reasons are a fixed vocabulary.
+  home-structure table. With "All hubs" inputs are bought at the cheapest hub
+  (`hub_pricing`) but outputs are valued at the hub with the highest net
+  revenue for `pi_valuation` (`economics.best_output_hubs`, `Prices.output_*`);
+  the planner response names each import's and export's hub. Verdict reasons
+  are a fixed vocabulary.
 - **Layouts** (`pi/layout/`): `template_io` round-trips EVE templates byte
   for byte (alphabetical keys, La/Lo/Diam floats; pin `S` = product type id,
   `H` = head count, no Command Center pin). Templates are serialized only in
@@ -896,6 +1089,30 @@ Plan and decisions: `docs/LOCATION_RESOLUTION_PLAN.md`. One package,
   report lists characters that own assets in unnamed structures but have not
   ticked it; it never ticks for them.
 
+## Request limits
+
+Every **request** model is bounded; response models never are (a long stored
+value would turn a read into a 500). `api/schemas.py` holds the shared
+`Annotated` types: `NameText` (100), `ShortText` (200), `LongText` (10,000),
+`PasteText` (500,000), `IdList` (50,000 ids), `ShortTextList` (1,000 x
+`ShortText`), `SkillLevels` (0-5, at most 50) and `bounded_json(max_bytes,
+max_depth=12)` for free-form `Any`/dict bodies (`BoundedTemplate` 256 KiB,
+`BoundedDesign`/`BoundedPlan` 64 KiB, `BoundedViewQuery` 16 KiB and 30 keys,
+`BoundedPiSettings` 100 keys). Narrower existing limits stay. A new request
+field needs one of these types; `tests/test_request_limits.py` walks every
+route's body models and fails on an unbounded str, list, dict or `Any`.
+
+Settings models double as response models, so they carry no limits themselves:
+`api/partial.py` `partial_model()` adds them to the derived update model
+(`bound_annotation`: str -> `ShortText`, id lists 50,000, text lists and
+dicts bounded) and re-attaches a top-level `Annotated` constraint that
+pydantic lifts into `FieldInfo.metadata`. Pass `overrides={field: annotation}`
+for a field that needs a tighter shape. `api/body_limit.py` is a pure ASGI
+middleware (not `BaseHTTPMiddleware`) that answers 413 `request_too_large` for
+an `/api/*` body over 1 MiB, declared by `Content-Length` or counted while
+streamed; it sits inside `RequestIdMiddleware` and outside
+`AccessGateMiddleware`. nginx's own body limit is separate (deployment).
+
 ## Testing conventions
 
 - Router tests (`tests/test_api_routers.py`) monkeypatch the already-imported
@@ -954,6 +1171,10 @@ slightly different shapes as new needs came up, not one uniform pattern:
   refresh) -   TTL alone would let a just-changed Setting serve stale results
  for the rest of the TTL window, a real correctness problem, not just a
  performance one.
+- `production/engine.py`'s market-velocity estimate (`_w2_market_velocity`)
+  keeps a small dict (cap 8, other days dropped on insert) behind a lock that
+  guards only the dict, plus one lock per key, so a slow network call blocks
+  only callers with the same key; a failed estimate is never cached.
 - Per-id SDE lookups (`get_sde_type`, `get_type_materials`, and the recipe
  getters `get_blueprint_for_product` / `get_blueprint_materials` /
  `get_blueprint_time` / `find_invention_recipe_candidates_by_product_type_id`)
@@ -1086,7 +1307,9 @@ true now (the paragraphs above are still right except where this overrides
 them):
 
 - **Job switches.** `scheduler_enabled` on `DEFAULT_TENANT_ID` is the master
-  switch (it also gates every other tenant's per-tenant jobs, which still need
+  switch (saving it through `do_update_settings` under the Default tenant calls
+  the idempotent `scheduler.start()`; `_run_job` records `SystemExit`/
+  `KeyboardInterrupt` and re-raises; `_loop` always resets `_thread` on exit) (it also gates every other tenant's per-tenant jobs, which still need
   their own `scheduler_enabled` too - now reachable from Trading Settings'
   "Background scheduler" switch, added 2026-10-01 after a code review found it
   was previously writable only via a direct `tenant_settings` SQL update, no UI
@@ -1106,6 +1329,13 @@ them):
   before this UI existed) still shadows a `config.yaml` default the way any
   other `TradingConfig` field would, unlike the operator-only switches above,
   which have no per-tenant override path at all.
+- **Transient ESI failures retry sooner (ESI kinds only).** A kind whose last
+  failure was transient (5xx, timeout/network `ESIError`, 420/429, `ESIRateLimited`)
+  waits 15 min, then 30, 60, ... (`esi_freshness.consecutive_failures`, read via
+  `storage.list_esi_failure_counts()`, capped at the long backoff below). Dead
+  owners (401/403, SSO rejection), re-auth skips, `suspicious_empty:` rejections
+  and non-ESI errors keep the long backoff and reset the count to 0; a success
+  resets it too. `list_esi_freshness()` keeps its 7-field tuple.
 - **Failure backoff.** A job/kind is due only if the interval since the last
   *success* has elapsed **and** `min(interval, 6 h)` has elapsed since the last
   *attempt* (`scheduler._job_due`, `orchestrator._kind_is_due`). Before this an
@@ -1150,6 +1380,25 @@ them):
   sync themselves once per open when their data was last tried more than 6 h
   ago (`frontend/src/hooks/useSyncWhenStale.ts`, fixed 6 h = default normal
   tier). `skills` stays scheduled (Production/Station Trading need it).
+- **ESI read integrity.** `ESIClient._get_all_pages` checks that every page
+  of one list agrees on `X-Pages` and `Last-Modified` (never `ETag`) and, when
+  the last page is as long as page 1 and page 1 has 1,000 or more rows, probes
+  page N+1 once (404/400 or `[]` is the end). A mismatch reloads the whole list
+  once; a second one raises `ESIError`, so the owner batch rolls back and the
+  old snapshot stays. The collector gets the `Last-Modified` stamps of the
+  accepted pass only. Fetchers (`esi_data/fetchers.py`) additionally reload an
+  empty `assets`/`blueprints` list once when 50 or more rows are stored, and
+  reject it with a `suspicious_empty:` error; the next attempt, whose
+  `esi_freshness.last_error` still starts with that prefix, accepts it (other
+  kinds never do this: 0 after many rows is normal for jobs, orders, wallet).
+  `is_buy` and `is_singleton` are required fields (indexed, a missing one fails
+  the sync); `is_buy_order` and journal `amount` are optional in ESI's spec.
+  `ESI_COMPATIBILITY_DATE` (`config.py`) is None until a date is pinned after
+  diffing the public spec; setting it sends `X-Compatibility-Date` and drops
+  `/latest` from the default `esi_base`. The ESI, Goonmetrics and SDE clients
+  share `esi_client.USER_AGENT`. Goonmetrics `current_prices` remembers a
+  failed market for 45 s (no network for callers in that window) and does not
+  cache an empty list.
 - Defaults: `trading_pipeline_interval_hours` 48 (was 24),
   `jita_price_cache_interval_hours` 3 (was 1), `wallet_balance` in the normal
   tier (was frequent). They only change tenants without a saved override; a
@@ -1158,12 +1407,77 @@ them):
 - Tick stays 300 s on purpose (returning tenants and the future mail alerts need
   short latency; after the above an idle tick is a few small queries).
 
+### SDE guards and the daily SDE check
+
+- **Import checks** (`production/sde.py`): `_fetch_csv` and the two streamed
+  files reject a file with missing columns, a cut-off or over-long row, or fewer
+  rows than `_CSV_SPEC` / `_MIN_STREAM_ROWS` (about half of the real size; invTypes
+  26,000) with `SdeDumpInvalid`, which the preview turns into an `ActionError`.
+  `sde_diff.build_diff` adds `shrink_warnings` (a table losing more than 20 %,
+  `SHRINK_LIMIT_PERCENT`); `admin.do_apply_sde(confirm_shrink=False)` refuses while
+  there are warnings, recomputed from the staged dump (which stays) against
+  `storage.sde_row_counts()`. The first fill of an empty table is no shrink.
+- **Constant drift**: the preview also reports `constant_drift` (`production/
+  constant_drift.py`): skill time bonuses, decryptor stats and example rig bonuses
+  against the dump's dogma. Attribute ids are looked up by name in
+  `dgmAttributeTypes.csv` at fetch time, never hard-coded; a name the dump lacks is
+  listed as not compared. Structure bonuses are not compared. Nothing is changed
+  automatically.
+- **Daily check job**: global job `sde_freshness_check` (switch
+  `SchedulerOperatorConfig.sde_check_job_enabled`, default on; needs the master
+  switch like backup and the Jita cache) stores the remote ETag and time in
+  `sde_refresh_state.remote_etag` / `remote_checked_at` through one HEAD request,
+  once per 24 h with the usual failure backoff, and only after the SDE was applied
+  once. `sde.check_for_newer_sde` (the manual route) falls back to the stored ETag
+  when its live HEAD fails; the Admin page shows "New SDE available".
+- **Jita price cache age**: `jita_price_cache.get_cached_prices` still serves a
+  snapshot older than twice `jita_price_cache_interval_hours` but
+  `stale_age_seconds()` feeds it into `price_data_stale_hours`; older than 24 h it
+  serves nothing and `pricing.jita_prices` falls back to live ESI.
+- **Missing adjusted prices**: plans carry `adjusted_prices_missing` (recipe
+  materials of the priced types that ESI's adjusted-price list lacks; their EIV
+  share reads 0). Informational only, numbers and `job_costs_reliable` stay.
+
+## Server templates
+
+`deploy/eve-trader.service.template` carries the systemd sandboxing directives
+(no `ProtectHome`: the repo lives in the deploy user's home). `setup.sh` runs a
+fresh install as a system user `eve-trader` (no shell, no sudo; ACLs give it
+read on the repo and write on `data/`), keeps the `User=` of an existing unit,
+and `APP_USER` overrides both; `deploy.sh` never assumes deploy and service
+user are the same. Bare-host backups use `EVE_TRADER_PG_BACKUP_USER` (default
+`postgres`); Docker mode keeps `-U postgres`. nginx has an HTTP and an HTTPS
+template (`setup.sh` picks the HTTPS one when a certificate exists); both have
+a 1 MiB body cap, the `eve_trader_timing` log with the request id and proposal
+`limit_req` zones (general `/api/`, strict for solver/rebuild POSTs).
+
+## Error log and data retention
+
+`error_log` (unscoped, `docs/observability_schema.sql`) keeps the newest
+`MAX_ERROR_LOG_ROWS_PER_TENANT` (500) rows per tenant (NULL tenant is its own
+group) plus a global backstop of 5000; `storage.log_error` counts the tenant
+on every insert and prunes only once it is 50 over. The Admin "Recent Errors"
+view is grouped by source and normalized message (UUIDs and digit runs
+ignored; `GET /api/admin/errors/groups`), the raw list stays under a toggle.
+`POST /api/errors` needs a session but no tool grant.
+
+`shortlist_snapshot` (per tenant) and `goonmetrics_history` (global) are
+pruned once a day by scheduler jobs `shortlist_retention` and
+`goonmetrics_retention` (master switch on; the per-tenant one also needs the
+`trading` grant and an active tenant), keeping `TradingConfig.
+history_retention_days` (90, floor 30) of shortlist runs and `TradingConfig.
+price_history_retention_days` (365, floor 90) of Goonmetrics history (the
+Trading price chart shows it all). Both are operator values, not on the
+Settings page; the global job reads the Default tenant's. `storage.prune_*` delete in
+chunks of 20,000 rows, one transaction each; `prune_shortlist_snapshot` never
+deletes a tenant's newest run. Only the newest shortlist run is read.
+
 ## Backup
 
 `eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/
 compressed format - restorable via `pg_restore`) of the whole Postgres
 database plus `config.yaml` into a timestamped `.zip` under `data/backups/`,
-pruning down to `MAX_BACKUPS` (14) automatically. `data/tokens.json` is
+pruning down to `MAX_BACKUPS` (14) automatically. Stored SSO tokens inside the dump are encrypted and the key (`TOKEN_ENCRYPTION_KEY`, `.env`) is never in the ZIP: keep it in a password manager, a restore needs it. `data/tokens.json` is
 **not** included - `TokenManager` persists to Postgres's `tenant_tokens`
 table now, so the live tokens are already inside the dump; a separate,
 possibly-stale file copy would be actively misleading on a restore. Shells
@@ -1184,8 +1498,54 @@ more read/write split needing a one-off exception in `api/app.py`'s
 `_required_tool_for_path` (the old `F-06` carve-out, now gone) - plus the
 scheduler's own global backup job (opt-in via `DEFAULT_TENANT_ID`'s
 `backup_interval_hours`).
+A backup is written to `<name>.zip.partial` (matches no `*.zip` glob, so
+`list_backups()` and both prefixes' pruning never see it), verified with
+`testzip()`, fsynced and only then `os.replace`d to its final name; the
+retention prune runs after that. `backup.cleanup_partial_files()` (app start,
+not under pytest) deletes `.tmp_*` and `*.partial` older than 10 minutes.
 Filenames include microseconds and a uuid so two backups cannot collide;
 `pg_dump` stderr stays in the process log, not in the HTTP 400.
+
+`create_backup(prefix=...)` has a second file-name family,
+`eve_trader_predeploy_*` (`PREDEPLOY_BACKUP_PREFIX`, `eve-trader backup create
+--pre-deploy`), with its own retention (`MAX_PREDEPLOY_BACKUPS` = 5) so several
+deploys in one day cannot push the daily backups out of `MAX_BACKUPS`; the
+Admin list (`list_backups`) deliberately does not show them. `deploy/deploy.sh`
+calls it before the schema step whenever a `docs/*.sql` file changed since the
+previous deploy (or `DEPLOY_BACKUP=1`) and aborts the deploy if it fails.
+
+## Deploy, health and rollback
+
+`deploy/deploy.sh` (steps and rollback semantics are in its header comment and
+`deploy/README.md`; recovery procedures in `docs/RUNBOOK.md`). Settled rules:
+- It updates by `git merge --ff-only` to `DEPLOY_REF` (default
+  `origin/$DEPLOY_BRANCH`), never `git pull`, and refuses on modified tracked
+  files. The code update and the state record (`data/deploy-state/`,
+  untracked) come *before* the re-exec guard, as `git pull` did.
+- The schema files run in one `psql -1` transaction (checked: no `CONCURRENTLY`,
+  `ADD VALUE` or own `BEGIN`/`COMMIT`). tests/pg_helpers.py parses the
+  `for f in phase1_schema.sql ...; do` loop - keep its shape.
+- `frontend/dist` is replaced atomically from `dist.new`; `dist.prev` serves
+  `deploy.sh rollback`. Rollback never undoes database changes (schema is
+  additive). Deploy tags `deploy-<UTC>` are local only, the deploy key is
+  read-only.
+- The script never `chmod`s, `chown`s or `sed -i`s `config.yaml`, `.env` or
+  `data/` (ACL-managed on a server); only `docs/*.sql` is `chmod 644`.
+- `GET /api/health` is public (in `_GATE_EXEMPT_PATHS`) and answers only
+  `{"status": "ok"}` or 503 `{"status": "degraded"}` from a `SELECT 1` with a
+  2 s pool timeout; version, backup age, last ESI sync and scheduler state are
+  behind the `admin` grant at `GET /api/admin/health`
+  (`admin.do_get_health_detail`). Do not add such details to the public one.
+- Every HTTP response carries `X-Request-ID` (`api/request_id.py`, outermost
+  middleware; a client value is accepted only if it matches
+  `^[A-Za-z0-9-]{8,64}$`, else a uuid4 hex). It lives in
+  `request_context.request_id_var` (inherited by `copy_context` threads) and
+  logging_setup's filter prints it as `[%(request_id)s]` (`-` outside a
+  request).
+- Dependencies: `requirements.txt` is runtime only, `requirements-dev.txt` adds
+  the test packages (CI and `.cursor/install.sh` install it); deploy and the
+  start scripts install `requirements.lock` (= `-r requirements.txt`). No hash
+  pins yet (they need a Linux-generated file covering x86_64 and aarch64).
 
 **Update (2026-10-02): the scheduler is now fully on in production**
 (`config.yaml` `scheduler_enabled: true` and the Default tenant's
@@ -1328,8 +1688,13 @@ structures without a known system whose name starts with "<system> - ",
 global structure names, and Offices/containers parented there
 (`storage.location_ids_in_systems`). Production's asset, blueprint, formula
 and running-job readers pass it as `exclude_location_ids`; a new Production
-stock or blueprint reader must pass it too. Valuation, the Asset Manager and
-other tools are not affected.
+stock or blueprint reader must pass it too. That includes manual stock,
+manual blueprints and manual jobs (`engine.production_excluded_kwargs()`;
+`location_id = 0` is in no system and always counts), invention jobs by output
+location, and the reaction window: a reaction job delivering into an excluded
+system still takes its slot but adds no stock or incoming. The storage
+parameter defaults to unfiltered, so the manual-stock page, the ledger,
+valuation, the Asset Manager and other tools are not affected.
 
 ## Job-time character-skill bonus (confirmed real gap, fixed 2026-09-27)
 
@@ -1592,7 +1957,7 @@ Reprocessing `module_reprocessing/shopping_optimizer.py`) solve through one
 shared integer program, `eve_trader/mineral_supply_lp.py`. Every ore, module
 and directly bought mineral is split into supply tiers
 (`eve_trader/market_depth.py`): the hub's real sell orders up to the reference
-price (5th percentile) plus `shopping_price_tolerance` (default 5%, separate
+price (5th percentile weighted by listed volume) plus `shopping_price_tolerance` (default 5%, separate
 field in RefiningConfig and ModuleReprocessingConfig), in price bands starting
 +1%, +2%, +4%... above the cheapest order, each at its volume-weighted price.
 Deeper bands are bought only while they still beat every other source; when a
@@ -1630,6 +1995,12 @@ HiGHS hang below. Mineral value is the Shortlist's C-J figure. The minerals tabl
 shows output against the quantity listed at C-J as a hint only; that does not
 change the selection. Nothing is stored.
 
+**One solver process at a time.** `mineral_supply_lp._solve_mip_in_child` holds a
+module-wide `BoundedSemaphore(1)` around the worker process; a caller that does not
+get the slot within `MIP_QUEUE_WAIT_SECONDS` (25 s) gets `None` and the usual
+rounded, `approximate` LP plan. Do not put the semaphore in `_run_mip` (tests
+replace it).
+
 **HiGHS can ignore its time limit (found 2026-11-05).** Production is aarch64
 with one CPU. With integer column bounds in the billions (3.0B of listed
 Tritanium), HiGHS sat in `HighsRedcostFixing::addRootRedcost` for minutes on an
@@ -1640,7 +2011,8 @@ runs in a killable process (`eve_trader/mip_worker.py`,
 `MIP_PROCESS_DEADLINE_SECONDS`). A list needing over about 2B of one mineral can
 still get a bound that large; the killable process covers that. A killed or
 failed solve returns the LP solution rounded up, flagged `approximate` and shown
-as such. `tests/conftest.py` runs this solve in-process,
+as such. A solve that stops at its time limit with a whole-unit solution
+(worker `status` 1) keeps that solution, also flagged `approximate`. `tests/conftest.py` runs this solve in-process,
 `tests/test_mineral_supply_lp.py` tests the real worker.
 
 **The trigger is a large finite integer bound, not a missing one.** On emulated
@@ -1659,8 +2031,9 @@ Every structure/rig bonus goes through `engine._facility_mults` /
 `facility_resolution` (ME, TE and job cost; also Realized and Max buildable).
 For an item's job category (`job_category`) the order is: the value saved in
 `job_category_facilities` (Logistics page, CLI `eve-trader production
-facilities list|set|clear`), then the rig tier the category structure's name
-states (`production/facility_names.py`, e.g. "IAK-JW - CEZ T2 Adv L T1 Basic
+facilities list|set|clear`), then the tier a **rig sheet** states for the
+category structure's solar system (below), then the rig tier the category
+structure's name states (`production/facility_names.py`, e.g. "IAK-JW - CEZ T2 Adv L T1 Basic
 L"), then the global Settings profile (`*_structure_type` / `*_rig_tier`).
 Rig security comes from the category structure's system when known. Only the
 three ship-size categories have a separate rig for Tech II/III hulls
@@ -1670,6 +2043,52 @@ where it says so; the CEZ/KFEZ/GEZ prefixes are owner tags, not structure
 types. Structure rigs are not in ESI assets unless the corp owns the
 structure, so names are the only automatic source. Data is cached per tenant
 (60 s TTL plus `invalidate_facility_cache()` on every write path).
+
+**Rig sheet source (decided with the user 2026-11-16).** An alliance may keep
+a shared Google sheet with the rig tier per solar system and job category.
+`ProductionConfig.rig_sheet_url` (per tenant, Production settings, validated
+and length-limited) names it; the link is user input and never part of the
+repository, tests or docs. `production/rig_sheet.py` holds a pure parser
+(`parse_csv`, `lookup`) and the only network code (`fetch_csv`: the export
+address is built from the link's sheet id and `gid`, host `docs.google.com`
+only, redirects only to `*.googleusercontent.com`, 10 s, 1 MiB, error texts
+never carry the address or the server's answer). The parser finds each block
+by its `Location` cell, reads the group row above it, identifies a column by
+group plus name (one table, `_COLUMN_TABLE`), follows arrows to the
+neighbouring column inside the same group (a loop or the group's end means no
+value), and treats `F`, empty and unknown codes as no value; only `T1`/`T2`/`N`
+count, a qualifier in brackets counts only as `All` (a category is not one
+reaction kind). A column that depends on the structure type (Raitaru/Azbel/
+Sotiyo, Athanor/Tatara) is read at the type of the category's structure; an
+unknown type gives no value. The last good parse is stored per tenant in
+`production_rig_sheet` (with the source key of the link it came from, so a
+changed link never reads the old sheet). **Planners and `facility_resolution`
+never touch the network**: only `actions.do_reload_rig_sheet` does (saving a
+new link, the Logistics page's "Reload rig sheet" button, and the page's
+automatic reload when the stored copy is older than 24 h). A failed reload
+keeps the stored rows and shows its error. The sheet applies only when the
+category structure's system is known and listed and the cell resolves to
+`T1`/`T2`/`N`; `N` ("No Rig") beats the name. TE follows the ME tier as before.
+The Research/Copy/Invention blocks are not read.
+
+**ME and TE rigs are separate tiers (decided with the user 2026-11-16).** The
+ME tier follows the order above (`rig_tier`, `rig_source`). The time-efficiency
+tier (`te_rig_tier`, `te_rig_source`) is the category's saved
+`te_rig_tier_basic`/`_advanced`, else the profile's global
+`<profile>_te_rig_tier`, else **the same tier as ME** ("same as ME"), so nothing
+changes until someone sets a TE tier; the structure name is an ME source only.
+Each tier may carry its own security table (`RigTier.security`; the Thukker
+tier uses 0.1 / 1.9 / 0.1 and has no TE bonus, never offered for reactions), and
+`facility_resolution` returns the ME and TE security multipliers separately
+(`security_multiplier` stays the ME one). The invention cost rig
+(`invention_rig_tier`, `constants.INVENTION_RIG_TIERS`, kept out of the
+per-category dropdowns) is resolved by `facility_resolution(None, "Invention",
+"invention", cfg)` with the invention system's security and only lowers the
+modelled invention/copy fee in `invention.fee_rates`; an observed total rate
+stays authoritative. Rig values follow the SDE dogma: the Thukker material rig
+is the T1 base (2 %) scaled by its own table (so 3.8 % in low sec); its extra
+`attributeThukkerEngRigMatBonus` (-3.7) is not applied until its effect is
+confirmed. Invention cost rigs are -10 % / -12 % with the standard table.
 
 **Facility tax is observed, never bound to a station or category (confirmed
 with the user 2026-11-07).** A structure owner changes the rate at any time, so
@@ -1807,6 +2226,11 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
   full history and every PR description were already scrubbed of these once
   (2026-08-24, ahead of making the repo public) - don't reintroduce the
   pattern going forward.
+- **Hooks, fonts, notices.** `git config core.hooksPath .githooks` enables the
+  `commit-msg` hook that rejects AI attribution lines (CI checks a pull
+  request's commits the same way). Fonts are bundled via `@fontsource` (no
+  Google hosts, the CSP allows none); the CCP notice is the one `CcpNotice`
+  component; licenses of data and dependencies are in `THIRD_PARTY_NOTICES.md`.
 - **Everything that goes into the repo is written in English (confirmed
   2026-10-01).** Code, comments, docs, plan files, commit messages, PR and
   issue text - regardless of the language the conversation with the user is

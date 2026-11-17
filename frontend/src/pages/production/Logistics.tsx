@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton, NumberInput, SegmentedControl,
@@ -15,6 +15,7 @@ import { StructureIdField } from '../../components/StructureIdField'
 import { useAction } from '../../hooks/useAction'
 import { qty, volume } from '../../format'
 import { CategoryFacilityFields } from './CategoryFacilityFields'
+import { RigSheetCard } from './RigSheetCard'
 import { StalePlanAlert } from './StalePlanAlert'
 
 const SCOPE_KEY = 'production-logistics-scope'
@@ -85,7 +86,7 @@ export default function Logistics() {
     if (!settings) return
     const locationId = sourceDraft
     const result = await productionApi.updateSettings({
-      ...settings, distribution_source_location_id: locationId,
+      distribution_source_location_id: locationId,
     })
     // Same best-effort resolve-after-save pattern as saveLocation below
     // (GitHub issue #21 - this used to never be called at all for the
@@ -104,7 +105,7 @@ export default function Logistics() {
   const saveInventionLocation = useAction('Invention Station Saved', async () => {
     if (!settings) return
     const locationId = inventionDraft
-    const result = await productionApi.updateSettings({ ...settings, invention_location_id: locationId })
+    const result = await productionApi.updateSettings({ invention_location_id: locationId })
     if (locationId != null) {
       try {
         await productionApi.resolveStructureName(locationId)
@@ -203,6 +204,11 @@ export default function Logistics() {
     ['production', 'category-facilities'], ['production', 'logistics'],
   ])
 
+  const reloadRigSheet = useAction('Rig Sheet Reloaded', productionApi.reloadRigSheet, [
+    ['production', 'category-facilities'], ['production', 'logistics'],
+  ])
+  const reloadRigSheetNow = useCallback(() => reloadRigSheet.mutate(), [reloadRigSheet.mutate])  // eslint-disable-line react-hooks/exhaustive-deps
+
   const grouped = useMemo(() => {
     const map = new Map<string, LogisticsRow[]>()
     for (const r of rows ?? []) {
@@ -222,17 +228,27 @@ export default function Logistics() {
     },
     { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },
     {
-      // Can point at another category's currently-configured station (a
-      // surplus beyond its own demand) or a category's own former station
-      // (Structure per Category above was reassigned away from it) - either
-      // way, its whole stock counts once nobody else's demand claims it.
-      header: 'Pull From', accessorKey: 'pull_from_location_id', size: 200,
+      // One or more stops, in the order to move them: the warehouse, then
+      // other category stations' surplus (largest first), then this
+      // category's former stations. Each line is the quantity to take
+      // there, and later rows of the same item already see what earlier
+      // rows claimed.
+      header: 'Pull From', id: 'pull_from', size: 240,
+      accessorFn: (row) => (row.pull_from ?? []).map((stop) => {
+        const name = structureNames?.[String(stop.location_id)] ?? stop.location_id
+        return `${name} (${qty(stop.quantity)})`
+      }).join(', '),
       cell: (i) => {
-        const locationId = i.getValue() as number | null
-        if (locationId == null) return '–'
-        const name = structureNames?.[String(locationId)]
-        const available = i.row.original.pull_from_available
-        return `${name ?? locationId} (${qty(available)})`
+        const stops = i.row.original.pull_from ?? []
+        if (stops.length === 0) return '–'
+        return (
+          <Stack gap={0}>
+            {stops.map((stop) => {
+              const name = structureNames?.[String(stop.location_id)] ?? stop.location_id
+              return <Text key={stop.location_id} size="sm">{name} ({qty(stop.quantity)})</Text>
+            })}
+          </Stack>
+        )
       },
     },
   ], [structureNames])
@@ -278,6 +294,7 @@ export default function Logistics() {
 
   return (
     <Stack>
+      <RigSheetCard status={facilities?.rig_sheet} reloading={reloadRigSheet.isPending} onReload={reloadRigSheetNow} />
       <Card withBorder>
         <Title order={4} mb="xs">Structure per Category</Title>
         <Text size="xs" c="dimmed" mb="sm">

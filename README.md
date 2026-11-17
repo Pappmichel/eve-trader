@@ -41,6 +41,7 @@ python3 -m venv .venv && source .venv/bin/activate     # or .venv\Scripts\activa
 # Python 3.10, 3.11 (CI), or 3.12. Install the lockfile, not open ranges:
 pip install -r requirements.lock
 pip install -e . --no-deps                             # installs the `eve-trader` command
+# To run the tests: pip install -r requirements-dev.txt (runtime pins + pytest, httpx)
 
 cp .env.example .env          # fill in EVE_SSO_CLIENT_ID (register at developers.eveonline.com)
 cp config.example.yaml config.yaml   # adjust structure_id, character names, thresholds
@@ -49,8 +50,9 @@ cp config.example.yaml config.yaml   # adjust structure_id, character names, thr
 ### Postgres (required before the app will start)
 
 Local dev runs Postgres in Docker (`docs/MULTI_TENANT_PLAN.md`'s "Phase 0"
-setup) - the default `EVE_TRADER_PG_DSN` in `.env.example` already matches
-this exactly, so no `.env` edit is needed for local dev:
+setup). `EVE_TRADER_PG_DSN` has no built-in default: `cp .env.example .env`
+brings a local-dev line that matches the `ALTER ROLE` step below. The app
+refuses to start without the variable:
 
 ```bash
 docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
@@ -95,9 +97,14 @@ Get-Content docs\asset_manager_schema.sql | docker exec -i eve-trader-pg psql -U
 Get-Content docs\location_registry_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
-(`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in
-dev password `app_devpassword` - fine for local dev, never for a real
-deployment, see `deploy/README.md`.)
+`phase1_schema.sql` creates the `eve_trader_app` role **without a password**.
+After applying the schema, give it the password your `EVE_TRADER_PG_DSN` uses
+(for local dev, the value in `.env.example`; `TOKEN_ENCRYPTION_KEY` is also required: generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`; a real deployment needs a real
+generated one, see `deploy/README.md`):
+
+```bash
+docker exec -i eve-trader-pg psql -U postgres -d eve_trader   -c "ALTER ROLE eve_trader_app WITH PASSWORD 'app_devpassword';"
+```
 
 ### Registering an EVE SSO application
 
@@ -208,6 +215,18 @@ They never touch the `eve_trader` dev database: they create and use
 and apply every schema file to it. `EVE_TRADER_TEST_PG_DB` changes that
 base name.
 
+## Development: commit-message hook
+
+Enable the repository's hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The `commit-msg` hook rejects `Co-Authored-By:` lines naming Claude, Anthropic
+or Cursor, `Claude-Session:` lines and "Generated with Claude Code" footers.
+CI checks the commits of every pull request against the same rule.
+
 ## Deploying somewhere reachable beyond localhost
 
 See [`deploy/README.md`](deploy/README.md) and
@@ -243,6 +262,11 @@ at a glance.
 
 ## License
 
-[MIT](LICENSE). EVE Trader is an unofficial third-party tool, not affiliated
-with or endorsed by CCP hf. EVE, EVE Online, CCP, and all related logos and
-trademarks are the property of CCP hf.
+[MIT](LICENSE). Third-party data and dependency licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights
+are reserved worldwide. All other trademarks are the property of their
+respective owners. EVE Online, the EVE logo, EVE and all associated logos and
+designs are the intellectual property of CCP hf. EVE Trader is an unofficial
+third-party tool, not affiliated with or endorsed by CCP hf.

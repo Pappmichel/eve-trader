@@ -92,3 +92,31 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON job_category_facilities TO eve_trader_ap
 -- own jobs at the category's structure, and the Settings rate when there is
 -- none (production/facility_tax.py, engine.facility_resolution).
 ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS facility_tax_rate DOUBLE PRECISION;
+
+-- Separate time-efficiency rig tier per category (NULL = same tier as the ME
+-- rig tier, the behaviour before the split).
+ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS te_rig_tier_basic TEXT;
+ALTER TABLE job_category_facilities ADD COLUMN IF NOT EXISTS te_rig_tier_advanced TEXT;
+
+-- Last good state of the tenant's rig sheet (production/rig_sheet.py): the
+-- parsed rows per solar system, read by engine.facility_resolution. Planners
+-- never fetch the sheet; a failed fetch keeps the stored rows and only records
+-- the error. `source_key` identifies the sheet and tab the rows came from, so
+-- a changed link never reuses another sheet's state.
+CREATE TABLE IF NOT EXISTS production_rig_sheet (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    source_key TEXT NOT NULL,
+    fetched_at TIMESTAMPTZ,
+    systems JSONB NOT NULL DEFAULT '{}'::jsonb,
+    duplicates JSONB NOT NULL DEFAULT '[]'::jsonb,
+    last_error TEXT,
+    last_error_at TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id)
+);
+ALTER TABLE production_rig_sheet ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON production_rig_sheet;
+CREATE POLICY tenant_isolation ON production_rig_sheet
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON production_rig_sheet TO eve_trader_app;

@@ -23,8 +23,8 @@ from typing import Any, Iterator, Optional
 import requests
 
 from . import storage
-from .auth import TokenManager
-from .config import TRADING_CONFIG, TradingConfig
+from .auth import RefreshTokenRejected, TokenManager
+from .config import ESI_COMPATIBILITY_DATE, TRADING_CONFIG, TradingConfig
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ METALEVEL_ATTRIBUTE_ID = 633  # EVE SDE dogma attribute "metaLevel" (0=Tech I, 5
 _last_modified_seen: ContextVar[Optional[list[datetime]]] = ContextVar(
     "esi_last_modified_seen", default=None,
 )
+storage.register_thread_local_contextvar(_last_modified_seen, None)
 
 
 @contextmanager
@@ -417,6 +418,8 @@ class ESIClient:
         self.tokens = tokens or TokenManager()
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
+        if ESI_COMPATIBILITY_DATE:
+            self.session.headers["X-Compatibility-Date"] = ESI_COMPATIBILITY_DATE
 
     @classmethod
     def clear_price_caches(cls) -> None:
@@ -558,6 +561,15 @@ class ESIClient:
         if auth_role:
             try:
                 headers.update(self.tokens.auth_header(auth_role))
+            except RefreshTokenRejected as e:
+                # Dead refresh token: surfaces as the same 400 status error a
+                # live rejection always did, so the sync orchestrator treats
+                # the owner as dead and clears stale data.
+                raise ESIStatusError(
+                    400,
+                    f"Token refresh failed for role '{auth_role}': refresh token rejected. "
+                    f"Re-authorize this character.",
+                ) from e
             except requests.RequestException as e:
                 # Confirmed real bug: TokenManager._refresh calls
                 # resp.raise_for_status(), so a revoked/expired refresh token
@@ -784,54 +796,110 @@ class ESIClient:
         chunked already uses for the equivalent "many independent chunks,
         latency-bound" situation. Results are reassembled in page order
         before returning, matching the old sequential call's ordering."""
+        collector = _last_modified_seen.get()
+        problem = ""
+        for attempt in (1, 2):
+            # The collector is bypassed while the pages are read: a rejected
+            # pass must not leave its (older cache state) stamps behind. The
+            # accepted pass reports its own stamps below.
+            token = _last_modified_seen.set(None)
+            try:
+                out, responses, problem = self._get_all_pages_once(
+                    path, params, auth_role, max_workers)
+            finally:
+                _last_modified_seen.reset(token)
+            if not problem:
+                if auth_role and collector is not None:
+                    for page_resp in responses:
+                        token = _last_modified_seen.set(collector)
+                        try:
+                            _note_last_modified(page_resp)
+                        finally:
+                            _last_modified_seen.reset(token)
+                return out
+            if attempt == 1:
+                log.warning("Inconsistent ESI pages for %s (%s); reloading once", path, problem)
+        raise ESIError(f"Inconsistent ESI pages for {path} after retry: {problem}")
+
+    # A last page as long as page 1 on a list this big may mean X-Pages was
+    # too small; one probe tells (a 404 counts against ESI's error budget,
+    # so a short last page is never probed).
+    _FULL_PAGE_PROBE_MIN = 1000
+
+    def _get_all_pages_once(self, path: str, params: Optional[dict], auth_role: Optional[str],
+                             max_workers: int) -> tuple[list, list, str]:
+        """One pass over every page. Returns (rows, responses, problem);
+        `problem` names the failed consistency check, empty when the pages
+        belong together."""
         base_params = dict(params or {})
         first_params = dict(base_params, page=1)
         resp = self._get_response(path, first_params, auth_role)
         first_chunk = resp.json()
         if not first_chunk:
-            return []
+            return [], [resp], ""
         total_pages = int(resp.headers.get("X-Pages", "1"))
-        if total_pages <= 1:
-            return first_chunk
 
         def _fetch_page(page: int) -> requests.Response:
             page_params = dict(base_params, page=page)
             return self._get_response(path, page_params, auth_role)
 
         pages: dict[int, list] = {1: first_chunk}
-        # storage.with_current_tenant: ThreadPoolExecutor workers don't
-        # inherit contextvars from the submitting thread - if auth_role's
-        # token happens to be expired right now, _fetch_page's auth_header()
-        # call would otherwise refresh it from inside a worker thread with no
-        # ambient tenant set, 500ing with "no current tenant set".
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(storage.with_current_tenant(_fetch_page), page): page
-                       for page in range(2, total_pages + 1)}
-            for future in as_completed(futures):
-                page_resp = future.result()
-                # Worker threads do not see this thread's contextvars, so
-                # their pages' Last-Modified is noted here.
-                if auth_role:
-                    _note_last_modified(page_resp)
-                pages[futures[future]] = page_resp.json()
+        responses: dict[int, requests.Response] = {1: resp}
+        if total_pages > 1:
+            # storage.with_current_tenant: ThreadPoolExecutor workers don't
+            # inherit contextvars from the submitting thread - if auth_role's
+            # token happens to be expired right now, _fetch_page's auth_header()
+            # call would otherwise refresh it from inside a worker thread with no
+            # ambient tenant set, 500ing with "no current tenant set".
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(storage.with_current_tenant(_fetch_page), page): page
+                           for page in range(2, total_pages + 1)}
+                for future in as_completed(futures):
+                    page_resp = future.result()
+                    responses[futures[future]] = page_resp
+                    pages[futures[future]] = page_resp.json()
 
         out: list = []
         for page in range(1, total_pages + 1):
             chunk = pages[page]
             # An empty follow-up page inside X-Pages used to silently shorten
             # the list (and replace a good snapshot). Retry once; still empty
-            # → fail closed. An empty first page still means [] above.
+            # -> fail closed. An empty first page still means [] above.
             if page > 1 and not chunk:
                 page_resp = _fetch_page(page)
-                if auth_role:
-                    _note_last_modified(page_resp)
+                responses[page] = page_resp
                 chunk = page_resp.json()
                 if not chunk:
                     raise ESIError(
                         f"Empty ESI page {page}/{total_pages} for {path} after retry"
                     )
             out.extend(chunk)
-        return out
+
+        ordered = [responses[p] for p in range(1, total_pages + 1)]
+        problem = self._page_header_problem(ordered, resp.headers.get("X-Pages", "1"))
+        if problem:
+            return out, ordered, problem
+        if (len(first_chunk) >= self._FULL_PAGE_PROBE_MIN
+                and len(pages[total_pages]) == len(first_chunk)):
+            try:
+                extra = _fetch_page(total_pages + 1).json()
+            except ESIStatusError as e:
+                if e.status not in (400, 404):
+                    raise
+                extra = []
+            if extra:
+                return out, ordered, f"data beyond the last page ({total_pages})"
+        return out, ordered, ""
+
+    @staticmethod
+    def _page_header_problem(responses: list, first_x_pages: str) -> str:
+        for number, page_resp in enumerate(responses, start=1):
+            if page_resp.headers.get("X-Pages", "1") != first_x_pages:
+                return f"X-Pages differs on page {number}"
+        stamps = [page_resp.headers.get("Last-Modified") for page_resp in responses]
+        if all(stamps) and len(set(stamps)) > 1:
+            return "Last-Modified differs between pages"
+        return ""
 
     # -------------------------------------------------- market groups / types
     def list_market_group_ids(self) -> list[int]:
@@ -1285,6 +1353,12 @@ class ESIClient:
         url = f"{self.cfg.esi_base}{path}"
         try:
             headers = dict(self.tokens.auth_header(auth_role))
+        except RefreshTokenRejected as e:
+            raise ESIStatusError(
+                400,
+                f"Token refresh failed for role '{auth_role}': refresh token rejected. "
+                f"Re-authorize this character.",
+            ) from e
         except requests.RequestException as e:
             raise ESIError(
                 f"Token refresh failed for role '{auth_role}': {e}. Re-authorize this character."
@@ -2076,25 +2150,71 @@ class ESIClient:
         return out
 
 
-def _summarize_orders(orders: list[dict]) -> OrderStats:
+# Module-level switch for the one comparison script that wants the old
+# count-based rule. Not a setting and not read from config.
+PERCENTILE_BY_VOLUME = True
+
+
+def _summarize_orders(orders: list[dict], by_volume: Optional[bool] = None) -> OrderStats:
     """percentile = 5th percentile sell price / 95th percentile buy price (a
     robust proxy for "realistic" best price, ignoring outlier orders), volume
     = sum of volume_remain across all orders on that side.
+
+    The percentile is weighted by volume_remain: the price of the first order
+    (best price first) at which the cumulative listed volume reaches 5% of the
+    side's volume, so one tiny order cannot set the price of a deep book.
+    `by_volume=False` (or PERCENTILE_BY_VOLUME = False) gives the old rule
+    that counts orders instead, kept for before/after comparisons.
     """
-    sells = sorted((o["price"] for o in orders if not o["is_buy_order"]))
-    buys = sorted((o["price"] for o in orders if o["is_buy_order"]), reverse=True)
-    sell_vol = sum(o["volume_remain"] for o in orders if not o["is_buy_order"])
-    buy_vol = sum(o["volume_remain"] for o in orders if o["is_buy_order"])
+    if by_volume is None:
+        by_volume = PERCENTILE_BY_VOLUME
+    sell_orders = [o for o in orders if not o["is_buy_order"]]
+    buy_orders = [o for o in orders if o["is_buy_order"]]
+    sell_vol = sum(o["volume_remain"] for o in sell_orders)
+    buy_vol = sum(o["volume_remain"] for o in buy_orders)
+    if by_volume:
+        sell_p = _volume_percentile(sell_orders, 0.05, descending=False)
+        buy_p = _volume_percentile(buy_orders, 0.05, descending=True)
+    else:
+        sell_p = _percentile(sorted(o["price"] for o in sell_orders), 0.05)
+        buy_p = _percentile(sorted((o["price"] for o in buy_orders), reverse=True), 0.05)
     return OrderStats(
-        sell_percentile=_percentile(sells, 0.05),
+        sell_percentile=sell_p,
         sell_volume=sell_vol,
-        buy_percentile=_percentile(buys, 0.05),
+        buy_percentile=buy_p,
         buy_volume=buy_vol,
     )
 
 
+def _summarize_orders_by_count(orders: list[dict]) -> OrderStats:
+    """The previous, order-count based rule under its own name (comparison
+    scripts and tests)."""
+    return _summarize_orders(orders, by_volume=False)
+
+
+def _volume_percentile(side_orders: list[dict], pct: float, descending: bool) -> Optional[float]:
+    """Price of the first order, walking from the best price (lowest for
+    sells, highest for buys), where the cumulative volume_remain reaches `pct`
+    of the side's total volume. Empty side -> None. A side whose orders all
+    report zero volume falls back to the count-based rule."""
+    if not side_orders:
+        return None
+    ordered = sorted(side_orders, key=lambda o: o["price"], reverse=descending)
+    total = sum(o["volume_remain"] for o in ordered)
+    if total <= 0:
+        return _percentile([o["price"] for o in ordered], pct)
+    threshold = total * pct
+    cumulative = 0.0
+    for o in ordered:
+        cumulative += o["volume_remain"]
+        if cumulative >= threshold:
+            return o["price"]
+    return ordered[-1]["price"]
+
+
 def _percentile(sorted_values: list[float], pct: float) -> Optional[float]:
-    """`sorted_values` must already be sorted ascending (both call sites in
+    """Count-based percentile (the previous rule; `_summarize_orders(by_volume=
+    False)`). `sorted_values` must already be in best-first order (both call sites in
     _summarize_orders sort before calling) - not re-sorted here since both
     callers already have the sort order they need for their own side (sells
     ascending for a low percentile, buys descending so the same `pct` picks

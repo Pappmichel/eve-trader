@@ -195,6 +195,13 @@ def test_list_users_with_grants_excludes_orphaned_tool_grants_from_a_stale_tenan
     assert users[42]["tool_keys"] == ["trading"]  # not ["admin", "trading"]
 
 
+@pytest.fixture(autouse=True)
+def _empty_sde_tables(monkeypatch):
+    """do_apply_sde compares the staged dump with the current table sizes
+    (a database read needing a tenant); these tests start from empty tables."""
+    monkeypatch.setattr(storage, "sde_row_counts", lambda: {})
+
+
 def test_do_apply_sde_invalidates_caches(monkeypatch):
     # GitHub issue #34: moved here from production/actions.py - the SDE
     # cache is global/shared, not per-tenant, so this is a superadmin action.
@@ -282,7 +289,9 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
         return []
 
     monkeypatch.setattr(sde, "_fetch_csv", fake_fetch)
-    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(), equivalence_type_ids=frozenset(): ({}, {}, {}))
+    monkeypatch.setattr(sde, "_MIN_STREAM_ROWS", {k: 0 for k in sde._MIN_STREAM_ROWS})  # tiny mocked dump
+    monkeypatch.setattr(sde, "_fetch_attribute_ids", lambda session, base: {})
+    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(), equivalence_type_ids=frozenset(), **kw: ({}, {}, {}))
     monkeypatch.setattr(sde, "_fetch_pi_planets", lambda session, base: [])
     monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
     monkeypatch.setattr(storage, "get_sde_snapshot_for_diff", lambda: {
@@ -402,7 +411,7 @@ def test_grant_default_tools_is_additive_and_keeps_extra_grants():
 def test_do_apply_sde_revalidates_doctrine_contracts_when_equivalents_change(monkeypatch):
     maps = iter([{1: 1, 2: 1}, {1: 1, 2: 1, 3: 1}])
     monkeypatch.setattr(storage, "get_sde_equivalence_class_map", lambda: next(maps))
-    monkeypatch.setattr(admin, "_staged_sde", object())
+    monkeypatch.setattr(admin, "_staged_sde", sde.FetchedSde())
     monkeypatch.setattr(sde, "apply_sde", lambda staged: {"sde_types": 1})
     monkeypatch.setattr(admin, "invalidate_discover_cache", lambda all_tenants=False: None)
     monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda all_tenants=False: None)

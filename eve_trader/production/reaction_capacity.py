@@ -354,6 +354,8 @@ def window_state(
 
     Jobs whose installer is excluded from planning never count as busy
     (finding 1.4.5). Without a window date every slot is free (D12).
+    A job whose output lands in one of Production's excluded systems still
+    takes its slot, but its output is not counted as stock or incoming.
     """
     rows = character_rows if character_rows is not None else jobs_mod.character_slot_overview()
     total, _free_now = reaction_slot_totals(cfg, character_rows=rows)
@@ -369,6 +371,8 @@ def window_state(
 
     w2_dt = window_dt + timedelta(days=float(cfg.reaction_window_interval_days))
     excluded = _excluded_installer_names(rows)
+    from .engine import production_excluded_location_ids
+    excluded_locations = {int(i) for i in (production_excluded_location_ids(cfg) or ())}
 
     if industry_jobs is None:
         from ..esi_data.access import shared_owner_ids
@@ -384,7 +388,7 @@ def window_state(
     incoming1: dict[int, float] = {}
     incoming2: dict[int, float] = {}
     for (_job_id, activity_id, blueprint_type_id, product_type_id, _name, runs,
-         _loc, status, end_date, _start, installer) in industry_jobs:
+         output_location, status, end_date, _start, installer) in industry_jobs:
         if status not in ("active", "paused", "ready"):
             continue
         if ACTIVITY_SLOT_CATEGORY.get(activity_id) != "reaction":
@@ -393,7 +397,9 @@ def window_state(
             continue
         end_dt = _parse_window_dt(end_date)
         qty = 0.0
-        if product_type_id is not None and runs:
+        in_excluded_system = (
+            output_location is not None and int(output_location) in excluded_locations)
+        if product_type_id is not None and runs and not in_excluded_system:
             per_run = storage.get_product_quantity(
                 blueprint_type_id, activity_id, product_type_id)
             if per_run is not None:
@@ -1404,6 +1410,9 @@ def _postprocess(
     hard_window = (
         replace(window, demand=window.hard_demand()) if window.buffer else window)
     recomputed = _recompute_buy1(layer, hard_window, runs1, raw.defer)
+    if window.buffer_buy_cap is not None:
+        recomputed = _cut_buffer_runs_over_cap(
+            layer, window, hard_window, raw, runs1, jobs1, recomputed)
     buy1, buy_later = _split_buy1(buy_rounded, recomputed)
     new_f: dict[str, int] = {}
     for recipe in layer.recipes:
@@ -1452,7 +1461,94 @@ def _postprocess(
     for p, qty in unmet.items():
         warnings.append(
             f"Unmet W1 demand for {window.type_label(p)}: {_units_text(qty)} units")
+    warnings.extend(_unpriced_short_input_warnings(layer, window, runs1))
     return runs1, jobs1, buy1, new_f, unmet, slot_slack1, slot_slack2, warnings, buy_later
+
+
+def _w1_consumption(
+    layer: ReactionLayer, runs1: Mapping[str, float],
+) -> dict[int, float]:
+    by_key = {r.key: r for r in layer.recipes}
+    consumed: dict[int, float] = {}
+    for key, n_runs in runs1.items():
+        if n_runs <= 0:
+            continue
+        for m, qty in by_key[key].inputs.items():
+            consumed[m] = consumed.get(m, 0.0) + float(qty) * n_runs
+    return consumed
+
+
+def _unpriced_short_input_warnings(
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    runs1: Mapping[str, float],
+) -> list[str]:
+    """Rounded W1 runs can need more of an input than is on hand while that
+    input has no price, so the shortfall cannot be bought. The runs are kept
+    (the user decides); the gap is stated instead of passing silently."""
+    out: list[str] = []
+    for m, need in sorted(_w1_consumption(layer, runs1).items()):
+        if m in window.prices:
+            continue
+        short = need - float(window.on_hand.get(m, 0.0))
+        if short > _EPS:
+            out.append(
+                f"Input {window.type_label(m)} short by {_units_text(short)} units "
+                "and has no price")
+    return out
+
+
+def _cut_buffer_runs_over_cap(
+    layer: ReactionLayer,
+    window: ReactionWindow,
+    hard_window: ReactionWindow,
+    raw: _RawSolve,
+    runs1: dict[str, int],
+    jobs1: dict[str, int],
+    recomputed: dict[int, float],
+) -> dict[int, float]:
+    """Buffer solve: rounding W1 runs up can make the plan buy a reaction
+    product above the first stage's purchases (``buffer_buy_cap``), e.g. an
+    intermediate that an extra buffer run consumes. The buffer is never
+    bought (D9), so runs of buffered products are cut one at a time while
+    that lowers the purchases above the cap without raising their own
+    product's purchase; what they would have made stays in ``buffer_open``.
+    ``runs1`` / ``jobs1`` are updated in place; returns the new W1 buys."""
+    cap = window.buffer_buy_cap or {}
+    by_key = {r.key: r for r in layer.recipes}
+
+    def excess(buys: Mapping[int, float]) -> float:
+        return sum(
+            max(0.0, float(buys.get(p, 0.0)) - float(cap.get(p, 0.0)) - _EPS)
+            for p in layer.product_ids
+        )
+
+    current = excess(recomputed)
+    while current > 0.0:
+        best: Optional[tuple[float, str, dict[int, float]]] = None
+        for key in sorted(runs1):
+            recipe = by_key[key]
+            if runs1[key] <= 0 or window.buffer_of(recipe.product_type_id) <= _EPS:
+                continue
+            trial = dict(runs1)
+            trial[key] -= 1
+            buys = _recompute_buy1(layer, hard_window, trial, raw.defer)
+            product = recipe.product_type_id
+            if float(buys.get(product, 0.0)) > float(recomputed.get(product, 0.0)) + _EPS:
+                continue  # the run also serves the demand without buffer
+            value = excess(buys)
+            if value < current - _EPS and (best is None or value < best[0] - _EPS):
+                best = (value, key, buys)
+        if best is None:
+            break
+        current, key, recomputed = best
+        runs1[key] -= 1
+        fit = by_key[key].fit
+        jobs1[key] = min(
+            jobs1.get(key, 0),
+            int(math.ceil(runs1[key] / fit - _TOL)) if runs1[key] > 0 and fit > 0 else 0,
+        )
+    return recomputed
 
 
 def _w1_cost_of(
@@ -1995,7 +2091,9 @@ def build_window(
     ``reaction_stock_carry_value`` is on.
     """
     from . import pricing
-    from .engine import _current_stock, _haul_volume, _stock_on_hand, classify_activity
+    from .engine import (
+        _current_stock, _haul_volume, _manual_incoming_qty, _stock_on_hand, classify_activity,
+    )
 
     state = window_state(
         cfg, character_rows=character_rows, industry_jobs=industry_jobs)
@@ -2027,7 +2125,7 @@ def build_window(
             total = float(_current_stock(mid, dict(manual_stock), cfg, bp))
             extra = max(0.0, total - hangar)
         else:
-            extra = float(storage.manual_incoming_qty(mid))
+            extra = float(_manual_incoming_qty(mid))
         if extra > _EPS:
             incoming1[mid] = incoming1.get(mid, 0.0) + extra
 

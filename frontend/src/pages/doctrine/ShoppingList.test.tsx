@@ -34,7 +34,7 @@ describe('Doctrine ShoppingList best hub column', () => {
   it('shows buyer columns and warnings when buyers are configured', async () => {
     vi.mocked(doctrineApi.shoppingList).mockResolvedValue({
       rows: [{ ...ROW, hub_hangar: 2, on_order: 4, to_buy: 0, total_cost: 0 }],
-      warnings: ['Jason Andven: Market Orders are not shared with Doctrine - buy orders not counted.'],
+      warnings: ['Example Buyer: Market Orders are not shared with Doctrine - buy orders not counted.'],
       buyers_configured: true,
     } as never)
     vi.mocked(doctrineApi.settings).mockResolvedValue({ hub_region_id: 10000002 } as never)

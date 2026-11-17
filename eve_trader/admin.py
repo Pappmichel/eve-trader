@@ -17,9 +17,9 @@ import logging
 
 import requests
 
-from . import access_gate, backup, storage, tenant_scope
+from . import access_gate, backup, storage, tenant_scope, token_crypto
 from .actions import ActionError
-from .auth import TokenManager
+from .auth import TokenManager, revoke_refresh_tokens
 from .config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from .esi_client import ESIClient, ESIError
 from .production import dynamic_targets, esi_sync, jita_price_cache, sde, sde_diff
@@ -99,15 +99,102 @@ def do_grant_default_tools(dry_run: bool = False) -> dict:
     return {"changed": changed, "unchanged": unchanged, "dry_run": dry_run}
 
 
+def _delete_tenant_credentials(tenant_id: str) -> dict:
+    """Deletes every stored SSO token and the Discord link (which also turns
+    every alert subscription off) of one tenant, and returns the refresh
+    tokens that were readable so the caller can revoke them at SSO after the
+    deletion. A row that cannot be decrypted is deleted all the same."""
+    with tenant_scope.enter_tenant(tenant_id):
+        try:
+            refresh_tokens = [
+                str(rec.get("refresh_token") or "")
+                for rec in storage.load_all_tenant_tokens().values()
+            ]
+            readable = True
+        except token_crypto.TokenCryptoError:
+            refresh_tokens, readable = [], False
+        tokens_deleted = storage.delete_all_tenant_tokens()
+        discord_unlinked = storage.delete_alert_destination()
+    return {
+        "tokens_deleted": tokens_deleted,
+        "refresh_tokens": [t for t in refresh_tokens if t],
+        "revoke_skipped": not readable and tokens_deleted > 0,
+        "discord_unlinked": discord_unlinked,
+    }
+
+
+def _revoke_result(creds: dict) -> dict:
+    revoked, failed = revoke_refresh_tokens(creds["refresh_tokens"])
+    return {
+        "tokens_deleted": creds["tokens_deleted"],
+        "revoked": revoked,
+        "revoke_failed": failed,
+        "revoke_skipped": creds["revoke_skipped"],
+        "discord_unlinked": creds["discord_unlinked"],
+    }
+
+
 def do_remove_user(character_id: int) -> dict:
     """Deregisters `character_id` entirely - both their login (tenant_
-    registry_entries) and every tool grant they had. Idempotent (matches
-    storage.remove_tenant_registry_entry/revoke_all_tool_grants's own
-    no-op-if-missing semantics) - removing an already-removed/never-added
-    character isn't an error."""
+    registry_entries) and every tool grant they had - and deletes the
+    tenant's stored SSO tokens and Discord link at once (the tenant's other
+    data stays). The refresh tokens are then revoked at SSO on a best-effort
+    basis; the local deletion never depends on that call. Idempotent -
+    removing an already-removed/never-added character isn't an error."""
+    tenant_id = storage.resolve_tenant_id(character_id)
+    creds = (
+        _delete_tenant_credentials(tenant_id) if tenant_id is not None
+        else {"tokens_deleted": 0, "refresh_tokens": [], "revoke_skipped": False, "discord_unlinked": False}
+    )
     storage.remove_tenant_registry_entry(character_id)
     storage.revoke_all_tool_grants(character_id)
-    return {"removed": character_id}
+    return {"removed": character_id, **_revoke_result(creds)}
+
+
+def _purgeable_tenant_name(tenant_id: str, actor_character_id: int | None = None) -> str:
+    if str(tenant_id) == storage.DEFAULT_TENANT_ID:
+        raise ActionError("The default tenant can not be deleted.")
+    names = {str(t[0]): t[1] for t in storage.list_tenants()}
+    if str(tenant_id) not in names:
+        raise ActionError("Unknown tenant.")
+    if storage.tenant_registry_entry_count(tenant_id) > 0:
+        raise ActionError("This tenant still has a registered user. Remove the user first.")
+    if actor_character_id is not None and storage.resolve_tenant_id(actor_character_id) == str(tenant_id):
+        raise ActionError("You can not delete your own tenant.")
+    return names[str(tenant_id)]
+
+
+def do_purge_tenant_preview(tenant_id: str, actor_character_id: int | None = None) -> dict:
+    """What a purge would delete: tenant name, rows per table, total."""
+    tenant_id = str(tenant_id)
+    name = _purgeable_tenant_name(tenant_id, actor_character_id)
+    counts = storage.count_tenant_rows(tenant_id)
+    return {
+        "tenant_id": tenant_id, "name": name,
+        "tables": [{"table": t, "rows": n} for t, n in sorted(counts.items())],
+        "total_rows": sum(counts.values()),
+    }
+
+
+def do_purge_tenant(tenant_id: str, confirm_name: str, actor_character_id: int | None = None) -> dict:
+    """Deletes an orphaned tenant (no registered user) and all its data for
+    good. `confirm_name` must equal the tenant's name exactly. Stored tokens
+    go first (then revoked at SSO, best effort). Running it again finishes an
+    interrupted purge. Rolling backups keep the data until they rotate out."""
+    tenant_id = str(tenant_id)
+    name = _purgeable_tenant_name(tenant_id, actor_character_id)
+    if confirm_name != name:
+        raise ActionError("The confirmation name does not match the tenant name.")
+    creds = _delete_tenant_credentials(tenant_id)
+    deleted = storage.purge_tenant_rows(tenant_id)
+    from .asset_manager import actions as asset_manager_actions
+    asset_manager_actions.invalidate_cache(tenant_id)
+    return {
+        "purged": tenant_id, "name": name,
+        "rows_deleted": sum(deleted.values()),
+        "tables": [{"table": t, "rows": n} for t, n in sorted(deleted.items())],
+        **_revoke_result(creds),
+    }
 
 
 def do_start_sde_preview() -> dict:
@@ -133,6 +220,8 @@ def _preview_worker(progress_callback=None) -> dict:
     global _staged_sde
     try:
         fetched = sde.fetch_sde(progress_callback=progress_callback)
+    except sde.SdeDumpInvalid as e:
+        raise ActionError(f"SDE dump rejected: {e}") from e
     except requests.RequestException as e:
         # Confirmed real gap (see the original do_refresh_sde in production/
         # actions.py this was moved from): the fetch's network errors used
@@ -146,7 +235,7 @@ def _preview_worker(progress_callback=None) -> dict:
     return diff
 
 
-def do_apply_sde() -> dict:
+def do_apply_sde(confirm_shrink: bool = False) -> dict:
     """Writes the staged preview dump into the shared SDE cache. Moved here
     from production/actions.py (GitHub issue #34): the SDE cache (sde_types/
     sde_blueprint_materials/etc.) is global, shared data, not per-tenant, so
@@ -159,8 +248,19 @@ def do_apply_sde() -> dict:
     global _staged_sde
     if _staged_sde is None:
         raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
+    # Recomputed from the staged dump against the current tables, never taken
+    # from the client. The staged dump stays after a refusal.
+    warnings = sde_diff.shrink_warnings(_staged_sde, storage.sde_row_counts())
+    if warnings and not confirm_shrink:
+        tables = ", ".join(f"{w['table']} {w['old']} -> {w['new']} (-{w['drop_percent']}%)" for w in warnings)
+        raise ActionError(
+            f"The staged SDE would shrink tables by more than {sde_diff.SHRINK_LIMIT_PERCENT:.0f}%: "
+            f"{tables}. Nothing was written; confirm the shrink to apply it anyway.")
     equivalents_before = storage.get_sde_equivalence_class_map()
-    result = sde.apply_sde(_staged_sde)
+    # Synchronous HTTP route that rewrites whole tables: one statement can
+    # outlast the request-time statement timeout, so it is lifted here.
+    with storage.long_running():
+        result = sde.apply_sde(_staged_sde)
     if storage.get_sde_equivalence_class_map() != equivalents_before:
         result = {**result, "doctrine_contracts_revalidated": _revalidate_doctrine_contracts()}
     # all_tenants=True: the SDE cache is global (this function's own
@@ -707,3 +807,36 @@ def do_list_backups() -> dict:
     Portfolio, since a backups list with no admin nearby to act on it isn't
     useful to a non-admin tenant."""
     return {"rows": backup.list_backups()}
+
+
+def do_get_health_detail() -> dict:
+    """Operator health detail behind the `admin` grant: package version, age
+    of the newest backup, newest successful ESI sync of the default tenant
+    and whether the scheduler thread is alive. The public /api/health only
+    answers ok/degraded; none of this belongs on an open endpoint."""
+    from datetime import datetime, timezone
+    from importlib import metadata
+
+    from . import scheduler, tenant_scope
+
+    try:
+        version = metadata.version("eve-trader")
+    except metadata.PackageNotFoundError:
+        from . import __version__ as version
+
+    backups = backup.list_backups()
+    backup_age_seconds = None
+    if backups:
+        created = datetime.fromisoformat(backups[0]["created_at"])
+        backup_age_seconds = max(0, int((datetime.now(timezone.utc) - created).total_seconds()))
+
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        last_sync = storage.newest_esi_freshness_success_at()
+
+    return {
+        "version": version,
+        "newest_backup_at": backups[0]["created_at"] if backups else None,
+        "newest_backup_age_seconds": backup_age_seconds,
+        "newest_esi_sync_at": last_sync,
+        "scheduler_running": bool(scheduler._thread is not None and scheduler._thread.is_alive()),
+    }

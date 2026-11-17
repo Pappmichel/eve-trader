@@ -1,4 +1,5 @@
-"""Read ME rig tiers from a structure's name.
+"""Read ME rig tiers from a structure's name (the TE tier follows the ME tier
+unless a TE tier is set).
 
 Corps often name an engineering structure after its rig fit, for example
 "IAK-JW - CEZ T2 Adv L T1 Basic L": a Tech II rig for Advanced Large Ships

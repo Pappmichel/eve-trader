@@ -35,6 +35,7 @@ import {
 } from '../../esiAccess'
 import { useAction } from '../../hooks/useAction'
 import { openAccessConfirmModal } from '../../roleAccessDescriptions'
+import CcpNotice from '../../components/CcpNotice'
 
 const CHARACTERS_KEYS = [
   ['characters', 'owners'],
@@ -230,6 +231,15 @@ function CharactersSection({
                   <Table.Td>
                     <Group gap="xs" wrap="nowrap">
                       <Text size="sm" fw={600}>{owner.character_name || `#${owner.character_id}`}</Text>
+                      {owner.refresh_rejected && (
+                        <Tooltip
+                          multiline
+                          w={280}
+                          label="EVE Online rejected this character's stored login. Press Re-authorize to log in again."
+                        >
+                          <Badge size="xs" color="danger" variant="light">Re-authorize needed</Badge>
+                        </Tooltip>
+                      )}
                       {owner.character_has_token_pool && (
                         <Tooltip
                           multiline
@@ -829,6 +839,7 @@ export default function CharactersPage() {
         <Divider />
         <ToolViewSection sharing={sharing} owners={owners} />
       </Stack>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

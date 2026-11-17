@@ -13,6 +13,7 @@ from .. import schemas
 from ...actions import ActionError
 from ...production.constants import INTAKE_HANGAR_FLAGS
 from ...sorting import actions
+from ..schemas import NameText
 
 router = APIRouter()
 
@@ -25,10 +26,10 @@ def _wrap(fn, **kwargs):
 
 
 class AddIntakeSourceRequest(BaseModel):
-    source_kind: str
-    hangar_flag: str
-    owner_name: Optional[str] = None
-    label: Optional[str] = None
+    source_kind: NameText
+    hangar_flag: NameText
+    owner_name: Optional[NameText] = None
+    label: Optional[NameText] = None
 
 
 @router.get("/sorting-list", response_model=schemas.SortingList)

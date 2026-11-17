@@ -3,16 +3,18 @@ eve_trader/module_reprocessing/actions.py (do_*) and eve_trader/storage.py
 (reads), same pattern as api/routers/refining.py."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import schemas
+from ..partial import partial_model
 from ...actions import ActionError
 from ...module_reprocessing import actions
 from ...module_reprocessing.config import MODULE_REPROCESSING_CONFIG
 from ... import storage
+from ..schemas import IdList
 
 router = APIRouter()
 
@@ -63,7 +65,7 @@ def get_esi_sync_time():
 
 # ------------------------------------------------------------------ writes
 class ShortlistItemIdsBody(BaseModel):
-    item_ids: list[int]
+    item_ids: IdList
 
 
 @router.post("/shortlist/refresh")
@@ -81,13 +83,16 @@ def activate_module_shortlist_items(body: ShortlistItemIdsBody):
     return _wrap(actions.do_activate_shortlist_items, item_ids=body.item_ids)
 
 
+ModuleReprocessingSettingsUpdate = partial_model(schemas.ModuleReprocessingSettings, "ModuleReprocessingSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: schemas.ModuleReprocessingSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: ModuleReprocessingSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 class MineralRequirementsBody(BaseModel):
-    requirements: list[schemas.MineralRequirement]
+    requirements: Annotated[list[schemas.MineralRequirement], Field(max_length=1_000)]
 
 
 @router.post("/shopping-list/requirements")
@@ -99,7 +104,7 @@ def save_shopping_requirements(body: MineralRequirementsBody):
 class OptimizeShoppingListBody(BaseModel):
     # Omitted/null solves the saved requirement list; a supplied list is an
     # ad-hoc solve that deliberately isn't persisted (see the action's docstring).
-    requirements: Optional[list[schemas.MineralRequirement]] = None
+    requirements: Optional[Annotated[list[schemas.MineralRequirement], Field(max_length=1_000)]] = None
 
 
 @router.post("/shopping-list/optimize", response_model=schemas.ModuleShoppingListPlan)

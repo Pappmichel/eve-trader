@@ -52,6 +52,10 @@ CREATE POLICY tenant_isolation ON ledger_wallet_transactions
 CREATE INDEX IF NOT EXISTS idx_ledger_wallet_tx_owner_date
     ON ledger_wallet_transactions (owner_type, owner_id, date);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_wallet_transactions TO eve_trader_app;
+-- ESI's counterparty of the fill. A sale to one of the tenant's own owners
+-- is a transfer in costing, not a result. NULL on rows archived before the
+-- column existed until a sync still sees them in ESI's 30-day window.
+ALTER TABLE ledger_wallet_transactions ADD COLUMN IF NOT EXISTS client_id BIGINT;
 
 -- ====================================================== archive: wallet journal
 CREATE TABLE IF NOT EXISTS ledger_wallet_journal (
@@ -698,6 +702,31 @@ CREATE POLICY tenant_isolation ON ledger_valuation_prices
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_valuation_prices TO eve_trader_app;
+
+-- What one blueprint-copy run is worth when the ledger has no cost layer
+-- for it (a copy made before T0, or received without a record): the same
+-- per-run value as Total Wealth (portfolio._bpc_run_values - invention cost
+-- per run for an invented blueprint, copy job fee per run for a Tech I
+-- copy). Keyed by blueprint type id, frozen per (type, day) the first time a
+-- rebuild needs it, insert-only, not derived. Stored only when the value
+-- computation ran completely (no quote or fee-rate outage).
+-- source: invention / copy, or unavailable (unit_value NULL: faction or
+-- officer copy, unpriced input; the run stays price_missing).
+CREATE TABLE IF NOT EXISTS ledger_bpc_run_prices (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    price_date DATE NOT NULL,
+    unit_value DOUBLE PRECISION,
+    source TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id, price_date)
+);
+ALTER TABLE ledger_bpc_run_prices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_bpc_run_prices;
+CREATE POLICY tenant_isolation ON ledger_bpc_run_prices
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_bpc_run_prices TO eve_trader_app;
 
 -- What buying a produced item would have cost on the day a doctrine
 -- contract sold it: Doctrine's informational "production saving" (unified

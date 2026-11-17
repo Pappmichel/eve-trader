@@ -31,19 +31,21 @@ def region_id_for_location(location_id: int) -> Optional[int]:
 def upsert_ledger_wallet_transactions(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, division, transaction_id, date, type_id,
     location_id, unit_price, quantity, is_buy, journal_ref_id, region_id,
-    freight_rate_per_m3, freight_m3). Insert-only on conflict (frozen freight)."""
+    freight_rate_per_m3, freight_m3[, client_id]). Insert-only on conflict
+    (frozen freight). A 14-field tuple leaves client_id NULL."""
     if not rows:
         return 0
+    padded = [tuple(row) + (None,) * (15 - len(row)) for row in rows]
     with storage.connect() as conn:
         conn.executemany(
             "INSERT INTO ledger_wallet_transactions ("
             "owner_type, owner_id, division, transaction_id, date, type_id, "
             "location_id, unit_price, quantity, is_buy, journal_ref_id, "
-            "region_id, freight_rate_per_m3, freight_m3) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "region_id, freight_rate_per_m3, freight_m3, client_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, division, transaction_id) "
             "DO NOTHING",
-            rows,
+            padded,
         )
     return len(rows)
 
@@ -352,6 +354,39 @@ def set_transaction_region(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def transactions_missing_client(
+    owner_type: str, owner_id: int, transaction_ids: Iterable[int],
+) -> set[tuple[int, int]]:
+    """(division, transaction_id) of archived rows among `transaction_ids`
+    whose client_id is still NULL (archived before the column existed)."""
+    ids = sorted({int(t) for t in transaction_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT division, transaction_id FROM ledger_wallet_transactions "
+            "WHERE owner_type = ? AND owner_id = ? AND transaction_id = ANY(?) "
+            "AND client_id IS NULL",
+            (owner_type, int(owner_id), ids),
+        ).fetchall()
+    return {(int(r[0]), int(r[1])) for r in rows}
+
+
+def set_transaction_client(rows: list[tuple]) -> int:
+    """`rows`: (client_id, owner_type, owner_id, division, transaction_id).
+    Only fills rows whose client_id is still NULL."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "UPDATE ledger_wallet_transactions SET client_id = ? "
+            "WHERE owner_type = ? AND owner_id = ? AND division = ? "
+            "AND transaction_id = ? AND client_id IS NULL",
+            rows,
+        )
+    return len(rows)
+
+
 def job_ids_with_inputs(
     owner_type: str, owner_id: int, job_ids: Iterable[int],
 ) -> set[int]:
@@ -533,13 +568,14 @@ def _owner_in_clause(owners: list[tuple[str, int]]) -> tuple[str, list]:
 def list_wallet_transactions_for_owners(
     owners: list[tuple[str, int]],
 ) -> list[tuple]:
-    """All archived wallet txs for the given owners (one query)."""
+    """All archived wallet txs for the given owners (one query). Column 14
+    is client_id (NULL on rows archived before it existed)."""
     where, params = _owner_in_clause(owners)
     with storage.connect() as conn:
         return conn.execute(
             "SELECT owner_type, owner_id, division, transaction_id, date, type_id, "
             "location_id, unit_price, quantity, is_buy, journal_ref_id, region_id, "
-            "freight_rate_per_m3, freight_m3 "
+            "freight_rate_per_m3, freight_m3, client_id "
             "FROM ledger_wallet_transactions "
             f"WHERE {where} ORDER BY date, transaction_id",
             tuple(params),
@@ -1190,6 +1226,30 @@ def upsert_valuation_prices(rows: list[tuple]) -> int:
     with storage.connect() as conn:
         conn.executemany(
             "INSERT INTO ledger_valuation_prices (type_id, price_date, unit_value, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, type_id, price_date) DO NOTHING",
+            rows,
+        )
+    return len(rows)
+
+
+def list_bpc_run_prices() -> dict[tuple[int, object], tuple[Optional[float], str]]:
+    """{(blueprint type_id, price_date): (unit_value, source)} - every frozen
+    per-run copy value of this tenant. unit_value is None for "unavailable"."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, price_date, unit_value, source FROM ledger_bpc_run_prices",
+        ).fetchall()
+    return {(int(r[0]), r[1]): (None if r[2] is None else float(r[2]), str(r[3])) for r in rows}
+
+
+def insert_bpc_run_prices(rows: list[tuple]) -> int:
+    """`rows`: (type_id, price_date, unit_value, source). Insert-only freeze."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "INSERT INTO ledger_bpc_run_prices (type_id, price_date, unit_value, source) "
             "VALUES (?,?,?,?) "
             "ON CONFLICT (tenant_id, type_id, price_date) DO NOTHING",
             rows,
@@ -2338,7 +2398,7 @@ def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
     """Archived couriers for the shared owners, one row per contract_id.
 
     (contract_id, issuer_id, start_location_id, end_location_id, date_issued,
-    volume, reward, collateral, status). A row that already has a volume
+    volume, reward, collateral, status, date_completed). A row that already has a volume
     wins when the same contract was archived twice. Courier rows never
     enter costing as buys or sales; the loader uses them only to price
     freight.
@@ -2350,7 +2410,7 @@ def list_couriers_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
         return conn.execute(
             "SELECT DISTINCT ON (contract_id) contract_id, issuer_id, "
             "start_location_id, end_location_id, date_issued, volume, reward, "
-            "collateral, status "
+            "collateral, status, date_completed "
             "FROM ledger_contracts "
             f"WHERE {where} AND type = 'courier' "
             "ORDER BY contract_id, (volume IS NULL), date_issued NULLS LAST",
@@ -2700,3 +2760,45 @@ def get_reprocess_events(refs: list[str]) -> list[tuple]:
             "FROM prod_reprocess_events WHERE ref = ANY(?)",
             (list(refs),),
         ).fetchall()
+
+
+def unreported_results(
+    scopes: list[tuple],
+    start: Optional[datetime],
+    end: datetime,
+) -> tuple[int, float, float]:
+    """(sales, revenue, profit) of results no tool's report shows.
+
+    `scopes` holds one `(channel, wallet_owners, contract_owners)` per tool
+    that has a card. A result of that channel is counted when its owner is not
+    in the owner lists that tool's report filters by (the negation of
+    `_result_scope_sql`: a row with no owner is always in scope). A channel
+    without a card contributes nothing. `start` None means no lower bound.
+    """
+    sales, revenue, profit = 0, 0.0, 0.0
+    for channel, wallet_owners, contract_owners in scopes:
+        in_scope = ["owner_id IS NULL"]
+        params: list = []
+        if wallet_owners:
+            match, match_params = _owner_match_sql(wallet_owners, "")
+            in_scope.append(f"(source = 'market' AND {match})")
+            params.extend(match_params)
+        if contract_owners:
+            match, match_params = _owner_match_sql(contract_owners, "")
+            in_scope.append(f"(source IS DISTINCT FROM 'market' AND {match})")
+            params.extend(match_params)
+        sql = (
+            "SELECT COUNT(*), COALESCE(SUM(revenue), 0), COALESCE(SUM(profit), 0) "
+            "FROM prod_realized_results WHERE channel = ? AND sale_date < ? "
+            "AND NOT (" + " OR ".join(in_scope) + ")"
+        )
+        args: list = [channel, end]
+        if start is not None:
+            sql += " AND sale_date >= ?"
+            args.append(start)
+        with storage.connect() as conn:
+            row = conn.execute(sql, args[:2] + params + args[2:]).fetchone()
+        sales += int(row[0] or 0)
+        revenue += float(row[1] or 0.0)
+        profit += float(row[2] or 0.0)
+    return sales, revenue, profit

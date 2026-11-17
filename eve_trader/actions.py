@@ -15,7 +15,7 @@ from typing import Optional
 
 import pandas as pd
 
-from . import candidate_discovery, history_backtest, own_orders, storage
+from . import candidate_discovery, history_backtest, own_orders, storage, timeutil
 from .auth import InvalidRoleKey, TokenManager, validate_role_key, validate_role_key_for_tool
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
                      save_tenant_config_overrides, validate_trading_overrides)
@@ -88,7 +88,7 @@ def _require_trading_wallet_role_key(role_key: str) -> str:
 
 
 def now_ts() -> str:
-    return dt.datetime.utcnow().isoformat(timespec="seconds")
+    return timeutil.utc_now_naive().isoformat(timespec="seconds")
 
 
 def _int_or_none(v):
@@ -320,6 +320,12 @@ def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> di
         save_tenant_config_overrides("trading", updates, cfg, cfg_type=TradingConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
+    if "scheduler_enabled" in updates and storage.get_current_tenant() == storage.DEFAULT_TENANT_ID:
+        # The master switch is read once at boot; start() is idempotent and
+        # re-reads it from the database, which now holds the saved value.
+        # Switching off needs no stop: every tick checks the switch again.
+        from . import scheduler  # lazy: scheduler imports this module
+        scheduler.start()
     return updates
 
 
@@ -1278,7 +1284,7 @@ def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dic
     dict isn't currently on a streak. Used by api/routers/trading.py's
     /shortlist/snapshot to surface a "days until auto-deactivation" column."""
     skip_since = storage.get_shortlist_skip_since()
-    now = dt.datetime.utcnow()
+    now = timeutil.utc_now_naive()
     return {
         item_id: max(0, math.ceil(cfg.skip_grace_period_days
                                    - (now - dt.datetime.fromisoformat(since_str)).total_seconds() / 86400))

@@ -12,7 +12,8 @@ import yaml
 
 from .. import storage
 from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
-from .constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
+from .constants import (HANGAR_DIVISION_FLAGS, INVENTION_RIG_TIERS, RIG_TIERS, STRUCTURE_TYPES,
+                        THUKKER_TIER)
 
 
 @dataclass
@@ -21,20 +22,14 @@ class ProductionConfig:
     component_overbuild: float = 0.7      # extra buffer kept for build-chain components
     bpc_inventory: float = 4.0            # multiplier: 4.0 = 400% BPC stockpile buffer (keep 4x needed BPC runs)
     market_fees: float = 0.0537           # sell-side broker fee + sales tax, subtracted from margins
-                                            # (see engine.py _build_margin) - originally derived (like
-                                            # TradingConfig.structure_sell_haircut, see that field's own
-                                            # T1-01 comment) as SCC surcharge 0.5% + Broker's fee 1.5% +
-                                            # Sales tax 3.37% + Safety Tax 0.00% = 5.37%. T1-01
-                                            # (2026-09-25) confirmed with the user that SCC surcharge
-                                            # applies only to industry jobs, never to a market sell - the
-                                            # same mistake T1-01 fixed for structure_sell_haircut applies
-                                            # here too (this field IS specifically a market-sell fee, per
-                                            # its own docstring and every call site in engine.py). Kept at
-                                            # its original 0.0537 default rather than silently
-                                            # reinterpreted, same reasoning as structure_sell_haircut - a
-                                            # live-configurable value a tenant may already have tuned;
-                                            # the corrected value would be 1.5%+3.37% = 0.0487 (0.9513
-                                            # retention) - revisit only with the user.
+                                            # (see engine.py _build_margin). A structure sell pays the
+                                            # broker's fee 1.5% + SCC surcharge 0.5% + sales tax 3.375%
+                                            # (7.5% base x (1 - 0.11 x Accounting 5)) = 5.375%, i.e.
+                                            # 0.0537 rounded (0.9463 retention, same as
+                                            # TradingConfig.structure_sell_haircut). The wallet journal
+                                            # shows the SCC surcharge on market orders, so an earlier
+                                            # derivation without SCC (0.0487) is wrong. Tenants may
+                                            # override it.
     # jita_buy_broker_fee removed 2026-09-26 (T3-04, business-logic audit
     # follow-up, user-confirmed merge): this used to be its own field here,
     # duplicating TradingConfig's own jita_buy_broker_fee - both were always
@@ -155,11 +150,28 @@ class ProductionConfig:
     supercapital_rig_tier: str = "No Rig"
     manufacturing_structure_type: str = "Citadel (no bonuses)"
     manufacturing_rig_tier: str = "No Rig"
+    # Time-efficiency rig tier per profile. None = same tier as the ME rig
+    # tier above (the long-standing behaviour); set "No Rig" where the
+    # structure carries no time rig. See engine.facility_resolution.
+    reaction_te_rig_tier: Optional[str] = None
+    component_te_rig_tier: Optional[str] = None
+    supercapital_te_rig_tier: Optional[str] = None
+    manufacturing_te_rig_tier: Optional[str] = None
+    # Invention cost rig of the invention structure (constants.
+    # INVENTION_RIG_TIERS); only the modelled invention/copy fee uses it, an
+    # observed total rate stays authoritative.
+    invention_rig_tier: str = "No Rig"
+    # Link to a shared Google sheet that lists the rig tier per solar system
+    # and job category (production/rig_sheet.py). Empty = no sheet source. The
+    # link is per-tenant user input and never part of the repository.
+    rig_sheet_url: str = ""
 
     # -- Invention (see production/invention.py) --
-    encryption_skill_level: int = 4
-    datacore_skill_1_level: int = 4
-    datacore_skill_2_level: int = 4
+    # Default 5/5/5: real invention jobs match maxed skills far more often
+    # than 4/4/4 (which overstated the cost per success by about 6.7%).
+    encryption_skill_level: int = 5
+    datacore_skill_1_level: int = 5
+    datacore_skill_2_level: int = 5
 
     # -- Job-time skills (see production/engine.py's _skill_time_mult) --
     # Flat, manually-set assumptions - same "one tenant-wide number, no per-
@@ -167,11 +179,10 @@ class ProductionConfig:
     # (confirmed with the user 2026-09-27: real ESI character skills already
     # exist for job-slot counts, but deliberately are not wired up here
     # either, to avoid re-opening the "which character, if several hold the
-    # relevant skill" question). Default 5 (max) rather than the invention
-    # fields' 4, since Industry/Advanced Industry/Reactions/the "specialist"
-    # skills (constants.SPECIALIST_TIME_SKILLS) are common, cheap-to-max
-    # skills most industrialists train to 5 early, unlike the invention
-    # skills' 4 (a more typical, non-maxed assumption for those).
+    # relevant skill" question). Default 5 (max), like the invention skill
+    # fields: Industry/Advanced Industry/Reactions/the "specialist" skills
+    # (constants.SPECIALIST_TIME_SKILLS) are common, cheap-to-max skills most
+    # industrialists train to 5 early.
     industry_skill_level: int = 5
     advanced_industry_skill_level: int = 5
     reactions_skill_level: int = 5
@@ -278,6 +289,8 @@ class ProductionConfig:
 _STRUCTURE_TYPE_FIELDS = ("reaction_structure_type", "component_structure_type",
                           "supercapital_structure_type", "manufacturing_structure_type")
 _RIG_TIER_FIELDS = ("reaction_rig_tier", "component_rig_tier", "supercapital_rig_tier", "manufacturing_rig_tier")
+_TE_RIG_TIER_FIELDS = ("reaction_te_rig_tier", "component_te_rig_tier", "supercapital_te_rig_tier",
+                       "manufacturing_te_rig_tier")
 
 
 def validate_production_overrides(overrides: dict) -> None:
@@ -297,6 +310,21 @@ def validate_production_overrides(overrides: dict) -> None:
         if key in overrides and overrides[key] not in RIG_TIERS:
             raise ConfigError(f"{key}: '{overrides[key]}' is not a known rig tier. "
                                f"Options: {', '.join(RIG_TIERS)}")
+    for key in _TE_RIG_TIER_FIELDS:
+        if overrides.get(key) is not None and overrides[key] not in RIG_TIERS:
+            raise ConfigError(f"{key}: '{overrides[key]}' is not a known rig tier. "
+                               f"Options: {', '.join(RIG_TIERS)}")
+    for key in ("reaction_rig_tier", "reaction_te_rig_tier"):
+        if overrides.get(key) == THUKKER_TIER:
+            raise ConfigError(f"{key}: the {THUKKER_TIER} rig does not exist for reactions.")
+    if overrides.get("rig_sheet_url"):
+        from . import rig_sheet
+        if not rig_sheet.is_valid_url(overrides["rig_sheet_url"]):
+            raise ConfigError("rig_sheet_url: must be a https://docs.google.com/spreadsheets link "
+                               "with a spreadsheet id.")
+    if "invention_rig_tier" in overrides and overrides["invention_rig_tier"] not in INVENTION_RIG_TIERS:
+        raise ConfigError(f"invention_rig_tier: '{overrides['invention_rig_tier']}' is not a known invention "
+                           f"rig tier. Options: {', '.join(INVENTION_RIG_TIERS)}")
     if "stock_hangar_flags" in overrides:
         bad = [f for f in overrides["stock_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
         if bad:

@@ -131,7 +131,7 @@ where no courier exists yet.
 
 ## 2. What the test server shows (Default tenant, 2026-10-18)
 
-All couriers are issued by **jason Andven** (92267134, buyer). After his
+All couriers are issued by **the buyer character** (1234567894, buyer). After his
 token got the contracts scope and contracts were shared with Production, one
 sync archived his contracts (`ledger_contracts`, type `courier`, already
 handled by the archive since the Production plan's Phase 5):
@@ -160,7 +160,7 @@ Facts that shape the design:
   349,971 for the first one).
 - Two couriers issued a minute apart (10-03) are one shipment: one
   hand-over carries both volumes.
-- After delivery Jason hands the goods to pappmichl5 with a 0-ISK item
+- After delivery Jason hands the goods to examplepilot5 with a 0-ISK item
   exchange at C-J. Both are tenant characters, so costing already skips it
   as an internal transfer. It is useful as a check, not as a cost.
 - Today every Jita 4-4 buy has 900 ISK/m3 frozen (4,789 rows, 1.40 bn). The

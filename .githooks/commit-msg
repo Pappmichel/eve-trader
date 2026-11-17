@@ -1,0 +1,17 @@
+#!/bin/sh
+# commit-msg hook: refuse AI attribution lines in commit messages.
+# Enable with:  git config core.hooksPath .githooks
+# CI runs this same script over every commit message of a pull request.
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || { echo "usage: commit-msg <message-file>" >&2; exit 2; }
+
+bad=$(grep -v '^#' "$msg_file" | grep -inE \
+  '^[[:space:]]*co-authored-by:.*(claude|anthropic|cursor)|^[[:space:]]*claude-session:|generated[[:space:]]+(with|by)[[:space:]]+(\[)?claude[[:space:]]+code') || true
+
+if [ -n "$bad" ]; then
+  echo "Commit message rejected: it contains an attribution line this repository does not allow." >&2
+  echo "$bad" | sed 's/^/  /' >&2
+  echo "Remove the Co-Authored-By / Claude-Session / 'Generated with Claude Code' lines and commit again." >&2
+  exit 1
+fi
+exit 0

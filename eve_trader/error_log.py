@@ -1,14 +1,15 @@
 """Self-hosted error tracking (GitHub issue #88) - see docs/observability_
 schema.sql for the storage-layer rationale (deliberately unscoped, like
 tool_grants/tenants). Cross-cutting like portfolio.py/admin.py: `do_report_
-error` is reachable by any tenant's frontend (no tool grant required, same
-as e.g. /api/gate/status - see api/app.py's _TOOL_PATH_PREFIXES), while
+error` is reachable by any logged-in tenant's frontend (a valid session is
+required, no tool grant - see api/app.py's _SESSION_ONLY_API_PREFIXES), while
 `do_list_errors` is Admin-tool-only (wired through api/routers/admin.py,
 not this module's own router).
 """
 from __future__ import annotations
 
 import logging
+import re
 
 from . import storage
 
@@ -50,3 +51,44 @@ def do_report_error(source: str, message: str, detail: str | None = None, path: 
 
 def do_list_errors(limit: int = 200) -> list[dict]:
     return storage.list_errors(limit=limit)
+
+
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_DIGITS_RE = re.compile(r"\d+")
+
+
+def normalize_message(message: str) -> str:
+    """Message with UUIDs and digit runs replaced, so "error 1 <uuid>" and
+    "error 2 <uuid>" count as one problem."""
+    return _DIGITS_RE.sub("#", _UUID_RE.sub("<id>", message))
+
+
+def group_errors(rows: list[dict]) -> list[dict]:
+    """Groups rows (newest first, as list_errors returns them) by source and
+    normalized message. Each group carries the count, first/last time, the
+    number of distinct tenants and the newest row's detail/path. Newest
+    group first."""
+    groups: dict[tuple[str, str], dict] = {}
+    tenants: dict[tuple[str, str], set] = {}
+    for row in rows:
+        key = (row["source"], normalize_message(row["message"]))
+        g = groups.get(key)
+        if g is None:
+            groups[key] = g = {
+                "source": row["source"], "message": row["message"], "count": 0,
+                "first_seen": row["created_at"], "last_seen": row["created_at"],
+                "detail": row["detail"], "path": row["path"],
+            }
+            tenants[key] = set()
+        g["count"] += 1
+        if row["created_at"] is not None:
+            if g["first_seen"] is None or row["created_at"] < g["first_seen"]:
+                g["first_seen"] = row["created_at"]
+        tenants[key].add(row["tenant_id"])
+    for key, g in groups.items():
+        g["tenant_count"] = len(tenants[key])
+    return list(groups.values())
+
+
+def do_list_error_groups(limit: int = 1000) -> list[dict]:
+    return group_errors(storage.list_errors(limit=limit))

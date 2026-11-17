@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Group, NumberInput, Select, Text } from '@mantine/core'
 
-import type { CategoryFacilityRow, CategoryFacilityTax, CategoryFacilityUpdate, FacilitySource } from '../../api/types'
+import type {
+  CategoryFacilityRow, CategoryFacilityTax, CategoryFacilityUpdate, FacilitySource, TeFacilitySource,
+} from '../../api/types'
 
 // 2 decimals: real facility taxes are fractions of a percent (0.25%, 0.5%).
 const taxPct = (rate: number) => `${(rate * 100).toFixed(2)}%`
@@ -31,11 +33,26 @@ export function facilityTaxSummary(tax: CategoryFacilityTax): string {
 
 const SOURCE_TEXT: Record<FacilitySource, string> = {
   set: 'set here',
+  sheet: 'from rig sheet',
   name: 'from structure name',
   global: 'Settings page',
 }
 
+const TE_SOURCE_TEXT: Record<TeFacilitySource, string> = {
+  set: 'set here',
+  global: 'Settings page',
+  'same as ME': 'same as ME',
+}
+
+// Reactions have no Thukker rig.
+const NO_REACTION_RIG = 'Thukker'
+
 const AUTO = ''
+
+function teAutoLabel(value: string | undefined | null, source: TeFacilitySource | undefined | null): string {
+  if (!value || !source || source === 'set') return 'Auto'
+  return `Auto: ${value} (${TE_SOURCE_TEXT[source]})`
+}
 
 function autoLabel(value: string | null, source: FacilitySource | null): string {
   if (!value || !source || source === 'set') return 'Auto'
@@ -43,8 +60,11 @@ function autoLabel(value: string | null, source: FacilitySource | null): string 
 }
 
 // The "Auto" label shows what applies when nothing is saved for the field:
-// the tier the structure name states, else the Settings page's profile.
+// the tier the rig sheet states for the structure's system, else the one the
+// structure name states, else the Settings page's profile.
 function autoFallback(row: CategoryFacilityRow, field: 'basic' | 'advanced'): [string | null, FacilitySource] {
+  const sheeted = field === 'basic' ? row.from_sheet?.rig_tier_basic : row.from_sheet?.rig_tier_advanced
+  if (sheeted) return [sheeted, 'sheet']
   const named = field === 'basic' ? row.from_name.rig_tier_basic : row.from_name.rig_tier_advanced
   if (named) return [named, 'name']
   const eff = row.effective
@@ -77,13 +97,15 @@ export function CategoryFacilityFields({
   }
   const [basicAuto, basicSource] = autoFallback(row, 'basic')
   const [advancedAuto, advancedSource] = autoFallback(row, 'advanced')
+  const tiers = row.category === 'Reactions' ? rigTiers.filter((t) => t !== NO_REACTION_RIG) : rigTiers
+  const eff = row.effective
   const structureAuto = row.effective.structure_source === 'set' ? 'Auto' : `Auto: ${row.effective.structure_type}`
   return (
     <>
       <Group gap="xs" mt={4} grow align="flex-end">
         <Select
           size="xs" label={row.split_by_tech ? 'Rig, Tech I' : 'ME rig'} disabled={saving}
-          data={[{ value: AUTO, label: autoLabel(basicAuto, basicSource) }, ...rigTiers.map((t) => ({ value: t, label: t }))]}
+          data={[{ value: AUTO, label: autoLabel(basicAuto, basicSource) }, ...tiers.map((t) => ({ value: t, label: t }))]}
           value={row.saved.rig_tier_basic ?? AUTO}
           onChange={(v) => save({ rig_tier_basic: toValue(v) })}
           allowDeselect={false}
@@ -91,9 +113,29 @@ export function CategoryFacilityFields({
         {row.split_by_tech && (
           <Select
             size="xs" label="Rig, Tech II/III" disabled={saving}
-            data={[{ value: AUTO, label: autoLabel(advancedAuto, advancedSource) }, ...rigTiers.map((t) => ({ value: t, label: t }))]}
+            data={[{ value: AUTO, label: autoLabel(advancedAuto, advancedSource) }, ...tiers.map((t) => ({ value: t, label: t }))]}
             value={row.saved.rig_tier_advanced ?? AUTO}
             onChange={(v) => save({ rig_tier_advanced: toValue(v) })}
+            allowDeselect={false}
+          />
+        )}
+      </Group>
+      <Group gap="xs" mt={4} grow align="flex-end">
+        <Select
+          size="xs" label={row.split_by_tech ? 'TE rig, Tech I' : 'TE rig'} disabled={saving}
+          data={[{ value: AUTO, label: teAutoLabel(eff.te_rig_tier_basic, eff.te_rig_source_basic) },
+            ...tiers.map((t) => ({ value: t, label: t }))]}
+          value={row.saved.te_rig_tier_basic ?? AUTO}
+          onChange={(v) => save({ te_rig_tier_basic: toValue(v) })}
+          allowDeselect={false}
+        />
+        {row.split_by_tech && (
+          <Select
+            size="xs" label="TE rig, Tech II/III" disabled={saving}
+            data={[{ value: AUTO, label: teAutoLabel(eff.te_rig_tier_advanced, eff.te_rig_source_advanced) },
+              ...tiers.map((t) => ({ value: t, label: t }))]}
+            value={row.saved.te_rig_tier_advanced ?? AUTO}
+            onChange={(v) => save({ te_rig_tier_advanced: toValue(v) })}
             allowDeselect={false}
           />
         )}
@@ -109,6 +151,10 @@ export function CategoryFacilityFields({
         In use: {row.effective.rig_tier_basic}
         {row.split_by_tech && row.effective.rig_tier_advanced ? ` / ${row.effective.rig_tier_advanced} (Tech II/III)` : ''}
         {' '}x{row.effective.security_multiplier.toFixed(1)} security
+        {eff.te_rig_tier_basic
+          ? `; TE ${eff.te_rig_tier_basic}${row.split_by_tech && eff.te_rig_tier_advanced ? ` / ${eff.te_rig_tier_advanced}` : ''}`
+          : ''}
+        {eff.te_rig_tier_basic && eff.te_rig_source_basic ? ` (${TE_SOURCE_TEXT[eff.te_rig_source_basic]})` : ''}
       </Text>
       <NumberInput
         size="xs" mt={4} label="Facility tax override" suffix="%" decimalScale={2} min={0} max={100} step={0.05}

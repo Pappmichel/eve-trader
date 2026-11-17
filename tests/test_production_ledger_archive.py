@@ -48,7 +48,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices", "ledger_bpc_run_prices",
         "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "esi_sharing",
@@ -507,7 +507,8 @@ def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypat
     ledger_ingest.archive_contracts(
         owner_type="character", owner_id=ALICE,
         contracts=[
-            {"contract_id": 1, "type": "courier", "status": "finished", **common},
+            {"contract_id": 1, "type": "courier", "status": "finished",
+             "date_completed": "2026-10-31T06:58:00Z", **common},
             {"contract_id": 2, "type": "courier", "status": "failed", **common},
             {"contract_id": 3, "type": "courier", "status": "expired", **common},
             {"contract_id": 4, "type": "courier", "status": "deleted", **common},
@@ -521,6 +522,9 @@ def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypat
     failed = next(row for row in rows if int(row[0]) == 2)
     assert failed[7] == pytest.approx(1_500_000_000)
     assert failed[8] == "failed"
+    finished = next(row for row in rows if int(row[0]) == 1)
+    assert finished[9] == datetime(2026, 10, 31, 6, 58, tzinfo=timezone.utc)
+    assert failed[9] is None
 
 
 def test_buy_order_escrow_survives_a_later_history_row_without_it(tenant):
@@ -560,3 +564,124 @@ def test_open_buy_order_volume_counts_open_buys_in_the_region_only(tenant):
     assert ledger_db.open_buy_order_volume(owners, {10000002}) == {TYPE_ID: 7.0, 35: 1.0}
     assert ledger_db.open_buy_order_volume(owners, {10000002, 10000043}) == {TYPE_ID: 16.0, 35: 1.0}
     assert ledger_db.open_buy_order_volume([], {10000002}) == {}
+
+
+def _client(owner_id: int) -> dict:
+    rows = ledger_db.list_wallet_transactions_for_owners([("character", owner_id)])
+    return {int(r[3]): r[14] for r in rows}
+
+
+def test_wallet_archive_stores_client_id_and_fills_older_rows_once(tenant, monkeypatch):
+    """ESI's client_id rides along as a tenth field on the archive path only.
+    Rows archived before it existed are filled once while ESI still lists
+    them; a stored value is never overwritten."""
+    from eve_trader.esi_data import fetchers
+
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=[_txn(1)], journal_raw=[], now=T0)
+    assert _client(ALICE) == {1: None}
+
+    esi = [{"transaction_id": 1, "date": DATE1, "type_id": TYPE_ID, "location_id": 60000042,
+            "unit_price": 10.0, "quantity": 5, "is_buy": True, "journal_ref_id": 1,
+            "client_id": BOB},
+           {"transaction_id": 2, "date": DATE2, "type_id": TYPE_ID, "location_id": 60000042,
+            "unit_price": 10.0, "quantity": 5, "is_buy": False, "journal_ref_id": 2,
+            "client_id": 777}]
+    rows = fetchers._wallet_txn_archive_rows(esi, 0)
+    assert [len(r) for r in rows] == [10, 10]
+    assert fetchers._wallet_txn_rows(esi, 0) == [r[:9] for r in rows]
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=rows,
+                                 journal_raw=[], now=T0 + timedelta(hours=1))
+    assert _client(ALICE) == {1: BOB, 2: 777}
+
+    changed = [r[:9] + (999,) for r in rows]
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=changed,
+                                 journal_raw=[], now=T0 + timedelta(hours=2))
+    assert _client(ALICE) == {1: BOB, 2: 777}
+
+
+def _txns(first_id: int, count: int, newest: datetime, division: int = 0) -> list[tuple]:
+    """`count` sell rows, one second apart, the newest at `newest`."""
+    return [
+        (division, first_id + i, (newest - timedelta(seconds=i)).isoformat(), TYPE_ID, 60000042,
+         10.0, 1, False, first_id + i)
+        for i in range(count)
+    ]
+
+
+def test_wallet_transaction_cap_matches_the_fetchers_page_size():
+    from eve_trader.esi_data import fetchers
+    assert ledger_ingest.WALLET_TRANSACTIONS_PAGE_SIZE == fetchers.WALLET_TRANSACTIONS_PAGE_SIZE == 2500
+
+
+def test_full_transaction_page_without_overlap_records_a_gap(tenant, monkeypatch):
+    """At least one full page (2,500 rows) whose oldest row is newer than the
+    newest archived one: rows in between may be lost. A first sync never
+    records a gap."""
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    cap = ledger_ingest.WALLET_TRANSACTIONS_PAGE_SIZE
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=_txns(1, cap, T0), journal_raw=[], now=T0)
+    assert ledger_db.list_archive_gaps("character", ALICE) == []
+
+    newer = T0 + timedelta(days=2)
+    rows = _txns(10_000, cap, newer)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=rows,
+                                 journal_raw=[], now=newer + timedelta(hours=1))
+    oldest_new = newer - timedelta(seconds=cap - 1)
+    assert [(g[0], g[1], g[2]) for g in ledger_db.list_archive_gaps("character", ALICE)] == [
+        ("wallet_transactions", T0, oldest_new),
+    ]
+
+
+def test_overlapping_or_short_transaction_lists_record_no_gap(tenant, monkeypatch):
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    cap = ledger_ingest.WALLET_TRANSACTIONS_PAGE_SIZE
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=_txns(1, 1, T0), journal_raw=[], now=T0)
+    newer = T0 + timedelta(days=1)
+    # Under one full page: ESI returned everything.
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=_txns(100, cap - 1, newer), journal_raw=[],
+                                 now=newer + timedelta(hours=1))
+    assert ledger_db.list_archive_gaps("character", ALICE) == []
+    # A full page that reaches back into the archive overlaps it.
+    newest = T0 + timedelta(days=2)
+    overlap = _txns(20_000, cap - 1, newest) + [_txns(1, 1, T0)[0]]
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=overlap,
+                                 journal_raw=[], now=newest + timedelta(hours=1))
+    assert ledger_db.list_archive_gaps("character", ALICE) == []
+
+
+def test_corp_transaction_gap_is_checked_per_division(tenant, monkeypatch):
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    corp = 98000002
+    cap = ledger_ingest.WALLET_TRANSACTIONS_PAGE_SIZE
+    ledger_ingest.archive_corp_wallet(
+        owner_id=corp, txn_rows=_txns(1, 1, T0, division=1) + _txns(2, 1, T0, division=2),
+        journal_entries_by_division={1: [], 2: []}, now=T0,
+    )
+    newer = T0 + timedelta(days=2)
+    # Division 1: a full page newer than its archive. Division 2: ten rows.
+    rows = _txns(10_000, cap, newer, division=1) + _txns(50_000, 10, newer, division=2)
+    ledger_ingest.archive_corp_wallet(owner_id=corp, txn_rows=rows,
+                                      journal_entries_by_division={1: [], 2: []},
+                                      now=newer + timedelta(hours=1))
+    gaps = ledger_db.list_archive_gaps("corporation", corp)
+    assert [(g[0], g[1], g[2]) for g in gaps] == [
+        ("wallet_transactions", T0, newer - timedelta(seconds=cap - 1)),
+    ]
+
+
+def test_archived_reaction_job_is_stored_under_the_sde_activity_id(tenant, monkeypatch):
+    monkeypatch.setattr(ledger_ingest.inputs, "freeze_job_inputs", lambda **kw: [])
+    job = {
+        "job_id": 56, "activity_id": 9, "blueprint_id": 1, "blueprint_type_id": 999,
+        "product_type_id": 34, "runs": 1, "licensed_runs": None, "successful_runs": None,
+        "cost": 100.0, "facility_id": None, "station_id": None, "output_location_id": None,
+        "installer_id": ALICE, "start_date": DATE1, "end_date": DATE2,
+        "completed_date": DATE2, "status": "delivered", "probability": None,
+    }
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE, jobs=[job])
+    assert ledger_db.list_ledger_industry_jobs("character", ALICE)[0][3] == 11

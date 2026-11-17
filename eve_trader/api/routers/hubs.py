@@ -7,10 +7,10 @@ so no single tool grant fits. The table is this tenant's own setting
 (tenant_settings, RLS-scoped), nothing cross-tenant."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ... import hubs
 from ...actions import ActionError
@@ -29,7 +29,7 @@ def get_hub_freight():
 
 
 @router.post("/freight")
-def update_hub_freight(rows: list[HubFreightRow]):
+def update_hub_freight(rows: Annotated[list[HubFreightRow], Field(max_length=1_000)]):
     try:
         return hubs.do_update_hub_freight({r.region_id: r.freight_cost_per_m3 for r in rows})
     except ActionError as e:

@@ -12,6 +12,7 @@ import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import { ToolHeader } from '../../components/ToolHeader'
 import { JobProgress } from '../../components/JobProgress'
+import CcpNotice from '../../components/CcpNotice'
 
 const TABS = [
   { path: '/doctrine', label: 'Overview' },
@@ -172,10 +173,7 @@ export default function DoctrineLayout() {
 
           <Divider />
 
-          <Text size="xs" c="dimmed">
-            Unofficial third-party tool, not affiliated with or endorsed by CCP hf. EVE, EVE Online, CCP, and
-            all related logos/trademarks are property of CCP hf.
-          </Text>
+          <CcpNotice />
         </Stack>
       </AppShell.Navbar>
 

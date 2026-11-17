@@ -5,6 +5,7 @@ import pytest
 
 from eve_trader import portfolio, storage
 from eve_trader.config import TradingConfig
+from eve_trader.timeutil import utc_today
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +117,7 @@ def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatc
 
     result = portfolio.take_portfolio_snapshot(TradingConfig())
 
-    assert upserted["date"] == date.today()
+    assert upserted["date"] == utc_today()
     assert upserted["total_wealth"] is None
     assert upserted["wealth_assets_value"] is None
     assert upserted["wealth_wallet_balance"] is None
@@ -136,11 +137,11 @@ def test_do_get_portfolio_overview_takes_snapshot_when_not_taken_today(monkeypat
 
     assert calls == ["snapshot"]
     assert result["combined_value"] == 1.0
-    assert result["wealth_change"] == {"d1": None, "d7": None, "d30": None}
+    assert result["wealth_change"] == {"d1": None, "d7": None, "d30": None, "price_jumps": []}
 
 
 def test_do_get_portfolio_overview_reads_live_when_already_taken_today(monkeypatch):
-    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: utc_today())
     monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     calls = []
     monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("snapshot") or {"combined_value": 1.0})
@@ -198,7 +199,7 @@ def test_wealth_change_is_none_when_today_has_no_wealth(monkeypatch):
     today = date(2026, 10, 18)
     monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [_snapshot_row(today, None)])
 
-    assert portfolio.wealth_change(today) == {"d1": None, "d7": None, "d30": None}
+    assert portfolio.wealth_change(today) == {"d1": None, "d7": None, "d30": None, "price_jumps": []}
 
 
 def test_do_get_portfolio_history_unbounded_when_days_is_none(monkeypatch):
@@ -234,7 +235,7 @@ def test_do_get_portfolio_history_with_days_computes_since(monkeypatch):
 
     # Inclusive of today: 7 days means today back through 6 days ago.
     from datetime import timedelta
-    assert captured["since"] == date.today() - timedelta(days=6)
+    assert captured["since"] == utc_today() - timedelta(days=6)
 
 
 def test_do_get_portfolio_history_days_zero_is_clamped_to_one(monkeypatch):
@@ -251,7 +252,7 @@ def test_do_get_portfolio_history_days_zero_is_clamped_to_one(monkeypatch):
 
     portfolio.do_get_portfolio_history(days=0)
 
-    assert captured["since"] == date.today()
+    assert captured["since"] == utc_today()
 
 
 def test_do_get_portfolio_history_negative_days_is_clamped_to_one(monkeypatch):
@@ -265,7 +266,7 @@ def test_do_get_portfolio_history_negative_days_is_clamped_to_one(monkeypatch):
 
     portfolio.do_get_portfolio_history(days=-5)
 
-    assert captured["since"] == date.today()
+    assert captured["since"] == utc_today()
 
 
 def test_do_list_manual_item_prices(monkeypatch):
@@ -658,6 +659,23 @@ def test_bpc_run_values_are_cached_per_tenant(monkeypatch):
     assert computed == [[1, 2], [1]]
 
 
+def test_bpc_run_values_with_status_reports_an_incomplete_computation(monkeypatch):
+    monkeypatch.setattr(portfolio, "_bpc_cache", {("t", 1): 10.0, ("t", 2): None})
+    monkeypatch.setattr(portfolio, "_bpc_cache_at", {"t": __import__("time").time()})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "t")
+    state = {"cacheable": False}
+    monkeypatch.setattr(portfolio, "_compute_bpc_run_values",
+                        lambda type_ids: ({tid: 30.0 for tid in type_ids}, state["cacheable"]))
+
+    # Cache hits only: complete, and a cached "no value" comes back as None.
+    assert portfolio.bpc_run_values_with_status({1, 2}) == ({1: 10.0, 2: None}, True)
+    # A computation during an outage: values returned, but not complete.
+    assert portfolio.bpc_run_values_with_status({1, 3}) == ({1: 10.0, 3: 30.0}, False)
+    assert ("t", 3) not in portfolio._bpc_cache
+    state["cacheable"] = True
+    assert portfolio.bpc_run_values_with_status({3}) == ({3: 30.0}, True)
+
+
 def test_tech_one_copy_is_worth_its_copy_job_and_faction_copy_stays_unpriced(monkeypatch):
     from eve_trader.production import invention
 
@@ -948,7 +966,7 @@ def test_do_get_wealth_change_stays_ok_when_quotes_unavailable(monkeypatch):
         lambda cfg: (_ for _ in ()).throw(portfolio.MarketQuotesUnavailable("down")),
     )
     assert portfolio.do_get_wealth_change(TradingConfig()) == {
-        "d1": None, "d7": None, "d30": None,
+        "d1": None, "d7": None, "d30": None, "price_jumps": [],
     }
 
 
@@ -965,4 +983,4 @@ def test_do_get_portfolio_overview_falls_back_live_when_quotes_unavailable(monke
     )
     result = portfolio.do_get_portfolio_overview(TradingConfig())
     assert result["combined_value"] == 9.0
-    assert result["wealth_change"] == {"d1": None, "d7": None, "d30": None}
+    assert result["wealth_change"] == {"d1": None, "d7": None, "d30": None, "price_jumps": []}

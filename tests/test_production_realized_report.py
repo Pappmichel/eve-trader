@@ -61,7 +61,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices", "ledger_bpc_run_prices",
         "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
@@ -727,17 +727,17 @@ def test_owner_names_come_from_stored_data_before_esi(tenant, monkeypatch):
     with storage.connect() as conn:
         conn.execute(
             "INSERT INTO corp_assets (item_id, type_id, location_id, quantity, is_blueprint_copy, "
-            "owner_name, owner_corporation_id) VALUES (1, 34, ?, 1, 0, 'RichlTech (corp)', 98723738)",
+            "owner_name, owner_corporation_id) VALUES (1, 34, ?, 1, 0, 'Example Corp (corp)', 98000001)",
             (LOC,),
         )
         conn.execute(
             "INSERT INTO character_industry_jobs (job_id, installer_id, installer_name) "
-            "VALUES (5, 2112543378, 'Corpmate')",
+            "VALUES (5, 1234567896, 'Corpmate')",
         )
     asked = []
     monkeypatch.setattr(names, "_esi_names", lambda ids: asked.append(list(ids)) or {424242: "Stranger"})
-    found = names.owner_names([98723738, 2112543378, 424242])
-    assert found == {98723738: "RichlTech", 2112543378: "Corpmate", 424242: "Stranger"}
+    found = names.owner_names([98000001, 1234567896, 424242])
+    assert found == {98000001: "Example Corp", 1234567896: "Corpmate", 424242: "Stranger"}
     assert asked == [[424242]]
 
 

@@ -5,6 +5,7 @@ import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { refiningApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { RefiningSettings as RefiningSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { DataTable } from '../../components/DataTable'
@@ -139,7 +140,7 @@ export default function OreSettings() {
         checked={form.credit_byproducts}
         onChange={(e) => set('credit_byproducts', e.currentTarget.checked)} mt={6} />
 
-      <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={240} onClick={() => save.mutate(changedFields(data, form))} loading={save.isPending}>
         Save Settings
       </Button>
     </Stack>

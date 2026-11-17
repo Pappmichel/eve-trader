@@ -66,6 +66,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON esi_freshness TO eve_trader_app;
 -- readers fall back to `last_success_at`.
 ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS data_as_of TIMESTAMPTZ;
 
+-- Transient ESI failures (5xx, timeout, network, rate limit) in a row. Drives
+-- the short retry backoff; reset by a success, by a dead-owner failure and by
+-- a re-auth skip, which keep the long backoff.
+ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
+
 -- ====================================================== per-tenant: group-3 capabilities
 -- On/off per character, no tool_key. Presence of a row means the
 -- capability is ticked. Not a sharing row.
@@ -82,6 +87,26 @@ CREATE POLICY tenant_isolation ON esi_character_capabilities
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON esi_character_capabilities TO eve_trader_app;
+
+-- ====================================================== per-tenant: removed characters
+-- Written when a character is removed on the Characters page. Removal keeps
+-- the character's esi_sharing / esi_character_capabilities rows (re-adding
+-- restores them), so this row is what tells the realized-profit ledger that
+-- a character with sharing rows but no token is no longer one of the
+-- tenant's own characters. A token always wins; re-adding never deletes it.
+CREATE TABLE IF NOT EXISTS esi_removed_characters (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    removed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, character_id)
+);
+ALTER TABLE esi_removed_characters ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON esi_removed_characters;
+CREATE POLICY tenant_isolation ON esi_removed_characters
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON esi_removed_characters TO eve_trader_app;
 
 -- ====================================================== per-tenant: wallet snapshots
 -- Phase 8 added ESI client methods and a live fetch inside

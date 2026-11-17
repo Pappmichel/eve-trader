@@ -40,9 +40,10 @@ import logging
 import threading
 from typing import Optional
 
-from . import backup, portfolio, storage, tenant_eligibility, tenant_scope
+from . import backup, portfolio, storage, tenant_eligibility, tenant_scope, timeutil
 from .config import SCHEDULER_OPERATOR_CONFIG, TRADING_CONFIG, TradingConfig
 from .production import jita_price_cache
+from .production import sde as production_sde
 
 log = logging.getLogger("eve_trader.scheduler")
 
@@ -81,6 +82,16 @@ _backup_status: dict = {}
 # once per tenant.
 _jita_price_cache_status: dict = {}
 
+# And for the daily SDE freshness check (production/sde.py record_remote_sde_check).
+_sde_check_status: dict = {}
+
+SDE_CHECK_INTERVAL_HOURS = 24.0
+
+# And for the global goonmetrics_history retention prune.
+_goonmetrics_retention_status: dict = {}
+
+RETENTION_INTERVAL_HOURS = 24.0
+
 
 def _hours_since(iso_ts: str | None) -> float:
     if iso_ts is None:
@@ -110,7 +121,7 @@ def _portfolio_snapshot_due(cfg: TradingConfig) -> bool:
     if latest is None:
         return True
     interval_days = max(1, round(cfg.portfolio_snapshot_interval_hours / 24))
-    return (dt.date.today() - latest).days >= interval_days
+    return (timeutil.utc_today() - latest).days >= interval_days
 
 
 def _job_due(success_ts: str | None, attempt_ts: str | None, interval_hours: float) -> bool:
@@ -144,7 +155,12 @@ def _master_enabled() -> bool:
         return bool(TRADING_CONFIG.scheduler_enabled)
 
 
-_GLOBAL_JOB_STATUS = {"backup": _backup_status, "jita_price_cache": _jita_price_cache_status}
+_GLOBAL_JOB_STATUS = {
+    "backup": _backup_status,
+    "jita_price_cache": _jita_price_cache_status,
+    "sde_freshness_check": _sde_check_status,
+    "goonmetrics_retention": _goonmetrics_retention_status,
+}
 
 # One in-flight worker per (tenant_id, job name). Released in the worker's
 # finally — not after join — so a timed-out thread keeps blocking a restart
@@ -197,7 +213,7 @@ def _sync_due_then_match(grants, **kwargs):
     return result
 
 
-def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
+def _run_job(tenant_id: Optional[str], name: str, fn, *, wait: bool = True) -> None:
     """tenant_id=None records into the matching global status dict (looked
     up by `name` via _GLOBAL_JOB_STATUS) instead of a per-tenant slot - only
     the backup and jita_price_cache jobs ever pass None.
@@ -208,7 +224,12 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
     threading.Thread does not inherit contextvars (CLAUDE.md).
 
     If a previous worker for the same (tenant, name) is still alive, skip
-    without overwriting its status."""
+    without overwriting its status.
+
+    `wait=False` starts the worker and returns at once (the alerts job, so
+    its long runs never hold the tick loop): the worker writes the status
+    itself when it ends, and JOB_TIMEOUT_SECONDS does not apply - the
+    per-(tenant, job) guard stays held until the thread is done."""
     key = (tenant_id, name)
     with _job_mu:
         existing = _running_jobs.get(key)
@@ -221,16 +242,33 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
 
     outcome: dict = {"error": None}
 
+    def _record_status() -> None:
+        result = {
+            "ran_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "error": outcome["error"],
+        }
+        if tenant_id is None:
+            _GLOBAL_JOB_STATUS[name].update(result)
+        else:
+            last_run_status.setdefault(tenant_id, {})[name] = result
+
     def _worker() -> None:
         try:
-            fn()
+            with storage.long_running():
+                fn()
         except Exception as e:  # noqa: BLE001 - a job's own failure must never kill the scheduler thread
             log.warning("Scheduled job %r (tenant=%s) failed: %s", name, tenant_id, e)
             outcome["error"] = str(e)
+        except BaseException as e:  # SystemExit, KeyboardInterrupt, GeneratorExit
+            log.warning("Scheduled job %r (tenant=%s) aborted: %r", name, tenant_id, e)
+            outcome["error"] = f"{type(e).__name__}: {e}"
+            raise
         finally:
             with _job_mu:
                 if _running_jobs.get(key) is thread:
                     _running_jobs.pop(key, None)
+            if not wait:
+                _record_status()
 
     ctx = contextvars.copy_context()
     thread = threading.Thread(
@@ -247,6 +285,8 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
             return
         _running_jobs[key] = thread
     thread.start()
+    if not wait:
+        return
     thread.join(JOB_TIMEOUT_SECONDS)
     if thread.is_alive():
         log.warning(
@@ -256,15 +296,7 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
         )
         outcome["error"] = f"timed out after {JOB_TIMEOUT_SECONDS}s (still running)"
 
-    result = {
-        "ran_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "error": outcome["error"],
-    }
-
-    if tenant_id is None:
-        _GLOBAL_JOB_STATUS[name].update(result)
-    else:
-        last_run_status.setdefault(tenant_id, {})[name] = result
+    _record_status()
 
 
 def _check_and_run_due_jobs_for_tenant(
@@ -354,6 +386,56 @@ def _check_and_run_due_jobs_for_tenant(
         ):
             _run_job(tenant_id, "asset_history", asset_manager_actions.take_history_snapshot)
 
+    # Old shortlist runs (only the newest run is ever read), once a day.
+    if tenant_eligibility.may_use("trading", grants) and _retention_due(tenant_id, "shortlist_retention"):
+        _run_job(tenant_id, "shortlist_retention", _prune_shortlist_snapshot_job)
+
+
+def _retention_due(tenant_id: Optional[str], name: str) -> bool:
+    """Once a day per (tenant, job), measured from the last successful run in
+    this process (a restart allows one extra run; deleting is idempotent). A
+    failed run backs off like every job (_job_due)."""
+    status = (
+        _GLOBAL_JOB_STATUS[name] if tenant_id is None
+        else last_run_status.get(tenant_id, {}).get(name, {})
+    )
+    ran_at = status.get("ran_at")
+    success = ran_at if ran_at and not status.get("error") else None
+    return _job_due(success, ran_at, RETENTION_INTERVAL_HOURS)
+
+
+def _retention_days() -> float:
+    return max(30.0, float(TRADING_CONFIG.history_retention_days or 90.0))
+
+
+def _price_history_retention_days() -> float:
+    return max(90.0, float(TRADING_CONFIG.price_history_retention_days or 365.0))
+
+
+def _prune_shortlist_snapshot_job() -> None:
+    cutoff = timeutil.utc_now_naive() - dt.timedelta(days=_retention_days())
+    deleted = storage.prune_shortlist_snapshot(cutoff.isoformat(timespec="seconds"))
+    if deleted:
+        log.info("Pruned %d old shortlist_snapshot rows", deleted)
+
+
+def _prune_goonmetrics_history_job() -> None:
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        cutoff = timeutil.utc_today() - dt.timedelta(days=_price_history_retention_days())
+        deleted = storage.prune_goonmetrics_history(cutoff.isoformat())
+    if deleted:
+        log.info("Pruned %d old goonmetrics_history rows", deleted)
+
+
+def _check_and_run_goonmetrics_retention_job() -> None:
+    """Global, unscoped (the table has no tenant_id); the retention value is
+    DEFAULT_TENANT_ID's, like the backup interval. Runs under the master
+    switch only."""
+    if _retention_due(None, "goonmetrics_retention"):
+        with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+            fn = _prune_goonmetrics_history_job
+            _run_job(None, "goonmetrics_retention", fn)
+
 
 def _check_and_run_backup_job() -> None:
     """Global, unscoped - reads DEFAULT_TENANT_ID's own backup_interval_hours
@@ -391,6 +473,31 @@ def _check_and_run_jita_price_cache_job() -> None:
         _run_job(None, "jita_price_cache", jita_price_cache.refresh_jita_price_cache)
 
 
+def _sde_check_job() -> None:
+    # The SDE tables are global, but storage needs an ambient tenant for any
+    # connection; the Default tenant is the operator's stand-in (same as the
+    # SDE cache warm-up at server start).
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        production_sde.record_remote_sde_check()
+
+
+def _check_and_run_sde_check_job() -> None:
+    """Global, unscoped, daily: one HEAD request against the Fuzzwork dump
+    stored as sde_refresh_state.remote_etag. The Admin page shows "New SDE
+    available" when it differs from the applied one. A failed check backs
+    off like every job (_job_due) and never claims an update. Skipped when
+    the operator switched it off (sde_check_job_enabled)."""
+    if not SCHEDULER_OPERATOR_CONFIG.sde_check_job_enabled:
+        return
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        stored = storage.get_sde_remote_check()
+    if stored is None:
+        return  # SDE never applied: nothing to compare a remote ETag with
+    checked_at = stored[1]
+    if _job_due(checked_at, _last_attempt(None, "sde_freshness_check"), SDE_CHECK_INTERVAL_HOURS):
+        _run_job(None, "sde_freshness_check", _sde_check_job)
+
+
 def _check_and_run_alerts_job() -> None:
     """Per tenant with an enabled alert opt-in. Independent of the tenant's
     own `scheduler_enabled` and of the tenant activity gate (see
@@ -406,7 +513,7 @@ def _check_and_run_alerts_job() -> None:
             with tenant_scope.enter_tenant(tenant_id):
                 if not tenant_eligibility.alerts_allowed(tenant_id) or not alert_runner.enabled_subscriptions():
                     continue
-                _run_job(tenant_id, "alerts", alert_runner.run_for_tenant)
+                _run_job(tenant_id, "alerts", alert_runner.run_for_tenant, wait=False)
         except Exception as e:  # noqa: BLE001 - one tenant's failure must not block the others
             log.warning("Alerts check failed for tenant %s: %s", tenant_id, e)
 
@@ -433,6 +540,14 @@ def _check_and_run_due_jobs() -> None:
 
         _check_and_run_backup_job()
         _check_and_run_jita_price_cache_job()
+        try:
+            _check_and_run_goonmetrics_retention_job()
+        except Exception as e:  # noqa: BLE001 - housekeeping must not stop the other jobs
+            log.warning("Goonmetrics retention scheduling failed: %s", e)
+        try:
+            _check_and_run_sde_check_job()
+        except Exception as e:  # noqa: BLE001 - an advisory check must not stop the alerts job below
+            log.warning("SDE freshness check scheduling failed: %s", e)
 
     # The opt-in alerts job runs regardless of `master`, gated only by its own
     # operator switch (CLAUDE.md "Discord alerts").
@@ -440,12 +555,20 @@ def _check_and_run_due_jobs() -> None:
 
 
 def _loop() -> None:
-    while not _stop_event.is_set():
-        try:
-            _check_and_run_due_jobs()
-        except Exception as e:  # noqa: BLE001 - one bad check must not end the background thread
-            log.warning("Scheduler check failed: %s", e)
-        _stop_event.wait(CHECK_INTERVAL_SECONDS)
+    global _thread
+    try:
+        while not _stop_event.is_set():
+            try:
+                _check_and_run_due_jobs()
+            except Exception as e:  # noqa: BLE001 - one bad check must not end the background thread
+                log.warning("Scheduler check failed: %s", e)
+            _stop_event.wait(CHECK_INTERVAL_SECONDS)
+    finally:
+        # Whatever ended the loop (stop(), SystemExit, ...), the next start()
+        # must be able to start a fresh thread.
+        log.error("scheduler thread ended")
+        if _thread is threading.current_thread() or _thread is None or not _thread.is_alive():
+            _thread = None
 
 
 def start() -> None:
@@ -471,8 +594,9 @@ def start() -> None:
 
 def stop() -> None:
     _stop_event.set()
-    if _thread is not None:
-        _thread.join(timeout=5)
+    thread = _thread
+    if thread is not None:
+        thread.join(timeout=5)
 
 
 def get_status() -> dict:
@@ -503,6 +627,7 @@ def get_status() -> dict:
         "operator": {
             "backup_job_enabled": SCHEDULER_OPERATOR_CONFIG.backup_job_enabled,
             "jita_price_cache_job_enabled": SCHEDULER_OPERATOR_CONFIG.jita_price_cache_job_enabled,
+            "sde_check_job_enabled": SCHEDULER_OPERATOR_CONFIG.sde_check_job_enabled,
             "alerts_job_enabled": SCHEDULER_OPERATOR_CONFIG.alerts_job_enabled,
             "inactive_tenant_days": SCHEDULER_OPERATOR_CONFIG.inactive_tenant_days,
         },
@@ -532,6 +657,11 @@ def get_status() -> dict:
                 "interval_hours": TRADING_CONFIG.jita_price_cache_interval_hours,
                 "last_run_at": jita_price_cache.last_updated_at(),
                 "last_error": _jita_price_cache_status.get("error"),
+            },
+            "sde_freshness_check": {
+                "interval_hours": SDE_CHECK_INTERVAL_HOURS,
+                "last_run_at": _sde_check_status.get("ran_at"),
+                "last_error": _sde_check_status.get("error"),
             },
         },
     }

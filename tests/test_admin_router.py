@@ -154,7 +154,7 @@ def test_preview_sde_action_error_maps_to_400(monkeypatch):
 
 
 def test_apply_sde_passes_through_action(monkeypatch):
-    monkeypatch.setattr(admin, "do_apply_sde", lambda: {"sde_types": 42})
+    monkeypatch.setattr(admin, "do_apply_sde", lambda confirm_shrink=False: {"sde_types": 42})
 
     resp = client.post("/api/admin/sde/apply")
 
@@ -162,8 +162,18 @@ def test_apply_sde_passes_through_action(monkeypatch):
     assert resp.json() == {"sde_types": 42}
 
 
+def test_apply_sde_passes_the_shrink_confirmation(monkeypatch):
+    seen = []
+    monkeypatch.setattr(admin, "do_apply_sde", lambda confirm_shrink=False: seen.append(confirm_shrink) or {})
+
+    client.post("/api/admin/sde/apply")
+    client.post("/api/admin/sde/apply", json={"confirm_shrink": True})
+
+    assert seen == [False, True]
+
+
 def test_apply_sde_without_preview_maps_to_400(monkeypatch):
-    def _raise():
+    def _raise(confirm_shrink=False):
         raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
     monkeypatch.setattr(admin, "do_apply_sde", _raise)
 
@@ -403,3 +413,51 @@ def test_remove_allowlist_entry_forwards_path_params(monkeypatch):
 
     assert resp.status_code == 200
     assert captured == {"entry_type": "corporation", "entry_id": 500}
+
+
+def test_list_error_groups_returns_groups(monkeypatch):
+    monkeypatch.setattr(error_log, "do_list_error_groups", lambda limit: [
+        {"source": "frontend", "message": "boom", "count": 4, "tenant_count": 2,
+         "first_seen": "2026-11-01T00:00:00", "last_seen": "2026-11-02T00:00:00",
+         "detail": None, "path": "/trading"},
+    ])
+    resp = client.get("/api/admin/errors/groups")
+    assert resp.status_code == 200
+    assert resp.json()[0]["count"] == 4 and resp.json()[0]["tenant_count"] == 2
+
+
+def test_remove_user_returns_the_removal_summary(monkeypatch):
+    summary = {"removed": 42, "tokens_deleted": 2, "revoked": 1, "revoke_failed": 1,
+               "revoke_skipped": False, "discord_unlinked": True}
+    monkeypatch.setattr(admin, "do_remove_user", lambda **kw: summary)
+    assert client.delete("/api/admin/users/42").json() == summary
+
+
+def test_purge_routes_forward_tenant_and_confirmation(monkeypatch):
+    seen = {}
+    tid = "11111111-1111-1111-1111-111111111111"
+
+    def preview(**kw):
+        seen["preview"] = kw
+        return {"tenant_id": kw["tenant_id"], "name": "N", "tables": [], "total_rows": 0}
+
+    def purge(**kw):
+        seen["purge"] = kw
+        return {"purged": kw["tenant_id"]}
+
+    monkeypatch.setattr(admin, "do_purge_tenant_preview", preview)
+    monkeypatch.setattr(admin, "do_purge_tenant", purge)
+    assert client.get(f"/api/admin/tenants/{tid}/purge-preview").status_code == 200
+    assert client.post(f"/api/admin/tenants/{tid}/purge", json={"confirm_name": "N"}).status_code == 200
+    assert seen["purge"]["confirm_name"] == "N" and seen["purge"]["tenant_id"] == tid
+    assert client.post(f"/api/admin/tenants/{tid}/purge", json={"confirm_name": "x" * 101}).status_code == 422
+    assert client.get("/api/admin/tenants/not-a-uuid/purge-preview").status_code == 422
+
+
+def test_purge_refusal_is_a_400(monkeypatch):
+    def _raise(**kw):
+        raise ActionError("This tenant still has a registered user. Remove the user first.")
+    monkeypatch.setattr(admin, "do_purge_tenant", _raise)
+    resp = client.post("/api/admin/tenants/11111111-1111-1111-1111-111111111111/purge",
+                       json={"confirm_name": "N"})
+    assert resp.status_code == 400

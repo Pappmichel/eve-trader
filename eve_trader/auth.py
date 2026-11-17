@@ -25,13 +25,14 @@ import base64
 import hashlib
 import http.server
 import json
+import logging
 import re
 import secrets
 import threading
 import time
 import urllib.parse
 import webbrowser
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,8 @@ import requests
 
 from . import storage
 from .config import OAUTH_CONFIG, OAuthConfig
+
+_log = logging.getLogger(__name__)
 
 
 class InvalidRoleKey(ValueError):
@@ -173,6 +176,26 @@ def validate_role_key_for_tool(role_key: str, tool_key: str) -> str:
     return role_key
 
 
+class RefreshTokenRejected(requests.HTTPError):
+    """SSO rejected the stored refresh token (`invalid_grant`), now or on an
+    earlier attempt. Still a `requests.RequestException`, so the broad
+    handlers that already catch refresh failures keep catching it; the ESI
+    client maps it to a 400 "Token refresh failed" status error, which the
+    sync orchestrator treats as a dead owner."""
+
+    status_code = 400
+
+    def __init__(self, message: str = "refresh token rejected (invalid_grant)", response=None):
+        super().__init__(message, response=response)
+
+
+def _record_from_stored(rec: dict) -> "TokenRecord":
+    """Build a record from a stored dict, dropping keys this version does not
+    know (a row written by a newer version must not break a rollback)."""
+    known = {f.name for f in fields(TokenRecord)}
+    return TokenRecord(**{k: v for k, v in rec.items() if k in known})
+
+
 @dataclass
 class TokenRecord:
     role: str                 # arbitrary label, e.g. "buyer" / "seller"
@@ -182,9 +205,36 @@ class TokenRecord:
     refresh_token: str
     expires_at: float          # unix timestamp
     scopes: str
+    # Set when SSO answered `invalid_grant` to a refresh: the refresh token is
+    # dead until the user authorizes again, which writes a fresh record.
+    refresh_rejected_at: Optional[float] = None
+    # EVE's character owner hash from the verified SSO token; changes when the
+    # character is transferred to another account. Empty until a login saw it.
+    owner_hash: str = ""
 
     def is_expired(self, skew_seconds: int = 60) -> bool:
         return time.time() >= (self.expires_at - skew_seconds)
+
+
+@dataclass(frozen=True)
+class SsoIdentity:
+    """What a locally verified SSO access token says about its character."""
+    character_id: int
+    character_name: str
+    owner_hash: str
+    scopes: tuple[str, ...]
+
+
+class IdentityError(ValueError):
+    """The SSO access token could not be verified (bad signature, claims, or
+    the signing keys could not be fetched)."""
+
+
+_SSO_ISSUERS = ("login.eveonline.com", "https://login.eveonline.com")
+_SSO_AUDIENCE = "EVE Online"
+_JWKS_TTL_SECONDS = 3600
+_JWKS_TIMEOUT_SECONDS = 10
+_JWT_LEEWAY_SECONDS = 60
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -245,6 +295,13 @@ class TokenManager:
     _refresh_locks_guard = threading.Lock()
     _refresh_locks: dict[str, threading.Lock] = {}
 
+    # SSO signing keys, cached class-wide (a TokenManager is built per
+    # request) as {kid: public key}; one lock covers the whole fetch.
+    _jwks_lock = threading.Lock()
+    _jwks_keys: dict = {}
+    _jwks_fetched_at: float = 0.0
+    _jwks_url: str = ""
+
     def __init__(self, cfg: OAuthConfig = OAUTH_CONFIG):
         self.cfg = cfg
         self._tokens: dict[str, TokenRecord] = {}
@@ -282,7 +339,7 @@ class TokenManager:
         to this instance's in-memory dict, or a later remove_token(new_role)
         call on a different instance would target a storage row that still
         doesn't exist under that key."""
-        self._tokens = {role: TokenRecord(**rec) for role, rec in storage.load_all_tenant_tokens().items()}
+        self._tokens = {role: _record_from_stored(rec) for role, rec in storage.load_all_tenant_tokens().items()}
         self._tokens, changes = _rekey_legacy_bare_roles(self._tokens)
         if changes:
             with storage.batch_session():
@@ -313,10 +370,13 @@ class TokenManager:
         (e.g. several "producer" alts for ESI asset/industry tracking) without
         one login overwriting another's stored token."""
         token_json = self._authorize_browser_flow(role_prefix, scopes)
-        character_id, character_name = self._verify(token_json["access_token"])
+        identity = self._identity(token_json["access_token"])
+        character_id, character_name = identity.character_id, identity.character_name
         final_role = f"{role_prefix}:{character_id}"
-        record = self._to_record(final_role, token_json, " ".join(scopes),
-                                  character_id=character_id, character_name=character_name)
+        record = self._to_record(final_role, token_json,
+                                  " ".join(identity.scopes) or " ".join(scopes),
+                                  character_id=character_id, character_name=character_name,
+                                  owner_hash=identity.owner_hash)
         self._tokens[final_role] = record
         self._save_record(final_role)
         return record
@@ -405,42 +465,164 @@ class TokenManager:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=30,
         )
+        if resp.status_code == 400 and self._is_invalid_grant(resp):
+            # Remember the rejection so later syncs do not ask SSO again.
+            self._tokens[record.role] = replace(record, refresh_rejected_at=time.time())
+            self._save_record_with_retry(record.role)
+            raise RefreshTokenRejected(response=resp)
         resp.raise_for_status()
         token_json = resp.json()
         new_record = self._to_record(record.role, token_json, record.scopes,
                                       character_id=record.character_id,
-                                      character_name=record.character_name)
+                                      character_name=record.character_name,
+                                      previous_refresh_token=record.refresh_token,
+                                      owner_hash=record.owner_hash)
+        # Keep the record in memory first: SSO may already have rotated the
+        # refresh token, so it must survive a failing save for this run.
         self._tokens[record.role] = new_record
-        self._save_record(record.role)
+        self._save_record_with_retry(record.role)
         return new_record
+
+    @staticmethod
+    def _is_invalid_grant(resp) -> bool:
+        try:
+            body = resp.json()
+        except ValueError:
+            return False
+        return isinstance(body, dict) and body.get("error") == "invalid_grant"
+
+    _SAVE_ATTEMPTS = 3
+    _SAVE_RETRY_WAIT_SECONDS = 0.5
+
+    def _save_record_with_retry(self, role: str) -> None:
+        """Save after a successful SSO refresh; retry a busy pool or a
+        transient database error, then log (no token values) and carry on
+        with the in-memory record."""
+        from psycopg import OperationalError
+        from psycopg_pool import PoolTimeout
+        for attempt in range(1, self._SAVE_ATTEMPTS + 1):
+            try:
+                self._save_record(role)
+                return
+            except (PoolTimeout, OperationalError) as exc:
+                if attempt >= self._SAVE_ATTEMPTS:
+                    _log.error(
+                        "could not store refreshed token for role %s after %d attempts: %s",
+                        role, attempt, type(exc).__name__)
+                    return
+                time.sleep(self._SAVE_RETRY_WAIT_SECONDS)
 
     def _to_record(self, role: str, token_json: dict, scopes: str,
                     character_id: Optional[int] = None,
-                    character_name: Optional[str] = None) -> TokenRecord:
+                    character_name: Optional[str] = None,
+                    previous_refresh_token: Optional[str] = None,
+                    owner_hash: str = "") -> TokenRecord:
         access_token = token_json["access_token"]
-        refresh_token = token_json.get("refresh_token", "")
+        # A refresh response without a new refresh token keeps the old one.
+        refresh_token = token_json.get("refresh_token") or previous_refresh_token or ""
         expires_at = time.time() + token_json.get("expires_in", 1200)
         if character_id is None or character_name is None:
-            character_id, character_name = self._verify(access_token)
+            identity = self._identity(access_token)
+            character_id, character_name = identity.character_id, identity.character_name
+            owner_hash = owner_hash or identity.owner_hash
         return TokenRecord(
             role=role, character_id=character_id, character_name=character_name,
             access_token=access_token, refresh_token=refresh_token,
-            expires_at=expires_at, scopes=scopes,
+            expires_at=expires_at, scopes=scopes, owner_hash=owner_hash,
         )
 
-    @staticmethod
-    def _verify(access_token: str) -> tuple[int, str]:
-        """Resolves character id/name from an access token via /oauth/verify."""
-        resp = requests.get(
-            "https://login.eveonline.com/oauth/verify",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=30,
+    @classmethod
+    def _signing_key(cls, kid: Optional[str], jwks_url: str):
+        """Public key for `kid`. Reloads the key set once for an unknown kid
+        (key rotation) and when the cache is older than an hour."""
+        import jwt  # PyJWT
+
+        def _load_keys() -> None:
+            try:
+                resp = requests.get(jwks_url, timeout=_JWKS_TIMEOUT_SECONDS)
+                resp.raise_for_status()
+                keys = resp.json().get("keys", [])
+            except (requests.RequestException, ValueError, AttributeError) as exc:
+                raise IdentityError("signing keys unavailable") from exc
+            loaded = {}
+            for jwk in keys:
+                if jwk.get("kty") != "RSA" or not jwk.get("kid"):
+                    continue
+                try:
+                    loaded[jwk["kid"]] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
+                except (jwt.PyJWTError, ValueError, TypeError):
+                    continue
+            if not loaded:
+                raise IdentityError("signing keys unavailable")
+            cls._jwks_keys = loaded
+            cls._jwks_fetched_at = time.time()
+            cls._jwks_url = jwks_url
+
+        with cls._jwks_lock:
+            stale = (
+                cls._jwks_url != jwks_url
+                or time.time() - cls._jwks_fetched_at > _JWKS_TTL_SECONDS
+            )
+            if stale or kid not in cls._jwks_keys:
+                _load_keys()
+            key = cls._jwks_keys.get(kid)
+        if key is None:
+            raise IdentityError("unknown signing key")
+        return key
+
+    def _identity(self, access_token: str) -> SsoIdentity:
+        """Verifies an SSO access token locally (RS256 signature against the
+        JWKS, issuer, audience, expiry) and returns who it belongs to and the
+        scopes SSO actually granted. Never called on refresh: an outage of the
+        key endpoint must not stop syncs."""
+        import jwt  # PyJWT
+
+        try:
+            header = jwt.get_unverified_header(access_token)
+            if header.get("alg") != "RS256":
+                raise IdentityError("unexpected signing algorithm")
+            key = self._signing_key(header.get("kid"), self.cfg.jwks_url)
+            claims = jwt.decode(
+                access_token, key, algorithms=["RS256"],
+                issuer=list(_SSO_ISSUERS),
+                leeway=_JWT_LEEWAY_SECONDS,
+                # PyJWT accepts any one listed audience; both are required
+                # here, so the audience is checked below.
+                options={"require": ["exp", "iss", "aud", "sub"], "verify_aud": False},
+            )
+            aud = claims.get("aud")
+            aud = [aud] if isinstance(aud, str) else list(aud or [])
+            if self.cfg.client_id not in aud or _SSO_AUDIENCE not in aud:
+                raise IdentityError("token audience mismatch")
+        except IdentityError:
+            raise
+        except jwt.PyJWTError as exc:
+            raise IdentityError(f"token rejected: {type(exc).__name__}") from exc
+        match = re.fullmatch(r"CHARACTER:EVE:(\d+)", str(claims.get("sub", "")))
+        if not match or not claims.get("name"):
+            raise IdentityError("token carries no character")
+        scp = claims.get("scp") or []
+        scopes = tuple(scp.split()) if isinstance(scp, str) else tuple(str(x) for x in scp)
+        return SsoIdentity(
+            character_id=int(match.group(1)),
+            character_name=str(claims["name"]),
+            owner_hash=str(claims.get("owner") or ""),
+            scopes=scopes,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        return int(data["CharacterID"]), data["CharacterName"]
+
+    def _verify(self, access_token: str) -> tuple[int, str]:
+        """Character id and name of a verified access token (CLI paths)."""
+        identity = self._identity(access_token)
+        return identity.character_id, identity.character_name
 
     # ------------------------------------------------------------- public API
+    @staticmethod
+    def _raise_if_rejected(record: TokenRecord) -> None:
+        if record.refresh_rejected_at is not None:
+            raise RefreshTokenRejected(
+                "refresh token was rejected earlier (invalid_grant); authorize this character again"
+            )
+
     def get_token(self, role: str) -> TokenRecord:
         self._ensure_loaded()
         record = self._tokens.get(role)
@@ -450,6 +632,7 @@ class TokenManager:
                 f"e.g.: `eve-trader auth --role {role}`."
             )
         if record.is_expired():
+            self._raise_if_rejected(record)
             with self._refresh_lock_for(role):
                 # Re-load + re-check after acquiring the lock - a concurrent
                 # request may have already refreshed (and saved) this exact
@@ -458,6 +641,28 @@ class TokenManager:
                 self._load()
                 record = self._tokens.get(role, record)
                 if record.is_expired():
+                    self._raise_if_rejected(record)
+                    record = self._refresh(record)
+        return record
+
+    def ensure_fresh(self, role: str, min_valid_seconds: int = 300) -> TokenRecord:
+        """Like get_token, but refreshes already when less than
+        `min_valid_seconds` of validity remain. Called before a batch session
+        opens so the refresh does not need a second pooled connection."""
+        self._ensure_loaded()
+        record = self._tokens.get(role)
+        if record is None:
+            raise RuntimeError(f"No stored token for role '{role}'.")
+        if record.is_expired(skew_seconds=min_valid_seconds):
+            with self._refresh_lock_for(role):
+                self._load()
+                record = self._tokens.get(role, record)
+                if record.is_expired(skew_seconds=min_valid_seconds):
+                    if record.refresh_rejected_at is not None and not record.is_expired():
+                        # Dead refresh token, but the access token still
+                        # works for now: nothing to refresh, nothing to raise.
+                        return record
+                    self._raise_if_rejected(record)
                     record = self._refresh(record)
         return record
 
@@ -535,9 +740,41 @@ def import_tokens_file(tenant_id: str, path: Optional[Path] = None) -> int:
     imported."""
     path = path or OAUTH_CONFIG.token_store_path
     raw = json.loads(path.read_text(encoding="utf-8"))
-    tokens = {role: TokenRecord(**rec) for role, rec in raw.items()}
+    tokens = {role: _record_from_stored(rec) for role, rec in raw.items()}
     tokens, _changes = _rekey_legacy_bare_roles(tokens)
     with storage.tenant_context(tenant_id):
         for role, record in tokens.items():
             storage.save_tenant_token(role, asdict(record))
     return len(tokens)
+
+
+def revoke_refresh_tokens(refresh_tokens: list[str]) -> tuple[int, int]:
+    """Best-effort revocation of refresh tokens at SSO. Returns
+    `(revoked, failed)`. Never raises and never logs a token; the caller has
+    already deleted the local copies, so a failure here changes nothing
+    locally."""
+    revoked = failed = 0
+    for token in refresh_tokens:
+        if not token:
+            continue
+        try:
+            resp = requests.post(
+                OAUTH_CONFIG.revoke_url,
+                data={
+                    "token": token,
+                    "token_type_hint": "refresh_token",
+                    "client_id": OAUTH_CONFIG.client_id,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            _log.warning("token revoke request failed: %s", type(exc).__name__)
+            failed += 1
+            continue
+        if 200 <= resp.status_code < 300:
+            revoked += 1
+        else:
+            _log.warning("token revoke answered HTTP %s", resp.status_code)
+            failed += 1
+    return revoked, failed

@@ -21,7 +21,7 @@ import logging
 
 import click
 
-from . import actions, config, storage, tenant_scope
+from . import actions, backup, config, storage, tenant_scope
 from .auth import import_tokens_file
 from .production import actions as production_actions
 from .production import config as production_config
@@ -41,6 +41,9 @@ def main():
     # once here rather than each command setting it individually. No
     # explicit reset needed - the process exits when the command finishes.
     storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
+    # An operator command, not a request: no statement timeout (rebuilds, SDE
+    # apply and similar legitimately run single statements for minutes).
+    storage.enable_long_running()
     # Also resolve DEFAULT_TENANT_ID's own TRADING_CONFIG/PRODUCTION_CONFIG
     # (config.yaml + any Settings-page overrides already saved to Postgres's
     # tenant_settings) - confirmed real gap: without this, every CLI command
@@ -108,6 +111,60 @@ def tenant_import_tokens(tenant_id: str | None, path: str | None):
         tenant_id or storage.DEFAULT_TENANT_ID, Path(path) if path else None
     )
     click.echo(f"Imported {count} token(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
+
+
+def _echo_counts(counts: dict) -> None:
+    for key, value in counts.items():
+        click.echo(f"{key}: {value}")
+
+
+@tenant.command("encrypt-tokens")
+@click.option("--check", is_flag=True, help="Only count plaintext rows; exit 1 if any exist.")
+def tenant_encrypt_tokens(check: bool):
+    """Encrypts plaintext stored SSO tokens of every tenant with
+    TOKEN_ENCRYPTION_KEY. Idempotent; run with the service stopped (deploy.sh
+    does). Prints counts only."""
+    from . import token_crypto, token_maintenance
+    try:
+        counts = token_maintenance.encrypt_tokens(check_only=check)
+    except token_crypto.TokenCryptoError as exc:
+        raise click.ClickException(str(exc))
+    _echo_counts(counts)
+    if check and counts["plaintext"]:
+        raise SystemExit(1)
+
+
+@tenant.command("rotate-token-key")
+def tenant_rotate_token_key():
+    """Re-encrypts every stored token with the first key of
+    TOKEN_ENCRYPTION_KEY (put the new key first, keep the old one until this
+    has run). Prints counts only."""
+    from . import token_crypto, token_maintenance
+    try:
+        counts = token_maintenance.rotate_token_key()
+    except token_crypto.TokenCryptoError as exc:
+        raise click.ClickException(str(exc))
+    _echo_counts(counts)
+
+
+@tenant.command("decrypt-tokens")
+@click.option("--write-plaintext", is_flag=True,
+              help="Required. Writes plaintext token rows back; only for rolling back to older code.")
+def tenant_decrypt_tokens(write_plaintext: bool):
+    """Emergency rollback step: turns encrypted token rows back into plaintext
+    so a release from before token encryption can read them. Leaves refresh
+    tokens readable in the database and in every later backup."""
+    from . import token_crypto, token_maintenance
+    if not write_plaintext:
+        raise click.ClickException(
+            "Refusing to write plaintext tokens. Pass --write-plaintext if you really are "
+            "rolling back to code from before token encryption."
+        )
+    try:
+        counts = token_maintenance.decrypt_tokens_to_plaintext()
+    except token_crypto.TokenCryptoError as exc:
+        raise click.ClickException(str(exc))
+    _echo_counts(counts)
 
 
 @tenant.command("backfill-esi-sharing")
@@ -203,6 +260,30 @@ def refresh_shortlist():
                     f"max_profit/day={row['max_profit_per_day']:,.0f} ISK")
     if any(result["audit"].values()):
         click.echo(f"Audit warnings: {result['audit']}")
+
+
+@main.group("backup")
+def backup_group():
+    """Database backups (same function the Admin tool and scheduler use)."""
+
+
+@backup_group.command("create")
+@click.option("--pre-deploy", is_flag=True, default=False,
+              help="Use the pre-deploy file-name family (own retention: last 5), "
+                   "as deploy/deploy.sh does before a schema migration.")
+def backup_create(pre_deploy: bool):
+    """Create one backup zip under data/backups and print its path.
+
+    Exits 1 on failure; pg_dump's own error text stays in the process log.
+    """
+    prefix = backup.PREDEPLOY_BACKUP_PREFIX if pre_deploy else backup.BACKUP_NAME_PREFIX
+    try:
+        info = backup.create_backup(prefix=prefix)
+    except (OSError, RuntimeError) as e:
+        log.error("backup failed: %s", e)
+        click.echo("Backup failed (see log).", err=True)
+        raise SystemExit(1) from e
+    click.echo(f"Backup created: {backup.BACKUP_DIR / info['name']} ({info['size_bytes']} bytes)")
 
 
 @main.group("realized")
@@ -680,20 +761,41 @@ def facilities_group():
 @_tenant_id_option
 def facilities_list(tenant_id: str | None):
     """Shows the structure type and rigs each job category is computed with,
-    and where each value comes from (set / name / global), plus the facility
+    and where each value comes from (set / sheet / name / global; a TE rig left unset is "same as ME"), plus the facility
     tax in use (override / observed on the last own jobs / Settings) and how
     old the observation is."""
     result = _targets_call(tenant_id, production_actions.do_list_category_facilities)
     click.echo(f"{'category':<20} {'structure':<34} {'Tech I rig':<16} {'Tech II rig':<16} {'sec x':>5}  "
-               f"{'facility tax':<30} name")
+               f"{'Tech I TE rig':<24} {'Tech II TE rig':<24} {'facility tax':<30} name")
     for row in result["categories"]:
         eff = row["effective"]
         basic = f"{eff['rig_tier_basic']} ({eff['rig_source_basic']})"
         advanced = f"{eff['rig_tier_advanced']} ({eff['rig_source_advanced']})" if row["split_by_tech"] else "-"
+        te_basic = (f"{eff['te_rig_tier_basic']} ({eff['te_rig_source_basic']})"
+                    if eff.get("te_rig_tier_basic") else "-")
+        te_advanced = (f"{eff['te_rig_tier_advanced']} ({eff['te_rig_source_advanced']})"
+                       if row["split_by_tech"] and eff.get("te_rig_tier_advanced") else "-")
         structure = f"{eff['structure_type']} ({eff['structure_source']})"
         click.echo(f"{row['category']:<20} {structure[:34]:<34} {basic:<16} {advanced:<16} "
-                   f"{eff['security_multiplier']:>5.2f}  {_tax_text(row.get('tax')):<30} "
+                   f"{eff['security_multiplier']:>5.2f}  {te_basic:<24} {te_advanced:<24} {_tax_text(row.get('tax')):<30} "
                    f"{row['structure_name'] or '-'}")
+    sheet = result.get("rig_sheet") or {}
+    if sheet.get("configured"):
+        loaded = (f"{sheet['system_count']} systems, fetched {sheet['fetched_at']}"
+                  if sheet.get("fetched_at") else "not loaded yet")
+        error = f"; last error: {sheet['error']}" if sheet.get("error") else ""
+        click.echo(f"Rig sheet: {loaded}{error}")
+
+
+@facilities_group.command("reload-sheet")
+@_tenant_id_option
+def facilities_reload_sheet(tenant_id: str | None):
+    """Fetches the rig sheet set in Production settings now and stores it."""
+    status = _targets_call(tenant_id, production_actions.do_reload_rig_sheet)
+    if status["ok"]:
+        click.echo(f"Loaded {status['system_count']} systems.")
+    else:
+        click.echo(f"Failed: {status['error']}")
 
 
 def _tax_text(tax: dict | None) -> str:
@@ -712,18 +814,26 @@ def _tax_text(tax: dict | None) -> str:
 @click.option("--structure", "structure_type", default=None, help="Structure type, e.g. 'Azbel (L Engineering Complex)'.")
 @click.option("--rig", "rig_tier_basic", default=None, help="Rig tier for Tech I items (or every item outside ship categories).")
 @click.option("--rig-advanced", "rig_tier_advanced", default=None, help="Rig tier for Tech II/III hulls (ship categories only).")
+@click.option("--te-rig", "te_rig_tier_basic", default=None,
+              help="Time-efficiency rig tier for Tech I items. Without it the global TE tier applies, else "
+                   "the ME rig tier.")
+@click.option("--te-rig-advanced", "te_rig_tier_advanced", default=None,
+              help="Time-efficiency rig tier for Tech II/III hulls (ship categories only).")
 @click.option("--tax-percent", "tax_percent", type=float, default=None,
               help="Facility tax override in percent, e.g. 0.5. Without it the rate last observed on your own jobs "
                    "at the category's structure applies, then the Settings rate.")
 @_tenant_id_option
 def facilities_set(category: str, structure_type: str | None, rig_tier_basic: str | None,
-                   rig_tier_advanced: str | None, tax_percent: float | None, tenant_id: str | None):
+                   rig_tier_advanced: str | None, te_rig_tier_basic: str | None,
+                   te_rig_tier_advanced: str | None, tax_percent: float | None, tenant_id: str | None):
     """Saves CATEGORY's structure type, rig tiers and facility tax override
     (values not given are cleared and fall back to the structure name, then
     the global setting; the tax to the observed rate, then Settings)."""
+    te_rigs = {key: value for key, value in (("te_rig_tier_basic", te_rig_tier_basic),
+                                             ("te_rig_tier_advanced", te_rig_tier_advanced)) if value is not None}
     _targets_call(tenant_id, lambda: production_actions.do_set_category_facility(
         category, structure_type=structure_type, rig_tier_basic=rig_tier_basic, rig_tier_advanced=rig_tier_advanced,
-        facility_tax_rate=None if tax_percent is None else tax_percent / 100))
+        facility_tax_rate=None if tax_percent is None else tax_percent / 100, **te_rigs))
     click.echo(f"Saved {category}.")
 
 
@@ -959,6 +1069,24 @@ def admin_bootstrap(character_id: int, character_name: str | None, all_tools: bo
         f"created_tenant={result['created_tenant']} "
         f"already_had_admin={result['already_had_admin']}"
     )
+
+
+@admin_group.command("purge-tenant")
+@click.argument("tenant_id")
+@click.option("--confirm", "confirm_name", required=True,
+              help="The tenant's exact name. Deletes the orphaned tenant and all its data for good.")
+def admin_purge_tenant(tenant_id: str, confirm_name: str):
+    """Deletes a tenant that has no registered user, with all its data."""
+    from . import admin as admin_mod
+    from .actions import ActionError
+    storage.enable_long_running()
+    try:
+        result = admin_mod.do_purge_tenant(tenant_id, confirm_name)
+    except ActionError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Purged tenant {result['purged']}: {result['rows_deleted']} row(s) in "
+               f"{len(result['tables'])} table(s); tokens deleted {result['tokens_deleted']}, "
+               f"revoked {result['revoked']}, revoke failed {result['revoke_failed']}.")
 
 
 @admin_group.command("grant-defaults")

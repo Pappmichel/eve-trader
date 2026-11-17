@@ -298,7 +298,7 @@ def test_has_bpo_at_location_true_when_only_manual_has_one(monkeypatch):
 
 @pg_helpers.postgres_required()
 def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, tenant):
-    """pappmichl5's personal Hangar is a Sorting intake source AND a
+    """examplepilot5's personal Hangar is a Sorting intake source AND a
     Production producer hangar. Stock sitting there is unsortiertes staging
     and must not cover Buy-List / _current_stock demand at C-J. The same
     character's Hangar at another structure, and a non-intake division at
@@ -311,11 +311,11 @@ def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, ten
         conn.execute(sql.read_text(encoding="utf-8"))
     pg_helpers.wipe_tables("character_assets", "sorting_intake_sources")
     storage.replace_assets("character_assets", [
-        (9101, 34, home, "Hangar", 500, 0, "pappmichl5"),
-        (9102, 34, home, "CorpSAG1", 10, 0, "pappmichl5"),
-        (9103, 34, jita, "Hangar", 80, 0, "pappmichl5"),
+        (9101, 34, home, "Hangar", 500, 0, "examplepilot5"),
+        (9102, 34, home, "CorpSAG1", 10, 0, "examplepilot5"),
+        (9103, 34, jita, "Hangar", 80, 0, "examplepilot5"),
     ])
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     cfg = ProductionConfig(home_location_id=home)
 
@@ -1006,6 +1006,17 @@ def test_job_category_splits_titan_and_supercarrier_into_their_own_bucket(monkey
         monkeypatch.setattr(storage, "get_sde_type",
                              lambda tid, group_id=group_id, name=name: (tid, group_id, name, 100.0, 1, 1884, None, None))
         assert engine.job_category(type_id) == "Super Capital Ship"
+
+
+def test_job_category_puts_special_edition_yachts_into_medium_ships(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
+    monkeypatch.setattr(
+        storage, "get_sde_type",
+        lambda type_id: (type_id, 5087, "Special Edition Yacht", 100.0, 1, 1884, None, None),
+    )
+
+    assert engine.job_category(77001) == "Medium Ships"
 
 
 def test_job_category_keeps_regular_capital_ships_as_capital_ship(monkeypatch):
@@ -4404,9 +4415,9 @@ def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeyp
         conn.execute((docs / "production_buy_list_schema.sql").read_text(encoding="utf-8"))
     pg_helpers.wipe_tables("character_assets", "sorting_intake_sources", "production_buy_list")
     storage.replace_assets("character_assets", [
-        (9201, 36, home, "Hangar", 1_135_000, 0, "pappmichl5"),
+        (9201, 36, home, "Hangar", 1_135_000, 0, "examplepilot5"),
     ])
-    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="examplepilot5")
     monkeypatch.setattr(storage, "save_latest_buy_list", _save_latest_buy_list_impl)
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
 
@@ -4444,6 +4455,10 @@ def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeyp
 
 
 # ---------------------------------------------------------------- logistics_status
+def _pulls(row):
+    return [(stop.location_id, stop.quantity) for stop in row.pull_from]
+
+
 def _build_job(type_id=1, category="Advanced Components", job_runs=1, decryptor=None):
     from eve_trader.production.models import BuildJobEntry
     return BuildJobEntry(type_id=type_id, type_name=f"Item{type_id}", blueprint_type_id=type_id + 100,
@@ -4528,8 +4543,8 @@ def test_logistics_status_pull_from_hint_picks_richest_surplus_when_no_warehouse
 
     row = rows[0]
     assert row.missing == 7.0
-    assert row.pull_from_location_id == 1002  # 20 > 5, richest surplus (neither has its own demand here)
-    assert row.pull_from_available == 20.0
+    # 20 covers the shortfall, so the chain stops there and does not also list the 5.
+    assert _pulls(row) == [(1002, 7.0)]
 
 
 def test_logistics_status_prefers_warehouse_over_surplus(monkeypatch):
@@ -4547,10 +4562,8 @@ def test_logistics_status_prefers_warehouse_over_surplus(monkeypatch):
 
     row = rows[0]
     assert row.missing == 7.0
-    # Warehouse (9000) only has 6, less than Capital Components' surplus of 20,
-    # but it's still preferred - GitHub issue #4's explicit ask.
-    assert row.pull_from_location_id == 9000
-    assert row.pull_from_available == 6.0
+    # Warehouse first, then the surplus station for the one unit it cannot cover.
+    assert _pulls(row) == [(9000, 6.0), (1002, 1.0)]
 
 
 def test_logistics_status_falls_back_to_surplus_when_warehouse_empty(monkeypatch):
@@ -4567,8 +4580,7 @@ def test_logistics_status_falls_back_to_surplus_when_warehouse_empty(monkeypatch
     rows = engine.logistics_status([_build_job()], cfg)
 
     row = rows[0]
-    assert row.pull_from_location_id == 1002
-    assert row.pull_from_available == 20.0
+    assert _pulls(row) == [(1002, 7.0)]
 
 
 def test_logistics_status_pull_from_hint_nets_other_locations_own_demand(monkeypatch):
@@ -4593,8 +4605,9 @@ def test_logistics_status_pull_from_hint_nets_other_locations_own_demand(monkeyp
         cfg)
 
     row = next(r for r in rows if r.category == "Advanced Components")
-    assert row.pull_from_location_id == 1003
-    assert row.pull_from_available == 5.0
+    # Equipment's surplus is 5; Capital Components has 2 left after its own demand.
+    # Together they cover the 7, largest surplus first.
+    assert _pulls(row) == [(1003, 5.0), (1002, 2.0)]
 
 
 def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
@@ -4608,7 +4621,62 @@ def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
     rows = engine.logistics_status([_build_job()], cfg)
 
     assert rows[0].missing == 0.0
-    assert rows[0].pull_from_location_id is None
+    assert rows[0].pull_from == []
+
+
+def test_logistics_status_pull_chain_does_not_hand_the_same_units_out_twice(monkeypatch):
+    # Both categories are short 10. Equipment has 12 spare and nothing else does.
+    # Equal shortfalls are filled in category-name order, so Advanced Components
+    # takes 10 and Capital Components the remaining 2.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
+    })
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: {
+        1001: 0.0, 1002: 0.0, 1003: 12.0,
+    }[location_id])
+
+    rows = engine.logistics_status(
+        [_build_job(category="Advanced Components"), _build_job(category="Capital Components")], cfg)
+
+    by_category = {row.category: row for row in rows}
+    assert _pulls(by_category["Advanced Components"]) == [(1003, 10.0)]
+    assert _pulls(by_category["Capital Components"]) == [(1003, 2.0)]
+
+
+def test_logistics_status_uses_the_material_multiplier_stored_on_the_job(monkeypatch):
+    # The plan froze ME 9 (0.91). Recomputing would assume ME 10 (0.90) and
+    # ask for 720 instead of 728 of a base-800 material.
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Super Capital Ship": 1001})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (23920, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 0.90)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(21017, 800.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda *a, **k: 0.0)
+    job = _build_job(type_id=23919, category="Super Capital Ship")
+    job.material_mult = 0.91
+
+    rows = engine.logistics_status([job])
+
+    assert rows[0].needed == 728.0
+
+
+def test_build_build_list_stores_the_material_multiplier(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Aeon", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda *a, **k: 100.0)
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (23920, 1, 1.0))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (23920, 1, 1.0)))
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (0.91, 0.8, 0.05))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "job_category", lambda type_id: "Super Capital Ship")
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "home_sell_and_profit", lambda *a, **k: (None, None))
+
+    rows = engine._build_build_list({(23920, 1, 23919): 1}, {}, {}, ProductionConfig(), {}, {}, {})
+
+    assert len(rows) == 1
+    assert rows[0].material_mult == 0.91
 
 
 # ------------------------------------------------------- distribution_recommendations
@@ -4751,8 +4819,7 @@ def test_logistics_status_pull_from_hint_uses_orphaned_former_location(monkeypat
     assert len(rows) == 1
     row = rows[0]
     assert row.missing == 7.0  # 10 needed - 3 already at the new location
-    assert row.pull_from_location_id == 1001
-    assert row.pull_from_available == 20.0  # whole former-station stock, not netted against anyone
+    assert _pulls(row) == [(1001, 7.0)]
 
 
 def test_logistics_status_no_orphaned_hint_when_no_former_location(monkeypatch):
@@ -4764,7 +4831,7 @@ def test_logistics_status_no_orphaned_hint_when_no_former_location(monkeypatch):
 
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
-    assert rows[0].pull_from_location_id is None
+    assert rows[0].pull_from == []
 
 
 def test_logistics_status_ignores_orphaned_location_still_active_for_another_category(monkeypatch):
@@ -4783,8 +4850,8 @@ def test_logistics_status_ignores_orphaned_location_still_active_for_another_cat
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
     reactions_row = next(r for r in rows if r.category == "Reactions")
-    assert reactions_row.pull_from_location_id == 1001
-    assert reactions_row.pull_from_available == 20.0  # same result here, via the "other category" surplus path
+    # 1001 is Equipment's station, so this is surplus, and only the 10 that are missing move.
+    assert _pulls(reactions_row) == [(1001, 10.0)]
 
 
 def test_logistics_status_ignores_orphaned_location_configured_as_warehouse(monkeypatch):
@@ -4801,8 +4868,7 @@ def test_logistics_status_ignores_orphaned_location_configured_as_warehouse(monk
 
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
-    assert rows[0].pull_from_location_id == 1001
-    assert rows[0].pull_from_available == 20.0  # via the warehouse-first branch, not double-counted
+    assert _pulls(rows[0]) == [(1001, 10.0)]
 
 
 def test_logistics_status_picks_richest_orphaned_location_first(monkeypatch):
@@ -4817,8 +4883,8 @@ def test_logistics_status_picks_richest_orphaned_location_first(monkeypatch):
 
     rows = engine.logistics_status([_build_job(category="Reactions")], cfg)
 
-    assert rows[0].pull_from_location_id == 1002
-    assert rows[0].pull_from_available == 9.0
+    # 9 at 1002, then 1 of the 4 at 1001, covers the 10 that are missing.
+    assert _pulls(rows[0]) == [(1002, 9.0), (1001, 1.0)]
 
 
 def test_logistics_status_volume_m3_is_missing_times_unit_volume(monkeypatch):
@@ -6763,3 +6829,51 @@ def test_logistics_actions_take_exactly_one_job_source():
         production_actions.do_get_logistics_status()
     with pytest.raises(production_actions.ActionError):
         production_actions.do_get_distribution_recommendations(build_list=[], asset_jobs=[])
+
+
+def _plan_context_with_adjusted_prices(monkeypatch, adjusted):
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(100, "Widget", 0, 1, 0)])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(storage, "get_blueprint_for_product",
+                        lambda tid: (900, 1, 1.0) if tid == 100 else None)
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                        lambda bp, act: [(34, 10.0), (35, 5.0), (36, 1.0)])
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda ids: [100, 34, 35, 36])
+    monkeypatch.setattr(engine, "_prefetch_planner_reads", lambda ids, cfg: None)
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: adjusted)
+    return engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+
+
+def test_plan_context_lists_recipe_materials_without_an_adjusted_price(monkeypatch):
+    adjusted = {34: 5.0, 35: 7.0, 100: 1000.0}
+    ctx = _plan_context_with_adjusted_prices(monkeypatch, adjusted)
+    assert ctx.adjusted_prices_missing == [36]
+    assert engine._reliability_fields(ctx)["adjusted_prices_missing"] == [36]
+    # Informational only: nothing about the reliability verdict or the prices moves.
+    assert ctx.job_costs_reliable
+    assert ctx.adjusted_prices == adjusted
+
+
+def test_plan_context_missing_list_is_empty_when_adjusted_prices_are_unavailable(monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+
+    def boom(self):
+        raise esi_client_module.ESIError("down")
+
+    ctx = _plan_context_with_adjusted_prices(monkeypatch, {})
+    assert ctx.adjusted_prices_missing == [34, 35, 36]   # available but empty list
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", boom)
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+    assert ctx.adjusted_prices_available is False
+    assert ctx.adjusted_prices_missing == []

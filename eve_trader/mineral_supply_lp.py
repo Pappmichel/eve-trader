@@ -35,6 +35,7 @@ import logging
 import math
 import pickle
 import subprocess
+import threading
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,9 +102,11 @@ class SupplySolution:
     # mineral id -> units no source covers at an acceptable price
     short: dict[int, int] = field(default_factory=dict)
     lp_cost: float = 0.0
-    # True when the integer solve gave no answer and this plan is the
-    # continuous optimum rounded up: it covers the list but may cost slightly
-    # more than the best whole-unit plan.
+    # True when the plan is not a proven whole-unit optimum: either the
+    # integer solve gave no answer and this is the continuous optimum rounded
+    # up, or it stopped at its time limit and this is the best whole-unit plan
+    # it had found. Either way it covers the list but may cost more than the
+    # best whole-unit plan.
     approximate: bool = False
 
 
@@ -111,10 +114,31 @@ def _tier_cap_portions(tier: SupplyTier, portion_size: int) -> Optional[int]:
     return None if tier.max_units is None else tier.max_units // portion_size
 
 
-def _solve_mip_in_child(kwargs: dict) -> Optional[np.ndarray]:
-    """The integer solution from a mip_worker process, or None when it found
-    none, failed or passed MIP_PROCESS_DEADLINE_SECONDS (subprocess.run kills
-    it then)."""
+# One solver process at a time (1 CPU): concurrent requests queue here for at
+# most MIP_QUEUE_WAIT_SECONDS (below the reverse proxy's timeout) and fall back
+# to the rounded LP plan when they do not get a turn.
+MIP_QUEUE_WAIT_SECONDS = 25.0
+_mip_slot = threading.BoundedSemaphore(1)
+
+
+def _solve_mip_in_child(kwargs: dict) -> Optional[tuple[np.ndarray, int]]:
+    """(integer solution, scipy status) from a mip_worker process - status 1
+    is a solution found before the time limit, not a proven optimum - or None
+    when it found none, failed, passed MIP_PROCESS_DEADLINE_SECONDS
+    (subprocess.run kills it then) or waited more than MIP_QUEUE_WAIT_SECONDS
+    for its turn."""
+    if not _mip_slot.acquire(timeout=MIP_QUEUE_WAIT_SECONDS):
+        log.warning("Mineral shopping list: no solver slot within %.0f s, using the rounded LP plan.",
+                    MIP_QUEUE_WAIT_SECONDS)
+        return None
+    try:
+        return _run_mip_process(kwargs)
+    finally:
+        _mip_slot.release()
+
+
+def _run_mip_process(kwargs: dict) -> Optional[tuple[np.ndarray, int]]:
+    """One mip_worker process (see _solve_mip_in_child)."""
     try:
         done = subprocess.run([sys.executable, "-m", "eve_trader.mip_worker"], input=pickle.dumps(kwargs),
                               capture_output=True, timeout=MIP_PROCESS_DEADLINE_SECONDS, cwd=_APP_ROOT)
@@ -130,10 +154,17 @@ def _solve_mip_in_child(kwargs: dict) -> Optional[np.ndarray]:
                     done.returncode, done.stderr[-500:].decode(errors="replace"))
         return None
     try:
-        return pickle.loads(done.stdout)["x"]
-    except (pickle.UnpicklingError, EOFError, KeyError, AttributeError, ValueError) as e:
+        out = pickle.loads(done.stdout)
+        x, status = out["x"], int(out["status"])
+    except (pickle.UnpicklingError, EOFError, KeyError, AttributeError, ValueError, TypeError) as e:
         log.warning("Mineral shopping list: unreadable solver output (%s), using the rounded LP plan.", e)
         return None
+    if x is None:
+        return None
+    if status != 0:
+        log.warning("Mineral shopping list: integer solve stopped with status %s (%s); "
+                    "keeping its whole-unit plan, marked approximate.", status, out.get("message"))
+    return x, status
 
 
 # Module attribute so tests can run the solve in-process (a worker per solve
@@ -205,13 +236,18 @@ def solve(mineral_ids: list[int], required: dict[int, float], sources: list[Supp
     # Shortfall is whole units too: a continuous one would cover a fractional
     # requirement remainder for a fraction of the penalty instead of buying a unit.
     integrality = np.array([1] * (n_real + len(mineral_ids)))
-    x = _run_mip({"c": cost, "A_ub": a_ub, "b_ub": b_ub, "bounds": bounds, "method": "highs",
-                  "integrality": integrality, "options": {"time_limit": MIP_TIME_LIMIT_SECONDS}})
-    approximate = x is None
-    if approximate:
+    mip = _run_mip({"c": cost, "A_ub": a_ub, "b_ub": b_ub, "bounds": bounds, "method": "highs",
+                    "integrality": integrality, "options": {"time_limit": MIP_TIME_LIMIT_SECONDS}})
+    x, status = mip if mip is not None else (None, None)
+    # A solution found before the time limit (status 1) is feasible and whole,
+    # just not proven optimal: keep it, mark it.
+    approximate = x is None or status != 0
+    if x is None:
         # Rounding up stays within every cap (caps are whole numbers) and still
-        # covers every requirement. At most one fractional column per mineral
-        # in a basic solution, so the extra cost is a few portions.
+        # covers every requirement. A basic solution has at most one
+        # fractional column per listed mineral, so rounding adds at most one
+        # portion (or unit) per mineral: small against a large list, but on a
+        # list of a few portions it can be a large share of the cost.
         x = np.ceil(relaxed.x - _EPS)
 
     solution = SupplySolution(lp_cost=lp_cost, approximate=approximate)

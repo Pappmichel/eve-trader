@@ -17,8 +17,27 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_USER="${APP_USER:-$(whoami)}"
+DEPLOY_USER="$(whoami)"
 DOMAIN="${1:-}"
+UNIT_FILE=/etc/systemd/system/eve-trader.service
+
+# Service user. The repository belongs to the deploy user (the login user that
+# runs this script and deploy.sh); the service runs as a separate system user
+# without a shell, a home directory or sudo rights. Precedence:
+#   1. APP_USER=<name> in the environment,
+#   2. the User= of an already installed unit (re-running this script on an
+#      existing install must never silently switch the service to a new user),
+#   3. "eve-trader" for a fresh install.
+if [ -z "${APP_USER:-}" ]; then
+    APP_USER=""
+    if [ -f "$UNIT_FILE" ]; then
+        APP_USER="$(sed -n 's/^User=//p' "$UNIT_FILE" | head -n1)"
+        if [ -n "$APP_USER" ]; then
+            echo "==> Existing service unit found - keeping User=$APP_USER (set APP_USER=<name> to change it)."
+        fi
+    fi
+    APP_USER="${APP_USER:-eve-trader}"
+fi
 
 if [ -z "$DOMAIN" ]; then
     echo "Usage: $0 <your-domain-or-ip>"
@@ -31,7 +50,7 @@ fi
 echo "==> Installing system packages (Python, Node.js, nginx, certbot, Postgres)..."
 sudo apt-get update -qq
 sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential \
-    nginx certbot python3-certbot-nginx curl git postgresql
+    nginx certbot python3-certbot-nginx curl git postgresql acl
 
 echo "==> Tuning Postgres for a memory-constrained VM..."
 # Native install, not Docker (see deploy/README.md's "Set up Postgres"
@@ -48,9 +67,13 @@ if [ -n "$PG_CONF" ]; then
     sudo systemctl restart postgresql
 fi
 
-if ! command -v node >/dev/null 2>&1; then
-    echo "==> Installing Node.js 20.x (NodeSource)..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+    NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+fi
+if [ "$NODE_MAJOR" -lt 22 ]; then
+    echo "==> Installing Node.js 22.x (NodeSource; found major version $NODE_MAJOR)..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
     sudo apt-get install -y nodejs
 fi
 
@@ -95,14 +118,18 @@ else
 fi
 
 echo "==> Config files (only if missing - existing config.yaml/.env are never overwritten)..."
+NEW_SECRET_FILES=()
 if [ ! -f .env ]; then
     cp .env.example .env
+    NEW_SECRET_FILES+=(.env)
     echo "    Created .env from .env.example - EDIT IT before starting the service (see deploy/README.md)."
 fi
 if [ ! -f config.yaml ]; then
     cp config.example.yaml config.yaml
+    NEW_SECRET_FILES+=(config.yaml)
     echo "    Created config.yaml from config.example.yaml - EDIT IT before starting the service."
 fi
+mkdir -p data
 # P5-05: an existing install whose config.yaml still has the old
 # access_gate_enabled: false default is rewritten to true unless the
 # operator has explicitly set EVE_TRADER_ALLOW_GATE_OFF. Fresh copies of
@@ -124,6 +151,44 @@ case "$(echo "${ALLOW_GATE_OFF:-}" | tr '[:upper:]' '[:lower:]')" in
     ;;
 esac
 
+echo "==> Service user and file access..."
+if [ "$APP_USER" = "$DEPLOY_USER" ]; then
+    echo "    Service user equals the deploy user ($APP_USER) - no separate account, no ACLs."
+    echo "    A separate, sudo-less service user is recommended; see deploy/README.md."
+else
+    if ! id "$APP_USER" >/dev/null 2>&1; then
+        # --system: no aging, low uid; no home directory, no login shell, and
+        # useradd adds no supplementary groups, so no sudo/admin membership.
+        sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_USER"
+        echo "    Created system user $APP_USER."
+    fi
+    # The service user may traverse the directories above the repository
+    # (execute bit only), read the code, the venv and the built frontend, and
+    # write only data/. Default ACLs make new files under data/ writable by
+    # both the service user and the deploy user (backups are created by
+    # either).
+    _dir="$APP_DIR"
+    while [ "$_dir" != "/" ]; do
+        sudo setfacl -m "u:$APP_USER:x" "$_dir"
+        _dir="$(dirname "$_dir")"
+    done
+    sudo setfacl -R -m "u:$APP_USER:rX" "$APP_DIR"
+    sudo setfacl -R -m "u:$APP_USER:rwX" -m "u:$DEPLOY_USER:rwX" "$APP_DIR/data"
+    sudo setfacl -R -d -m "u:$APP_USER:rwX" -m "u:$DEPLOY_USER:rwX" "$APP_DIR/data"
+    # .env and config.yaml hold secrets: readable only by the deploy user and
+    # the service user. Only files created by this run are touched; an
+    # existing file keeps whatever ACL its operator gave it.
+    for _f in "${NEW_SECRET_FILES[@]}"; do
+        chmod 600 "$APP_DIR/$_f"
+        sudo setfacl -m "u:$APP_USER:r" "$APP_DIR/$_f"
+    done
+    for _f in .env config.yaml; do
+        if ! printf '%s\n' "${NEW_SECRET_FILES[@]}" | grep -qx "$_f" && [ -f "$APP_DIR/$_f" ]; then
+            echo "    $_f already existed: grant read with  sudo setfacl -m u:$APP_USER:r $APP_DIR/$_f  (not changed here)."
+        fi
+    done
+fi
+
 echo "==> systemd service..."
 sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" \
     deploy/eve-trader.service.template | sudo tee /etc/systemd/system/eve-trader.service > /dev/null
@@ -131,7 +196,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable eve-trader
 
 echo "==> nginx site..."
-sed -e "s|__DOMAIN__|$DOMAIN|g" deploy/nginx-eve-trader.conf.template \
+NGINX_TEMPLATE=deploy/nginx-eve-trader.conf.template
+if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
+    echo "    Certificate found for $DOMAIN - using the HTTPS template."
+    NGINX_TEMPLATE=deploy/nginx-eve-trader-ssl.conf.template
+else
+    echo "    No certificate under /etc/letsencrypt/live/$DOMAIN/ - using the HTTP template."
+    echo "    After 'sudo certbot certonly --nginx -d $DOMAIN', re-run this script (see deploy/README.md)."
+fi
+sed -e "s|__DOMAIN__|$DOMAIN|g" "$NGINX_TEMPLATE" \
     | sudo tee /etc/nginx/sites-available/eve-trader > /dev/null
 sudo ln -sf /etc/nginx/sites-available/eve-trader /etc/nginx/sites-enabled/eve-trader
 sudo nginx -t
@@ -149,6 +222,7 @@ cat <<EOF
      itself is already installed and tuned by this script, but the schema/
      role password are deliberately manual, one-time steps.
   2. Edit $APP_DIR/.env and $APP_DIR/config.yaml with your real values
+     (including TOKEN_ENCRYPTION_KEY - see .env.example; keep a copy in a password manager)
      (EVE_SSO_CLIENT_ID, structure_id, character names, ...), then provision
      yourself as a tenant (`eve-trader tenant create`/`tenant add-entry` -
      see deploy/README.md, this replaces the old config.yaml allowlist).

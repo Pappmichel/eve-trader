@@ -11,7 +11,7 @@ from eve_trader.realized import access as realized_access
 from eve_trader.realized import db as realized_db
 from eve_trader.realized import loader as realized_loader
 
-CHAR, CORP, BUYER = 2120471927, 98723738, 97194801
+CHAR, CORP, BUYER = 1234567895, 98000001, 1234567897
 LOC = 1049588174021
 DONE = datetime(2026, 11, 13, 22, 37, tzinfo=timezone.utc)
 
@@ -47,7 +47,7 @@ def test_missing_doctrine_sales_are_added_from_the_archive(monkeypatch):
             pass
 
         def list_records(self):
-            return [SimpleNamespace(character_id=CHAR, role="doctrine:2120471927")]
+            return [SimpleNamespace(character_id=CHAR, role="doctrine:1234567895")]
 
     monkeypatch.setattr(esi_sync, "TokenManager", _TM)
     written = []
@@ -59,5 +59,5 @@ def test_missing_doctrine_sales_are_added_from_the_archive(monkeypatch):
 
     assert seen_locations == [[LOC]]
     assert matched_ids == [1, 5]
-    assert written == [(1, "doctrine:2120471927", "fit-1", "GSF - Tomahawk - DPS - V26.1", 4306,
+    assert written == [(1, "doctrine:1234567895", "fit-1", "GSF - Tomahawk - DPS - V26.1", 4306,
                         "GSF - Tomahawk", 260e6, BUYER, "Buyer", DONE, DONE)]

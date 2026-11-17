@@ -50,7 +50,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices", "ledger_bpc_run_prices",
         "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
@@ -58,7 +58,7 @@ def _wipe(_apply_production_ledger_schema):
         "prod_cost_draws", "prod_job_records", "prod_fee_lines", "prod_job_losses",
         "prod_capital_bpos", "prod_inventory_drift", "prod_opening_frozen",
         "prod_opening_lines", "prod_ledger_runs", "esi_sharing", "character_assets", "corp_assets",
-        "stock_targets",
+        "stock_targets", "esi_character_capabilities", "esi_removed_characters",
     )
     yield
 
@@ -252,7 +252,7 @@ def test_rebuild_keeps_sales_before_a_truncated_journal_and_flags_only_those(ten
     bob_early = next(r for r in rows if int(r[0]) == BOB and r[1] == early)
     assert "fees_missing" in bob_early[3]
     run = ledger_db.latest_ledger_run()
-    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 6
+    assert run is not None and ledger_db.latest_costing_version()[1] == loader.COSTING_VERSION == 7
     totals = ledger_db.realized_totals(T0, T1 + (T1 - T0))
     assert int(totals[16]) == 1                      # one flagged sale
     assert float(totals[17]) == pytest.approx(150.0)  # its stored (gross) revenue
@@ -284,7 +284,7 @@ def test_reference_prices_fall_back_to_esi_and_nearest_day_and_cache_misses(tena
             # Goonmetrics has TYPE_A only for Oct 3 (an untraded day is 0).
             return [_Point(TYPE_A, date(2026, 10, 3), 50.0), _Point(TYPE_A, date(2026, 10, 2), 0.0)]
 
-    def fake_esi(type_ids):
+    def fake_esi(type_ids, failed=None):
         calls["esi"].append(sorted(type_ids))
         # ESI knows TYPE_B on Oct 1 only.
         return {TYPE_B: {date(2026, 10, 1): (7.0, "esi")}}
@@ -310,6 +310,63 @@ def test_reference_prices_fall_back_to_esi_and_nearest_day_and_cache_misses(tena
     loader._fetch_reference_prices({(999, date(2026, 10, 16))}, today)
     _prices, misses = loader._cached_prices({999})
     assert (999, date(2026, 10, 16)) not in misses
+
+
+class _Esi:
+    """ESIClient double: per-type history, a status error, or an outage."""
+
+    def __init__(self, answers):
+        self.answers = answers
+
+    def region_market_history(self, region_id, type_id):
+        from eve_trader.esi_client import ESIError
+        answer = self.answers.get(type_id, ESIError("down"))
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _reference_miss_setup(monkeypatch, goon_points, esi_answers):
+    class FakeGoon:
+        def price_history_chunked(self, region_id, type_ids):
+            return goon_points  # an outage yields no points (the client never raises)
+
+    monkeypatch.setattr(loader, "GoonmetricsClient", FakeGoon)
+    monkeypatch.setattr(loader, "ESIClient", lambda: _Esi(esi_answers))
+
+
+def _misses(types):
+    """Cached misses (source "none") in ledger_reference_prices."""
+    cached = ledger_db.list_cached_reference_prices(sorted(types))
+    return {(int(t), loader._as_date(d)) for (t, d), (_p, src) in cached.items()
+            if src == loader._MISSING_SOURCE}
+
+
+def test_no_miss_is_cached_when_every_source_is_down(tenant, monkeypatch):
+    from datetime import date
+    _reference_miss_setup(monkeypatch, [], {})
+    day = date(2026, 10, 1)
+    loader._fetch_reference_prices({(TYPE_A, day), (TYPE_B, day)}, date(2026, 10, 17))
+    assert _misses({TYPE_A, TYPE_B}) == set()
+
+
+def test_miss_is_cached_when_esi_answers_empty_or_404(tenant, monkeypatch):
+    from datetime import date
+    from eve_trader.esi_client import ESIStatusError
+    _reference_miss_setup(monkeypatch, [],
+                          {TYPE_A: [], TYPE_B: ESIStatusError(404, "not found")})
+    day = date(2026, 10, 1)
+    loader._fetch_reference_prices({(TYPE_A, day), (TYPE_B, day)}, date(2026, 10, 17))
+    assert _misses({TYPE_A, TYPE_B}) == {(TYPE_A, day), (TYPE_B, day)}
+
+
+def test_miss_is_not_cached_when_esi_fails_for_the_type(tenant, monkeypatch):
+    from datetime import date
+    from eve_trader.esi_client import ESIStatusError
+    _reference_miss_setup(monkeypatch, [], {TYPE_A: ESIStatusError(503, "busy"), TYPE_B: []})
+    day = date(2026, 10, 1)
+    loader._fetch_reference_prices({(TYPE_A, day), (TYPE_B, day)}, date(2026, 10, 17))
+    assert _misses({TYPE_A, TYPE_B}) == {(TYPE_B, day)}
 
 
 def test_opening_stock_adds_listed_and_contracted_items_from_shared_owners(tenant, monkeypatch):
@@ -415,7 +472,7 @@ def test_snapshot_reads_are_batched_but_contract_load_is_not(tenant, monkeypatch
         seen["types"] = _batch_open()
         return real_types(job_rows)
 
-    def _contracts():
+    def _contracts(*_args, **_kwargs):
         seen["contracts"] = _batch_open()
         return ()
 
@@ -497,6 +554,36 @@ def test_tenant_characters_include_every_token_character(tenant, monkeypatch):
     assert loader._tenant_character_ids() == frozenset({ALICE, 910002, 910003})
 
 
+def test_tenant_characters_include_sharing_and_capability_characters(tenant, monkeypatch):
+    """A character without a token still counts while it has sharing rows or
+    an Access capability. A character removed on the Characters page does
+    not, unless it holds a token again. Corporation sharing rows are not
+    characters."""
+    from types import SimpleNamespace
+
+    from eve_trader import auth
+
+    monkeypatch.setattr(storage, "list_tenant_registry_entries",
+                        lambda tenant_id: [("character", ALICE)])
+    tokens = [
+        SimpleNamespace(character_id=ALICE, role=f"producer:{ALICE}"),
+        SimpleNamespace(character_id=910002, role="producer:910002"),
+    ]
+    monkeypatch.setattr(auth.TokenManager, "list_records", lambda self: list(tokens))
+    storage.upsert_esi_sharing("character", 910004, "wallet", "trading")
+    storage.upsert_esi_sharing("corporation", 98000001, "wallet", "production")
+    storage.upsert_esi_character_capability(910005, "structure_name_resolution")
+    storage.upsert_esi_sharing("character", 910006, "contracts", "doctrine")
+    storage.mark_esi_character_removed(910006)
+    # Removed but holding a token again: the token wins.
+    storage.mark_esi_character_removed(910002)
+
+    assert loader._tenant_character_ids() == frozenset({ALICE, 910002, 910004, 910005})
+
+    tokens.append(SimpleNamespace(character_id=910006, role="esi:910006"))
+    assert 910006 in loader._tenant_character_ids()
+
+
 def test_planner_valuation_wins_and_forge_is_only_the_fallback(tenant, monkeypatch):
     from datetime import date
 
@@ -561,7 +648,7 @@ def test_courier_rate_follows_the_contracts_share(tenant, monkeypatch):
          None, None, None),
     ])
     ledger_db.upsert_ledger_contracts([(
-        "character", ALICE, 236650353, 92267134, None, 7001,
+        "character", ALICE, 236650353, 1234567894, None, 7001,
         LOC, home, "courier", "finished", None, 0, 80_000.0,
         issued, issued, None, 100.0, 1_000_000.0, 10000002,
     )])
@@ -603,3 +690,48 @@ def test_courier_rate_follows_the_contracts_share(tenant, monkeypatch):
         ).fetchone()[0]
     assert float(freight) == pytest.approx(9000.0)
     assert ledger_db.latest_ledger_run()[4] == after
+
+
+def test_snapshot_carries_the_archived_client_id(tenant, monkeypatch):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 1.0, 1, True, 1, None, None, None),
+        ("character", ALICE, 0, 2, T1, TYPE_A, LOC, 1.0, 1, False, 2, None, None, None, 910002),
+    ])
+    monkeypatch.setattr(loader, "_opening_stock", lambda type_ids: {})
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    monkeypatch.setattr(loader, "_relic_type_ids", lambda: frozenset())
+    snap = loader.load_ledger_snapshot()
+    assert {tx.transaction_id: tx.client_id for tx in snap.wallet_transactions} == {1: None, 2: 910002}
+
+
+def test_snapshot_does_not_see_a_row_committed_while_it_loads(tenant, monkeypatch):
+    """All archive reads run on one repeatable-read snapshot: a sync that
+    commits a journal row between two reads does not reach the snapshot."""
+    _seed_buy_and_sell(tenant)
+    monkeypatch.setattr(loader, "_opening_stock", lambda type_ids: {})
+    monkeypatch.setattr(loader, "_tenant_corporation_ids", lambda: frozenset())
+    monkeypatch.setattr(loader, "_tenant_character_ids", lambda: frozenset({ALICE}))
+    committed = []
+    real = ledger_access.list_all_wallet_transactions_for_production
+
+    def _read_then_sync_commits():
+        rows = real()
+        with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO ledger_wallet_journal (tenant_id, owner_type, owner_id, division, journal_id, "
+                "date, ref_type, amount) VALUES (%s, 'character', %s, 0, 777, %s, 'transaction_tax', -5)",
+                (tenant, ALICE, T1),
+            )
+        committed.append(True)
+        return rows
+
+    monkeypatch.setattr(ledger_access, "list_all_wallet_transactions_for_production", _read_then_sync_commits)
+
+    snap = loader.load_ledger_snapshot()
+
+    assert committed == [True]
+    assert 777 not in {j.journal_id for j in snap.journal_entries}
+    # The row is committed: the next snapshot (a later rebuild) sees it.
+    monkeypatch.setattr(ledger_access, "list_all_wallet_transactions_for_production", real)
+    assert 777 in {j.journal_id for j in loader.load_ledger_snapshot().journal_entries}

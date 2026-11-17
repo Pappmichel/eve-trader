@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Alert, Stack, Title, Text, SimpleGrid, NumberInput, Select, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
 
 import { doctrineApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { DoctrineSettings as DoctrineSettingsT, ReserveContainerOption, ReserveHangarOption } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
@@ -229,7 +230,7 @@ export default function DoctrineSettings() {
         </Text>
       )}
 
-      <Button mt="md" w={200} loading={save.isPending} onClick={() => save.mutate({
+      <Button mt="md" w={200} loading={save.isPending} onClick={() => save.mutate(changedFields(data, {
         // Only the editable fields - the effective/name lists are read-only.
         doctrine_structure_ids: form.doctrine_structure_ids,
         stockpile_location_ids: form.stockpile_location_ids,
@@ -253,7 +254,7 @@ export default function DoctrineSettings() {
         contract_market_system_id: form.contract_market_system_id,
         contract_market_include_public: form.contract_market_include_public,
         contract_market_include_alliance: form.contract_market_include_alliance,
-      })}>
+      }))}>
         Save Settings
       </Button>
     </Stack>

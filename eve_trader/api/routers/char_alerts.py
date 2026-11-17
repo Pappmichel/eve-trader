@@ -7,13 +7,14 @@ from __future__ import annotations
 from typing import Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from ...actions import ActionError
 from ...alerts import actions as alert_actions
 from ...config import OAUTH_CONFIG
+from ..schemas import NameText
 
 router = APIRouter()
 
@@ -30,7 +31,7 @@ class ContractFiltersRequest(BaseModel):
 
 class SubscriptionRequest(BaseModel):
     character_id: int
-    alert_type: str
+    alert_type: NameText
     enabled: bool
     include_content: bool = False
     lead_hours: Optional[int] = None
@@ -58,21 +59,30 @@ def set_subscription(body: SubscriptionRequest):
     )
 
 
+def _login_state(request: Request) -> dict:
+    """Who is calling and when they logged in (set by the access gate; absent
+    with the gate off)."""
+    return {
+        "session_issued_at": getattr(request.state, "session_issued_at", None),
+        "character_name": getattr(request.state, "character_name", None),
+    }
+
+
 @router.get("/discord/start")
-def discord_start():
-    return _wrap(alert_actions.do_start_discord_link)
+def discord_start(request: Request):
+    return _wrap(alert_actions.do_start_discord_link, **_login_state(request))
 
 
 @router.get("/discord/callback")
-def discord_callback(code: str = "", state: str = "", error: str = ""):
+def discord_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     outcome = "linked"
     if error or not code:
         outcome = "cancelled"
     else:
         try:
-            alert_actions.do_finish_discord_link(code=code, state=state)
-        except ActionError:
-            outcome = "error"
+            alert_actions.do_finish_discord_link(code=code, state=state, **_login_state(request))
+        except ActionError as e:
+            outcome = alert_actions.FRESH_LOGIN_REQUIRED if str(e) == alert_actions.FRESH_LOGIN_REQUIRED else "error"
     return RedirectResponse(
         OAUTH_CONFIG.frontend_origin.rstrip("/") + _UI_PATH + "?" + urlencode({"discord": outcome}),
     )

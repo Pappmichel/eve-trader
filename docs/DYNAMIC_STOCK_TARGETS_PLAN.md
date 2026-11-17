@@ -1232,7 +1232,7 @@ stock targets, manual stock and the special order copied to S1; S2 itself was
 not changed) and the plans now match exactly: 209 jobs, 158,801 runs, 46 buy
 lines, 17.54 B ISK, unit costs and prices identical. Not aligned on purpose:
 the trading scheduler stays off on S1, and S1 has no tokens for the three
-characters `esi:2123928988/…043/…065` that only S2 knows.
+characters `esi:1234567892/…043/…065` that only S2 knows.
 
 **Corrected capacity, haul and preview figures** (S1 on the aligned state, which
 equals S2's plan; all 247 home-target rows dynamic against today):

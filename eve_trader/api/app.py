@@ -34,8 +34,10 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..pi.config import PI_CONFIG
 from ..production.config import PRODUCTION_CONFIG
+from .body_limit import BodyLimitMiddleware
+from .request_id import RequestIdMiddleware
 from .routers import (
-    admin, asset_manager, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
+    admin, asset_manager, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, health, hubs, module_reprocessing, pi, pi_design, portfolio, production, production_realized, refining, sde, sorting, updates,
     station_trading, trading,
 )
 
@@ -113,6 +115,9 @@ _GATE_EXEMPT_PATHS = {
     "/api/auth/callback",
     "/api/gate/status",
     "/api/gate/logout",
+    # Liveness probe for the deploy script / proxy: no session, no tenant.
+    # Returns only a status; details are in GET /api/admin/health.
+    "/api/health",
 }
 
 # /api routes that require a valid session when the gate is on, but no
@@ -327,6 +332,9 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
             blocked = await _affiliation_block(session)
             if blocked is not None:
                 return blocked
+            if "admin" not in session.tool_keys:
+                # The schema lists every route and field: admins only.
+                return JSONResponse({"detail": "Forbidden - missing tool grant"}, status_code=403)
             return await call_next(request)
 
         if not path.startswith("/api/") or path in _GATE_EXEMPT_PATHS:
@@ -366,6 +374,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         # two tools' data, e.g. Skills x Doctrine) check this - fail closed when
         # it is absent - instead of the middleware growing multi-tool paths.
         request.state.tool_keys = tuple(session.tool_keys)
+        # Who is calling and when this login happened: handlers that need a
+        # fresh login (linking a Discord account) read these, never the cookie.
+        request.state.character_id = session.character_id
+        request.state.character_name = session.character_name
+        request.state.session_issued_at = session.issued_at
 
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
@@ -400,8 +413,22 @@ def fail_stale_pipeline_runs_on_startup() -> None:
             storage.fail_stale_pipeline_runs(stale_after_seconds=0)
 
 
+def verify_token_encryption_on_startup() -> None:
+    """The service refuses to start without a valid `TOKEN_ENCRYPTION_KEY`.
+    Outside pytest it also scans every tenant's token rows (same guard as the
+    warm-up threads: tests share a database)."""
+    from .. import token_crypto, token_maintenance
+    token_crypto.require_key()
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    token_maintenance.verify_stored_tokens()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Fail closed before serving anything: stored SSO tokens need a key, and
+    # outside tests every stored row must decrypt (only counts are reported).
+    verify_token_encryption_on_startup()
     _load_default_tenant_config()
     # Clear hung pipeline_runs left by a previous process before accepting
     # work. Skip under pytest: tests share a DB and may have their own
@@ -411,6 +438,11 @@ async def _lifespan(app: FastAPI):
             fail_stale_pipeline_runs_on_startup()
         except Exception:  # noqa: BLE001 - never block app start on cleanup
             log.exception("failed to clear stale pipeline_runs on startup")
+        try:
+            from .. import backup
+            backup.cleanup_partial_files()
+        except Exception:  # noqa: BLE001 - never block app start on cleanup
+            log.exception("failed to clean leftover backup files on startup")
     scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
     # Load the SDE recipe index and type rows in the background so the first
     # planner run after a restart does not pay thousands of one-row queries.
@@ -420,10 +452,17 @@ async def _lifespan(app: FastAPI):
     # Price the Asset Manager rows in the background so the first page open is
     # not a 20 s wait. Daemon thread: it must neither block start nor shutdown.
     if "PYTEST_CURRENT_TEST" not in os.environ:  # tests start the app against a shared test database
-        threading.Thread(target=asset_manager_actions.warm_all_tenants, name="asset-manager-warmup",
+        threading.Thread(target=_warm_asset_manager, name="asset-manager-warmup",
                          daemon=True).start()
     yield
     scheduler.stop()
+
+
+def _warm_asset_manager() -> None:
+    """Thread target for the Asset Manager warm-up; a background job, so the
+    request-time statement timeout does not apply."""
+    with storage.long_running():
+        asset_manager_actions.warm_all_tenants()
 
 
 def _warm_sde_caches() -> None:
@@ -431,7 +470,8 @@ def _warm_sde_caches() -> None:
     raises: a failed warm-up only means the caches fill lazily, as before."""
     started = time.monotonic()
     try:
-        summary = storage.warm_sde_caches()
+        with storage.long_running():
+            summary = storage.warm_sde_caches()
         log.info("SDE caches warmed in %.1fs: %s", time.monotonic() - started, summary)
     except Exception:  # noqa: BLE001 - never affect the running app
         log.exception("SDE cache warm-up failed")
@@ -439,8 +479,8 @@ def _warm_sde_caches() -> None:
 
 def _load_default_tenant_config() -> None:
     """One-time, at-boot load of DEFAULT_TENANT_ID's own saved Settings-page
-    overrides into TRADING_CONFIG/PRODUCTION_CONFIG/DOCTRINE_CONFIG's
-    *shared default* instance (mutated directly via apply_config_overrides,
+    overrides of all seven config scopes into their
+    *shared default* instances (mutated directly via apply_config_overrides,
     not via a ContextVar.set() - the gate-disabled request path above never
     sets a per-request value at all, it always falls through to this same
     default object, so mutating it once here is enough for every future
@@ -451,19 +491,26 @@ def _load_default_tenant_config() -> None:
     live instance in place) but is silently lost across a restart - only
     config.yaml is read at TRADING_CONFIG/PRODUCTION_CONFIG/DOCTRINE_CONFIG's
     own import time, never tenant_settings."""
+    from ..module_reprocessing.config import MODULE_REPROCESSING_CONFIG
+    from ..refining.config import REFINING_CONFIG
+    from ..station_trading.config import STATION_TRADING_CONFIG
+
+    # (tenant_settings.scope, shared default instance) - every scope the
+    # Settings saves write to.
+    scopes = (
+        ("trading", TRADING_CONFIG),
+        ("production", PRODUCTION_CONFIG),
+        ("doctrine", DOCTRINE_CONFIG),
+        ("pi", PI_CONFIG),
+        ("refining", REFINING_CONFIG),
+        ("station_trading", STATION_TRADING_CONFIG),
+        ("module_reprocessing", MODULE_REPROCESSING_CONFIG),
+    )
     with storage.tenant_context(storage.DEFAULT_TENANT_ID):
-        trading_overrides = storage.load_tenant_settings("trading")
-        production_overrides = storage.load_tenant_settings("production")
-        doctrine_overrides = storage.load_tenant_settings("doctrine")
-        pi_overrides = storage.load_tenant_settings("pi")
-    if trading_overrides:
-        apply_config_overrides(TRADING_CONFIG, trading_overrides)
-    if production_overrides:
-        apply_config_overrides(PRODUCTION_CONFIG, production_overrides)
-    if doctrine_overrides:
-        apply_config_overrides(DOCTRINE_CONFIG, doctrine_overrides)
-    if pi_overrides:
-        apply_config_overrides(PI_CONFIG, pi_overrides)
+        loaded = [(cfg, storage.load_tenant_settings(scope)) for scope, cfg in scopes]
+    for cfg, overrides in loaded:
+        if overrides:
+            apply_config_overrides(cfg, overrides)
 
 
 def create_app() -> FastAPI:
@@ -500,9 +547,16 @@ def create_app() -> FastAPI:
     # chunks, and GZip only honors minimum_size for a body it sees whole.
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.add_middleware(AccessGateMiddleware)
+    # Outside the gate (an oversized body is refused before any session lookup),
+    # inside RequestIdMiddleware (its 413 still carries X-Request-ID).
+    app.add_middleware(BodyLimitMiddleware)
+    # Added last = outermost: every response, including the gate's own 401/403
+    # and CORS preflights, carries X-Request-ID and its log lines the id.
+    app.add_middleware(RequestIdMiddleware)
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(gate.router, prefix="/api/gate", tags=["gate"])
+    app.include_router(health.router, prefix="/api", tags=["health"])
     app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
     app.include_router(production.router, prefix="/api/production", tags=["production"])
     app.include_router(production_realized.router, prefix="/api/production", tags=["production"])

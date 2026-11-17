@@ -18,9 +18,12 @@ import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import { ALL_TOOL_KEYS, DEFAULT_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
 import type {
-  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow, LocationReportUnresolved,
+  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, LocationReportUnresolved,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { ErrorsSection } from './ErrorsSection'
+import { PurgeTenantDialog } from './PurgeTenantDialog'
+import CcpNotice from '../../components/CcpNotice'
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
 // previewing/applying it is a cross-tenant-impacting action - moved here from
@@ -41,7 +44,7 @@ function SdeDataSection() {
         <Title order={4}>SDE Data</Title>
         {sdeFreshness && (
           sdeFreshness.newer_sde_available ? (
-            <Badge size="xs" color="warn" variant="light">Update available</Badge>
+            <Badge size="xs" color="warn" variant="light">New SDE available</Badge>
           ) : sdeFreshness.remote_check_succeeded ? (
             <Badge size="xs" color="accent" variant="light">Up to date</Badge>
           ) : (
@@ -364,19 +367,32 @@ function impactSummary(impact: AllowlistImpact): string {
   return lines.join(' ')
 }
 
-// Read-only - tenants are always created implicitly as part of "Add User"
-// below (one dedicated tenant per character, enforced at the DB level, see
-// docs/admin_schema.sql). Kept visible here mainly to spot orphaned tenants
-// left behind by a removed user (do_remove_user intentionally leaves the
-// tenant and its data in place).
+// Tenants are created implicitly as part of "Add User" below (one dedicated
+// tenant per character, enforced at the DB level, see docs/admin_schema.sql).
+// Removing a user leaves the tenant and its data in place (tokens and the
+// Discord link are deleted); an orphaned tenant - one with no registered user -
+// can be deleted for good here, after a confirmation that shows the row counts.
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001'
+
 function TenantSection() {
   const { data: tenants, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: users } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
+  const [purgeTarget, setPurgeTarget] = useState<AdminTenant | null>(null)
+  const usedTenantIds = useMemo(() => new Set((users ?? []).map((u) => u.tenant_id)), [users])
 
   const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
     { header: 'Name', accessorKey: 'name', size: 220 },
     { header: 'Tenant ID', accessorKey: 'tenant_id', size: 300 },
     { header: 'Created', accessorKey: 'created_at', size: 180, cell: (i) => dateTime(i.getValue()) },
-  ], [])
+    {
+      header: '', id: 'purge', size: 120, enableSorting: false,
+      cell: (i) => {
+        const t = i.row.original
+        if (!users || t.tenant_id === DEFAULT_TENANT_ID || usedTenantIds.has(t.tenant_id)) return null
+        return <Button size="compact-xs" color="danger" variant="light" onClick={() => setPurgeTarget(t)}>Delete tenant</Button>
+      },
+    },
+  ], [users, usedTenantIds])
 
   return (
     <div>
@@ -392,6 +408,7 @@ function TenantSection() {
         onRetry={() => refetch()}
         dataUpdatedAt={dataUpdatedAt}
       />
+      {purgeTarget && <PurgeTenantDialog tenant={purgeTarget} onClose={() => setPurgeTarget(null)} />}
     </div>
   )
 }
@@ -420,7 +437,13 @@ function UsersSection() {
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']],
     { tier: 'live', effect: 'Resolves the character name live via ESI, creates a new tenant and grants every tool except admin and module_reprocessing.' })
-  const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
+  const removeUser = useAction('Remove User', async (characterId: number) => {
+    const r = await adminApi.removeUser(characterId)
+    const revoke = r.tokens_deleted === 0 ? '' : r.revoke_skipped
+      ? ' SSO revoke skipped (tokens were unreadable).'
+      : ` SSO revoke: ${r.revoked} ok, ${r.revoke_failed} failed.`
+    return `Removed. ${r.tokens_deleted} stored tokens deleted${r.discord_unlinked ? ', Discord unlinked' : ''}.${revoke}`
+  }, [['admin', 'users'], ['admin', 'tenants']])
   const refreshAffiliations = useAction(
     'Refresh affiliations', adminApi.refreshAffiliations, [['admin', 'users']],
     { tier: 'live', effect: 'Loads every registered character’s corporation and alliance from ESI.' },
@@ -468,7 +491,8 @@ function UsersSection() {
             title: 'Remove user',
             children: <Text size="sm">
               Remove {i.row.original.character_name ?? `#${i.row.original.character_id}`} from Admin?
-              Their tenant and its data stay intact - they just lose access until re-added.
+              Their stored ESI tokens and Discord link are deleted immediately, and the tokens are revoked
+              at EVE SSO. Their tenant and its other data stay intact - they just lose access until re-added.
             </Text>,
             labels: { confirm: 'Remove', cancel: 'Cancel' },
             confirmProps: { color: 'danger' },
@@ -517,45 +541,6 @@ function UsersSection() {
           </Button>
         </Tooltip>
       </Group>
-    </div>
-  )
-}
-
-// GitHub issue #88: self-hosted error tracking - ErrorBoundary.tsx and
-// main.tsx's global error/unhandledrejection listeners report here, this
-// is the only place that ever reads it back out. Cross-tenant (error_log
-// is deliberately unscoped, see docs/observability_schema.sql), same
-// pattern as TenantSection/UsersSection above.
-function ErrorsSection() {
-  const { data: errorRows, isLoading } = useQuery({ queryKey: ['admin', 'errors'], queryFn: () => adminApi.errors() })
-
-  const columns = useMemo<ColumnDef<ErrorLogRow, any>[]>(() => [
-    { header: 'When', accessorKey: 'created_at', size: 170, cell: (i) => dateTime(i.getValue()) },
-    { header: 'Source', accessorKey: 'source', size: 170 },
-    { header: 'Message', accessorKey: 'message', size: 360 },
-    { header: 'Page', accessorKey: 'path', size: 200, cell: (i) => i.getValue() ?? '—' },
-    { header: 'Tenant', accessorKey: 'tenant_id', size: 280, cell: (i) => i.getValue() ?? '—' },
-  ], [])
-
-  return (
-    <div>
-      <Title order={4} mb="xs">Recent Errors</Title>
-      <Text size="sm" c="dimmed" mb="sm">
-        The last 200 frontend errors reported across every tenant (a render crash, an uncaught exception, or an
-        unhandled promise rejection) - best-effort, never blocks the page that hit the error.
-      </Text>
-      {!isLoading && (errorRows ?? []).length === 0 && <Text c="dimmed" size="sm">No errors reported yet.</Text>}
-      {(isLoading || (errorRows ?? []).length > 0) && (
-        <DataTable
-          data={errorRows ?? []}
-          columns={columns}
-          tableId="admin-errors"
-          exportFilename="errors"
-          getRowId={(r) => String(r.id)}
-          isLoading={isLoading}
-          maxHeight={400}
-        />
-      )}
     </div>
   )
 }
@@ -828,6 +813,7 @@ export default function AdminPage() {
         <Divider />
         <ErrorsSection />
       </Stack>
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

@@ -88,3 +88,23 @@ def test_merge_duplicate_stacks_excludes_error_lines():
     merged = merge_duplicate_stacks(parse_paste(f"{_AMMO_LINE}\nnot a real line"))
     assert len(merged) == 1
     assert merged[0].name == "Antimatter Charge S"
+
+
+def test_parse_paste_rejects_decimal_looking_quantities():
+
+    for qty in ("12.5", "1,25", "3.0"):
+        (line,) = parse_paste(f"Tritanium\t{qty}\tMineral\tMaterial\t\t\t1 m3\t\t")
+        assert line.error == "Quantity must be a whole number.", qty
+        assert line.quantity == 0
+
+
+def test_parse_paste_accepts_thousands_separators():
+    forms = {
+        "1,000": 1000, "1.000": 1000, "1 000": 1000, "1\u00a0000": 1000,
+        "1\u202f000": 1000, "1,000,000": 1000000, "12": 12, "250": 250,
+        "1.234.567": 1234567,
+    }
+    for raw, expected in forms.items():
+        (line,) = parse_paste(f"Tritanium\t{raw}\tMineral\tMaterial\t\t\t1 m3\t\t")
+        assert line.error is None, raw
+        assert line.quantity == expected, raw

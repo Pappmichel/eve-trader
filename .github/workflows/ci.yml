@@ -52,15 +52,42 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       # Install the locked graph first so CI and production resolve the same
-      # versions (including itsdangerous==2.2.0). Then the editable package
-      # itself, without letting pip re-resolve pyproject ranges.
-      - run: python -m pip install -r requirements.lock
+      # runtime versions (including itsdangerous==2.2.0) plus the pinned test
+      # packages (requirements-dev.txt includes requirements.txt). Then the
+      # editable package itself, without letting pip re-resolve pyproject
+      # ranges.
+      - run: python -m pip install -r requirements-dev.txt
       - run: python -m pip install -e . --no-deps
       - run: python -m pip install pip-audit
-      # requirements.txt, not the lock file: the lock file is only a -r include,
-      # which pip-audit would otherwise check as zero packages.
+      # requirements.txt (runtime pins), not the lock file: the lock file is
+      # only a -r include, which pip-audit would otherwise check as zero
+      # packages.
       - run: python -m pip_audit -r requirements.txt
       - run: python -m pytest -n auto
+
+  commit-messages:
+    # Hooks can be bypassed, so the pull request's own commits are checked
+    # here too (not the whole history, which predates the rule).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Check commit messages for attribution lines
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          for sha in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/msg"
+            if ! sh .githooks/commit-msg "$RUNNER_TEMP/msg"; then
+              echo "Offending commit: $sha" >&2
+              status=1
+            fi
+          done
+          exit $status
 
   frontend:
     runs-on: ubuntu-latest

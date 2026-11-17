@@ -11,7 +11,7 @@ from typing import Optional
 
 import requests
 
-from .. import storage
+from .. import storage, timeutil
 from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_roles
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
@@ -38,7 +38,7 @@ log = logging.getLogger("eve_trader.refining.actions")
 
 
 def now_ts() -> str:
-    return dt.datetime.utcnow().isoformat(timespec="seconds")
+    return timeutil.utc_now_naive().isoformat(timespec="seconds")
 
 
 def _seller_roles(tm: TokenManager) -> list[str]:

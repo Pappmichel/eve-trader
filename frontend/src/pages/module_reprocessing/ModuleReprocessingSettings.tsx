@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Stack, Title, Text, SimpleGrid, NumberInput, Checkbox, Button, Center, Loader } from '@mantine/core'
 
 import { moduleReprocessingApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { ModuleReprocessingSettings as ModuleReprocessingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
@@ -90,7 +91,7 @@ export default function ModuleReprocessingSettings() {
         candidates still clear that bar.
       </Text>
 
-      <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={240} onClick={() => save.mutate(changedFields(data, form))} loading={save.isPending}>
         Save Settings
       </Button>
     </Stack>

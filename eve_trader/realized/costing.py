@@ -16,6 +16,16 @@ Events at or after the cutover `t0` are sorted by
 So at the same second a purchase is available to a job that starts, a job's
 output is available to a sale, and a sale never consumes a job's inputs.
 
+Market trades between own owners
+--------------------------------
+A sale whose `client_id` is an own character or corporation, with the
+buyer's archived purchase of the same fill (`internal_trade_pairs`), is a
+transfer, not a result: the sale draws its layers, the buyer gets layers
+with the same cost plus the fill's tax and broker fees (source `transfer`),
+and the purchase is not booked again. Without that purchase the sale stays
+a result warned `internal_trade_unmatched`. Rows without a client_id (older
+archive rows) are booked as before.
+
 Reprocessing
 ------------
 ESI has no reprocessing event. The loader passes tenant-wide stock
@@ -34,7 +44,11 @@ a quantity-only pre-pass before costing. Per observation:
    seen in the other order); the rest, in whole portions, is reprocessed.
 
 Pending stock older than the window becomes ledger stock without a layer
-(mined, looted): a later consumption draws it as unknown origin.
+(mined, looted): a later consumption draws it as unknown origin. The window
+counts from the detection, except while a courier the tenant issued was in
+transit at that moment and has since finished: then it counts from that
+courier's completion (`reprocess_undo_window_extended` warns with the count).
+Couriers still open are not in the archive, so they extend nothing yet.
 
 A reprocess event is split over the FIFO lots it drew since the previous
 observation (the stock held then, then each inflow), in whole portions,
@@ -90,7 +104,13 @@ Inputs the loader must prepare (not checked here)
   on a BPC (consumes BPC runs), False for a BPO, None when unknown (treated
   like a BPO: no BPC runs drawn).
 - `reference_prices` are item prices; BPC runs use the separate
-  `bpc_run_reference_prices` (a BPO market price is not a per-run price).
+  `bpc_run_reference_prices` (a BPO market price is not a per-run price):
+  keyed by blueprint type id and day, the copy job fee per run for a Tech I
+  copy or the invention cost per run for an invented blueprint (Total
+  Wealth's per-run value, frozen per day by the loader). A run valued this
+  way stays `estimated` (unknown origin) but is not `price_missing`, and
+  each blueprint type gets one `bpc_run_estimated` warning. A copy without
+  a per-run value (faction/officer) stays `price_missing`.
   Every lookup that finds nothing is listed in `CostingResult.price_requests`
   so the loader can fetch exactly those and run again.
 - `bpo_type_ids`: blueprint types bought on the market - always BPOs, since
@@ -143,6 +163,10 @@ _OBSERVATION_RANK = 100
 
 SOURCE_MARKET = "market"
 SOURCE_CONTRACT = "contract"
+# A layer the buyer side of a market trade between two own owners received.
+SOURCE_TRANSFER = "transfer"
+# Result warning: a sale to an own owner whose purchase is not archived.
+INTERNAL_TRADE_UNMATCHED = "internal_trade_unmatched"
 CONTRACT_ITEM_EXCHANGE = "item_exchange"
 
 # Who sold it (unified plan U1). Origin on each draw stays independent.
@@ -298,6 +322,8 @@ class WalletTransaction:
     freight_rate_per_m3: Optional[float] = None
     freight_m3: Optional[float] = None  # total for the transaction
     journal_ref_id: Optional[int] = None
+    # ESI's counterparty. None on rows archived before it was stored.
+    client_id: Optional[int] = None
 
     @property
     def key(self) -> tuple:
@@ -458,6 +484,10 @@ class CourierContract:
     reward: float
     collateral: float
     status: str
+    # Completion time of a finished courier (the archive keeps no acceptance
+    # time). Only used to bound reprocessing detection while goods are in
+    # transit.
+    date_completed: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -598,6 +628,10 @@ class LedgerSnapshot:
     # has no archived sales tax or broker fee and is flagged `fees_missing`.
     # Absent wallets are fully covered. T0 stays shared and does not move.
     fee_coverage_starts: Mapping[tuple, Optional[datetime]] = field(default_factory=dict)
+    # Run warnings the loader found while assembling the snapshot (e.g. a
+    # character with archive rows that is not an own character). Costing
+    # does not read them; the loader stores them with the run's warnings.
+    loader_warnings: Sequence[str] = ()
 
 
 # ====================================================================== outputs
@@ -1146,13 +1180,91 @@ def classify_contract(contract: ItemExchangeContract, *, tenant_character_ids,
     return view, None
 
 
+def _trade_match_key(tx: WalletTransaction) -> tuple:
+    return (tx.date, int(tx.type_id), int(tx.location_id),
+            round(float(tx.unit_price), 2), float(tx.quantity))
+
+
+def _buy_matches_internal_sale(sale: WalletTransaction, buy: WalletTransaction, chars) -> bool:
+    """Does `buy` belong to the same fill as `sale`, seen from the other side?
+
+    The buyer must be the sale's client: the character itself, or a
+    corporation owner (ESI names a character as the client of a corp
+    transaction, and may name the corporation). When the seller is a
+    character and the buy carries its own client_id, that must be the seller.
+    """
+    if (buy.owner_type, int(buy.owner_id)) == (sale.owner_type, int(sale.owner_id)):
+        return False
+    client = int(sale.client_id)
+    if buy.owner_type == "character":
+        if int(buy.owner_id) != client:
+            return False
+    elif int(buy.owner_id) != client and client not in chars:
+        return False
+    if sale.owner_type == "character" and buy.client_id is not None:
+        return int(buy.client_id) == int(sale.owner_id)
+    return True
+
+
+def internal_trade_pairs(ledger: LedgerSnapshot) -> tuple[dict, frozenset]:
+    """Market fills between two of the tenant's own owners, at or after T0.
+
+    A sale is internal when its `client_id` is an own character or an own
+    corporation. Its purchase is the archived buy of the same fill: same
+    second, type, location, unit price (to the cent) and quantity, by the
+    client (`_buy_matches_internal_sale`). A buy with the same transaction id
+    is preferred; otherwise candidates are taken in a fixed order. Fills that
+    agree on all of these fields are interchangeable for costing (layers are
+    tenant-wide and the pool follows the location), so the choice among them
+    does not change any figure.
+
+    Returns ({sale key: buy}, unmatched sale keys). An unmatched internal
+    sale (the buyer's wallet is not shared) stays a sale and is warned. Rows
+    without a client_id are never internal. BPO types are not paired.
+    """
+    chars = {int(c) for c in ledger.tenant_character_ids}
+    own = chars | {int(c) for c in ledger.tenant_corporation_ids}
+    bpo = ledger.bpo_type_ids
+    candidates: dict[tuple, list[WalletTransaction]] = defaultdict(list)
+    sales: list[WalletTransaction] = []
+    for tx in ledger.wallet_transactions:
+        if tx.date < ledger.t0 or int(tx.type_id) in bpo:
+            continue
+        if tx.is_buy:
+            candidates[_trade_match_key(tx)].append(tx)
+        elif tx.client_id is not None and int(tx.client_id) in own:
+            sales.append(tx)
+    pairs: dict[tuple, WalletTransaction] = {}
+    unmatched: set[tuple] = set()
+    used: set[tuple] = set()
+    for sale in sorted(sales, key=lambda t: (t.date, int(t.transaction_id), t.key)):
+        options = [
+            buy for buy in sorted(candidates.get(_trade_match_key(sale), ()), key=lambda t: t.key)
+            if buy.key not in used and _buy_matches_internal_sale(sale, buy, chars)
+        ]
+        same_id = [buy for buy in options if int(buy.transaction_id) == int(sale.transaction_id)]
+        chosen = (same_id or options or [None])[0]
+        if chosen is None:
+            unmatched.add(sale.key)
+            continue
+        used.add(chosen.key)
+        pairs[sale.key] = chosen
+    return pairs, frozenset(unmatched)
+
+
 def freight_purchases(ledger: LedgerSnapshot) -> list:
     """Purchases costing freights: market buys with frozen m3 (not BPOs)
-    and contract-buy lines with frozen m3, at or after T0."""
+    and contract-buy lines with frozen m3, at or after T0. The buy side of a
+    trade between own owners is not freighted: the units keep the cost,
+    freight included, of the layers the seller drew."""
     out: list[FreightPurchase] = []
     bpo = ledger.bpo_type_ids
+    pairs, _unmatched = internal_trade_pairs(ledger)
+    transferred = {buy.key for buy in pairs.values()}
     for tx in ledger.wallet_transactions:
         if not tx.is_buy or tx.date < ledger.t0:
+            continue
+        if tx.key in transferred:
             continue
         if tx.freight_m3 is None or float(tx.freight_m3) <= _EPS:
             continue
@@ -1243,6 +1355,8 @@ def rebuild_costing(ledger: LedgerSnapshot) -> CostingResult:
 
 
 def _day(ts: datetime) -> date:
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc)
     return ts.date()
 
 
@@ -1252,6 +1366,7 @@ class _Costing:
         self.t0 = ledger.t0
         self.warnings: list[str] = []
         self._warned: set[str] = set()
+        self._fee_income_ignored: dict[tuple, float] = defaultdict(float)
         self.all_layers: list[CostLayer] = []
         self.layers_by_key: dict[tuple, list[CostLayer]] = defaultdict(list)
         self.results: list[RealizedResult] = []
@@ -1270,6 +1385,9 @@ class _Costing:
         self.fee_by_tx: dict[tuple, float] = {}
         self.contract_fee_by_ref: dict[str, float] = {}
         self.price_requests: set[tuple] = set()
+        # Blueprint-copy runs without a layer valued at the frozen per-run
+        # copy/invention cost, per blueprint type (one warning each).
+        self.bpc_runs_estimated: dict[int, float] = defaultdict(float)
         self._rates: dict = {}
         self.reprocess_records: list[ReprocessRecord] = []
 
@@ -1278,6 +1396,18 @@ class _Costing:
         if msg not in self._warned:
             self._warned.add(msg)
             self.warnings.append(msg)
+
+    def _fee_cost(self, entry) -> float:
+        """A fee is a negative journal amount; its cost is `-amount`. A
+        positive entry is income (for example a structure-owning corporation
+        wallet receiving fees) and never a cost: it is ignored and reported
+        once per run in `fee_income_ignored`."""
+        amount = float(entry.amount)
+        if amount < 0:
+            return -amount
+        if amount > 0:
+            self._fee_income_ignored[(str(entry.ref_type), f"{entry.owner_type}:{int(entry.owner_id)}")] += amount
+        return 0.0
 
     def _job_included(self, job: IndustryJob) -> bool:
         if job.owner_type != "corporation":
@@ -1399,6 +1529,8 @@ class _Costing:
                 self.warn(f"missing_reference_price: type {type_id} ({unit}) on {_day(when).isoformat()}, "
                           f"unknown-origin {need:g} valued at 0")
                 price = 0.0
+            elif unit == UNIT_BPC_RUN:
+                self.bpc_runs_estimated[int(type_id)] += need
             self.warn(f"unknown_origin: type {type_id} ({unit}) {need:g} without a layer ({context})")
             layer = self._new_layer(
                 type_id=type_id, unit=unit, quantity=need,
@@ -1600,7 +1732,9 @@ class _Costing:
         pools: dict[tuple, float] = defaultdict(float)
         for j in self.ledger.journal_entries:
             if j.ref_type in FEE_REF_TYPES and j.date >= self.t0:
-                pools[(j.owner_type, int(j.owner_id), _day(j.date))] += abs(float(j.amount))
+                cost = self._fee_cost(j)
+                if cost:
+                    pools[(j.owner_type, int(j.owner_id), _day(j.date))] += cost
         own_orders = {
             (o.owner_type, int(o.owner_id), int(o.type_id), int(o.location_id), bool(o.is_buy_order))
             for o in self.ledger.market_orders
@@ -1720,7 +1854,7 @@ class _Costing:
             return CHANNEL_PRODUCTION
         return CHANNEL_TRADING
 
-    def _on_sell(self, tx: WalletTransaction) -> None:
+    def _on_sell(self, tx: WalletTransaction, *, internal_unmatched: bool = False) -> None:
         type_id = int(tx.type_id)
         fee = self.fee_by_tx.get(tx.key, 0.0)
         qty = float(tx.quantity)
@@ -1732,6 +1866,12 @@ class _Costing:
         production = type_id in self.ledger.production_type_ids
         gross = float(tx.unit_price) * qty
         result_warnings: list[str] = []
+        if internal_unmatched:
+            result_warnings.append(INTERNAL_TRADE_UNMATCHED)
+            self.warn(
+                f"{INTERNAL_TRADE_UNMATCHED}: {tx.ref} sold to own owner {int(tx.client_id)} "
+                f"but its purchase is not archived; booked as a sale"
+            )
         tax = self._sales_tax(tx, gross)
         fees_missing = self._fees_missing_for(tx)
         if tax is None:
@@ -1766,6 +1906,45 @@ class _Costing:
             location_id=int(tx.location_id), warnings=result_warnings, source=SOURCE_MARKET,
             channel=self._market_channel(tx), owner_type=tx.owner_type, owner_id=int(tx.owner_id),
         )
+
+    def _on_transfer(self, sale: WalletTransaction, buy: WalletTransaction) -> None:
+        """A market fill between two own owners moves stock, it earns nothing.
+
+        The sale draws its layers as a sale would (D6 order for a Production
+        type, the station pool first at the station) and books no result.
+        The buyer gets one layer per draw with that draw's cost components,
+        origin and flags, plus the fill's real costs to third parties as
+        `fees`: the seller's sales tax and broker fee share and the buyer's
+        broker fee share. Source `transfer`; its buy event is skipped."""
+        type_id = int(sale.type_id)
+        qty = float(sale.quantity)
+        if qty <= _EPS:
+            return
+        gross = float(sale.unit_price) * qty
+        tax = self._sales_tax(sale, gross) or 0.0
+        fees = tax + self.fee_by_tx.get(sale.key, 0.0) + self.fee_by_tx.get(buy.key, 0.0)
+        production = type_id in self.ledger.production_type_ids
+        draws, _consumed = self._consume(
+            type_id, UNIT_ITEM, qty, sale.date, sale.ref,
+            sale_order=production, at_location=sale.location_id,
+        )
+        fee_shares = split_exact(fees, [float(d.quantity) for d in draws])
+        pool = self._pool_for_location(buy.location_id)
+        for draw, fee in zip(draws, fee_shares):
+            dq = float(draw.quantity)
+            if dq <= _EPS:
+                continue
+            source_layer = self.all_layers[int(draw.layer_id) - 1]
+            total = draw.components.add(CostComponents(fees=fee))
+            self._new_layer(
+                type_id=type_id, unit=UNIT_ITEM, quantity=dq, unit_components=total.scale(1.0 / dq),
+                origin=draw.origin, source_ref=buy.ref, layer_date=sale.date,
+                job_id=source_layer.job_id, assumed_me=source_layer.assumed_me,
+                assumed_decryptor=source_layer.assumed_decryptor,
+                estimated_origin=draw.estimated_origin, price_missing=draw.price_missing,
+                source=SOURCE_TRANSFER, pool=pool, freight_source=draw.freight_source,
+                shipment_ref=draw.shipment_ref, freight_rate_per_m3=draw.freight_rate_per_m3,
+            )
 
     def _split_prices(self, lines: Sequence[ContractItem], when: datetime) -> list[Optional[float]]:
         """Per-line reference prices for a multi-type split. A single type
@@ -1906,14 +2085,25 @@ class _Costing:
         # lines become one result per type: Production types keep today's
         # sale_ref, other types are Trading (U1 rule 5).
         grouped: dict[int, list] = defaultdict(lambda: [0.0, 0.0, False])
+        # The price share split onto blueprint lines is not booked anywhere
+        # (no result for a blueprint); say so instead of losing it silently.
+        unbooked: dict[int, float] = defaultdict(float)
         for item, share in zip(lines, shares):
             if item.is_blueprint:
                 self._draw_given_line(contract, item, sale_order=False)
+                if view.sale_pool is not None:
+                    unbooked[int(item.type_id)] += float(share)
                 continue
             slot = grouped[int(item.type_id)]
             slot[0] += float(item.quantity)
             slot[1] += share
             slot[2] = True
+        for type_id in sorted(unbooked):
+            if unbooked[type_id] > _EPS:
+                self.warn(
+                    f"contract_blueprint_share_unbooked: {contract.ref} type {type_id} "
+                    f"{_isk_amount(unbooked[type_id])}"
+                )
         if view.sale_pool is None:
             for type_id, (qty, _share, _item) in grouped.items():
                 self._consume(
@@ -2156,7 +2346,20 @@ class _Costing:
             queue = lots.setdefault(type_id, [])
             queue.append([since, float(amount)])
             queue.sort(key=lambda lot: lot[0])
-        pending: dict[int, list[list]] = defaultdict(list)  # type -> [[observed_at, qty], ...]
+        pending: dict[int, list[list]] = defaultdict(list)  # type -> [[observed_at, qty, anchor], ...]
+        transits = self._courier_transits()
+        extended = 0
+
+        def anchor(moment: datetime) -> datetime:
+            """The time the undo window counts from. Goods that left while a
+            courier was in transit may come back only when it delivers, so the
+            window counts from that completion. Otherwise it counts from the
+            detection itself."""
+            release = None
+            for start, end in transits:
+                if start <= moment <= end:
+                    release = end if release is None else max(release, end)
+            return release if release is not None and release > moment else moment
         candidates: dict[int, list[dict]] = defaultdict(list)
         ordered: list[dict] = []
         timeline = [(ev[:2], 0, ev) for ev in events if ev[6] in (
@@ -2184,7 +2387,7 @@ class _Costing:
             for type_id, entries in pending.items():
                 keep = []
                 for entry in entries:
-                    if entry[0] < window_start:
+                    if entry[2] < window_start:
                         qty[type_id] += entry[1]
                         add_lot(type_id, entry[0], entry[1])
                     else:
@@ -2229,7 +2432,7 @@ class _Costing:
                 for cand in reversed(candidates[type_id]):
                     if s <= _EPS:
                         break
-                    if cand["detected_at"] < window_start or cand["qty"] <= _EPS:
+                    if cand["undo_at"] < window_start or cand["qty"] <= _EPS:
                         continue
                     back = min(s, cand["qty"])
                     cand["qty"] -= back
@@ -2237,7 +2440,7 @@ class _Costing:
                     add_lot(type_id, cand["when"], back)
                     s -= back
                 if s > _EPS:
-                    pending[type_id].append([now, s])
+                    pending[type_id].append([now, s, anchor(now)])
             # 3. Deficit: offset pending stock, reprocess the rest in whole portions.
             for type_id, d in sorted(deficit.items()):
                 if d <= _EPS:
@@ -2259,15 +2462,49 @@ class _Costing:
                     continue
                 for part, (when, part_qty) in enumerate(
                         self._place_reprocess(take_lots(type_id, whole), whole, recipe, place(type_id))):
+                    undo_at = anchor(now)
+                    if undo_at > now:
+                        extended += 1
                     cand = {"kind": KIND_REPROCESS, "type_id": type_id, "qty": part_qty, "when": when,
-                            "detected_at": now, "part": part}
+                            "detected_at": now, "part": part, "undo_at": undo_at}
                     candidates[type_id].append(cand)
                     ordered.append(cand)
                 qty[type_id] -= whole
             prev_obs = now
             # Whatever is left counts as held at this observation.
             lots = {t: ([[now, qty[t]]] if qty[t] > _EPS else []) for t in tracked}
+        if extended:
+            self.warn(
+                f"reprocess_undo_window_extended: {extended} reprocess candidates kept open "
+                f"while a courier was in transit"
+            )
         return self._reprocess_records(ordered, recipes, [o.observed_at for o in observations])
+
+    def _courier_transits(self) -> list[tuple[datetime, datetime]]:
+        """Time spans in which goods may be inside a courier this tenant
+        issued: from issue to completion of a finished courier. The archive
+        keeps only finished and failed couriers, so a courier that is still
+        open is not known here; the next rebuild after it completes extends
+        the window. Failed and other couriers are not spans. Only couriers
+        issued by an own character count. A finished courier without a
+        completion time is skipped, not guessed."""
+        spans: list[tuple[datetime, datetime]] = []
+        seen: set[int] = set()
+        for raw in self.ledger.couriers:
+            contract_id = int(raw.contract_id)
+            if contract_id in seen or raw.date_issued is None:
+                continue
+            if raw.issuer_id is None or int(raw.issuer_id) not in self.ledger.tenant_character_ids:
+                continue  # someone else's shipment, hauled by one of ours
+            seen.add(contract_id)
+            status = (raw.status or "").lower()
+            start = _as_utc(raw.date_issued)
+            if status == "finished" and raw.date_completed is not None:
+                end = _as_utc(raw.date_completed)
+                if end >= start:
+                    spans.append((start, end))
+        spans.sort()
+        return spans
 
     @staticmethod
     def _place_reprocess(parts: list, whole: float, recipe: ReprocessRecipe,
@@ -2341,7 +2578,9 @@ class _Costing:
             idx = bisect_left(obs_times, entry.date)
             if idx >= len(obs_times):
                 continue
-            pools[obs_times[idx]] += abs(float(entry.amount))
+            cost = self._fee_cost(entry)
+            if cost:
+                pools[obs_times[idx]] += cost
         unmatched = 0.0
         for at, amount in sorted(pools.items()):
             recs = by_obs.get(at, [])
@@ -2423,7 +2662,9 @@ class _Costing:
         for entry in self.ledger.journal_entries:
             if entry.ref_type != CONTRACT_BROKER_FEE_REF or entry.date < self.t0:
                 continue
-            amount = abs(float(entry.amount))
+            amount = self._fee_cost(entry)
+            if not amount:
+                continue
             if entry.context_id_type == "contract_id" and entry.context_id is not None:
                 contract = sales_by_id.get(int(entry.context_id))
                 if contract is not None:
@@ -2474,16 +2715,25 @@ class _Costing:
                 key=lambda e: e[:6],
             )
         self._seed_opening(flows, explained)
+        # A trade between own owners is resolved at its sale event; the buy
+        # event (rank 10, before the sale's 50 at the same second) is skipped.
+        transfers, unmatched = internal_trade_pairs(self.ledger)
+        transferred_buys = {buy.key for buy in transfers.values()}
         for ev in events:
             when, kind, obj = ev[0], ev[6], ev[7]
             if kind == KIND_BUY:
-                self._on_buy(obj)
+                if obj.key not in transferred_buys:
+                    self._on_buy(obj)
             elif kind == KIND_CONTRACT_BUY:
                 self._on_contract_buy(obj)
             elif kind == KIND_CONTRACT_GIVE:
                 self._on_contract_give(obj)
             elif kind == KIND_SELL:
-                self._on_sell(obj)
+                buy = transfers.get(obj.key)
+                if buy is not None:
+                    self._on_transfer(obj, buy)
+                else:
+                    self._on_sell(obj, internal_unmatched=obj.key in unmatched)
             elif kind == KIND_JOB_START:
                 self._on_job_start(obj)
             elif kind == KIND_JOB_CANCEL:
@@ -2492,6 +2742,13 @@ class _Costing:
                 self._on_job_end(obj, when)
             elif kind in (KIND_REPROCESS, KIND_COMPRESS):
                 self._on_reprocess(obj)
+        for (ref_type, owner), amount in sorted(self._fee_income_ignored.items()):
+            self.warn(f"fee_income_ignored: {ref_type} {owner} {_isk_amount(amount)}")
+        for type_id in sorted(self.bpc_runs_estimated):
+            self.warn(
+                f"bpc_run_estimated: type {type_id} {self.bpc_runs_estimated[type_id]:g} runs "
+                f"valued at copy/invention cost"
+            )
         return CostingResult(
             t0=self.t0,
             layers=[l for l in self.all_layers if l.quantity_left > _EPS],

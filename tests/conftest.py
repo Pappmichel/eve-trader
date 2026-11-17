@@ -17,6 +17,20 @@ runs that need it - see tests/pg_helpers.py for the fixture itself.
 """
 from __future__ import annotations
 
+import os
+
+# The app has no built-in database credentials. Tests get a local-dev DSN
+# before anything imports eve_trader (storage reads it at import time); an
+# EVE_TRADER_PG_DSN already in the environment wins. tests/pg_helpers.py sets
+# the app role's password to match whichever DSN is in effect.
+os.environ.setdefault(
+    "EVE_TRADER_PG_DSN",
+    "host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=app_devpassword",
+)
+
+# Fixed key for the stored-token encryption (never a real key).
+os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "dGVzdC10b2tlbi1rZXktMDAwMDAwMDAwMDAwMDAwMDA=")
+
 import pytest
 
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
@@ -49,6 +63,14 @@ def _access_gate_test_mode(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_token_key_cache():
+    from eve_trader import token_crypto
+    token_crypto.reset_key_cache()
+    yield
+    token_crypto.reset_key_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):
     """Fails any test that sends a real HTTP request through `requests`
     (ESI, Goonmetrics, the SDE download, Discord). An unmocked ESI call used
@@ -77,7 +99,10 @@ def _mineral_mip_in_process(monkeypatch):
     brute-force optimizer tests take minutes. test_mineral_supply_lp.py puts
     the real worker back for its own tests."""
     from eve_trader import mineral_supply_lp as supply
-    monkeypatch.setattr(supply, "_run_mip", lambda kwargs: supply.linprog(**kwargs).x)
+    def in_process(kwargs):
+        result = supply.linprog(**kwargs)
+        return None if result.x is None else (result.x, int(result.status))
+    monkeypatch.setattr(supply, "_run_mip", in_process)
 
 
 @pytest.fixture(autouse=True)

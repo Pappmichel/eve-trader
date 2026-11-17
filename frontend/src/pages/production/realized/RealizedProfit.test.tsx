@@ -289,7 +289,7 @@ describe('RealizedProfit', () => {
       groups: [
         {
           kind: 'archive_gap', count: 1, items: [{
-            owner_type: 'corporation', owner_id: 98723738, owner_name: 'RichlTech',
+            owner_type: 'corporation', owner_id: 98000001, owner_name: 'Example Corp',
             data_kind: 'wallet_journal', gap_start: '2026-10-01T00:00:00Z', gap_end: '2026-10-02T00:00:00Z',
           }],
         },
@@ -304,10 +304,10 @@ describe('RealizedProfit', () => {
     renderPage()
     await screen.findByText('Cost of goods sold')
     await user.click(screen.getByRole('tab', { name: 'Warnings' }))
-    expect(await screen.findByText('Owner: RichlTech')).toBeInTheDocument()
+    expect(await screen.findByText('Owner: Example Corp')).toBeInTheDocument()
     expect(screen.getByText('Data: wallet journal')).toBeInTheDocument()
     expect(screen.getByText('Tritanium is also bought on the market')).toBeInTheDocument()
-    expect(screen.queryByText(/98723738/)).toBeNull()
+    expect(screen.queryByText(/98000001/)).toBeNull()
     expect(screen.queryByText(/type 34/)).toBeNull()
   })
 

@@ -43,9 +43,12 @@ from typing import Iterable, Optional
 
 import pandas as pd
 from dotenv import load_dotenv
+import psycopg
+import psycopg.conninfo
 from psycopg_pool import ConnectionPool
 from psycopg.types.json import Jsonb
 
+from . import token_crypto
 from .models import Candidate, NewCandidateResult, ShortlistItem, ShortlistRow
 
 # PG_DSN below reads EVE_TRADER_PG_DSN via os.getenv() at module-import
@@ -59,13 +62,23 @@ from .models import Candidate, NewCandidateResult, ShortlistItem, ShortlistRow
 # load_dotenv() is safe to call more than once per process.
 load_dotenv()
 
-# Dev default matches the local `eve-trader-pg` Docker container (see
-# docs/MULTI_TENANT_PLAN.md's Phase 0/1) - override via env var for any
-# other environment. Never a hardcoded production credential.
-PG_DSN = os.getenv(
-    "EVE_TRADER_PG_DSN",
-    "host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=app_devpassword",
-)
+# No default: a credential in source is a credential in every checkout. The
+# variable is read here, after load_dotenv(), so a deployment's .env counts.
+# An empty value keeps the module importable (CLI --help, tests that never
+# touch the database); _get_pool() refuses to connect without it.
+PG_DSN = os.getenv("EVE_TRADER_PG_DSN", "")
+
+# Per-statement ceiling for app connections, in milliseconds (0 = off). Applied
+# as a connection option unless the DSN carries its own `options`; background
+# jobs and the CLI lift it per transaction through long_running().
+def _statement_timeout_ms() -> int:
+    raw = os.getenv("EVE_TRADER_STATEMENT_TIMEOUT_MS", "").strip()
+    if not raw:
+        return 60000
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 60000
 
 # The fixed tenant used when there's no real tenant-resolution to defer to -
 # access-gate disabled (this app's default: trusted single operator, no
@@ -79,11 +92,65 @@ _tenant_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("
 
 _pool: Optional[ConnectionPool] = None
 
+# True while code runs that may legitimately hold one statement longer than the
+# request-time statement timeout (background jobs, rebuilds, the CLI). A plain
+# ContextVar, not registered as thread-local: with_current_tenant and
+# copy_context carry it into worker threads on purpose.
+_long_running_var: contextvars.ContextVar[bool] = contextvars.ContextVar("long_running", default=False)
+
+
+@contextmanager
+def long_running():
+    """Lifts the statement timeout for every transaction opened inside the
+    block (and in threads that inherit its context). Use it only at the entry
+    point of a background job or operator command, never in a request."""
+    token = _long_running_var.set(True)
+    try:
+        yield
+    finally:
+        _long_running_var.reset(token)
+
+
+def enable_long_running() -> None:
+    """Turns long_running on for the rest of this context, with no block to
+    leave: for process-wide entry points such as the CLI."""
+    _long_running_var.set(True)
+
+
+def _lift_statement_timeout(cur) -> None:
+    """Called right after a transaction's own first statements: the timeout
+    is switched off for this transaction only (set_config is_local), so the
+    pooled connection goes back to the default."""
+    if _long_running_var.get():
+        cur.execute("SELECT set_config('statement_timeout', '0', true)")
+
+
+def _pool_kwargs(dsn: str) -> dict:
+    """Connection options for the pool: the statement timeout, unless the DSN
+    sets `options` itself (then the operator's value stands)."""
+    timeout_ms = _statement_timeout_ms()
+    if timeout_ms <= 0:
+        return {}
+    try:
+        if psycopg.conninfo.conninfo_to_dict(dsn).get("options"):
+            return {}
+    except psycopg.ProgrammingError:
+        return {}
+    return {"options": f"-c statement_timeout={timeout_ms}"}
+
 
 def _get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(PG_DSN, min_size=1, max_size=10, open=True)
+        if not PG_DSN:
+            raise RuntimeError(
+                "EVE_TRADER_PG_DSN is not set. Put the app role's connection "
+                "string in .env or the environment (see .env.example); the "
+                "application has no built-in database credentials."
+            )
+        _pool = ConnectionPool(
+            PG_DSN, min_size=1, max_size=10, open=True, kwargs=_pool_kwargs(PG_DSN)
+        )
     return _pool
 
 
@@ -133,6 +200,17 @@ def get_current_tenant() -> Optional[str]:
     return _tenant_id_var.get()
 
 
+_thread_local_contextvars: list[tuple[contextvars.ContextVar, object]] = []
+
+
+def register_thread_local_contextvar(var: contextvars.ContextVar, default=None) -> None:
+    """Mark `var` as per-thread state: `with_current_tenant` workers start with
+    `default` instead of the caller's value (e.g. a per-run memo or a response
+    collector that two threads must never share)."""
+    if all(v is not var for v, _d in _thread_local_contextvars):
+        _thread_local_contextvars.append((var, default))
+
+
 def with_current_tenant(fn):
     """Wraps fn so that, no matter which thread later executes it, it runs
     with the tenant_id ambient on the *calling* thread right now -
@@ -146,12 +224,21 @@ def with_current_tenant(fn):
     an expired token mid-fetch) gets parallelized via ThreadPoolExecutor -
     see esi_client.py's _get_all_pages and production/esi_sync.py's
     sync_esi."""
-    tenant_id = _tenant_id_var.get()
+    # Snapshot the whole context (tenant id plus the per-tenant config
+    # ContextVars) on the calling thread. Each call runs in its own copy:
+    # one Context cannot be entered by two threads at once. Variables
+    # registered with register_thread_local_contextvar are reset to their
+    # default inside that copy - they belong to the calling thread only.
+    ctx = contextvars.copy_context()
+
+    def _run_in_copy(*args, **kwargs):
+        for var, default in _thread_local_contextvars:
+            var.set(default)
+        return fn(*args, **kwargs)
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with tenant_context(tenant_id):
-            return fn(*args, **kwargs)
+        return ctx.copy().run(_run_in_copy, *args, **kwargs)
     return wrapper
 
 
@@ -286,6 +373,7 @@ def connect_own_transaction():
             # call, takes a normal parameter, and with is_local=true is the
             # functional equivalent of SET LOCAL (reverts at COMMIT/ROLLBACK).
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            _lift_statement_timeout(cur)
         try:
             yield _TranslatingConnection(conn)
             conn.commit()
@@ -295,7 +383,7 @@ def connect_own_transaction():
 
 
 @contextmanager
-def batch_session():
+def batch_session(isolation: Optional[str] = None):
     """Opens ONE pooled connection and makes every connect() call on this
     thread reuse it until this `with` block exits, instead of each one
     checking out its own - see connect()'s docstring for the pattern this
@@ -313,7 +401,19 @@ def batch_session():
     (reuses the outer batch). A nested call under a *different* ambient
     tenant opens its own connection (and holds two pool connections until
     it exits), then restores the outer batch - do not loop over tenants
-    inside one batch."""
+    inside one batch.
+
+    `isolation="repeatable read"` runs the whole batch on one snapshot: a
+    commit by another connection mid-batch is not visible inside it (the
+    default, READ COMMITTED, sees it on the next statement). It is set as the
+    transaction's first statement, so it ends with the batch and the pooled
+    connection goes back at its default. Only for read blocks: a write that
+    collides with a concurrent update of the same row fails with a
+    serialization error. A nested batch of the same tenant ignores the
+    argument but raises RuntimeError when it asks for repeatable read and the
+    outer batch is not one - a silent downgrade would void the guarantee."""
+    if isolation is not None and isolation != "repeatable read":
+        raise ValueError(f"unsupported isolation level: {isolation!r}")
     tenant_id = _tenant_id_var.get()
     if tenant_id is None:
         raise RuntimeError(
@@ -322,16 +422,26 @@ def batch_session():
         )
     active = getattr(_batch_local, "conn", None)
     if active is not None and getattr(_batch_local, "tenant_id", None) == tenant_id:
+        if isolation is not None and getattr(_batch_local, "isolation", None) != isolation:
+            raise RuntimeError(
+                f"batch_session(isolation={isolation!r}) nested in a batch without that isolation level"
+            )
         yield  # same-tenant nested batch - reuse outer, nothing to set up
         return
     outer_conn = active
     outer_tenant = getattr(_batch_local, "tenant_id", None)
+    outer_isolation = getattr(_batch_local, "isolation", None)
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            if isolation is not None:
+                # Must be the transaction's first statement.
+                cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            _lift_statement_timeout(cur)
         _batch_local.conn = _TranslatingConnection(conn)
         _batch_local.tenant_id = tenant_id
+        _batch_local.isolation = isolation
         try:
             yield
             conn.commit()
@@ -342,9 +452,11 @@ def batch_session():
             if outer_conn is not None:
                 _batch_local.conn = outer_conn
                 _batch_local.tenant_id = outer_tenant
+                _batch_local.isolation = outer_isolation
             else:
                 _batch_local.conn = None
                 _batch_local.tenant_id = None
+                _batch_local.isolation = None
 
 
 @contextmanager
@@ -404,6 +516,9 @@ def connect_unscoped(timeout: Optional[float] = None):
     connect()'s own check, just enforced by Postgres instead of Python."""
     pool = _get_pool()
     with pool.connection(timeout=timeout) as conn:
+        if _long_running_var.get():
+            with conn.cursor() as cur:
+                _lift_statement_timeout(cur)
         try:
             yield _TranslatingConnection(conn)
             conn.commit()
@@ -440,6 +555,31 @@ def _upsert_character_session_revocation(conn, character_id: int) -> None:
         "character_session_revocations.sessions_valid_after, excluded.sessions_valid_after)",
         (character_id,),
     )
+
+
+def record_owner_hash(character_id: int, owner_hash: str) -> Optional[str]:
+    """Stores the SSO owner hash of a registered character when none is stored
+    yet; an existing value is never overwritten. Returns the value stored before
+    this call (None or empty when it was unset), so the caller can tell a changed
+    hash from a first one. Unscoped: the registry is tenant-independent."""
+    if not owner_hash:
+        return None
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT owner_hash FROM tenant_registry_entries "
+            "WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        previous = row[0]
+        if not previous:
+            conn.execute(
+                "UPDATE tenant_registry_entries SET owner_hash = ? "
+                "WHERE entry_type = 'character' AND entry_id = ? AND (owner_hash IS NULL OR owner_hash = '')",
+                (owner_hash, character_id),
+            )
+        return previous
 
 
 def add_tenant_registry_entry(tenant_id: str, character_id: int, character_name: Optional[str] = None) -> None:
@@ -514,6 +654,97 @@ def list_tenants() -> list[tuple]:
     (`admin.do_list_tenants`)."""
     with connect_unscoped() as conn:
         return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
+
+
+_SAFE_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def tenant_data_tables() -> list[tuple[str, bool]]:
+    """`(table, row_level_security)` for every base table in the public schema
+    with a `tenant_id` column, found from the catalog so a table added later
+    is covered without a list to maintain. `tenants` itself is not included
+    (its key is the tenant id; purge deletes that row last)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT c.table_name, pc.relrowsecurity "
+            "FROM information_schema.columns c "
+            "JOIN information_schema.tables t ON t.table_schema = c.table_schema "
+            "  AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE' "
+            "JOIN pg_class pc ON pc.relname = c.table_name "
+            "  AND pc.relnamespace = 'public'::regnamespace "
+            "WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id' "
+            "AND c.table_name <> 'tenants' ORDER BY c.table_name"
+        ).fetchall()
+    out = []
+    for name, rls in rows:
+        if not _SAFE_TABLE_NAME.match(name):
+            raise RuntimeError("unexpected table name in catalog")
+        out.append((name, bool(rls)))
+    return out
+
+
+def count_tenant_rows(tenant_id: str) -> dict[str, int]:
+    """Rows per table (non-zero only) that belong to `tenant_id`."""
+    counts: dict[str, int] = {}
+    tables = tenant_data_tables()
+    with tenant_context(tenant_id):
+        with batch_session():
+            with connect() as conn:
+                for name, rls in tables:
+                    if rls:
+                        n = conn.execute(
+                            f'SELECT count(*) FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                        ).fetchone()[0]
+                        if n:
+                            counts[name] = n
+    with connect_unscoped() as conn:
+        for name, rls in tables:
+            if not rls:
+                n = conn.execute(
+                    f'SELECT count(*) FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                ).fetchone()[0]
+                if n:
+                    counts[name] = n
+    return counts
+
+
+def purge_tenant_rows(tenant_id: str) -> dict[str, int]:
+    """Deletes every row of `tenant_id` from every tenant table, then the
+    tenant row itself. RLS tables go in one transaction, the unscoped ones and
+    the `tenants` row after it, so an interrupted run is finished by running
+    it again. Returns rows deleted per table."""
+    deleted: dict[str, int] = {}
+    tables = tenant_data_tables()
+    with long_running():
+        with tenant_context(tenant_id):
+            with batch_session():
+                with connect() as conn:
+                    for name, rls in tables:
+                        if rls:
+                            n = conn.execute(
+                                f'DELETE FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                            ).rowcount
+                            if n:
+                                deleted[name] = n
+        with connect_unscoped() as conn:
+            for name, rls in tables:
+                if not rls:
+                    n = conn.execute(
+                        f'DELETE FROM "{name}" WHERE tenant_id = ?::uuid', (tenant_id,)
+                    ).rowcount
+                    if n:
+                        deleted[name] = n
+            n = conn.execute("DELETE FROM tenants WHERE tenant_id = ?::uuid", (tenant_id,)).rowcount
+            if n:
+                deleted["tenants"] = n
+    return deleted
+
+
+def tenant_registry_entry_count(tenant_id: str) -> int:
+    with connect_unscoped() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM tenant_registry_entries WHERE tenant_id = ?::uuid", (tenant_id,)
+        ).fetchone()[0]
 
 
 def touch_tenant_active(tenant_id: str) -> None:
@@ -722,6 +953,21 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[Session
         access_suspended=bool(first[5]),
         allowlist_active=bool(first[6]),
     )
+
+
+def latest_session_revocation(tenant_id: str) -> Optional[datetime]:
+    """The newest logout/revocation of any character registered to the tenant
+    (largest `sessions_valid_after` of the registry rows and the persistent
+    revocation watermarks), or None when nobody ever logged out."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT GREATEST(MAX(e.sessions_valid_after), MAX(r.sessions_valid_after)) "
+            "FROM tenant_registry_entries e "
+            "LEFT JOIN character_session_revocations r ON r.character_id = e.entry_id "
+            "WHERE e.entry_type = 'character' AND e.tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+    return row[0] if row else None
 
 
 def revoke_sessions_for_character(character_id: int) -> None:
@@ -1071,11 +1317,16 @@ def update_registry_affiliation(character_id: int, corporation_id: Optional[int]
 
 
 # --------------------------------------------------------------- error log
-# Caps unbounded growth (nothing else ever deletes from error_log - see
-# test_storage_error_log.py's own comment) - same "prune down to a fixed
-# count" shape as backup.py's MAX_BACKUPS, just row-count-based here since
-# there's no natural per-item identity to dedupe on beyond raw volume.
+# Caps unbounded growth - same "prune down to a fixed count" shape as
+# backup.py's MAX_BACKUPS, just row-count-based here since there's no
+# natural per-item identity to dedupe on beyond raw volume. The cap is per
+# tenant (rows without a tenant form their own group) so one noisy tenant
+# cannot push out everyone else's reports; the global cap is the backstop.
 MAX_ERROR_LOG_ROWS = 5000
+MAX_ERROR_LOG_ROWS_PER_TENANT = 500
+# A tenant is pruned only once it is this far over its cap, so most inserts
+# cost one small COUNT and no DELETE.
+ERROR_LOG_PRUNE_SLACK = 50
 
 
 def log_error(source: str, message: str, detail: Optional[str], path: Optional[str]) -> None:
@@ -1087,17 +1338,35 @@ def log_error(source: str, message: str, detail: Optional[str], path: Optional[s
     tenant's request this happened during) as a plain informational column,
     not an RLS-scoping one - get_current_tenant() returns None outside any
     request context (shouldn't happen in practice, but never raise over a
-    missing tenant while trying to log an unrelated error)."""
+    missing tenant while trying to log an unrelated error).
+
+    Retention: keeps the newest MAX_ERROR_LOG_ROWS_PER_TENANT rows of this
+    tenant (NULL tenant = its own group), then the newest MAX_ERROR_LOG_ROWS
+    overall."""
+    tenant_id = get_current_tenant()
     with connect_unscoped() as conn:
         conn.execute(
             "INSERT INTO error_log (tenant_id, source, message, detail, path) VALUES (?, ?, ?, ?, ?)",
-            (get_current_tenant(), source, message, detail, path),
+            (tenant_id, source, message, detail, path),
         )
-        conn.execute(
-            "DELETE FROM error_log WHERE id NOT IN "
-            "(SELECT id FROM error_log ORDER BY created_at DESC LIMIT ?)",
-            (MAX_ERROR_LOG_ROWS,),
-        )
+        (tenant_count,) = conn.execute(
+            "SELECT count(*) FROM error_log WHERE tenant_id IS NOT DISTINCT FROM ?::uuid",
+            (tenant_id,),
+        ).fetchone()
+        if tenant_count > MAX_ERROR_LOG_ROWS_PER_TENANT + ERROR_LOG_PRUNE_SLACK:
+            conn.execute(
+                "DELETE FROM error_log WHERE tenant_id IS NOT DISTINCT FROM ?::uuid AND id NOT IN "
+                "(SELECT id FROM error_log WHERE tenant_id IS NOT DISTINCT FROM ?::uuid "
+                "ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (tenant_id, tenant_id, MAX_ERROR_LOG_ROWS_PER_TENANT),
+            )
+        (total,) = conn.execute("SELECT count(*) FROM error_log").fetchone()
+        if total > MAX_ERROR_LOG_ROWS:
+            conn.execute(
+                "DELETE FROM error_log WHERE id NOT IN "
+                "(SELECT id FROM error_log ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (MAX_ERROR_LOG_ROWS,),
+            )
 
 
 def list_errors(limit: int = 200) -> list[dict]:
@@ -1147,7 +1416,9 @@ def load_tenant_settings(scope: str) -> dict:
 # -------------------------------------------------------------- tenant tokens
 def save_tenant_token(role: str, record: dict) -> None:
     """Upserts one OAuth token record (see auth.py's TokenRecord/asdict) for
-    `role` under the current tenant.
+    `role` under the current tenant. The row stores the record encrypted
+    (`token_crypto`); a missing key raises `TokenKeyError` before anything is
+    written.
 
     Commits on its own connection, never inside a caller's batch_session()
     (confirmed real incident 2026-10-03): a token refreshed during an ESI
@@ -1159,11 +1430,15 @@ def save_tenant_token(role: str, record: dict) -> None:
     only by idle_in_transaction_session_timeout after 5 minutes. A batch
     rollback also discarded the new record, and with it EVE's rotated
     refresh token."""
+    tenant_id = _tenant_id_var.get()
+    if tenant_id is None:
+        raise RuntimeError("save_tenant_token called with no current tenant set")
+    stored = token_crypto.encrypt_record(tenant_id, role, record)
     with connect_own_transaction() as conn:
         conn.execute(
             "INSERT INTO tenant_tokens (role, record) VALUES (?, ?) "
             "ON CONFLICT(tenant_id, role) DO UPDATE SET record = excluded.record",
-            (role, Jsonb(record)),
+            (role, Jsonb(stored)),
         )
 
 
@@ -1172,12 +1447,37 @@ def load_all_tenant_tokens() -> dict[str, dict]:
     tenant - TokenManager always operates on its whole store at once (same
     "read everything in one go" shape its old file-based _load() had), not
     a single role in isolation. Ordered by role so a later listing sees a
-    stable first-seen order."""
+    stable first-seen order.
+
+    Fails closed: a plaintext, undecryptable or misplaced row raises
+    `token_crypto.TokenCryptoError` instead of being skipped (a skipped token
+    looks like "never authorized" and the user's re-login would overwrite
+    the row)."""
+    rows = tenant_token_rows()
+    return {
+        role: token_crypto.decrypt_record(tenant_id, role, record)
+        for role, record, tenant_id in rows
+    }
+
+
+def tenant_token_rows() -> list[tuple[str, object, str]]:
+    """Raw `(role, stored_value, tenant_id)` rows of the current tenant, still
+    encrypted. For `token_maintenance` and load_all_tenant_tokens only."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT role, record FROM tenant_tokens ORDER BY role"
+            "SELECT role, record, tenant_id::text FROM tenant_tokens ORDER BY role"
         ).fetchall()
-    return {role: record for role, record in rows}
+    return [(role, record, tid) for role, record, tid in rows]
+
+
+def replace_tenant_token_row(role: str, old_value: object, new_value: dict) -> bool:
+    """Swaps one stored value only if the row still holds `old_value` (a
+    parallel refresh must not be overwritten). True when the row changed."""
+    with connect_own_transaction() as conn:
+        return conn.execute(
+            "UPDATE tenant_tokens SET record = ? WHERE role = ? AND record = ?",
+            (Jsonb(new_value), role, Jsonb(old_value)),
+        ).rowcount > 0
 
 
 def delete_tenant_token(role: str) -> None:
@@ -1185,6 +1485,14 @@ def delete_tenant_token(role: str) -> None:
     error, so callers never need to check existence first."""
     with connect() as conn:
         conn.execute("DELETE FROM tenant_tokens WHERE role = ?", (role,))
+
+
+def delete_all_tenant_tokens() -> int:
+    """Deletes every token row of the current tenant (committed on its own
+    connection so it is final before anything else happens). Returns the
+    number of rows removed."""
+    with connect_own_transaction() as conn:
+        return conn.execute("DELETE FROM tenant_tokens").rowcount
 
 
 # --------------------------------------------------------------------- writes
@@ -1630,6 +1938,25 @@ def set_sde_refresh_state(refreshed_at: str, dump_etag: Optional[str],
         )
 
 
+def set_sde_remote_check(remote_etag: str, checked_at: str) -> None:
+    """Records the remote dump's ETag seen by the daily freshness check job.
+    Updates the existing row only: before the first apply there is nothing
+    to compare the remote ETag with."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE sde_refresh_state SET remote_etag = ?, remote_checked_at = ? WHERE id = 1",
+            (remote_etag, checked_at),
+        )
+
+
+def get_sde_remote_check() -> Optional[tuple[Optional[str], Optional[str]]]:
+    """(remote_etag, remote_checked_at) stored by the freshness check job, or
+    None while the SDE has never been applied."""
+    with connect() as conn:
+        row = conn.execute("SELECT remote_etag, remote_checked_at FROM sde_refresh_state WHERE id = 1").fetchone()
+    return (row[0], row[1]) if row else None
+
+
 def get_sde_trading_inputs_changed_at() -> Optional[str]:
     """When an SDE apply last changed data Trading's candidate universe is
     built from (see production/sde.py's apply_sde), or None if never."""
@@ -2062,14 +2389,22 @@ def apply_manual_stock_paste(location_id: int, rows: dict[int, float], mode: str
                 )
 
 
-def load_manual_stock() -> dict[int, float]:
-    """Signature unchanged (decision 16) - totals per type across every
-    location, so every existing caller (_current_stock and friends in
-    production/engine.py) keeps working without knowing locations exist at
-    all. See load_manual_stock_entries for the per-location breakdown and
-    manual_stock_at_location for a single (type, location) lookup."""
+def load_manual_stock(exclude_location_ids: Optional[list[int]] = None) -> dict[int, float]:
+    """Totals per type across every location (decision 16), so every
+    existing caller (_current_stock and friends in production/engine.py)
+    keeps working without knowing locations exist at all. See
+    load_manual_stock_entries for the per-location breakdown and
+    manual_stock_at_location for a single (type, location) lookup.
+
+    `exclude_location_ids`: Production's excluded systems (None = every
+    location). `location_id = 0` (no location) is in no system and stays."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
+    where = f"WHERE TRUE{loc_clause} " if loc_clause else ""
     with connect() as conn:
-        rows = conn.execute("SELECT type_id, SUM(count) FROM manual_stock GROUP BY type_id").fetchall()
+        rows = conn.execute(
+            f"SELECT type_id, SUM(count) FROM manual_stock {where}GROUP BY type_id",
+            loc_params,
+        ).fetchall()
     return {r[0]: r[1] for r in rows}
 
 
@@ -2204,27 +2539,33 @@ def load_manual_owned_blueprints() -> list[tuple]:
         ).fetchall()
 
 
-def manual_bpo_best_me_te(bp_type_id: int) -> Optional[tuple[int, int]]:
+def manual_bpo_best_me_te(bp_type_id: int,
+                          exclude_location_ids: Optional[list[int]] = None) -> Optional[tuple[int, int]]:
     """Best (highest) ME/TE across every manually-registered BPO of
     `bp_type_id` - same "originals only" restriction as storage.
     get_owned_bpo_best_me_te's own ESI-side counterpart."""
-    return manual_bpo_best_me_te_bulk([bp_type_id]).get(bp_type_id)
+    return manual_bpo_best_me_te_bulk(
+        [bp_type_id], exclude_location_ids=exclude_location_ids).get(bp_type_id)
 
 
-def manual_bpo_best_me_te_bulk(bp_type_ids: list[int]) -> dict[int, Optional[tuple[int, int]]]:
+def manual_bpo_best_me_te_bulk(bp_type_ids: list[int],
+                               exclude_location_ids: Optional[list[int]] = None,
+                               ) -> dict[int, Optional[tuple[int, int]]]:
     """Best ME/TE per manually-registered BPO type_id. Missing ids map to
-    None. Empty input is `{}` and opens no connection."""
+    None. Empty input is `{}` and opens no connection.
+    `exclude_location_ids`: Production's excluded systems (None = all)."""
     unique = list(dict.fromkeys(bp_type_ids))
     if not unique:
         return {}
     out: dict[int, Optional[tuple[int, int]]] = {tid: None for tid in unique}
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
     with connect() as conn:
         rows = conn.execute(
             "SELECT blueprint_type_id, MAX(material_efficiency), MAX(time_efficiency) "
             "FROM manual_owned_blueprints "
-            "WHERE blueprint_type_id = ANY(?) AND is_original = ? "
+            f"WHERE blueprint_type_id = ANY(?) AND is_original = ?{loc_clause} "
             "GROUP BY blueprint_type_id",
-            (list(unique), True),
+            (list(unique), True, *loc_params),
         ).fetchall()
     for tid, me, te in rows:
         if tid in out and me is not None and te is not None:
@@ -2232,16 +2573,19 @@ def manual_bpo_best_me_te_bulk(bp_type_ids: list[int]) -> dict[int, Optional[tup
     return out
 
 
-def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None) -> float:
+def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None,
+                    exclude_location_ids: Optional[list[int]] = None) -> float:
     """SUM(runs * quantity) across manually-registered BPCs of `bp_type_id`
     - `location_id=None` sums every location (mirrors storage.
-    available_blueprint_copies' own None branch)."""
+    available_blueprint_copies' own None branch), minus
+    `exclude_location_ids` (Production's excluded systems)."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
     with connect() as conn:
         if location_id is None:
             row = conn.execute(
                 "SELECT SUM(runs * quantity) FROM manual_owned_blueprints "
-                "WHERE blueprint_type_id = ? AND is_original = ?",
-                (bp_type_id, False),
+                f"WHERE blueprint_type_id = ? AND is_original = ?{loc_clause}",
+                (bp_type_id, False, *loc_params),
             ).fetchone()
         else:
             row = conn.execute(
@@ -2311,27 +2655,32 @@ def load_manual_industry_jobs() -> list[tuple]:
         ).fetchall()
 
 
-def manual_incoming_qty(product_type_id: int) -> float:
+def manual_incoming_qty(product_type_id: int,
+                        exclude_location_ids: Optional[list[int]] = None) -> float:
     """SUM(quantity) of every manual job producing `product_type_id` - added
     directly to production/engine.py's _current_stock, not multiplied by a
     product quantity (decision 2), since `quantity` here is already stored
     in finished-product units (see insert_manual_industry_job's own
     docstring/the table's own column comment)."""
-    return manual_incoming_qty_bulk([product_type_id]).get(product_type_id, 0.0)
+    return manual_incoming_qty_bulk(
+        [product_type_id], exclude_location_ids=exclude_location_ids).get(product_type_id, 0.0)
 
 
-def manual_incoming_qty_bulk(product_type_ids: list[int]) -> dict[int, float]:
+def manual_incoming_qty_bulk(product_type_ids: list[int],
+                             exclude_location_ids: Optional[list[int]] = None) -> dict[int, float]:
     """One GROUP BY for every requested product_type_id. Missing ids map to
-    0.0. Empty input is `{}` and opens no connection."""
+    0.0. Empty input is `{}` and opens no connection.
+    `exclude_location_ids`: Production's excluded systems (None = all)."""
     unique = list(dict.fromkeys(product_type_ids))
     if not unique:
         return {}
     totals = {tid: 0.0 for tid in unique}
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "location_id")
     with connect() as conn:
         rows = conn.execute(
             "SELECT product_type_id, COALESCE(SUM(quantity), 0) FROM manual_industry_jobs "
-            "WHERE product_type_id = ANY(?) GROUP BY product_type_id",
-            (list(unique),),
+            f"WHERE product_type_id = ANY(?){loc_clause} GROUP BY product_type_id",
+            (list(unique), *loc_params),
         ).fetchall()
     for tid, qty in rows:
         if tid in totals:
@@ -2744,31 +3093,98 @@ def delete_category_cost_index_override(category: str) -> None:
 
 def load_category_facilities() -> dict[str, dict]:
     """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
-    facility_tax_rate}} - each value None when not set (see docs/job_category_
-    cost_index_overrides_schema.sql's job_category_facilities)."""
+    te_rig_tier_basic, te_rig_tier_advanced, facility_tax_rate}} - each value
+    None when not set (see docs/job_category_cost_index_overrides_schema.sql's
+    job_category_facilities)."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate "
-            "FROM job_category_facilities"
+            "SELECT category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate, "
+            "te_rig_tier_basic, te_rig_tier_advanced FROM job_category_facilities"
         ).fetchall()
     return {
         r[0]: {"structure_type": r[1], "rig_tier_basic": r[2], "rig_tier_advanced": r[3],
-               "facility_tax_rate": r[4]}
+               "facility_tax_rate": r[4], "te_rig_tier_basic": r[5], "te_rig_tier_advanced": r[6]}
         for r in rows
     }
 
 
+def load_rig_sheet() -> Optional[dict]:
+    """The tenant's stored rig sheet state, or None: {source_key, fetched_at
+    (datetime or None), systems, duplicates, last_error, last_error_at}."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT source_key, fetched_at, systems, duplicates, last_error, last_error_at "
+            "FROM production_rig_sheet"
+        ).fetchone()
+    if row is None:
+        return None
+    return {"source_key": row[0], "fetched_at": row[1], "systems": row[2] or {},
+            "duplicates": row[3] or [], "last_error": row[4], "last_error_at": row[5]}
+
+
+def save_rig_sheet_success(source_key: str, systems: dict, duplicates: list) -> None:
+    """Replaces the stored state with a freshly parsed sheet and clears the error."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO production_rig_sheet (source_key, fetched_at, systems, duplicates, last_error, "
+            "last_error_at) VALUES (?, now(), ?, ?, NULL, NULL) "
+            "ON CONFLICT(tenant_id) DO UPDATE SET source_key=excluded.source_key, fetched_at=excluded.fetched_at, "
+            "systems=excluded.systems, duplicates=excluded.duplicates, last_error=NULL, last_error_at=NULL",
+            (source_key, Jsonb(systems), Jsonb(duplicates)),
+        )
+
+
+def save_rig_sheet_error(source_key: str, error: str) -> None:
+    """Records a failed fetch. The stored rows stay when they came from the
+    same sheet; rows of another sheet are dropped, they must not be read."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO production_rig_sheet (source_key, last_error, last_error_at) VALUES (?, ?, now()) "
+            "ON CONFLICT(tenant_id) DO UPDATE SET "
+            "fetched_at = CASE WHEN production_rig_sheet.source_key = excluded.source_key "
+            "THEN production_rig_sheet.fetched_at ELSE NULL END, "
+            "systems = CASE WHEN production_rig_sheet.source_key = excluded.source_key "
+            "THEN production_rig_sheet.systems ELSE '{}'::jsonb END, "
+            "duplicates = CASE WHEN production_rig_sheet.source_key = excluded.source_key "
+            "THEN production_rig_sheet.duplicates ELSE '[]'::jsonb END, "
+            "source_key = excluded.source_key, last_error = excluded.last_error, "
+            "last_error_at = excluded.last_error_at",
+            (source_key, error),
+        )
+
+
+def delete_rig_sheet() -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM production_rig_sheet")
+
+
+def get_system_name(system_id: Optional[int]) -> Optional[str]:
+    """Solar system name from the local SDE cache."""
+    if system_id is None:
+        return None
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT solar_system_name FROM sde_solar_systems WHERE solar_system_id = ?", (system_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
 def upsert_category_facility(category: str, structure_type: Optional[str],
                              rig_tier_basic: Optional[str], rig_tier_advanced: Optional[str],
-                             facility_tax_rate: Optional[float] = None) -> None:
+                             facility_tax_rate: Optional[float] = None,
+                             te_rig_tier_basic: Optional[str] = None,
+                             te_rig_tier_advanced: Optional[str] = None) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO job_category_facilities "
-            "(category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate) "
-            "VALUES (?,?,?,?,?) ON CONFLICT(tenant_id, category) DO UPDATE SET "
+            "(category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate, "
+            "te_rig_tier_basic, te_rig_tier_advanced) "
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(tenant_id, category) DO UPDATE SET "
             "structure_type=excluded.structure_type, rig_tier_basic=excluded.rig_tier_basic, "
-            "rig_tier_advanced=excluded.rig_tier_advanced, facility_tax_rate=excluded.facility_tax_rate",
-            (category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate),
+            "rig_tier_advanced=excluded.rig_tier_advanced, facility_tax_rate=excluded.facility_tax_rate, "
+            "te_rig_tier_basic=excluded.te_rig_tier_basic, te_rig_tier_advanced=excluded.te_rig_tier_advanced",
+            (category, structure_type, rig_tier_basic, rig_tier_advanced, facility_tax_rate,
+             te_rig_tier_basic, te_rig_tier_advanced),
         )
 
 
@@ -3377,6 +3793,19 @@ def replace_assets(
     )
 
 
+def count_owner_snapshot_rows(table: str, owner_id: int) -> int:
+    """Rows currently stored for one owner in an asset or blueprint snapshot
+    table (rows with the owner id only, legacy NULL-id rows are not counted)."""
+    assert table in _ASSET_TABLES or table in _BP_TABLES
+    is_character = table in _CHAR_ASSET_TABLES or table in _CHAR_BP_TABLES
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {id_column} = ?", (owner_id,),
+        ).fetchone()
+    return int(row[0])
+
+
 def _replace_assets_one(
     table: str,
     rows: list[tuple],
@@ -3747,6 +4176,17 @@ def list_esi_freshness() -> list[tuple]:
     ]
 
 
+def list_esi_failure_counts() -> dict[tuple[str, int, str], int]:
+    """`{(owner_type, owner_id, data_kind): consecutive_failures}` for rows with
+    at least one transient failure in a row."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, consecutive_failures "
+            "FROM esi_freshness WHERE consecutive_failures > 0"
+        ).fetchall()
+    return {(r[0], int(r[1]), r[2]): int(r[3]) for r in rows}
+
+
 def list_esi_character_capabilities() -> list[tuple[int, str]]:
     with connect() as conn:
         rows = conn.execute(
@@ -3754,6 +4194,26 @@ def list_esi_character_capabilities() -> list[tuple[int, str]]:
             "ORDER BY character_id, capability_key"
         ).fetchall()
     return [(int(r[0]), r[1]) for r in rows]
+
+
+def mark_esi_character_removed(character_id: int) -> None:
+    """Remember that `character_id` was removed on the Characters page (its
+    sharing rows stay). Removing it again moves `removed_at` forward."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_removed_characters (character_id, removed_at) VALUES (?, now()) "
+            "ON CONFLICT (tenant_id, character_id) DO UPDATE SET removed_at = EXCLUDED.removed_at",
+            (int(character_id),),
+        )
+
+
+def list_esi_removed_characters() -> dict[int, object]:
+    """character_id -> removed_at for the current tenant."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT character_id, removed_at FROM esi_removed_characters ORDER BY character_id"
+        ).fetchall()
+    return {int(r[0]): r[1] for r in rows}
 
 
 def upsert_esi_character_capability(character_id: int, capability_key: str) -> None:
@@ -3783,8 +4243,11 @@ def upsert_esi_freshness(
     error: Optional[str] = None,
     now: Optional[str] = None,
     data_as_of: Optional[datetime] = None,
+    transient: bool = False,
 ) -> None:
-    """Per-(owner, kind) freshness (decision 5). Success advances
+    """Per-(owner, kind) freshness (decision 5). `transient` marks a failure
+    as a short-lived ESI problem: it adds one to `consecutive_failures`; any
+    other outcome resets that count to 0. Success advances
     `last_success_at` and clears `last_error`. Failure records `last_error`
     and leaves `last_success_at` unchanged so the age-limit clear still
     measures time since the last good fetch (decision 6).
@@ -3802,14 +4265,19 @@ def upsert_esi_freshness(
     with connect() as conn:
         conn.execute(
             "INSERT INTO esi_freshness "
-            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, data_as_of) "
-            "VALUES (?,?,?,?,?,?,?) "
+            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error, "
+            "data_as_of, consecutive_failures) "
+            "VALUES (?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
             "last_attempt_at = excluded.last_attempt_at, "
             "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
             "last_error = excluded.last_error, "
-            "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of)",
-            (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of),
+            "data_as_of = COALESCE(excluded.data_as_of, esi_freshness.data_as_of), "
+            "consecutive_failures = CASE WHEN ? THEN esi_freshness.consecutive_failures + 1 "
+            "ELSE 0 END",
+            (owner_type, owner_id, data_kind, last_success, ts, last_error, as_of,
+             1 if (transient and not success) else 0,
+             bool(transient and not success)),
         )
 
 
@@ -3829,7 +4297,7 @@ def record_esi_attempt(
             "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error) "
             "VALUES (?,?,?,NULL,?,NULL) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
-            "last_attempt_at = excluded.last_attempt_at",
+            "last_attempt_at = excluded.last_attempt_at, consecutive_failures = 0",
             (owner_type, owner_id, data_kind, ts),
         )
 
@@ -6045,13 +6513,16 @@ def started_job_inputs_after_assets(
 def delivered_inventions_after_blueprints(
         product_type_id: int,
         owner_character_ids: Optional[list[int]] = None,
-        owner_corporation_ids: Optional[list[int]] = None) -> float:
+        owner_corporation_ids: Optional[list[int]] = None,
+        exclude_location_ids: Optional[list[int]] = None) -> float:
     """Invented BPCs (successful runs) for `product_type_id` from invention
     jobs delivered after the owner's blueprint snapshot was generated - the
     blueprints kind is synced rarely, so the copies are missing there while
     the job already left the job snapshot. Same rule as
-    `delivered_job_outputs_after_assets`."""
+    `delivered_job_outputs_after_assets`. `exclude_location_ids` drops jobs
+    whose output location is in an excluded system."""
     owner_clause, owner_params = _ledger_owner_clause(owner_character_ids, owner_corporation_ids)
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "j.output_location_id")
     with connect() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(COALESCE(j.successful_runs, 0)), 0) "
@@ -6060,15 +6531,16 @@ def delivered_inventions_after_blueprints(
             "AND f.data_kind = 'blueprints' "
             "WHERE j.activity_id = 8 AND j.product_type_id = ? AND j.status = 'delivered' "
             "AND j.completed_date > COALESCE(f.data_as_of, f.last_success_at)"
-            f"{owner_clause}{_NOT_IN_JOB_SNAPSHOT}",
-            (product_type_id, *owner_params),
+            f"{owner_clause}{loc_clause}{_NOT_IN_JOB_SNAPSHOT}",
+            (product_type_id, *owner_params, *loc_params),
         ).fetchone()
     return float(row[0] or 0)
 
 
 def esi_expected_invention_successes(product_type_id: int, fallback_probability: float,
                                      owner_character_ids: Optional[list[int]] = None,
-                                     owner_corporation_ids: Optional[list[int]] = None) -> float:
+                                     owner_corporation_ids: Optional[list[int]] = None,
+                                     exclude_location_ids: Optional[list[int]] = None) -> float:
     """Expected number of successful inventions (= invented BPCs) still
     outstanding for `product_type_id` (the invented T2/T3 blueprint):
     SUM(runs x probability) over active/paused/ready invention jobs (activity
@@ -6077,8 +6549,10 @@ def esi_expected_invention_successes(product_type_id: int, fallback_probability:
     `fallback_probability`. Turning BPCs into BPC runs needs the decryptor,
     which ESI does not report - done in engine.py.
 
-    Same status set and owner filtering as esi_incoming_industry_qty."""
+    Same status set, owner and output-location filtering as
+    esi_incoming_industry_qty."""
     total = 0.0
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids, "output_location_id")
     with connect() as conn:
         for table in ("character_industry_jobs", "corp_industry_jobs"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
@@ -6086,8 +6560,8 @@ def esi_expected_invention_successes(product_type_id: int, fallback_probability:
                 f"SELECT COALESCE(SUM(runs * COALESCE(probability, ?)), 0) FROM {table} "
                 "WHERE product_type_id = ? AND activity_id = 8 "
                 "AND status IN ('active', 'paused', 'ready')"
-                f"{id_clause}",
-                (fallback_probability, product_type_id, *id_params),
+                f"{id_clause}{loc_clause}",
+                (fallback_probability, product_type_id, *id_params, *loc_params),
             ).fetchone()
             total += float(row[0])
     return total
@@ -6185,19 +6659,22 @@ def sum_wallet_balances(char_ids: Optional[list[int]] = None,
 
 def load_owned_blueprints(owner_character_ids: Optional[list[int]] = None,
                            owner_corporation_ids: Optional[list[int]] = None,
-                           exclude_hangar: Optional[ExcludedHangar] = None) -> list[tuple]:
+                           exclude_hangar: Optional[ExcludedHangar] = None,
+                           exclude_location_ids: Optional[list[int]] = None) -> list[tuple]:
     """Returns (type_id, quantity, material_efficiency, time_efficiency, runs)
     across character + corp blueprints, for informational display.
 
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
-    both None (the default) is unfiltered."""
+    both None (the default) is unfiltered. `exclude_location_ids`:
+    Production's excluded systems (None = all)."""
+    loc_clause, loc_params = _exclude_locations_clause(exclude_location_ids)
     with connect() as conn:
         rows = []
         for table in ("character_blueprints", "corp_blueprints"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             hangar_clause, hangar_params = _exclude_hangar_blueprint_clause(table, exclude_hangar)
-            id_clause += hangar_clause
-            id_params = (*id_params, *hangar_params)
+            id_clause += loc_clause + hangar_clause
+            id_params = (*id_params, *loc_params, *hangar_params)
             where_clause = f"WHERE {id_clause[5:]}" if id_clause else ""
             rows.extend(conn.execute(
                 f"SELECT type_id, quantity, material_efficiency, time_efficiency, runs FROM {table} {where_clause}",
@@ -6815,10 +7292,11 @@ def list_blueprint_copies(type_id: int,
                 (type_id, *NON_STOCK_LOCATION_FLAGS, *id_params),
             ).fetchall()
             groups.extend((int(me or 0), int(runs), 1) for me, runs in rows)
+        manual_loc, manual_params = _exclude_locations_clause(exclude_location_ids, "location_id")
         rows = conn.execute(
             "SELECT material_efficiency, runs, quantity FROM manual_owned_blueprints "
-            "WHERE blueprint_type_id = ? AND is_original = ? AND runs > 0 AND quantity > 0",
-            (type_id, False),
+            f"WHERE blueprint_type_id = ? AND is_original = ? AND runs > 0 AND quantity > 0{manual_loc}",
+            (type_id, False, *manual_params),
         ).fetchall()
         groups.extend((int(me or 0), int(runs), int(qty)) for me, runs, qty in rows)
     return groups
@@ -6977,6 +7455,48 @@ def latest_snapshot() -> pd.DataFrame:
         cur = conn.execute("SELECT * FROM shortlist_snapshot WHERE run_ts = ?", (run_ts,))
         columns = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+PRUNE_CHUNK_ROWS = 20_000
+
+
+def prune_shortlist_snapshot(before_run_ts: str, chunk_rows: int = PRUNE_CHUNK_ROWS) -> int:
+    """Deletes the current tenant's shortlist_snapshot rows with
+    `run_ts < before_run_ts` (ISO text, same format as the column), but
+    never the newest run - the pages read only that one. Deletes in chunks,
+    one transaction each, so the first run on a large table does not hold
+    locks for minutes. Returns the rows deleted."""
+    total = 0
+    while True:
+        with connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM shortlist_snapshot WHERE ctid IN ("
+                "SELECT ctid FROM shortlist_snapshot WHERE run_ts < ? "
+                "AND run_ts < (SELECT MAX(run_ts) FROM shortlist_snapshot) LIMIT ?)",
+                (before_run_ts, chunk_rows),
+            )
+            deleted = cur.rowcount
+        total += deleted
+        if deleted < chunk_rows:
+            return total
+
+
+def prune_goonmetrics_history(before_date: str, chunk_rows: int = PRUNE_CHUNK_ROWS) -> int:
+    """Global table (no tenant_id): deletes rows with `date < before_date`
+    (ISO YYYY-MM-DD text, the format the Goonmetrics client stores), in
+    chunks. Needs an ambient tenant only for the connection."""
+    total = 0
+    while True:
+        with connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM goonmetrics_history WHERE ctid IN ("
+                "SELECT ctid FROM goonmetrics_history WHERE date < ? LIMIT ?)",
+                (before_date, chunk_rows),
+            )
+            deleted = cur.rowcount
+        total += deleted
+        if deleted < chunk_rows:
+            return total
 
 
 # --------------------------------------------------- Ore & Minerals: Ore Shortlist
@@ -9112,7 +9632,7 @@ PORTFOLIO_SNAPSHOT_COLUMNS = (
     "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
     "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
     "wealth_listed_value", "wealth_contract_value", "wealth_escrow",
-    "wealth_in_production_value",
+    "wealth_in_production_value", "top_positions",
 )
 
 
@@ -9124,7 +9644,10 @@ def upsert_portfolio_snapshot(snapshot_date: date, values: dict) -> None:
     safe. `values` is expected to carry every column in
     PORTFOLIO_SNAPSHOT_COLUMNS - a missing key raises KeyError rather than
     silently writing NULL/0 for a figure the caller forgot."""
-    row = tuple(values[col] for col in PORTFOLIO_SNAPSHOT_COLUMNS)
+    row = tuple(
+        Jsonb(values[col]) if col == "top_positions" and values[col] is not None else values[col]
+        for col in PORTFOLIO_SNAPSHOT_COLUMNS
+    )
     with connect() as conn:
         conn.execute(
             "INSERT INTO portfolio_snapshots (snapshot_date, " + ", ".join(PORTFOLIO_SNAPSHOT_COLUMNS) + ", taken_at) "
@@ -9210,6 +9733,13 @@ def get_alert_destination() -> Optional[str]:
     with connect() as conn:
         row = conn.execute("SELECT discord_user_id FROM alert_destinations").fetchone()
     return str(row[0]) if row else None
+
+
+def get_alert_destination_linked_at() -> Optional[datetime]:
+    """When this tenant's Discord destination was (last) linked, or None."""
+    with connect() as conn:
+        row = conn.execute("SELECT linked_at FROM alert_destinations").fetchone()
+    return row[0] if row else None
 
 
 def set_alert_destination(discord_user_id: str) -> None:

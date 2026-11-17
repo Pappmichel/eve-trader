@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Optional
 
-from .. import storage, wealth_cache
+from .. import storage, timeutil, wealth_cache
 from ..actions import ActionError
 from . import collect, query
 from .scope import ASSET_KINDS, TOOL_KEY, allowed_tools, granted_tools, may_use, owner_scope
@@ -541,7 +541,7 @@ def _price_history(type_id: int) -> dict:
     from ..production.config import PRODUCTION_CONFIG
 
     region_id = int(PRODUCTION_CONFIG.hub_region_id or 0) or 10000002
-    since = (date.today() - timedelta(days=90)).isoformat()
+    since = (timeutil.utc_today() - timedelta(days=90)).isoformat()
     try:
         points = GoonmetricsClient().price_history(region_id, [type_id], esi_for_missing={type_id})
     except Exception:  # noqa: BLE001 - history is optional on this page
@@ -564,7 +564,7 @@ _history_empty_day: dict[str, object] = {}
 
 def history_snapshot_due() -> bool:
     from datetime import date
-    today = date.today()
+    today = timeutil.utc_today()
     if _history_empty_day.get(storage.get_current_tenant()) == today:
         return False
     latest = storage.latest_asset_history_date()
@@ -580,7 +580,7 @@ def take_history_snapshot() -> dict:
     from ..config import TRADING_CONFIG
 
     _grants, _allowed, scope = _context()
-    today = date.today()
+    today = timeutil.utc_today()
     # Quantities only: no pricing, no other sources (a daily job must not
     # hit Goonmetrics or the invention-cost path just to count items).
     written = storage.write_asset_history(today, collect.history_rows(scope))

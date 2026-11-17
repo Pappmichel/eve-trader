@@ -83,6 +83,10 @@ async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> 
     } catch {
       /* not JSON */
     }
+    if (resp.status === 429) {
+      // From the reverse proxy's rate limit (HTML body, no detail). Never retried here.
+      detail = 'Too many requests. Wait a moment and try again.'
+    }
     if (resp.status === 503 && detail === 'service_unavailable') {
       detail = 'The server is temporarily unavailable. Your session is fine, try again shortly.'
     }
@@ -147,7 +151,7 @@ export const tradingApi = {
   startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
   realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
-  updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
+  updateSettings: (s: Partial<T.TradingSettings>) => post<T.TradingSettings>('/api/trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
   buildUniverse: () => post<{ count: number }>('/api/trading/universe/build'),
@@ -287,14 +291,14 @@ export const productionApi = {
   removeManualBlueprintMeTeOverride: (typeId: number) =>
     del(`/api/production/blueprints/manual-me-te-overrides/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
-  updateSettings: (s: T.ProductionSettings) => post<T.ProductionSettings>('/api/production/settings', s),
+  updateSettings: (s: Partial<T.ProductionSettings>) => post<T.ProductionSettings>('/api/production/settings', s),
   reactionCapacityStatus: () => get<T.ReactionCapacityStatus>('/api/production/settings/reaction-capacity'),
   reactionChainChoices: () => get<Record<number, string>>('/api/production/reaction-chain-choices'),
   setReactionChainChoice: (typeId: number, choice: 'buy' | 'wait' | null) =>
     put<{ type_id: number; choice: string | null }>('/api/production/reaction-chain-choice', {
       type_id: typeId, choice,
     }),
-  structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; hangar_division_flags: string[] }>(
+  structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; invention_rig_tiers?: string[]; hangar_division_flags: string[] }>(
     '/api/production/settings/structure-options',
   ),
   systemSettings: () =>
@@ -322,6 +326,7 @@ export const productionApi = {
     del(`/api/production/logistics/cost-index-overrides/${encodeURIComponent(category)}`),
   categoryFacilities: () => get<T.CategoryFacilities>('/api/production/logistics/facilities'),
   setCategoryFacility: (body: T.CategoryFacilityUpdate) => post('/api/production/logistics/facilities', body),
+  reloadRigSheet: () => post<T.RigSheetStatus>('/api/production/logistics/rig-sheet/reload', {}),
   clearCategoryFacility: (category: string) =>
     del(`/api/production/logistics/facilities/${encodeURIComponent(category)}`),
   categoryLocationOptions: () => get<Record<string, number[]>>('/api/production/logistics/location-options'),
@@ -647,7 +652,7 @@ export const doctrineApi = {
   removeAssetCharacter: (roleKey: string) => del(`/api/doctrine/asset-characters/${roleKey}`),
 
   settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
-  updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
+  updateSettings: (s: Partial<T.DoctrineSettings>) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
   hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
     '/api/doctrine/settings/hangar-division-options',
   ),
@@ -682,7 +687,7 @@ export const refiningApi = {
   activateShortlistItems: (itemIds: number[]) =>
     post<{ activated: number }>('/api/refining/shortlist/activate', { item_ids: itemIds }),
   settings: () => get<T.RefiningSettings>('/api/refining/settings'),
-  updateSettings: (s: T.RefiningSettings) => post<T.RefiningSettings>('/api/refining/settings', s),
+  updateSettings: (s: Partial<T.RefiningSettings>) => post<T.RefiningSettings>('/api/refining/settings', s),
   settingsOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; implants: string[] }>(
     '/api/refining/settings/options',
   ),
@@ -711,7 +716,7 @@ export const stationTradingApi = {
   checkUndercut: () => post<T.StationTradingUndercutCheckResult>('/api/station-trading/undercut/check'),
   skills: () => get<T.SkillSummary[]>('/api/station-trading/skills'),
   settings: () => get<T.StationTradingSettings>('/api/station-trading/settings'),
-  updateSettings: (s: T.StationTradingSettings) =>
+  updateSettings: (s: Partial<T.StationTradingSettings>) =>
     post<T.StationTradingSettings>('/api/station-trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/station-trading/esi/sync-time'),
 
@@ -743,7 +748,11 @@ export const adminApi = {
     post<{ character_id: number; character_name: string; tenant_id: string }>(
       '/api/admin/users', { character_name: characterName },
     ),
-  removeUser: (characterId: number) => del(`/api/admin/users/${characterId}`),
+  removeUser: (characterId: number) => del<T.RemoveUserResult>(`/api/admin/users/${characterId}`),
+  purgeTenantPreview: (tenantId: string) =>
+    get<T.TenantPurgePreview>(`/api/admin/tenants/${tenantId}/purge-preview`),
+  purgeTenant: (tenantId: string, confirmName: string) =>
+    post<T.TenantPurgeResult>(`/api/admin/tenants/${tenantId}/purge`, { confirm_name: confirmName }),
   setToolGrants: (characterId: number, toolKeys: string[]) =>
     put<{ character_id: number; tool_keys: string[] }>(
       `/api/admin/users/${characterId}/tools`, { tool_keys: toolKeys },
@@ -753,13 +762,15 @@ export const adminApi = {
   // cross-tenant-impacting action, not a per-tenant Production one.
   previewSde: () => post<T.PipelineRunStatus>('/api/admin/sde/preview'),
   previewSdeStatus: () => get<T.PipelineRunStatus>('/api/admin/sde/preview/status'),
-  applySde: () => post<T.SdeApplyResult>('/api/admin/sde/apply'),
+  applySde: (confirmShrink = false) =>
+    post<T.SdeApplyResult>('/api/admin/sde/apply', { confirm_shrink: confirmShrink }),
   // Same cross-tenant-cache reasoning as previewSde above - see
   // production/jita_price_cache.py's own docstring.
   refreshJitaPriceCache: () =>
     post<{ cached_type_ids: number; updated_at: string | null }>('/api/admin/jita-price-cache/refresh'),
   // GitHub issue #88 - cross-tenant, same reasoning as everything else here.
   errors: (limit = 200) => get<T.ErrorLogRow[]>(`/api/admin/errors?limit=${limit}`),
+  errorGroups: (limit = 1000) => get<T.ErrorLogGroup[]>(`/api/admin/errors/groups?limit=${limit}`),
   // Moved from portfolioApi (confirmed real misplacement 2026-09-21, see
   // admin.do_create_backup's own docstring) - one pg_dump already covers
   // every tenant's data in one shot, same cross-tenant-impacting reasoning
@@ -1046,7 +1057,7 @@ export const moduleReprocessingApi = {
   activateShortlistItems: (itemIds: number[]) =>
     post<{ activated: number }>('/api/module-reprocessing/shortlist/activate', { item_ids: itemIds }),
   settings: () => get<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings'),
-  updateSettings: (s: T.ModuleReprocessingSettings) =>
+  updateSettings: (s: Partial<T.ModuleReprocessingSettings>) =>
     post<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/module-reprocessing/esi/sync-time'),
   // Mineral Shopping List (ore/ice AND modules/drones as reprocessing sources)

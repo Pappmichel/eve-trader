@@ -93,7 +93,7 @@ def _tokens(*chars: tuple[int, str], scopes: str = PRODUCER_SCOPES):
 def _asset(item_id, owner_id):
     return {
         "item_id": item_id, "type_id": TYPE_ID, "location_id": LOCATION_ID,
-        "location_flag": "Hangar", "quantity": owner_id, "is_blueprint_copy": False,
+        "location_flag": "Hangar", "quantity": owner_id, "is_blueprint_copy": False, "is_singleton": False,
     }
 
 
@@ -523,6 +523,9 @@ def test_corp_member_loop_continues_when_first_member_refresh_fails(tenant, monk
         members=[alice, bob], corp_name="Test Corp", extra={}, tokens=tm,
     )
     assert result["ok"] is True
+    # SSO is asked once, in the pre-refresh before the batch (rejected, only
+    # logged, remembered on the record). The lazy path inside the batch does
+    # not ask again but still reports the same dead-owner failure.
     assert refresh_tokens == ["revoked"]
     assert asset_auths == ["Bearer good"]
     assert _count("corp_assets", owner_corporation_id=CORP_ID) == 1
@@ -1051,3 +1054,29 @@ def test_a_failing_resolution_never_fails_the_sync(tenant, monkeypatch):
     monkeypatch.setattr(resolver, "resolve_pending", boom)
 
     assert orchestrator._resolve_locations() == {"resolved": 0, "error": True}
+
+
+def test_rejected_refresh_in_prefresh_still_gives_a_dead_owner_error_in_the_fetch(tenant, monkeypatch):
+    """The pre-refresh only logs a rejection, so the fetch itself must raise
+    the same 400 "Token refresh failed" status error, without asking SSO a
+    second time; _is_dead_owner_error holds and the failure is not transient."""
+    from eve_trader.esi_data.orchestrator import _is_dead_owner_error, _is_transient_error, _prefresh_tokens
+    from eve_trader.esi_client import ESIStatusError
+
+    storage.save_tenant_token("producer:1001", asdict(TokenRecord(
+        role="producer:1001", character_id=ALICE, character_name="Alice",
+        access_token="stale", refresh_token="revoked", expires_at=0.0, scopes=ASSETS_SCOPE,
+    )))
+    refresh_tokens = _patch_dead_refresh(monkeypatch, esi_handler=lambda self, url, **kw: None)
+    tm = TokenManager()
+    _prefresh_tokens(tm, {"producer:1001"})
+    assert refresh_tokens == ["revoked"]
+
+    client = ESIClient(tokens=TokenManager())
+    with pytest.raises(ESIStatusError) as exc:
+        client._get("/characters/1/assets/", auth_role="producer:1001")
+    assert exc.value.status == 400
+    assert "Token refresh failed" in str(exc.value)
+    assert _is_dead_owner_error(exc.value)
+    assert not _is_transient_error(exc.value)
+    assert refresh_tokens == ["revoked"]

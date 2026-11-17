@@ -16,17 +16,19 @@ already isolates every other piece of tenant state in this app.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import schemas
+from ..partial import partial_model
 from ... import storage
 from ...actions import ConflictError
 from ...production import actions
 from ...production.actions import ActionError
 from ...production.config import PRODUCTION_CONFIG
+from ..schemas import LongText, NameText, ShortTextList, UrlText
 
 router = APIRouter()
 
@@ -126,7 +128,7 @@ def get_manual_stock_entries():
 
 
 class AddManualStockEntryRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     count: float
     location_id: int = 0
 
@@ -148,7 +150,7 @@ class AssetPasteRequest(BaseModel):
     # lines at most, this is generous headroom, not a real-world limit.
     text: str = Field(max_length=500_000)
     location_id: int = 0
-    mode: str = "merge"
+    mode: NameText = "merge"
 
 
 @router.post("/manual-stock/paste/preview")
@@ -237,11 +239,11 @@ def get_current_jobs():
 
 
 class AddManualIndustryJobRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     quantity: Optional[float] = None
     runs: Optional[int] = None
     location_id: int = 0
-    ready_at: Optional[str] = None
+    ready_at: Optional[NameText] = None
 
 
 @router.post("/manual-jobs")
@@ -254,7 +256,7 @@ class UpdateManualIndustryJobRequest(BaseModel):
     quantity: Optional[float] = None
     runs: Optional[int] = None
     location_id: Optional[int] = None
-    ready_at: Optional[str] = None
+    ready_at: Optional[NameText] = None
 
 
 @router.patch("/manual-jobs/{manual_id}")
@@ -288,7 +290,7 @@ def get_manual_listed_stock():
 
 class SetManualListedStockRequest(BaseModel):
     type_id: int
-    market: str
+    market: NameText
     quantity: float
 
 
@@ -326,7 +328,7 @@ def get_owned_blueprints():
 
 
 class AddManualOwnedBlueprintRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     is_original: bool
     material_efficiency: int
     time_efficiency: int
@@ -368,7 +370,7 @@ def get_manual_blueprint_copy_costs():
 
 
 class AddManualBlueprintCopyCostRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     purchase_cost: float
     runs: int
 
@@ -402,7 +404,7 @@ def get_manual_blueprint_me_te_overrides():
 
 
 class AddManualBlueprintMeTeOverrideRequest(BaseModel):
-    item_name: str
+    item_name: NameText
     material_efficiency: int
     time_efficiency: int
 
@@ -461,6 +463,12 @@ class ProductionSettings(BaseModel):
     supercapital_rig_tier: str
     manufacturing_structure_type: str
     manufacturing_rig_tier: str
+    reaction_te_rig_tier: Optional[str] = None
+    component_te_rig_tier: Optional[str] = None
+    supercapital_te_rig_tier: Optional[str] = None
+    manufacturing_te_rig_tier: Optional[str] = None
+    invention_rig_tier: str = "No Rig"
+    rig_sheet_url: UrlText = ""
     encryption_skill_level: int
     datacore_skill_1_level: int
     datacore_skill_2_level: int
@@ -487,9 +495,12 @@ def get_settings():
     return ProductionSettings(**{f: getattr(PRODUCTION_CONFIG, f) for f in ProductionSettings.model_fields})
 
 
+ProductionSettingsUpdate = partial_model(ProductionSettings, "ProductionSettingsUpdate")
+
+
 @router.post("/settings")
-def update_settings(updates: ProductionSettings):
-    return _wrap(actions.do_update_settings, updates=updates.model_dump())
+def update_settings(updates: ProductionSettingsUpdate):  # type: ignore[valid-type]
+    return _wrap(actions.do_update_settings, updates=updates.model_dump(exclude_unset=True))
 
 
 @router.get("/settings/reaction-capacity")
@@ -550,8 +561,9 @@ def get_system_cost_indices():
 
 @router.get("/settings/structure-options")
 def get_structure_options():
-    from ...production.constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
+    from ...production.constants import HANGAR_DIVISION_FLAGS, INVENTION_RIG_TIERS, RIG_TIERS, STRUCTURE_TYPES
     return {"structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS),
+            "invention_rig_tiers": list(INVENTION_RIG_TIERS),
             "hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}
 
 
@@ -575,9 +587,9 @@ def get_all_solar_systems():
 
 
 class SetSystemRequest(BaseModel):
-    profile: str
+    profile: NameText
     system_id: int
-    system_name: str
+    system_name: NameText
 
 
 @router.post("/settings/systems")
@@ -713,7 +725,7 @@ def search_locations(q: str = ""):
 
 class SetManualLocationNameRequest(BaseModel):
     location_id: int
-    name: str
+    name: NameText
 
 
 @router.post("/locations/manual-names")
@@ -790,7 +802,7 @@ def get_ship_margins():
 
 
 class ItemMarginSearchRequest(BaseModel):
-    item_name: str
+    item_name: NameText
 
 
 @router.post("/margins/search", response_model=schemas.ShipMarginRow)
@@ -799,7 +811,7 @@ def search_item_margin(req: ItemMarginSearchRequest):
 
 
 class AddStockTargetRequest(BaseModel):
-    type_name: str
+    type_name: NameText
     backup_stock: float = 0
     home_market_stock: Optional[float] = None
     jita_market_stock: Optional[float] = None
@@ -878,7 +890,7 @@ def set_manual_stock(req: ManualStockRequest):
 
 class ManualBuildBuyRequest(BaseModel):
     type_id: int
-    decision: str
+    decision: NameText
 
 
 @router.post("/manual-build-buy")
@@ -893,7 +905,7 @@ def clear_manual_build_buy(type_id: int):
 
 class SelectedDecryptorRequest(BaseModel):
     type_id: int
-    decryptor: str
+    decryptor: NameText
 
 
 @router.post("/selected-decryptors")
@@ -907,7 +919,7 @@ def clear_selected_decryptor(type_id: int):
 
 
 class CategoryLocationRequest(BaseModel):
-    category: str
+    category: NameText
     location_id: int
 
 
@@ -926,19 +938,31 @@ def get_category_facilities():
     return _wrap(actions.do_list_category_facilities)
 
 
+@router.post("/logistics/rig-sheet/reload")
+def reload_rig_sheet():
+    """Fetches the tenant's rig sheet now (the Logistics page's button and its
+    automatic reload of a state older than 24 h). A failure is stored and
+    returned in the response, not raised: the page shows it next to the age."""
+    return _wrap(actions.do_reload_rig_sheet)
+
+
 class CategoryFacilityRequest(BaseModel):
-    category: str
-    structure_type: Optional[str] = None
-    rig_tier_basic: Optional[str] = None
-    rig_tier_advanced: Optional[str] = None
+    category: NameText
+    structure_type: Optional[NameText] = None
+    rig_tier_basic: Optional[NameText] = None
+    rig_tier_advanced: Optional[NameText] = None
+    te_rig_tier_basic: Optional[NameText] = None
+    te_rig_tier_advanced: Optional[NameText] = None
     facility_tax_rate: Optional[float] = None  # fraction; None = observed rate, then Settings
 
 
 @router.post("/logistics/facilities")
 def set_category_facility(req: CategoryFacilityRequest):
+    te_rigs = {key: value for key, value in (("te_rig_tier_basic", req.te_rig_tier_basic),
+                                             ("te_rig_tier_advanced", req.te_rig_tier_advanced)) if value is not None}
     return _wrap(actions.do_set_category_facility, category=req.category, structure_type=req.structure_type,
                  rig_tier_basic=req.rig_tier_basic, rig_tier_advanced=req.rig_tier_advanced,
-                 facility_tax_rate=req.facility_tax_rate)
+                 facility_tax_rate=req.facility_tax_rate, **te_rigs)
 
 
 @router.delete("/logistics/facilities/{category}")
@@ -947,7 +971,7 @@ def clear_category_facility(category: str):
 
 
 class CategoryCostIndexOverrideRequest(BaseModel):
-    category: str
+    category: NameText
     value: float
 
 
@@ -977,8 +1001,8 @@ def remove_category_location_option(category: str, location_id: int):
 
 
 class InventionEstimateRequest(BaseModel):
-    product_name: str
-    decryptor_name: Optional[str] = None
+    product_name: NameText
+    decryptor_name: Optional[NameText] = None
 
 
 @router.post("/invention/estimate", response_model=list[schemas.InventionResult])
@@ -989,7 +1013,7 @@ def estimate_invention(req: InventionEstimateRequest):
 
 
 class MaterialTreeRequest(BaseModel):
-    type_name: str
+    type_name: NameText
     quantity: float = 1.0
 
 
@@ -1011,6 +1035,7 @@ def refresh_production():
         "cost_indices_available": plan.get("cost_indices_available", True),
         "prices_available": plan.get("prices_available", True),
         "price_data_stale_hours": plan.get("price_data_stale_hours"),
+        "adjusted_prices_missing": plan.get("adjusted_prices_missing", []),
         "order_progress": plan.get("order_progress", []),
         "reaction_capacity": plan.get("reaction_capacity"),
         "stale": False,
@@ -1034,13 +1059,13 @@ def refresh_asset_plan():
 # --------------------------------------------------------- special orders
 class SpecialOrderItemInput(BaseModel):
     type_id: Optional[int] = None
-    name: Optional[str] = None
+    name: Optional[NameText] = None
     quantity: float
 
 
 class CreateSpecialOrderRequest(BaseModel):
-    items: list[SpecialOrderItemInput]
-    note: Optional[str] = None
+    items: Annotated[list[SpecialOrderItemInput], Field(max_length=1_000)]
+    note: Optional[LongText] = None
     net_against_stock: bool = False
     include_in_production: bool = False
 
@@ -1058,7 +1083,7 @@ def list_special_orders(status: Optional[str] = None):
 
 
 class CombineSpecialOrdersRequest(BaseModel):
-    order_ids: list[str]
+    order_ids: ShortTextList
     net_against_stock: bool = False
 
 
@@ -1075,7 +1100,7 @@ def compute_combined_special_orders(req: CombineSpecialOrdersRequest):
 
 
 class MaxBuildableRequest(BaseModel):
-    item: str
+    item: NameText
     mode: Literal["full", "direct"] = "full"
     target_quantity: Optional[int] = Field(default=None, ge=1)
 
@@ -1102,8 +1127,8 @@ def get_special_order(order_id: str):
 
 
 class UpdateSpecialOrderRequest(BaseModel):
-    status: Optional[str] = None
-    note: Optional[str] = None
+    status: Optional[NameText] = None
+    note: Optional[LongText] = None
     net_against_stock: Optional[bool] = None
     include_in_production: Optional[bool] = None
 
@@ -1125,7 +1150,7 @@ def list_one_special_order_events(order_id: str):
 
 class SetSpecialOrderItemRequest(BaseModel):
     type_id: Optional[int] = None
-    name: Optional[str] = None
+    name: Optional[NameText] = None
     quantity: float
 
 

@@ -19,6 +19,7 @@ from eve_trader.station_trading import realized as station_realized
 from eve_trader.trade_realized import actions as trade_realized_actions
 from eve_trader.production.models import BuildCandidate, ShipMarginRow
 from eve_trader.sorting import actions as sorting_actions
+from eve_trader.timeutil import utc_today
 
 client = TestClient(create_app())
 
@@ -89,12 +90,12 @@ def test_refresh_shortlist_conflict_maps_to_409(monkeypatch):
 
 def test_get_transaction_characters_serializes_role_tuples(monkeypatch):
     monkeypatch.setattr(actions, "do_list_transaction_characters", lambda: [
-        ("buyer:2112625428", 2112625428, "Some Buyer"),
+        ("buyer:1234567891", 1234567891, "Some Buyer"),
     ])
     resp = client.get("/api/trading/transaction-characters")
     assert resp.status_code == 200
     assert resp.json() == [
-        {"role_key": "buyer:2112625428", "character_id": 2112625428, "character_name": "Some Buyer"},
+        {"role_key": "buyer:1234567891", "character_id": 1234567891, "character_name": "Some Buyer"},
     ]
 
 
@@ -111,10 +112,10 @@ def test_get_wallet_transactions_passes_role_key_and_lookback_days(monkeypatch):
         }]
     monkeypatch.setattr(actions, "do_wallet_transactions", _fake)
 
-    resp = client.get("/api/trading/wallet-transactions?role_key=buyer:2112625428&lookback_days=90")
+    resp = client.get("/api/trading/wallet-transactions?role_key=buyer:1234567891&lookback_days=90")
 
     assert resp.status_code == 200
-    assert captured == {"role_key": "buyer:2112625428", "lookback_days": 90}
+    assert captured == {"role_key": "buyer:1234567891", "lookback_days": 90}
     assert resp.json()[0]["item"] == "Tritanium"
 
 
@@ -904,7 +905,8 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
         "jobs": [], "order_progress": [], "stale": False, "reaction_capacity": None,
         "ready_at_build_location": False,
         "adjusted_prices_available": True, "cost_indices_available": True,
-        "prices_available": True, "price_data_stale_hours": None}
+        "prices_available": True, "price_data_stale_hours": None,
+        "adjusted_prices_missing": []}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
@@ -1212,6 +1214,7 @@ def test_compute_special_order_success(monkeypatch):
         "line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": [],
         "adjusted_prices_available": True, "cost_indices_available": True,
         "prices_available": True, "price_data_stale_hours": None,
+        "adjusted_prices_missing": [],
     }
 
 
@@ -1732,7 +1735,7 @@ def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkey
     from datetime import date
 
     from eve_trader import portfolio
-    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: utc_today())
     monkeypatch.setattr(storage, "load_portfolio_snapshots", lambda since=None: [])
     monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg=None: {
         "trading_realized_profit": 1000.0, "trading_average_margin": 0.2,
@@ -1763,7 +1766,7 @@ def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypa
 
     assert resp.status_code == 200
     assert resp.json()["combined_value"] == 600.0
-    assert resp.json()["wealth_change"] == {"d1": None, "d7": None, "d30": None}
+    assert resp.json()["wealth_change"] == {"d1": None, "d7": None, "d30": None, "price_jumps": []}
     assert calls == [1]
 
 
@@ -1775,7 +1778,7 @@ def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypat
     calls = []
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: latest[0])
     monkeypatch.setattr(portfolio, "take_portfolio_snapshot",
-                        lambda cfg=None: (calls.append(1), latest.__setitem__(0, date.today()))[1])
+                        lambda cfg=None: (calls.append(1), latest.__setitem__(0, utc_today()))[1])
     monkeypatch.setattr(portfolio, "wealth_change",
                         lambda today=None: {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None})
 
@@ -1788,7 +1791,7 @@ def test_get_wealth_change_snapshots_only_on_the_first_read_of_the_day(monkeypat
     second = client.get("/api/portfolio/wealth-change")
 
     assert first.status_code == 200
-    assert first.json() == {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None}
+    assert first.json() == {"d1": {"isk": 5.0, "pct": 0.05}, "d7": None, "d30": None, "price_jumps": []}
     assert second.json() == first.json()
     assert calls == [1]
 
@@ -1827,6 +1830,20 @@ def test_portfolio_attention_route(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"items": []}
     assert "portfolio" in seen["keys"]
+
+
+def test_portfolio_capital_route_passes_needs_rebuild(monkeypatch):
+    from eve_trader import portfolio
+    from eve_trader.portfolio_capital import needs_rebuild
+
+    monkeypatch.setattr(portfolio, "do_get_portfolio_capital", lambda cfg=None: needs_rebuild("Recompute."))
+    resp = client.get("/api/portfolio/capital")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["needs_rebuild"] is True
+    assert body["hint"] == "Recompute."
+    assert body["buckets"] == []
+    assert body["total"]["cost_basis"] is None
 
 
 def test_get_portfolio_history_defaults_to_unbounded(monkeypatch):
@@ -2061,12 +2078,13 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
 
     state = "test-state-network-failure"
     auth_router._pending[state] = {
-        "verifier": "v", "role_prefix": "producer", "scopes": ["esi-assets.read_assets.v1"],
+        "verifier": "v", "role_prefix": "reauth", "scopes": ["esi-assets.read_assets.v1"],
         "created_at": time.time(), "browser_nonce": "n",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
     }
 
     def _raise(self, code, verifier):
-        raise requests.ConnectionError("network blip")
+        raise requests.ConnectionError("network blip to login.example.test")
     monkeypatch.setattr(TokenManager, "_exchange_code", _raise)
 
     resp = client.get(
@@ -2076,6 +2094,19 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
 
     assert resp.status_code in (302, 307)
     assert "auth=error" in resp.headers["location"]
+    assert resp.headers["location"].endswith("message=token_exchange_failed")
+    assert "blip" not in resp.headers["location"]
+
+
+def test_auth_callback_provider_error_text_is_never_reflected():
+    resp = client.get(
+        "/api/auth/callback",
+        params={"error": "access_denied", "error_description": "<script>alert(1)</script>"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code in (302, 307)
+    assert resp.headers["location"].endswith("/?auth=error&message=sso_error")
 
 
 # --------------------------------------------------- locations (phase 2)
@@ -2239,12 +2270,12 @@ def test_available_characters_serializes_action_result(monkeypatch):
 
 def test_available_corps_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_list_available_corps", lambda: {
-        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+        "corps": ["Example Corp (corp)", "building mining and research corporation (corp)"],
     })
     resp = client.get("/api/sorting/available-corps")
     assert resp.status_code == 200
     assert resp.json() == {
-        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+        "corps": ["Example Corp (corp)", "building mining and research corporation (corp)"],
     }
 
 
@@ -2303,7 +2334,7 @@ def test_history_sparklines_shape_and_calendar_cutoff(monkeypatch):
     body = resp.json()
     assert body["5"] == {"hub": [["2026-10-01", float(hub)]], "ref": [["2026-10-01", float(ref)]]}
     assert body["6"] == {"hub": [], "ref": []}
-    since = (date.today() - timedelta(days=30)).isoformat()
+    since = (utc_today() - timedelta(days=30)).isoformat()
     assert calls == [(hub, [5, 6], since), (ref, [5, 6], since)]
 
 

@@ -223,8 +223,10 @@ def test_skill_rows_from_attributes():
 
 def test_fetch_sde_carries_the_skill_rows_into_fetchedsde_and_apply_stores_them(tenant, monkeypatch):
     monkeypatch.setattr(sde, "_fetch_csv", lambda session, base, filename: [])
+    monkeypatch.setattr(sde, "_MIN_STREAM_ROWS", {k: 0 for k in sde._MIN_STREAM_ROWS})  # tiny mocked dump
+    monkeypatch.setattr(sde, "_fetch_attribute_ids", lambda session, base: {})
     monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
-    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(), equivalence_type_ids=frozenset(): ({
+    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(), equivalence_type_ids=frozenset(), **kw: ({
         587: {182: 3330.0, 277: 2.0}, 3380: {275: 1.0, 180: 165.0, 181: 166.0},
     }, {}, {}))
     monkeypatch.setattr(sde, "_fetch_pi_planets", lambda session, base: [])

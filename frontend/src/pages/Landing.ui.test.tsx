@@ -125,3 +125,14 @@ describe('Landing KPI tiles', () => {
     expect(screen.queryByTestId('kpi-line')).not.toBeInTheDocument()
   })
 })
+
+describe('Landing CCP notice', () => {
+  it('shows the shared CCP notice', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({
+      enabled: true, logged_in: true, character_name: 'Alice',
+      tools: ['trading'], suspended: false, pending_access_requests: null,
+    })
+    renderLanding()
+    expect(await screen.findByTestId('ccp-notice')).toHaveTextContent('registered trademarks of CCP hf')
+  })
+})

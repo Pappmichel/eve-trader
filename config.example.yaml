@@ -63,6 +63,9 @@ inactive_tenant_days: 14
 # switch is true.
 backup_job_enabled: true
 jita_price_cache_job_enabled: true
+# Daily check whether Fuzzwork published a newer SDE (one HEAD request); the
+# Admin page shows "New SDE available". Runs with the scheduler master switch.
+sde_check_job_enabled: true
 # Discord alerts job (CLAUDE.md "Discord alerts"). Runs for opted-in
 # characters only, independent of every tenant's scheduler_enabled. Also needs
 # DISCORD_BOT_TOKEN / DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET in .env.
@@ -111,9 +114,9 @@ manufacturing_rig_tier: "No Rig"
 
 # Invention skill levels (see production/invention.py) - Encryption Methods +
 # the two datacore skills relevant to whatever you're inventing.
-encryption_skill_level: 4
-datacore_skill_1_level: 4
-datacore_skill_2_level: 4
+encryption_skill_level: 5
+datacore_skill_1_level: 5
+datacore_skill_2_level: 5
 
 # ---- Access gate (see eve_trader/access_gate.py) - on by default. Every
 # /api/* route requires an EVE SSO login (identity only, no ESI scopes) that

@@ -66,7 +66,7 @@ class _Context:
     def __init__(self, cfg: ProductionConfig, mode: str):
         self.cfg = cfg
         self.mode = mode
-        self.manual_stock = storage.load_manual_stock()
+        self.manual_stock = storage.load_manual_stock(**engine.production_excluded_kwargs(cfg))
         self.cost_indices: engine.CostIndices = {
             f"me_te_override:{type_id}": (me, te)
             for type_id, _name, me, te in storage.load_manual_blueprint_me_te_overrides()

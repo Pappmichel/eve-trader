@@ -140,6 +140,7 @@ from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
 from . import dynamic_targets, facility_tax, invention, pricing, reaction_capacity
+from . import jita_price_cache
 from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -149,13 +150,14 @@ from .constants import (
     INDUSTRY_TIME_BONUS_PCT, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID, REACTIONS_TIME_BONUS_PCT,
     SCC_SURCHARGE_RATE, SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS, SPECIALIST_TIME_SKILLS,
     SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID, STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
-    rig_security_multiplier, structure_rig_multiplier,
+    rig_security_multiplier, structure_rig_multiplier, tier_security_multiplier,
 )
+from . import rig_sheet
 from .facility_names import SPLIT_BY_TECH_CATEGORIES, rig_tiers_from_name
 from .jobs import character_slot_overview
 from .models import (
     AlchemyComparison, AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow,
-    InventionResult, InventoryRow, LogisticsRow, MarketRestockRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow,
+    InventionResult, InventoryRow, LogisticsRow, MarketRestockRow, MarketStatusRow, PullFromStop, SpecialOrderLineItem, StockOverlapWarningRow,
     T1BpcInventionNeedRow,
 )
 
@@ -624,20 +626,48 @@ def _structure_rig(profile: str, cfg: ProductionConfig) -> tuple[str, str]:
         return cfg.component_structure_type, cfg.component_rig_tier
     if profile == "supercapital":
         return cfg.supercapital_structure_type, cfg.supercapital_rig_tier
+    if profile == "invention":
+        # Invention jobs run in the manufacturing structure; the rig is the
+        # invention cost rig.
+        return cfg.manufacturing_structure_type, cfg.invention_rig_tier
     return cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier
+
+
+def _global_te_rig(profile: str, cfg: ProductionConfig) -> Optional[str]:
+    """The profile's global time-efficiency rig tier; None = follow the ME tier."""
+    return {
+        "reaction": cfg.reaction_te_rig_tier,
+        "component": cfg.component_te_rig_tier,
+        "supercapital": cfg.supercapital_te_rig_tier,
+        "manufacturing": cfg.manufacturing_te_rig_tier,
+    }.get(profile)
+
+
+def _security_status_for(structure_profile: str, cfg: ProductionConfig) -> Optional[float]:
+    """Security status of the system the profile's structure sits in (the
+    flat per-profile system; a category structure's own system outranks it in
+    facility_resolution). Reaction/component structures use the component
+    system, manufacturing structures the manufacturing system - same system
+    mapping as the cost index (see _job_cost_rate). An invention job uses the
+    invention structure's system. Read from the local SDE cache (static
+    data), not ESI."""
+    if structure_profile == "invention":
+        if cfg.invention_rig_tier == "No Rig":
+            return None  # nothing to scale; skip the system lookup
+        system_id = invention._invention_system_id(cfg)
+    elif structure_profile in ("reaction", "component"):
+        system_id = cfg.component_system_id
+    else:
+        system_id = cfg.manufacturing_system_id
+    return storage.get_system_security(system_id)
 
 
 def _security_multiplier_for(structure_profile: str, cfg: ProductionConfig) -> float:
     """Rig bonuses scale with the security status of the system the structure
     sits in (see constants.rig_security_multiplier - reaction/refinery rigs use
-    a different table than Engineering Complex rigs, hence is_reaction below).
-    Reaction/component structures use the component system's security,
-    manufacturing structures use the manufacturing system's - same system
-    mapping as the cost index (see _job_cost_rate), since that's the only
-    system info configured per build category. Read from the local SDE cache
-    (static data), not ESI."""
-    system_id = cfg.component_system_id if structure_profile in ("reaction", "component") else cfg.manufacturing_system_id
-    return rig_security_multiplier(storage.get_system_security(system_id), is_reaction=(structure_profile == "reaction"))
+    a different table than Engineering Complex rigs, hence is_reaction below)."""
+    return rig_security_multiplier(_security_status_for(structure_profile, cfg),
+                                   is_reaction=(structure_profile == "reaction"))
 
 
 # Per-category facilities (job_category_facilities + the category structure's
@@ -659,9 +689,26 @@ def invalidate_facility_cache(all_tenants: bool = False) -> None:
     facility_tax.invalidate(all_tenants)
 
 
+def _stored_rig_sheet_systems() -> Optional[dict]:
+    """The stored rig sheet rows, only while a link is set and the rows come
+    from that link's sheet (a changed link never reads the old sheet). Never a
+    network call; None = no sheet source."""
+    url = PRODUCTION_CONFIG.rig_sheet_url
+    if not url:
+        return None
+    try:
+        key = rig_sheet.source_key(url)
+    except rig_sheet.RigSheetError:
+        return None
+    state = storage.load_rig_sheet()
+    if state is None or state["source_key"] != key or state["fetched_at"] is None:
+        return None
+    return state["systems"]
+
+
 def _load_category_facilities() -> dict[str, dict]:
     """{category: {structure_type, rig_tier_basic, rig_tier_advanced,
-    tax_rate_override (saved, each None when not set), location_id,
+    te_rig_tier_basic, te_rig_tier_advanced, tax_rate_override (saved, each None when not set), location_id,
     structure_name, system_id, security, observed_tax}}. `observed_tax` is
     {job activity id: facility_tax.ObservedTax} for the category's structure
     (activity 1 manufacturing, 11 reaction), read once for every category
@@ -680,6 +727,7 @@ def _load_category_facilities() -> dict[str, dict]:
     systems = storage.load_category_system_ids()
     names = storage.get_location_names(set(locations.values())) if locations else {}
     observed = facility_tax.observed_rates() if locations else {}
+    sheet_systems = _stored_rig_sheet_systems() if locations else None
     result: dict[str, dict] = {}
     for category in set(saved) | set(locations):
         row = saved.get(category, {})
@@ -689,11 +737,15 @@ def _load_category_facilities() -> dict[str, dict]:
             "structure_type": row.get("structure_type"),
             "rig_tier_basic": row.get("rig_tier_basic"),
             "rig_tier_advanced": row.get("rig_tier_advanced"),
+            "te_rig_tier_basic": row.get("te_rig_tier_basic"),
+            "te_rig_tier_advanced": row.get("te_rig_tier_advanced"),
             "tax_rate_override": row.get("facility_tax_rate"),
             "location_id": location_id,
             "structure_name": names.get(location_id) if location_id is not None else None,
             "system_id": system_id,
             "security": storage.get_system_security(system_id) if system_id is not None else None,
+            "sheet_cells": (rig_sheet.system_cells(sheet_systems, storage.get_system_name(system_id))
+                            if sheet_systems and system_id is not None else None),
             "observed_tax": {
                 activity_id: observed[(location_id, activity_id)]
                 for activity_id in (facility_tax.ACTIVITY_MANUFACTURING, facility_tax.ACTIVITY_REACTION)
@@ -716,10 +768,18 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
                         cfg: ProductionConfig) -> dict:
     """Which structure type, rig tier and security apply to one job category
     and tech level, and where each came from. Order: the tier saved for the
-    category, then the tier its structure's name states, then the global
+    category, then the tier the rig sheet states for the category structure's
+    system (only with a link set, read from the stored state; "No Rig" there
+    beats the name), then the tier its structure's name states, then the global
     profile (ProductionConfig.<profile>_structure_type/_rig_tier). Security
     comes from the category structure's system when it is known, else the
     profile's flat system.
+
+    The time-efficiency rig (`te_rig_tier`, `te_rig_source`) resolves
+    separately: the TE tier saved for the category, then the profile's global
+    TE field, else the same tier as ME. `security_multiplier` is the ME rig's,
+    `te_security_multiplier` the TE rig's (a tier may carry its own security
+    table).
 
     The facility tax rate resolves the same way (`tax_rate`, `tax_source`
     "override" | "observed" | "settings", plus the observation's date and job
@@ -733,11 +793,15 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
     # rig covers every tech level, stored in the "basic" slot.
     advanced = _is_advanced_tech(activity) and category in SPLIT_BY_TECH_CATEGORIES
     structure_type, structure_source = global_structure, "global"
-    rig_tier, rig_source = global_rig, "global"
     is_reaction = profile == "reaction"
-    security_multiplier = _security_multiplier_for(profile, cfg)
+    security_status = _security_status_for(profile, cfg)
     tax_rate, tax_source = cfg.facility_tax_rate, "settings"
     tax_observed_at, tax_jobs = None, None
+    # ME rig tier: the first source that states one wins. Sources are
+    # (tier, source) candidates in rank order, so a further source slots in
+    # between "set" and "name" without touching the rest.
+    me_candidates: list[tuple[Optional[str], str]] = []
+    te_saved: Optional[str] = None
     if facility is not None:
         override = facility.get("tax_rate_override")
         job_activity = facility_tax.ACTIVITY_REACTION if is_reaction else facility_tax.ACTIVITY_MANUFACTURING
@@ -749,20 +813,34 @@ def facility_resolution(category: Optional[str], activity: str, profile: str,
             tax_observed_at, tax_jobs = observation.observed_at, observation.jobs
         if facility["structure_type"]:
             structure_type, structure_source = facility["structure_type"], "set"
-        saved_rig = facility["rig_tier_advanced" if advanced else "rig_tier_basic"]
-        if saved_rig:
-            rig_tier, rig_source = saved_rig, "set"
-        else:
-            named_basic, named_advanced = rig_tiers_from_name(facility["structure_name"], category)
-            named = named_advanced if advanced else named_basic
-            if named:
-                rig_tier, rig_source = named, "name"
+        me_candidates.append((facility["rig_tier_advanced" if advanced else "rig_tier_basic"], "set"))
+        if cfg.rig_sheet_url and facility.get("sheet_cells"):
+            me_candidates.append((rig_sheet.lookup(facility["sheet_cells"], category, advanced, structure_type),
+                                  "sheet"))
+        te_saved = facility.get("te_rig_tier_advanced" if advanced else "te_rig_tier_basic")
+        named_basic, named_advanced = rig_tiers_from_name(facility["structure_name"], category)
+        me_candidates.append((named_advanced if advanced else named_basic, "name"))
         if facility["system_id"] is not None:
-            security_multiplier = rig_security_multiplier(facility["security"], is_reaction=is_reaction)
+            security_status = facility["security"]
+    me_candidates.append((global_rig, "global"))
+    rig_tier, rig_source = next((tier, source) for tier, source in me_candidates if tier)
+    # TE rig tier: the category's saved TE tier, else the profile's global TE
+    # tier, else the same tier as ME (so nothing changes until a TE tier is set).
+    global_te = _global_te_rig(profile, cfg)
+    if te_saved:
+        te_rig_tier, te_rig_source = te_saved, "set"
+    elif global_te:
+        te_rig_tier, te_rig_source = global_te, "global"
+    else:
+        te_rig_tier, te_rig_source = rig_tier, "same as ME"
+    security_multiplier = tier_security_multiplier(rig_tier, security_status, is_reaction)
+    te_security_multiplier = tier_security_multiplier(te_rig_tier, security_status, is_reaction)
     return {
         "structure_type": structure_type, "structure_source": structure_source,
         "rig_tier": rig_tier, "rig_source": rig_source,
+        "te_rig_tier": te_rig_tier, "te_rig_source": te_rig_source,
         "security_multiplier": security_multiplier,
+        "te_security_multiplier": te_security_multiplier,
         "tax_rate": tax_rate, "tax_source": tax_source,
         "tax_observed_at": tax_observed_at, "tax_jobs": tax_jobs,
     }
@@ -794,7 +872,8 @@ def _facility_mults(activity: str, type_id: int, cfg: ProductionConfig) -> tuple
     the structure of its job category (see facility_resolution)."""
     resolved = _item_facility(activity, type_id, cfg)
     return structure_rig_multiplier(resolved["structure_type"], resolved["rig_tier"],
-                                    resolved["security_multiplier"])
+                                    resolved["security_multiplier"], resolved["te_rig_tier"],
+                                    resolved["te_security_multiplier"])
 
 
 def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indices: CostIndices) -> float:
@@ -2136,6 +2215,21 @@ def production_excluded_location_ids(cfg: ProductionConfig = PRODUCTION_CONFIG) 
     return ids
 
 
+def production_excluded_kwargs(cfg: Optional[ProductionConfig] = None) -> dict:
+    """`{"exclude_location_ids": ids}` for a storage reader whose filter is
+    optional (manual stock, manual blueprints, manual jobs), or `{}` when no
+    system is excluded, so those calls stay exactly as before then."""
+    ids = production_excluded_location_ids() if cfg is None else production_excluded_location_ids(cfg)
+    return {"exclude_location_ids": ids} if ids else {}
+
+
+def _excluded_reads_key(cfg: ProductionConfig = PRODUCTION_CONFIG) -> tuple:
+    """The excluded systems as a memo key: planner_reads bags that hold
+    filtered values carry it, so a value read under one set of excluded
+    systems is never served under another."""
+    return tuple(sorted({int(s) for s in (cfg.excluded_system_ids or ()) if s}))
+
+
 def production_excluded_hangar():
     """The Doctrine strategic reserve hangar, or None: its contents do not exist
     for Production (GitHub issue #418, doctrine/reserve.py). Lazy import:
@@ -2176,6 +2270,7 @@ def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> N
 # _ReadinessLedger) - only the raw DB figure.
 _planner_reads_var: contextvars.ContextVar[Optional["_PlannerReads"]] = contextvars.ContextVar(
     "planner_reads", default=None)
+storage.register_thread_local_contextvar(_planner_reads_var, None)
 
 
 class _PlannerReads:
@@ -2184,9 +2279,11 @@ class _PlannerReads:
 
     def __init__(self) -> None:
         self.tenant_id = storage.get_current_tenant()
-        self.bpo_me_te: dict[int, Optional[tuple[int, int]]] = {}
-        self.esi_incoming: dict[int, dict[str, float]] = {}
-        self.manual_incoming: dict[int, float] = {}
+        # Keyed (excluded systems, type_id): every value below is read with
+        # Production's excluded-system filter (_excluded_reads_key).
+        self.bpo_me_te: dict[tuple, Optional[tuple[int, int]]] = {}
+        self.esi_incoming: dict[tuple, dict[str, float]] = {}
+        self.manual_incoming: dict[tuple, float] = {}
         self.haul_volume: dict[int, Optional[float]] = {}
         self.bpc_cost: dict[int, Optional[float]] = {}
         # (allowed_flags_tuple_or_None, exclude_intake_or_None) -> {type_id: qty}
@@ -2219,30 +2316,31 @@ class _PlannerReads:
 
         char_bp, corp_bp = shared_production_owner_ids("blueprints")
         excluded = production_excluded_location_ids()
+        ex_key = _excluded_reads_key()
         hangar = production_excluded_hangar()
-        need_bp = [t for t in bp_ids if t not in self.bpo_me_te]
+        need_bp = [t for t in bp_ids if (ex_key, t) not in self.bpo_me_te]
         if need_bp:
             esi_map = storage.get_owned_bpo_best_me_te_bulk(
                 need_bp, owner_character_ids=char_bp, owner_corporation_ids=corp_bp,
                 exclude_location_ids=excluded, exclude_hangar=hangar)
-            manual_map = storage.manual_bpo_best_me_te_bulk(need_bp)
+            manual_map = storage.manual_bpo_best_me_te_bulk(need_bp, **production_excluded_kwargs())
             for tid in need_bp:
                 esi = esi_map.get(tid)
                 manual = manual_map.get(tid)
                 if esi is None and manual is None:
-                    self.bpo_me_te[tid] = None
+                    self.bpo_me_te[(ex_key, tid)] = None
                 else:
                     esi_me, esi_te = esi or (0, 0)
                     man_me, man_te = manual or (0, 0)
-                    self.bpo_me_te[tid] = (max(esi_me, man_me), max(esi_te, man_te))
+                    self.bpo_me_te[(ex_key, tid)] = (max(esi_me, man_me), max(esi_te, man_te))
 
         char_jobs, corp_jobs = shared_production_owner_ids("industry_jobs")
         for tid, val in storage.esi_incoming_industry_qty_bulk(
                 ids, owner_character_ids=char_jobs, owner_corporation_ids=corp_jobs,
                 exclude_location_ids=excluded).items():
-            self.esi_incoming.setdefault(tid, val)
-        for tid, val in storage.manual_incoming_qty_bulk(ids).items():
-            self.manual_incoming.setdefault(tid, val)
+            self.esi_incoming.setdefault((ex_key, tid), val)
+        for tid, val in storage.manual_incoming_qty_bulk(ids, **production_excluded_kwargs()).items():
+            self.manual_incoming.setdefault((ex_key, tid), val)
 
         char_assets, corp_assets = shared_production_owner_ids("assets")
         flags = tuple(cfg.stock_hangar_flags) if cfg.stock_hangar_flags else None
@@ -2430,13 +2528,15 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
     (decision 1) - not a max of the *pair*, so a manual ME10 entry still
     lifts ME even if the ESI-owned BPO's own TE happens to be higher."""
     scope = _active_planner_reads()
-    if scope is not None and blueprint_type_id in scope.bpo_me_te:
-        return scope.bpo_me_te[blueprint_type_id]
+    memo_key = (_excluded_reads_key(), blueprint_type_id)
+    if scope is not None and memo_key in scope.bpo_me_te:
+        return scope.bpo_me_te[memo_key]
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    excluded = production_excluded_location_ids()
     esi = storage.get_owned_bpo_best_me_te(
         blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
-    manual = storage.manual_bpo_best_me_te(blueprint_type_id)
+        exclude_location_ids=excluded, exclude_hangar=production_excluded_hangar())
+    manual = storage.manual_bpo_best_me_te(blueprint_type_id, **production_excluded_kwargs())
     if esi is None and manual is None:
         result = None
     else:
@@ -2444,16 +2544,17 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
         manual_me, manual_te = manual or (0, 0)
         result = (max(esi_me, manual_me), max(esi_te, manual_te))
     if scope is not None:
-        scope.bpo_me_te[blueprint_type_id] = result
+        scope.bpo_me_te[memo_key] = result
     return result
 
 
 def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    excluded = production_excluded_location_ids()
     esi_copies = storage.available_blueprint_copies(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
-    return esi_copies + storage.manual_bpc_runs(type_id, location_id)
+        exclude_location_ids=excluded, exclude_hangar=production_excluded_hangar())
+    return esi_copies + storage.manual_bpc_runs(type_id, location_id, **production_excluded_kwargs())
 
 
 def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
@@ -2472,15 +2573,19 @@ def _invention_bpc_runs_in_progress(t2_blueprint_id: int, chosen: InventionResul
     user 2026-10-04 - inferring it from the probability is ambiguous:
     Symmetry and no decryptor share the same x1.0 chance)."""
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
+    # Copies delivered into an excluded system do not exist for Production.
+    excluded = production_excluded_location_ids()
     successes = storage.esi_expected_invention_successes(
         t2_blueprint_id, chosen.probability,
-        owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=excluded)
     # Delivered inventions whose copies the (rarely synced) blueprint
     # snapshot does not show yet still count; their successes are known.
     lag_chars, lag_corps = _owners_sharing_both("industry_jobs", "blueprints")
     if lag_chars or lag_corps:
         successes += storage.delivered_inventions_after_blueprints(
-            t2_blueprint_id, owner_character_ids=lag_chars, owner_corporation_ids=lag_corps)
+            t2_blueprint_id, owner_character_ids=lag_chars, owner_corporation_ids=lag_corps,
+            exclude_location_ids=excluded)
     return int(round(successes * chosen.output_runs))
 
 
@@ -2560,24 +2665,26 @@ def _asset_lag_delta(type_id: int, location_id: Optional[int] = None) -> float:
 
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
     scope = _active_planner_reads()
-    if scope is not None and type_id in scope.esi_incoming:
-        return scope.esi_incoming[type_id]
+    memo_key = (_excluded_reads_key(), type_id)
+    if scope is not None and memo_key in scope.esi_incoming:
+        return scope.esi_incoming[memo_key]
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
     result = storage.esi_incoming_industry_qty(
         type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
         exclude_location_ids=production_excluded_location_ids())
     if scope is not None:
-        scope.esi_incoming[type_id] = result
+        scope.esi_incoming[memo_key] = result
     return result
 
 
 def _manual_incoming_qty(type_id: int) -> float:
     scope = _active_planner_reads()
-    if scope is not None and type_id in scope.manual_incoming:
-        return scope.manual_incoming[type_id]
-    result = storage.manual_incoming_qty(type_id)
+    memo_key = (_excluded_reads_key(), type_id)
+    if scope is not None and memo_key in scope.manual_incoming:
+        return scope.manual_incoming[memo_key]
+    result = storage.manual_incoming_qty(type_id, **production_excluded_kwargs())
     if scope is not None:
-        scope.manual_incoming[type_id] = result
+        scope.manual_incoming[memo_key] = result
     return result
 
 
@@ -2721,12 +2828,33 @@ def _reaction_capacity_gross_demand(
 # history call per plan otherwise. Market history is daily, so a result is
 # reused for the rest of the UTC day; key includes everything it depends on.
 _w2_market_cache: dict[tuple, dict[int, float]] = {}
-_w2_market_lock = threading.Lock()
+_w2_market_lock = threading.Lock()  # guards the two dicts only, never held over a network call
+_w2_market_key_locks: dict[tuple, threading.Lock] = {}  # one per key: same-key callers share one computation
+_W2_MARKET_CACHE_MAX = 8
 
 
 def clear_w2_market_velocity_cache() -> None:
     with _w2_market_lock:
         _w2_market_cache.clear()
+
+
+def _w2_market_cache_get(key: tuple) -> Optional[dict[int, float]]:
+    with _w2_market_lock:
+        cached = _w2_market_cache.get(key)
+        return dict(cached) if cached is not None else None
+
+
+def _w2_market_cache_put(key: tuple, found: dict[int, float]) -> None:
+    """Drops entries of other days, then the oldest ones beyond the cap, so
+    several tenants' keys coexist instead of evicting each other."""
+    with _w2_market_lock:
+        day = key[1]
+        for old in [k for k in _w2_market_cache if k[1] != day]:
+            del _w2_market_cache[old]
+        _w2_market_cache.pop(key, None)
+        _w2_market_cache[key] = dict(found)
+        while len(_w2_market_cache) > _W2_MARKET_CACHE_MAX:
+            del _w2_market_cache[next(iter(_w2_market_cache))]
 
 
 def _w2_market_velocity(cfg: ProductionConfig, type_ids: list[int]) -> Optional[dict[int, float]]:
@@ -2735,23 +2863,36 @@ def _w2_market_velocity(cfg: ProductionConfig, type_ids: list[int]) -> Optional[
     no type got a value at all. The history client swallows failed requests,
     so an outage and "none of these trade" look the same; the caller then
     keeps the backlog (the pre-D17 rule) rather than read an outage as
-    "nothing sells". Not cached, so the next plan asks again."""
+    "nothing sells". Not cached, so the next plan asks again.
+
+    The network call runs outside the module lock: tenants with different keys
+    do not wait for each other. Callers with the same key queue on that key's
+    own lock and find the first one's result."""
     ids = sorted({int(t) for t in type_ids})
     if not ids:
         return {}
     region_id = TRADING_CONFIG.reference_region_id
     key = (region_id, dynamic_targets._today().isoformat(), int(cfg.dynamic_target_window_days),
            float(cfg.dynamic_target_market_share), tuple(ids))
+    cached = _w2_market_cache_get(key)
+    if cached is not None:
+        return cached
     with _w2_market_lock:
-        cached = _w2_market_cache.get(key)
-        if cached is not None:
-            return dict(cached)
-        found = dynamic_targets.compute_market_velocity(cfg, ids, region_id=region_id)
-        if not found:
-            return None
-        _w2_market_cache.clear()  # one key per tenant config and day is enough
-        _w2_market_cache[key] = dict(found)
-        return dict(found)
+        key_lock = _w2_market_key_locks.setdefault(key, threading.Lock())
+    try:
+        with key_lock:
+            cached = _w2_market_cache_get(key)
+            if cached is not None:
+                return cached
+            found = dynamic_targets.compute_market_velocity(cfg, ids, region_id=region_id)
+            if not found:
+                return None
+            _w2_market_cache_put(key, found)
+            return dict(found)
+    finally:
+        with _w2_market_lock:
+            if _w2_market_key_locks.get(key) is key_lock:
+                del _w2_market_key_locks[key]
 
 
 # A unit value above this is a data error, not a real end product; keeps the
@@ -3020,7 +3161,7 @@ def market_listing_shortfall_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) 
     yet, so they must not shrink listing demand here the way they
     legitimately shrink "how many more runs to plan" on the Buy/Build
     lists."""
-    manual_stock = storage.load_manual_stock()
+    manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
     wanted: dict[int, float] = {}
     for type_id, _name, backup_stock, home_market_stock, jita_market_stock in dynamic_targets.effective_stock_targets(cfg):
         if not home_market_stock and not jita_market_stock:
@@ -3073,7 +3214,7 @@ class _PlanContext:
         from ..esi_client import ESIClient
 
         self.stock_targets = storage.load_stock_targets()
-        self.manual_stock = storage.load_manual_stock()
+        self.manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
         self.manual_overrides = storage.load_manual_build_buy()
         self.selected_decryptors = storage.load_selected_decryptors()
 
@@ -3172,6 +3313,12 @@ class _PlanContext:
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
             self.adjusted_prices_available = False
+        # Informational only: materials of the recipes in this plan that ESI's
+        # list lacks (their EIV share reads 0). Never changes a number.
+        self.adjusted_prices_missing = (
+            _missing_adjusted_prices(priced_type_ids, self.adjusted_prices)
+            if self.adjusted_prices_available else []
+        )
         # Cost-index age only matters when a system is configured; otherwise
         # the plan never reads the class-wide catalog and a leftover stale
         # cache must not show "ESI is not reachable".
@@ -3183,6 +3330,13 @@ class _PlanContext:
             ci_age = getattr(ESIClient, "cost_indices_stale_seconds", lambda: None)()
             if ci_age is not None:
                 ages.append(ci_age)
+        # The shared Jita quote cache counts as price data too once it is
+        # older than twice its refresh interval.
+        hub = hub_region_id if hub_region_id is not None else cfg.hub_region_id
+        jita_age = (jita_price_cache.stale_age_seconds()
+                    if hub in (JITA_REGION_ID, hubs.ALL_HUBS) else None)
+        if jita_age is not None:
+            ages.append(jita_age)
         self.price_data_stale_hours = (max(ages) / 3600.0) if ages else None
         # docs/REACTION_CAPACITY_PLAN.md phase 3: solve once per plan context.
         self._reaction_solve_cache = None
@@ -3199,6 +3353,26 @@ class _PlanContext:
         return self.adjusted_prices_available and self.cost_indices_available
 
 
+def _missing_adjusted_prices(type_ids: Iterable[int], adjusted_prices: dict) -> list[int]:
+    """Sorted material type ids of the Manufacturing/Reaction recipes of
+    `type_ids` that have no adjusted price. Recipe lookups come from the
+    cached recipe index (no per-type query for ids the closure already
+    prefetched)."""
+    missing: set[int] = set()
+    try:
+        for type_id in type_ids:
+            recipe = storage.get_blueprint_for_product(type_id)
+            if recipe is None:
+                continue
+            for material_id, _qty in storage.get_blueprint_materials(recipe[0], recipe[1]):
+                if material_id not in adjusted_prices:
+                    missing.add(int(material_id))
+    except Exception:  # noqa: BLE001 - an informational hint must never fail a plan
+        log.warning("Could not check recipe materials against adjusted prices", exc_info=True)
+        return []
+    return sorted(missing)
+
+
 def _reliability_fields(ctx) -> dict:
     """Shared keys every plan_* return dict exposes for the UI warnings.
     getattr defaults keep test doubles that only set adjusted_prices_available
@@ -3208,6 +3382,7 @@ def _reliability_fields(ctx) -> dict:
         "cost_indices_available": getattr(ctx, "cost_indices_available", True),
         "prices_available": getattr(ctx, "prices_available", True),
         "price_data_stale_hours": getattr(ctx, "price_data_stale_hours", None),
+        "adjusted_prices_missing": list(getattr(ctx, "adjusted_prices_missing", None) or []),
     }
 
 
@@ -3296,11 +3471,12 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         product_activity = classify_activity(product_type_id)[0]
         invention_per_unit = None
         if product_activity == "Tech II" and product_type_id in t2_memo:
-            _, time_mult, decryptor_name, chosen = t2_memo[product_type_id]
+            material_mult, time_mult, decryptor_name, chosen = t2_memo[product_type_id]
             job_cost_rate = _job_cost_rate("Tech II", product_type_id, cfg, cost_indices)
             invention_per_unit = _invention_cost_per_unit(product_type_id, product_qty, chosen)
         else:
-            _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
+            material_mult, time_mult, job_cost_rate = _activity_mods(
+                product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
         job_time = base_time * time_mult * runs
         alchemy_entry = alchemy_keys.get((blueprint_id, activity_id, product_type_id))
@@ -3342,6 +3518,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             margin=margin_home(product_type_id, unit_cost, home, cfg),
             home_sell_price=home_sell,
             profit_per_unit=profit_per_unit,
+            material_mult=material_mult,
         ))
     build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
     return build_list
@@ -4965,7 +5142,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     decryptor_name = None
                 activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
                 job_meta[type_id] = (job_key, blueprint_id, activity_id, product_qty, activity_label,
-                                      decryptor_name, time_mult)
+                                      decryptor_name, time_mult, material_mult)
 
                 parent_base_runs = _parent_base_runs_for_buffer(type_id, pass_base_runs, buffered_parents)
                 for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
@@ -5050,7 +5227,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             # needing the same target still merge into that one row.
             for type_id, runs in runs_this_round.items():
                 (job_key, blueprint_id, activity_id, product_qty, activity_label,
-                 decryptor_name, time_mult) = job_meta[type_id]
+                 decryptor_name, time_mult, material_mult) = job_meta[type_id]
                 sde_type = storage.get_sde_type(job_key)
                 name = sde_type[2] if sde_type else str(job_key)
                 base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
@@ -5075,6 +5252,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         margin=margin_home(type_id, cost_memo.get(type_id), home, cfg),
                         recipe_source="alchemy" if job_key != type_id else None,
                         blockers=round_blockers,
+                        material_mult=material_mult,
                     )
                     (jobs[job_key].home_sell_price,
                      jobs[job_key].profit_per_unit) = home_sell_and_profit(
@@ -5309,7 +5487,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             sde_type = storage.get_sde_type(job_key)
             name = sde_type[2] if sde_type else str(job_key)
             base_time = storage.get_blueprint_time(recipe.blueprint_type_id, ACTIVITY_REACTION) or 0
-            _, time_mult, _ = _activity_mods(
+            material_mult, time_mult, _ = _activity_mods(
                 "Reaction", job_key, cfg, cost_indices, recipe.blueprint_type_id)
             job_time = base_time * time_mult * runs
             ready, blockers = reaction_ready[index]
@@ -5338,6 +5516,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     blockers=blockers,
                     formulas_owned=recipe.owned_formulas,
                     formulas_needed=alloc.jobs,
+                    material_mult=material_mult,
                     recommended_slots=_ready_slots(ready),
                     runs_per_slot=runs_per_job if ready > 0 else None,
                     days_to_complete_at_recommended_slots=(
@@ -5461,7 +5640,7 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
     home_market_stock=0, jita_market_stock=NULL and still showed up when
     only NULL was checked - a 0 target is never a real, deliberately-set
     market target in practice)."""
-    manual_stock = storage.load_manual_stock()
+    manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
     rows = []
     # Dynamic rows stay listed even at an effective 0 (E-09): the #33 rule
     # below would otherwise make a row vanish exactly when the page should
@@ -5489,22 +5668,22 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
 
 def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Total ISK value of current stock (manual + ESI assets + incoming jobs,
-    same _current_stock every stock target uses), priced at each item's C-J
-    sell quote - its real opportunity-cost value even for stock that's
-    actually consumed internally rather than resold, same sourcing
-    _build_margin uses for a home-market target - falling back to the Jita
-    sell quote if there's no C-J listing. Returns {'total_value': ISK,
-    'priced_items': N, 'unpriced_items': N} - unpriced items (no sell quote
-    anywhere) are excluded from total_value rather than counted as 0, so a
-    temporary market-data gap doesn't silently understate the total."""
-    manual_stock = storage.load_manual_stock()
+    same _current_stock every stock target uses), priced by the Portfolio
+    rule (portfolio._priced, the one valuation shared with Total Wealth):
+    the manual item price if set, else the cheaper of the home sell quote and
+    the Jita sell quote plus freight (haul_cost_per_m3 x packaged m3), without
+    the buy broker fee. Returns {'total_value': ISK, 'priced_items': N,
+    'unpriced_items': N} - unpriced items (no quote anywhere) are excluded
+    from total_value rather than counted as 0, so a temporary market-data gap
+    doesn't silently understate the total."""
+    # Lazy import: portfolio imports this module.
+    from .. import portfolio
+    manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
     stock_targets = storage.load_stock_targets()
     # Only the stock targets' own type_ids need pricing here (this KPI never
-    # recurses into materials) - see pricing.home_prices/jita_prices' own
-    # docstrings for why callers must scope type_ids explicitly now.
+    # recurses into materials).
     type_ids = [t[0] for t in stock_targets]
-    home = pricing.home_prices(cfg, type_ids)
-    jita = pricing.jita_prices(type_ids)
+    prices = portfolio._priced(set(type_ids))
 
     total_value = 0.0
     priced_items = 0
@@ -5514,13 +5693,8 @@ def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         current = _current_stock(type_id, manual_stock, cfg, bp)
         if current <= 0:
             continue
-        home_quote = home.get(type_id)
-        jita_quote = pricing.reference_quote(jita.get(type_id))
-        if home_quote and home_quote.sell > 0:
-            price = home_quote.sell
-        elif jita_quote and jita_quote.sell > 0:
-            price = jita_quote.sell
-        else:
+        price = prices.get(type_id)
+        if not price or price <= 0:
             unpriced_items += 1
             continue
         total_value += current * price
@@ -6306,9 +6480,12 @@ def _category_material_demand(build_list: list[BuildJobEntry] | list[AssetPlanJo
     of each *direct* material (one level only, not the full recursive chain
     _expand_all walks) is needed for every currently-planned job in each
     category that has an assigned location. Accepts Build List entries or
-    asset-plan jobs (asset_plan_ready_jobs) - only type_id, job_category,
-    decryptor and job_runs are read. Categories with no assigned
-    location are skipped entirely (nothing to net against either way)."""
+    asset-plan jobs (asset_plan_ready_jobs). A job that carries
+    material_mult (the factor the plan already applied, manual ME/TE
+    override included) is costed with that factor. A job without one is
+    recomputed via _direct_material_mult, which cannot see the override
+    and falls back to ME 10. Categories with no assigned location are
+    skipped entirely (nothing to net against either way)."""
     demand: dict[tuple[str, int], float] = {}
     for entry in build_list:
         category = entry.job_category
@@ -6318,13 +6495,92 @@ def _category_material_demand(build_list: list[BuildJobEntry] | list[AssetPlanJo
         if bp is None:
             continue
         blueprint_id, activity_id, _ = bp
-        material_mult = _direct_material_mult(entry.type_id, activity, entry.decryptor, cfg, blueprint_id)
+        if entry.material_mult is not None:
+            material_mult = entry.material_mult
+        else:
+            material_mult = _direct_material_mult(entry.type_id, activity, entry.decryptor, cfg, blueprint_id)
         for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
             qty = _material_qty(base_qty, material_mult, entry.job_runs)
             if qty > 0:
                 key = (category, material_id)
                 demand[key] = demand.get(key, 0.0) + qty
     return demand
+
+
+def _pull_from_chains(demand: dict[tuple[str, int], float],
+                      missing_of: dict[tuple[str, int], float],
+                      category_locations: dict[str, int],
+                      stock_of,
+                      warehouse_location_id: Optional[int],
+                      orphaned_locations_by_category: dict[str, list[int]],
+                      ) -> dict[tuple[str, int], list[PullFromStop]]:
+    """For each short (category, material), the places to take it from.
+
+    Order per row: warehouse stock, then other category stations' surplus
+    (largest remaining first), then that category's former stations. Each
+    stop's quantity is the amount to move. The largest shortfall of a
+    material is filled first, and what it takes is gone for the next row."""
+    by_material: dict[int, list[tuple[str, float]]] = {}
+    for (category, material_id), missing in missing_of.items():
+        if missing > 0:
+            by_material.setdefault(material_id, []).append((category, missing))
+
+    warehouse_left: dict[int, float] = {}
+    surplus_left: dict[tuple[int, int], float] = {}
+    orphan_left: dict[tuple[int, int], float] = {}
+    chains: dict[tuple[str, int], list[PullFromStop]] = {}
+
+    def category_at(location_id: int) -> str:
+        return next(category for category, loc in category_locations.items() if loc == location_id)
+
+    for material_id, shortfalls in by_material.items():
+        if warehouse_location_id is not None:
+            warehouse_left[material_id] = stock_of(material_id, warehouse_location_id)
+        for category, missing in sorted(shortfalls, key=lambda item: (-item[1], item[0])):
+            own = category_locations[category]
+            need = missing
+            stops: list[PullFromStop] = []
+
+            def take(location_id: int, available: float) -> float:
+                nonlocal need
+                qty = min(need, available)
+                if qty <= 0:
+                    return available
+                stops.append(PullFromStop(location_id=location_id, quantity=qty))
+                need -= qty
+                return available - qty
+
+            if warehouse_location_id is not None and warehouse_location_id != own:
+                warehouse_left[material_id] = take(warehouse_location_id, warehouse_left[material_id])
+
+            if need > 0:
+                candidates: list[int] = []
+                for other_location_id in {loc for cat, loc in category_locations.items() if cat != category}:
+                    if other_location_id == warehouse_location_id:
+                        continue
+                    key = (material_id, other_location_id)
+                    if key not in surplus_left:
+                        other_demand = demand.get((category_at(other_location_id), material_id), 0.0)
+                        surplus_left[key] = max(0.0, stock_of(material_id, other_location_id) - other_demand)
+                    candidates.append(other_location_id)
+                for loc_id in sorted(candidates, key=lambda loc: -surplus_left[(material_id, loc)]):
+                    if need <= 0:
+                        break
+                    surplus_left[(material_id, loc_id)] = take(loc_id, surplus_left[(material_id, loc_id)])
+
+            if need > 0:
+                orphans = orphaned_locations_by_category.get(category, [])
+                for loc_id in orphans:
+                    key = (material_id, loc_id)
+                    if key not in orphan_left:
+                        orphan_left[key] = stock_of(material_id, loc_id)
+                for loc_id in sorted(orphans, key=lambda loc: -orphan_left[(material_id, loc)]):
+                    if need <= 0:
+                        break
+                    orphan_left[(material_id, loc_id)] = take(loc_id, orphan_left[(material_id, loc_id)])
+
+            chains[(category, material_id)] = stops
+    return chains
 
 
 def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
@@ -6339,23 +6595,17 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
     (storage.esi_stock_at_location, a plain DB read) against whatever
     Bauliste is already on screen.
 
-    A row with missing > 0 also gets a "pull from" hint (GitHub issue #4) -
-    the configured warehouse (cfg.distribution_source_location_id, falling
-    back to home_location_id - "the home market acts as the central
-    warehouse" by default) if it has any stock, else whichever *other*
-    configured category location currently has surplus (stock beyond its
-    own demand), largest surplus first, else a category's own now-orphaned
-    *former* station (Structure per Category above was reassigned away from
-    it, e.g. a Reactions station move) - production rotates between a
-    handful of stations over time, and a former station isn't tracked
-    against anyone's demand anymore, so its whole remaining stock counts as
-    pullable (via `category_location_options` history, minus whatever's
-    still actively assigned to some category or configured as the
-    warehouse). Purely informational/independent per row - unlike
-    distribution_recommendations below, this doesn't need to track stock
-    already "claimed" by an earlier row, since it's just a hint for the user
-    to read, not a set of recommendations that must sum to no more than
-    what's actually there.
+    A row with missing > 0 gets a pull chain (GitHub issue #4). Stops, in
+    order, are the warehouse (cfg.distribution_source_location_id, falling
+    back to home_location_id), then other category stations' surplus
+    (stock beyond that station's own demand, largest first), then the
+    category's former stations (category_location_options, minus locations
+    still assigned to a category or used as the warehouse). Each stop's
+    quantity is what to take there, and the chain stops once missing is
+    covered. Several rows short of the same material share one pile: the
+    largest shortfall is filled first, same as distribution_recommendations.
+    A former station's whole stock counts, because nobody's demand is
+    netted against it.
 
     Each row's volume_m3 (packaged for ships/capital modules, same
     engine._haul_volume the Build List's own haul-cost math uses) is the
@@ -6368,10 +6618,6 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
     stock_of = _stock_lookup({material_id for _, material_id in demand}, cfg.home_location_id)
     warehouse_location_id = cfg.distribution_source_location_id or cfg.home_location_id
     active_locations = set(category_locations.values())
-    other_locations_by_category = {
-        category: sorted({loc for cat, loc in category_locations.items() if cat != category})
-        for category in category_locations
-    }
     orphaned_locations_by_category = {
         category: sorted({
             loc for loc in category_options.get(category, [])
@@ -6379,42 +6625,29 @@ def logistics_status(build_list: list[BuildJobEntry] | list[AssetPlanJob], cfg: 
         })
         for category, location_id in category_locations.items()
     }
+    available_of = {
+        (category, material_id): stock_of(material_id, category_locations[category])
+        for (category, material_id) in demand
+    }
+    missing_of = {
+        key: max(0.0, needed - available_of[key]) for key, needed in demand.items()
+    }
+    pull_of = _pull_from_chains(
+        demand, missing_of, category_locations, stock_of,
+        warehouse_location_id, orphaned_locations_by_category,
+    )
 
     rows = []
     for (category, material_id), needed in demand.items():
-        location_id = category_locations[category]
-        available = stock_of(material_id, location_id)
-        missing = max(0.0, needed - available)
+        missing = missing_of[(category, material_id)]
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
         unit_volume = _haul_volume(material_id, cfg) or 0.0
-
-        pull_from_location_id = None
-        pull_from_available = None
-        if missing > 0:
-            if warehouse_location_id is not None and warehouse_location_id != location_id:
-                warehouse_stock = stock_of(material_id, warehouse_location_id)
-                if warehouse_stock > 0:
-                    pull_from_location_id, pull_from_available = warehouse_location_id, warehouse_stock
-            if pull_from_location_id is None:
-                for other_location_id in other_locations_by_category[category]:
-                    if other_location_id == warehouse_location_id:
-                        continue
-                    other_category = next(c for c, loc in category_locations.items() if loc == other_location_id)
-                    other_demand = demand.get((other_category, material_id), 0.0)
-                    stock = stock_of(material_id, other_location_id)
-                    surplus = max(0.0, stock - other_demand)
-                    if surplus > 0 and (pull_from_available is None or surplus > pull_from_available):
-                        pull_from_location_id, pull_from_available = other_location_id, surplus
-                for orphaned_location_id in orphaned_locations_by_category[category]:
-                    stock = stock_of(material_id, orphaned_location_id)
-                    if stock > 0 and (pull_from_available is None or stock > pull_from_available):
-                        pull_from_location_id, pull_from_available = orphaned_location_id, stock
-
         rows.append(LogisticsRow(
-            category=category, location_id=location_id, type_id=material_id, type_name=name,
-            needed=needed, available=available, missing=missing,
-            pull_from_location_id=pull_from_location_id, pull_from_available=pull_from_available,
+            category=category, location_id=category_locations[category],
+            type_id=material_id, type_name=name,
+            needed=needed, available=available_of[(category, material_id)], missing=missing,
+            pull_from=pull_of.get((category, material_id), []),
             volume_m3=missing * unit_volume,
         ))
     rows.sort(key=lambda r: (r.category, -r.missing))
@@ -6434,15 +6667,14 @@ def distribution_recommendations(build_list: list[BuildJobEntry] | list[AssetPla
     Whatever the warehouse still can't cover after that is filled from other
     category locations' surplus (stock beyond their own demand), largest
     surplus first, same "warehouse first, then surplus" priority as
-    logistics_status' own pull-from hint. Unlike that hint (informational,
-    independent per row), the recommendations here are a commitment - two
-    categories short of the same material can't both be recommended to pull
-    more than a shared surplus location actually has, so surplus_remaining
-    tracks what's already been committed to an earlier category in this same
-    material's loop and decrements as it's consumed (confirmed real bug in
-    an earlier attempt at this: recomputing each category's candidate
-    surplus independently, straight off the unmodified DB stock figure,
-    let two categories each get recommended the same units).
+    logistics_status' pull chain. Both surfaces share one pile across rows:
+    two categories short of the same material cannot each be handed the
+    same units. surplus_remaining tracks what an earlier category in this
+    material's loop already took (confirmed real bug in an earlier attempt
+    at this: recomputing each category's candidate surplus independently,
+    straight off the unmodified DB stock figure, let two categories each
+    get recommended the same units). The pull chain also walks a category's
+    former stations; these recommendations stay warehouse then surplus.
 
     Returns [] if no distribution source is configured at all."""
     source_location_id = cfg.distribution_source_location_id or cfg.home_location_id

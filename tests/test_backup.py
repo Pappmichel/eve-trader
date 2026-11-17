@@ -59,6 +59,7 @@ def test_create_backup_produces_a_zip_with_dump_and_config(isolated_backup_dir):
         assert "eve_trader.dump" in names
         assert "config.yaml" in names
         assert "tokens.json" not in names  # never included anymore - TokenManager persists to Postgres now
+        assert not any(n == ".env" or n.endswith("/.env") for n in names)  # the token key never travels in a backup
 
         # Real bytes made it through the subprocess -> file -> zip path, not
         # an empty/corrupt placeholder.
@@ -239,3 +240,125 @@ def test_parallel_create_backup_does_not_collide_or_corrupt(isolated_backup_dir)
     assert len(set(names)) == 8
     listed = {row["name"] for row in backup.list_backups()}
     assert listed == set(names)
+
+
+def test_predeploy_prefix_has_its_own_name_family_and_retention(isolated_backup_dir, monkeypatch):
+    backup_dir, _ = isolated_backup_dir
+    monkeypatch.setattr(backup, "MAX_PREDEPLOY_BACKUPS", 2)
+    _fake_clock(monkeypatch)
+
+    daily = [backup.create_backup() for _ in range(3)]
+    pre = [backup.create_backup(prefix=backup.PREDEPLOY_BACKUP_PREFIX) for _ in range(4)]
+
+    assert all(i["name"].startswith("eve_trader_predeploy_") for i in pre)
+    pre_files = sorted(p.name for p in backup_dir.glob("eve_trader_predeploy_*.zip"))
+    assert pre_files == sorted(i["name"] for i in pre[-2:])
+    # Daily backups are untouched by pre-deploy rotation, and the Admin list
+    # does not show pre-deploy files.
+    assert {r["name"] for r in backup.list_backups()} == {i["name"] for i in daily}
+
+
+def test_predeploy_backup_is_not_counted_against_daily_retention(isolated_backup_dir, monkeypatch):
+    monkeypatch.setattr(backup, "MAX_BACKUPS", 2)
+    _fake_clock(monkeypatch)
+    backup.create_backup()
+    backup.create_backup()
+    for _ in range(3):
+        backup.create_backup(prefix=backup.PREDEPLOY_BACKUP_PREFIX)
+    assert len(backup.list_backups()) == 2
+
+
+def test_create_backup_rejects_an_unknown_prefix(isolated_backup_dir):
+    with pytest.raises(ValueError):
+        backup.create_backup(prefix="../evil_")
+
+
+@posix_modes_only
+def test_predeploy_backup_is_owner_only(isolated_backup_dir):
+    backup_dir, _ = isolated_backup_dir
+    info = backup.create_backup(prefix=backup.PREDEPLOY_BACKUP_PREFIX)
+    assert stat.S_IMODE((backup_dir / info["name"]).stat().st_mode) == 0o600
+
+
+def test_cli_backup_create_calls_create_backup(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from eve_trader import cli
+
+    calls = []
+    monkeypatch.setattr(backup, "BACKUP_DIR", tmp_path)
+    monkeypatch.setattr(
+        backup, "create_backup",
+        lambda prefix=backup.BACKUP_NAME_PREFIX: calls.append(prefix) or {"name": "x.zip", "size_bytes": 3},
+    )
+    # The group callback resolves tenant config from the database; the backup
+    # command itself does not need it.
+    monkeypatch.setattr(cli.config, "resolve_and_set_trading_config", lambda *_: None)
+    monkeypatch.setattr(cli.production_config, "resolve_and_set_production_config", lambda *_: None)
+
+    res = CliRunner().invoke(cli.main, ["backup", "create", "--pre-deploy"])
+    assert res.exit_code == 0, res.output
+    assert calls == [backup.PREDEPLOY_BACKUP_PREFIX]
+    assert "x.zip" in res.output
+
+
+@pytest.fixture(autouse=True)
+def _restore_ambient_tenant():
+    """cli.main sets the default tenant for the process; put it back so later
+    tests in the same worker see no ambient tenant."""
+    from eve_trader import storage
+
+    token = storage.set_current_tenant(None)
+    yield
+    storage.reset_current_tenant(token)
+
+
+def test_cli_backup_create_exits_1_on_failure(monkeypatch):
+    from click.testing import CliRunner
+    from eve_trader import cli
+
+    def boom(prefix=backup.BACKUP_NAME_PREFIX):
+        raise backup.BackupError("Database backup failed.")
+
+    monkeypatch.setattr(backup, "create_backup", boom)
+    monkeypatch.setattr(cli.config, "resolve_and_set_trading_config", lambda *_: None)
+    monkeypatch.setattr(cli.production_config, "resolve_and_set_production_config", lambda *_: None)
+    res = CliRunner().invoke(cli.main, ["backup", "create"])
+    assert res.exit_code == 1
+
+
+def _capture_cmd(monkeypatch):
+    calls = []
+
+    def _run(cmd, stdout=None, stderr=None, timeout=None, shell=False):
+        calls.append(cmd)
+        if stdout is not None:
+            stdout.write(b"x")
+        return _FakeCompletedProcess()
+    monkeypatch.setattr(backup.subprocess, "run", _run)
+    return calls
+
+
+def test_bare_pg_dump_defaults_to_the_postgres_role(isolated_backup_dir, monkeypatch):
+    monkeypatch.setattr(backup, "PG_CONTAINER", "")
+    monkeypatch.delenv("EVE_TRADER_PG_BACKUP_USER", raising=False)
+    calls = _capture_cmd(monkeypatch)
+    backup.create_backup()
+    cmd = calls[0]
+    assert cmd[cmd.index("-U") + 1] == "postgres"
+
+
+def test_bare_pg_dump_uses_the_configured_backup_role(isolated_backup_dir, monkeypatch):
+    monkeypatch.setattr(backup, "PG_CONTAINER", "")
+    monkeypatch.setenv("EVE_TRADER_PG_BACKUP_USER", "eve_trader_backup")
+    calls = _capture_cmd(monkeypatch)
+    backup.create_backup()
+    cmd = calls[0]
+    assert cmd[cmd.index("-U") + 1] == "eve_trader_backup"
+
+
+def test_docker_pg_dump_ignores_the_backup_role_setting(isolated_backup_dir, monkeypatch):
+    monkeypatch.setenv("EVE_TRADER_PG_BACKUP_USER", "eve_trader_backup")
+    calls = _capture_cmd(monkeypatch)
+    backup.create_backup()
+    cmd = calls[0]
+    assert cmd[cmd.index("-U") + 1] == "postgres"

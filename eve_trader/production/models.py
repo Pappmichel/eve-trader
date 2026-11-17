@@ -154,6 +154,12 @@ class BuildJobEntry:
     # rule as margin). None without a C-J sell quote or a unit cost.
     home_sell_price: Optional[float] = None
     profit_per_unit: Optional[float] = None
+    # Material multiplier the plan already applied to this job's direct
+    # materials (blueprint ME, including a manual ME/TE override, times the
+    # structure and rig). Logistics reads this instead of recomputing it:
+    # a recompute cannot see the override and falls back to ME 10. None on
+    # a hand-built job, which then uses that recompute.
+    material_mult: Optional[float] = None
 
 
 @dataclass
@@ -405,6 +411,18 @@ class AssetPlanJob:
     # for the same item `margin` is computed on (engine.home_sell_and_profit).
     home_sell_price: Optional[float] = None
     profit_per_unit: Optional[float] = None
+    # See BuildJobEntry.material_mult.
+    material_mult: Optional[float] = None
+
+
+@dataclass
+class PullFromStop:
+    """One place a logistics row should take `quantity` of its missing
+    material from. `quantity` is the amount to move, not the pile sitting
+    there. A row's stops, in order, cover its missing amount until stock
+    runs out."""
+    location_id: int
+    quantity: float
 
 
 @dataclass
@@ -422,15 +440,13 @@ class LogisticsRow:
     needed: float
     available: float
     missing: float
-    # Which other configured category-location has the most of this item
-    # right now, if any (GitHub issue #4's "where to pull from" hint) - None
-    # when nothing's missing, or no other configured location has any. Can
-    # also be a category's now-orphaned *former* station (Structure per
-    # Category above was reassigned, e.g. Reactions moved stations) - its
-    # whole remaining stock counts as pullable, since nobody's demand is
-    # netted against it anymore.
-    pull_from_location_id: Optional[int] = None
-    pull_from_available: Optional[float] = None
+    # Where to pull the missing units from, in the order they should be
+    # moved: the warehouse, then other category stations' surplus (largest
+    # first), then a category's former stations. Each stop carries the
+    # quantity to take there. Later rows of the same material see what
+    # earlier rows already claimed. Empty when nothing is missing or no
+    # other place holds any.
+    pull_from: list[PullFromStop] = field(default_factory=list)
     # Volume (packaged for ships/capital modules, engine._haul_volume) of
     # `missing` - how many m3 actually need to be freighted in, not just the
     # raw unit count.

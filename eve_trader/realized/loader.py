@@ -30,8 +30,9 @@ from typing import Iterable, Optional
 
 from .. import storage
 from ..config import TRADING_CONFIG
-from ..esi_client import ESIClient, ESIError
+from ..esi_client import ESIClient, ESIError, ESIStatusError
 from ..goonmetrics_client import GoonmetricsClient
+from ..industry_activity import normalize_activity_id
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from ..station_trading.config import STATION_TRADING_CONFIG
@@ -45,6 +46,8 @@ from . import access, db, decryptors
 from .inputs import _invention_skill_factor as invention_skill_factor
 from .costing import (
     ORIGIN_BOUGHT,
+    SOURCE_TRANSFER,
+    UNIT_BPC_RUN,
     UNIT_ITEM,
     CompressionLink,
     ContractItem,
@@ -68,8 +71,16 @@ log = logging.getLogger(__name__)
 # price instead of The Forge daily average. 4: sale channels, station pool
 # and hub freight (unified plan Phase 2). 5: reprocessing detection.
 # 6: T0 is no longer pushed forward by a truncated journal; sales before a
-# wallet's journal start stay and are flagged fees_missing. NULL counts as older.
-COSTING_VERSION = 6
+# wallet's journal start stay and are flagged fees_missing. 7: own characters
+# by token or sharing rows; internal market trades are transfers (also
+# re-derives the opening once after the reprocessing, gas decompression and
+# corp-accepted contract flow changes that shipped without a bump; goods in
+# a finished courier's transit are not reprocessing; a refinery without a rig
+# no longer gets the security yield factor, which is a rig attribute: the
+# no-rig reprocessing yield changed with this version, not with a bump of its
+# own, because 7 had not been deployed yet).
+# NULL counts as older.
+COSTING_VERSION = 7
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
@@ -84,6 +95,8 @@ _PRICE_NEAREST_DAYS = 7
 _NEGATIVE_CACHE_MIN_AGE_DAYS = 2
 _MISSING_SOURCE = "none"
 _VALUATION_UNAVAILABLE = "unavailable"
+# ledger_bpc_run_prices source for a copy without a per-run value.
+_BPC_RUN_UNAVAILABLE = "unavailable"
 
 _DECRYPTOR_RUN_BONUS = {d.type_id: d.run_bonus for d in DECRYPTORS.values() if d.type_id}
 
@@ -91,7 +104,7 @@ _DECRYPTOR_RUN_BONUS = {d.type_id: d.run_bonus for d in DECRYPTORS.values() if d
 def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt.astimezone(timezone.utc)
 
 
 def _as_date(value) -> date:
@@ -100,6 +113,13 @@ def _as_date(value) -> date:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value)[:10])
+
+
+def _client_id(tx_row: tuple) -> Optional[int]:
+    """ESI's counterparty (column 14 of the bulk wallet read), if archived."""
+    if len(tx_row) > 14 and tx_row[14] is not None:
+        return int(tx_row[14])
+    return None
 
 
 def _production_type_ids(job_rows: list[tuple]) -> frozenset[int]:
@@ -117,11 +137,17 @@ def _production_type_ids(job_rows: list[tuple]) -> frozenset[int]:
 
 
 def _tenant_character_ids() -> frozenset[int]:
-    """The tenant's own characters: the registry entry (the login character)
-    plus every character that holds a token in this tenant. The registry
-    alone has one character per tenant, so a tenant's other characters
-    would read as outsiders (their corp jobs skipped, contracts between
-    them booked as sales)."""
+    """The tenant's own characters: the registry entry (the login character),
+    every character that holds a token in this tenant, and every character
+    with a sharing row (`esi_sharing`) or an Access capability
+    (`esi_character_capabilities`), unless it was removed on the Characters
+    page (`esi_removed_characters`) and holds no token. A token always wins.
+
+    The registry alone has one character per tenant, and a token can expire
+    or be missing on a copy of the data, so without the sharing rows a
+    tenant's other characters would read as outsiders (their corp jobs
+    skipped, contracts between them booked as sales). Corporation sharing
+    rows are not characters. Callers compute this once per rebuild."""
     tenant_id = storage.get_current_tenant()
     entries = storage.list_tenant_registry_entries(str(tenant_id))
     ids = {int(eid) for et, eid in entries if et == "character"}
@@ -129,7 +155,39 @@ def _tenant_character_ids() -> frozenset[int]:
     from ..config import OAUTH_CONFIG
     ids.update(int(rec.character_id) for rec in TokenManager(OAUTH_CONFIG).list_records()
                if rec.character_id is not None)
+    shared = {int(oid) for ot, oid, _kind, _tool in storage.list_esi_sharing() if ot == "character"}
+    shared.update(int(cid) for cid, _key in storage.list_esi_character_capabilities())
+    if shared - ids:
+        removed = storage.list_esi_removed_characters()
+        ids.update(cid for cid in shared if cid not in removed)
     return frozenset(ids)
+
+
+def _foreign_character_warnings(own: frozenset[int], *row_sets) -> list[str]:
+    """One warning per character that owns archive rows read for this
+    rebuild but is not one of the tenant's own characters (in practice: a
+    character removed on the Characters page whose sharing rows were kept).
+    Each row set holds archive rows whose first two columns are
+    (owner_type, owner_id)."""
+    foreign = sorted({
+        int(row[1]) for rows in row_sets for row in rows
+        if row[0] == "character" and int(row[1]) not in own
+    })
+    if not foreign:
+        return []
+    removed = storage.list_esi_removed_characters()
+    out = []
+    for cid in foreign:
+        when = removed.get(cid)
+        if when is None:
+            detail = "not removed"
+        else:
+            detail = f"removed {_as_date(when).isoformat()}"
+        out.append(
+            f"foreign_character_with_archive: character {cid} has archive rows but is not "
+            f"an own character ({detail}); contracts with it count as sales"
+        )
+    return out
 
 
 def _corp_wallet_owner_ids() -> frozenset[int]:
@@ -265,6 +323,7 @@ def _load_couriers() -> tuple:
             reward=0.0 if row[6] is None else float(row[6]),
             collateral=0.0 if row[7] is None else float(row[7]),
             status=str(row[8] or ""),
+            date_completed=_as_utc(row[9]) if len(row) > 9 and row[9] is not None else None,
         ))
     return tuple(out)
 
@@ -353,6 +412,7 @@ def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
             region_id=int(r[11]) if r[11] is not None else None,
             freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
             freight_m3=float(r[13]) if r[13] is not None else None,
+            client_id=_client_id(r),
         )
         for r in access.list_all_wallet_transactions_for_production()
     ]
@@ -370,13 +430,15 @@ def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
     return snapshot, cutover
 
 
-def _load_contracts() -> tuple:
+def _load_contracts(tenant_chars: Optional[frozenset[int]] = None) -> tuple:
     """Finished item-exchange contracts shared with any realized tool, deduped
     by contract id. Freight is frozen onto item rows the first time the start
     location's region can be resolved. Courier rows are not returned.
     `is_doctrine` is U7: doctrine structure, issuer is a tenant character,
     archive owner shares contracts with Doctrine. Trading's contracts share
-    prices couriers only; it does not add item-exchange sales (F4)."""
+    prices couriers only; it does not add item-exchange sales (F4).
+    `tenant_chars` is the rebuild's own-character set (read once per
+    rebuild)."""
     owners = access.shared_item_exchange_owners()
     if not owners:
         return ()
@@ -405,7 +467,8 @@ def _load_contracts() -> tuple:
 
     doc_owners = set(access.shared_owners_for("contracts", "doctrine"))
     doc_structures = set(DOCTRINE_CONFIG.effective_structure_ids)
-    tenant_chars = _tenant_character_ids()
+    if tenant_chars is None:
+        tenant_chars = _tenant_character_ids()
     fittings = _doctrine_fitting_ids(list(grouped))
     titles = db.contract_titles(list(grouped))
     match_candidates = None
@@ -516,9 +579,7 @@ def _relic_type_ids() -> frozenset[int]:
 
 def _output_quantity(job_row: tuple) -> Optional[float]:
     """runs (or successful_runs) x SDE product qty for manufacturing/reaction."""
-    activity_id = int(job_row[3])
-    if activity_id == 9:
-        activity_id = ACTIVITY_REACTION
+    activity_id = normalize_activity_id(job_row[3])
     if activity_id not in (ACTIVITY_MANUFACTURING, ACTIVITY_REACTION):
         return None
     blueprint_type_id = int(job_row[5])
@@ -621,9 +682,7 @@ def _resolve_symmetry(jobs: list[IndustryJob]) -> list[IndustryJob]:
 def _uses_bpc(job_row: tuple, bp_runs: dict[int, int], invented: frozenset[int]) -> Optional[bool]:
     """Manufacturing/reaction only: did the job run on a BPC? From the
     archived blueprint (runs -1 = BPO); a T2/T3 blueprint is always a copy."""
-    activity_id = int(job_row[3])
-    if activity_id == 9:
-        activity_id = ACTIVITY_REACTION
+    activity_id = normalize_activity_id(job_row[3])
     if activity_id not in (ACTIVITY_MANUFACTURING, ACTIVITY_REACTION):
         return None
     blueprint_id = job_row[4]
@@ -705,6 +764,68 @@ def _fetch_valuations(requests: set[tuple[int, date]]) -> dict[tuple[int, date],
     return found
 
 
+def _cached_bpc_run_prices() -> tuple[dict[tuple[int, date], float], set[tuple[int, date]]]:
+    """(prices, known keys) of the frozen per-run copy values. A known key
+    without a price is a copy that has no per-run value ("unavailable")."""
+    prices: dict[tuple[int, date], float] = {}
+    known: set[tuple[int, date]] = set()
+    for (tid, pd), (value, source) in db.list_bpc_run_prices().items():
+        key = (int(tid), _as_date(pd))
+        known.add(key)
+        if source != _BPC_RUN_UNAVAILABLE and value is not None:
+            prices[key] = float(value)
+    return prices, known
+
+
+def _bpc_run_values_with_status(type_ids: set[int]) -> tuple[dict[int, Optional[float]], bool]:
+    # Lazy: portfolio imports half the app; realized must not import it at load.
+    from ..portfolio import bpc_run_values_with_status
+    return bpc_run_values_with_status(set(type_ids))
+
+
+def _bpc_run_value_source(type_id: int) -> str:
+    from ..portfolio import bpc_run_value_source
+    return bpc_run_value_source(int(type_id))
+
+
+def _fetch_bpc_run_prices(requests: set[tuple[int, date]]) -> dict[tuple[int, date], float]:
+    """Value the requested (blueprint type, day) copy runs that have no
+    frozen row yet with today's per-run value (Total Wealth's: invention
+    cost per run, or the copy job fee per run for a Tech I copy) and freeze
+    them, like `_fetch_valuations`. A type without a value is stored as
+    unavailable and stays price_missing. Nothing is stored when the value
+    computation was incomplete (a quote or fee-rate outage): the next
+    rebuild tries again."""
+    if not requests:
+        return {}
+    _prices, known = _cached_bpc_run_prices()
+    todo = sorted(key for key in requests if key not in known)
+    if not todo:
+        return {}
+    try:
+        values, complete = _bpc_run_values_with_status({tid for tid, _d in todo})
+    except Exception:  # noqa: BLE001 - a valuation failure must not fail the rebuild
+        log.exception("realized: blueprint-copy run valuation failed; runs stay price_missing")
+        return {}
+    if not complete:
+        log.warning("realized: blueprint-copy run valuation incomplete; nothing frozen")
+        return {}
+    rows: list[tuple] = []
+    found: dict[tuple[int, date], float] = {}
+    sources: dict[int, str] = {}
+    for tid, day in todo:
+        value = values.get(tid)
+        if value is None:
+            rows.append((tid, day, None, _BPC_RUN_UNAVAILABLE))
+            continue
+        if tid not in sources:
+            sources[tid] = _bpc_run_value_source(tid)
+        rows.append((tid, day, float(value), sources[tid]))
+        found[(tid, day)] = float(value)
+    db.insert_bpc_run_prices(rows)
+    return found
+
+
 def _pick_price(series: dict[date, tuple[float, str]], day: date) -> Optional[tuple[float, str]]:
     """Exact day, else the nearest traded day (earlier first) within
     _PRICE_NEAREST_DAYS. Deterministic for a given series."""
@@ -719,13 +840,22 @@ def _pick_price(series: dict[date, tuple[float, str]], day: date) -> Optional[tu
     return None
 
 
-def _esi_history(type_ids: list[int]) -> dict[int, dict[date, tuple[float, str]]]:
+def _esi_history(type_ids: list[int],
+                 failed: Optional[set[int]] = None) -> dict[int, dict[date, tuple[float, str]]]:
+    """`failed`, when given, collects the types ESI did not answer for (an
+    error other than 404). A 404 is an answer: no history for that type."""
     client = ESIClient()
 
     def one(tid: int):
         try:
             return tid, client.region_market_history(_REFERENCE_REGION_ID, tid)
+        except ESIStatusError as e:
+            if e.status != 404 and failed is not None:
+                failed.add(int(tid))
+            return tid, []
         except ESIError:
+            if failed is not None:
+                failed.add(int(tid))
             return tid, []
 
     out: dict[int, dict[date, tuple[float, str]]] = defaultdict(dict)
@@ -759,7 +889,8 @@ def _fetch_reference_prices(requests: set[tuple[int, date]], today: date) -> dic
         if hit is not None:
             found[(tid, day)] = hit
     esi_types = sorted({tid for tid, day in requests if (tid, day) not in found})
-    for tid, points in _esi_history(esi_types).items():
+    esi_failed: set[int] = set()
+    for tid, points in _esi_history(esi_types, failed=esi_failed).items():
         for day_, point in points.items():
             series[tid].setdefault(day_, point)
     for tid, day in requests:
@@ -770,8 +901,10 @@ def _fetch_reference_prices(requests: set[tuple[int, date]], today: date) -> dic
 
     rows = [(tid, day, price, source) for (tid, day), (price, source) in sorted(found.items())]
     cutoff = today - timedelta(days=_NEGATIVE_CACHE_MIN_AGE_DAYS)
+    # A miss is cached only for a type ESI (the last source) answered for; an
+    # outage must not turn into a permanent zero price.
     rows += [(tid, day, 0.0, _MISSING_SOURCE) for tid, day in sorted(requests)
-             if (tid, day) not in found and day <= cutoff]
+             if (tid, day) not in found and day <= cutoff and tid not in esi_failed]
     db.upsert_reference_prices(rows)
     return {key: price for key, (price, _source) in found.items()}
 
@@ -981,10 +1114,21 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                          reset_opening: bool = False) -> Optional[LedgerSnapshot]:
     """Assemble a LedgerSnapshot from the archive (with cached reference
     prices only), or None when T0 is unknown."""
-    # Pure archive reads share one pooled connection. `_load_contracts` stays
-    # outside both batches: it writes freight/regions back and its enricher
-    # can resolve a ship/module volume over ESI.
+    # `_load_contracts` runs first and outside the snapshot block: it writes
+    # freight/regions back and its enricher can resolve a ship/module volume
+    # over ESI. Every other archive read then happens in ONE repeatable-read
+    # block, so a sync that commits while the rebuild loads cannot give it
+    # rows of two different moments. The contracts are therefore read an
+    # instant before the other rows; the next rebuild corrects that.
+    # Nothing in the block writes (a write that collides with a sync's update
+    # of the same row would fail the whole block); the price freezes and the
+    # derived tables are written later, outside it.
     with storage.batch_session():
+        if access.cutover_t0_for_production() is None:
+            return None
+        pre_chars = _tenant_character_ids()
+    contracts = _load_contracts(pre_chars)
+    with storage.batch_session(isolation="repeatable read"):
         t0 = access.cutover_t0_for_production()
         if t0 is None:
             return None
@@ -997,6 +1141,8 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         order_rows = access.list_all_market_orders_for_production()
         job_rows = access.list_all_industry_jobs_for_production()
         input_rows = access.list_all_job_inputs_for_production()
+        # Read once per rebuild and passed on (contracts, costing, warnings).
+        tenant_chars = _tenant_character_ids()
 
         inputs_by_job: dict[tuple, list[JobInput]] = defaultdict(list)
         for ot, oid, job_id, type_id, qty, source in input_rows:
@@ -1013,6 +1159,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 region_id=int(r[11]) if r[11] is not None else None,
                 freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
                 freight_m3=float(r[13]) if r[13] is not None else None,
+                client_id=_client_id(r),
             )
             for r in tx_rows
         ]
@@ -1068,9 +1215,10 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 uses_bpc=_uses_bpc(r, bp_runs, invented),
             ))
 
-    contracts = _load_contracts()
-    with storage.batch_session():
-        tenant_chars = _tenant_character_ids()
+        foreign_warnings = _foreign_character_warnings(
+            tenant_chars, tx_rows, journal_rows, job_rows,
+            [(contract.owner_type, contract.owner_id) for contract in contracts],
+        )
         tenant_corps = _tenant_corporation_ids()
         corp_wallets = _corp_wallet_owner_ids()
         jobs = _resolve_symmetry(jobs)
@@ -1116,7 +1264,8 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             industry_jobs=tuple(jobs),
             opening_cost_overrides=db.list_opening_cost_overrides(),
             home_structure_id=PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id,
-            bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
+            # Frozen per-run copy values; missing days are valued by _run_costing.
+            bpc_run_reference_prices=_cached_bpc_run_prices()[0],
             relic_type_ids=_relic_type_ids(),
             bpo_type_ids=bpo_types,
             frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
@@ -1136,26 +1285,35 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
                 key: None if start is None else _as_utc(start)
                 for key, start in access.fee_coverage_starts_for_production().items()
             },
+            loader_warnings=tuple(foreign_warnings),
             **reprocess,
         )
 
 
 def _run_costing(snapshot: LedgerSnapshot, today: Optional[date] = None):
-    """Run costing; fetch exactly the item prices it missed (minus cached
-    misses) and run once more if anything new was found."""
+    """Run costing; fetch exactly the item prices and blueprint-copy run
+    values it missed (minus cached misses) and run once more if anything new
+    was found."""
     result = rebuild_costing(snapshot)
     requests = {(tid, day) for tid, unit, day in result.price_requests if unit == UNIT_ITEM}
-    if not requests:
+    bpc_requests = {(tid, day) for tid, unit, day in result.price_requests if unit == UNIT_BPC_RUN}
+    if not requests and not bpc_requests:
         return result
-    _prices, misses = _cached_prices({tid for tid, _d in requests})
-    requests -= misses
-    found = _fetch_valuations(requests)
-    rest = requests - set(found)
-    found.update(_fetch_reference_prices(rest, today or datetime.now(timezone.utc).date()))
-    if not found:
+    found: dict[tuple[int, date], float] = {}
+    if requests:
+        _prices, misses = _cached_prices({tid for tid, _d in requests})
+        requests -= misses
+        found = _fetch_valuations(requests)
+        rest = requests - set(found)
+        found.update(_fetch_reference_prices(rest, today or datetime.now(timezone.utc).date()))
+    bpc_found = _fetch_bpc_run_prices(bpc_requests)
+    if not found and not bpc_found:
         return result
-    merged = {**snapshot.reference_prices, **found}
-    return rebuild_costing(dataclasses.replace(snapshot, reference_prices=merged))
+    return rebuild_costing(dataclasses.replace(
+        snapshot,
+        reference_prices={**snapshot.reference_prices, **found},
+        bpc_run_reference_prices={**snapshot.bpc_run_reference_prices, **bpc_found},
+    ))
 
 
 def _components(c) -> tuple:
@@ -1217,7 +1375,12 @@ def _draw_rows(result, snapshot) -> list[tuple]:
         # The rate that costing applied (courier or configured), not the
         # frozen archive rate. ST3 clears it on a station draw.
         rate = None if draw.freight_rate_per_m3 is None else float(draw.freight_rate_per_m3)
-        if layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
+        if layer is not None and tx is not None and layer.source == SOURCE_TRANSFER:
+            # Bought from an own owner: the cost moved with the units, the
+            # internal price is not a purchase price.
+            location_id = int(tx.location_id)
+            unit_price = float(layer.unit_cost)
+        elif layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
             location_id = int(tx.location_id)
             unit_price = float(tx.unit_price)
         elif layer is not None and layer.origin == ORIGIN_BOUGHT and str(layer.source_ref).startswith("contract:"):
@@ -1369,7 +1532,7 @@ def _persist(snapshot, result, scope_hash: str) -> tuple[int, list]:
     """Write derived tables. Returns (run_id, warnings). The run row is
     written only inside replace_derived_costing, after the rows succeed."""
     bonus = db.structure_bonus_applied_by_job(access.shared_owners("industry_jobs"))
-    extra = list(result.warnings)
+    extra = list(getattr(snapshot, "loader_warnings", ())) + list(result.warnings)
     for ref in result.jobs_before_t0:
         extra.append(f"job_before_t0: {ref} started before cutover and consumes nothing")
     for ref in result.skipped_corp_jobs:

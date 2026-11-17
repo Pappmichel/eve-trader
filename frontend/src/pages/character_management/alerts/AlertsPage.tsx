@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert, Anchor, Badge, Button, Checkbox, Container, Group, Loader, NumberInput, Paper, Stack, Switch, Table, Text, Title,
 } from '@mantine/core'
@@ -7,7 +7,7 @@ import { IconArrowLeft } from '@tabler/icons-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { ApiError, charAlertsApi } from '../../../api/client'
+import { ApiError, authApi, charAlertsApi } from '../../../api/client'
 import type { AlertSubscription, AlertType, ContractAlertFilters } from '../../../api/types'
 
 const KEY = ['char-alerts', 'settings']
@@ -16,6 +16,8 @@ const LINK_RESULT: Record<string, { color: string; title: string; message: strin
   cancelled: { color: 'yellow', title: 'Discord link cancelled', message: 'Nothing was changed.' },
   error: { color: 'danger', title: 'Discord link failed', message: 'The link request expired or was rejected. Try again.' },
 }
+// Server code: linking Discord needs a login from the last 10 minutes.
+const FRESH_LOGIN_REQUIRED = 'fresh_login_required'
 
 // Labels per alert type. The PI ones read a colony snapshot (Planetary Industry
 // shared with Discord Alerts); pad full / inputs empty are estimates from it.
@@ -158,19 +160,29 @@ export default function AlertsPage() {
   const { data, isLoading, error } = useQuery({ queryKey: KEY, queryFn: charAlertsApi.settings, retry: false })
 
   const result = params.get('discord')
+  const [loginNeeded, setLoginNeeded] = useState(false)
   useEffect(() => {
     if (!result) return
+    if (result === FRESH_LOGIN_REQUIRED) setLoginNeeded(true)
     const info = LINK_RESULT[result]
     if (info) notify(info)
     qc.invalidateQueries({ queryKey: KEY })
     setParams({}, { replace: true })
   }, [result, qc, setParams])
 
-  const notifyError = (e: unknown) => notify({ title: 'Discord Alerts', message: errorMessage(e), color: 'danger' })
+  const notifyError = (e: unknown) => {
+    if (e instanceof ApiError && e.message === FRESH_LOGIN_REQUIRED) { setLoginNeeded(true); return }
+    notify({ title: 'Discord Alerts', message: errorMessage(e), color: 'danger' })
+  }
   const refresh = () => qc.invalidateQueries({ queryKey: KEY })
 
   const link = useMutation({
     mutationFn: charAlertsApi.linkStart,
+    onSuccess: ({ url }) => { window.location.assign(url) },
+    onError: notifyError,
+  })
+  const relogin = useMutation({
+    mutationFn: authApi.start,
     onSuccess: ({ url }) => { window.location.assign(url) },
     onError: notifyError,
   })
@@ -206,6 +218,20 @@ export default function AlertsPage() {
               </div>
               {data.linked ? <Badge color="green">Linked</Badge> : <Badge color="gray">Not linked</Badge>}
             </Group>
+            {loginNeeded && (
+              <Alert mt="md" color="yellow" title="Log in again to link Discord">
+                <Text size="sm">
+                  Linking a Discord account needs a login from the last 10 minutes. Log in again, then come back to this
+                  page and press Link Discord account.
+                </Text>
+                <Button mt="sm" size="xs" loading={relogin.isPending} onClick={() => relogin.mutate()}>Log in again</Button>
+              </Alert>
+            )}
+            {data.linked && data.mail_content_paused && (
+              <Alert mt="md" color="yellow" title="Mail text paused">
+                Mail text paused since your last logout. Link Discord again to resume.
+              </Alert>
+            )}
             {!data.bot_configured || !data.link_configured ? (
               <Alert mt="md" color="yellow" title="Not available on this server">
                 The operator has not set up the Discord bot yet (DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET).

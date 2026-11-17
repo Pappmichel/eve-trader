@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader, Switch, Tooltip } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
+import { changedFields } from '../../api/changedFields'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useSolarSystemOptions, useStructureNameOptions } from '../../hooks/useStaticOptions'
@@ -22,6 +23,16 @@ import { ReactionCapacitySettingsSection } from './ReactionCapacitySettingsSecti
 function pctHint(value: number | undefined): string {
   return value === undefined ? '–' : `${(value * 100).toFixed(2)}%`
 }
+
+const SAME_AS_ME = '__same_as_me__'
+
+type TeField = 'reaction_te_rig_tier' | 'component_te_rig_tier' | 'supercapital_te_rig_tier' | 'manufacturing_te_rig_tier'
+const TE_PROFILES: { field: TeField; label: string; noThukker?: boolean }[] = [
+  { field: 'reaction_te_rig_tier', label: 'Reactions', noThukker: true },
+  { field: 'component_te_rig_tier', label: 'Components' },
+  { field: 'supercapital_te_rig_tier', label: 'Supercapitals' },
+  { field: 'manufacturing_te_rig_tier', label: 'Manufacturing' },
+]
 
 export default function ProductionSettings() {
   const { data } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
@@ -48,7 +59,7 @@ export default function ProductionSettings() {
     }
   }, [systemSettings])
 
-  const save = useAction('Save Settings', async (updates: ProductionSettingsT) => {
+  const save = useAction('Save Settings', async (updates: Partial<ProductionSettingsT>) => {
     const result = await productionApi.updateSettings(updates)
     // Best-effort name resolution for the home structure (GitHub issue #21 -
     // this was never resolved at all, so the Logistics tab's Distribution
@@ -65,7 +76,8 @@ export default function ProductionSettings() {
       }
     }
     return result
-  }, [['production', 'settings'], ['production', 'structure-names'], ['production', 'reaction-capacity-status']])
+  }, [['production', 'settings'], ['production', 'structure-names'], ['production', 'reaction-capacity-status'],
+    ['production', 'category-facilities']])
   const saveComponentSystem = useAction('Save Component System', () => {
     const opt = systemSelectData.find((o) => o.value === componentSystemId)
     return productionApi.setSystem('component', Number(componentSystemId), opt?.label ?? '')
@@ -102,7 +114,7 @@ export default function ProductionSettings() {
           <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
             onChange={(v) => set('market_fees', Number(v) / 100)} />
           <ObservedSellFeeHint fees={observedFees} current={form.market_fees} applying={save.isPending}
-            onApply={(v) => { set('market_fees', v); save.mutate({ ...form, market_fees: v }) }} />
+            onApply={(v) => { set('market_fees', v); save.mutate(changedFields(data, { ...form, market_fees: v })) }} />
         </Stack>
         <Tooltip label="Fallback job-fee facility tax, on top of the system cost index and the fixed 4% SCC surcharge. Used only where no rate is known: the Logistics page's per-category override wins, then the rate seen on your own last jobs at that category's structure (a structure owner can change it at any time). NPC stations charge 0.25%." multiline w={300}>
           <NumberInput label="Facility tax (fallback)" suffix="%" decimalScale={2} value={form.facility_tax_rate * 100} min={0} max={100} step={0.05}
@@ -161,7 +173,7 @@ export default function ProductionSettings() {
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Select label="Structure - Reactions" data={structureOptions.structure_types} value={form.reaction_structure_type}
           onChange={(v) => v && set('reaction_structure_type', v)} />
-        <Select label="Rig - Reactions" data={structureOptions.rig_tiers} value={form.reaction_rig_tier}
+        <Select label="Rig - Reactions" data={structureOptions.rig_tiers.filter((t) => t !== 'Thukker')} value={form.reaction_rig_tier}
           onChange={(v) => v && set('reaction_rig_tier', v)} />
         <Select label="Structure - Components" data={structureOptions.structure_types} value={form.component_structure_type}
           onChange={(v) => v && set('component_structure_type', v)} />
@@ -176,6 +188,28 @@ export default function ProductionSettings() {
         <Select label="Rig - Manufacturing (everything else)" data={structureOptions.rig_tiers} value={form.manufacturing_rig_tier}
           onChange={(v) => v && set('manufacturing_rig_tier', v)} />
       </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        Time-efficiency (TE) rig per profile. &quot;Same as ME&quot; (the default) uses the ME rig above for time as
+        well; pick &quot;No Rig&quot; where the structure carries no time rig. A category&apos;s own TE rig on the
+        Logistics page wins.
+      </Text>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        {TE_PROFILES.map(({ field, label, noThukker }) => (
+          <Select key={field} label={`TE rig - ${label}`} value={form[field] ?? SAME_AS_ME}
+            data={[{ value: SAME_AS_ME, label: 'Same as ME' },
+              ...structureOptions.rig_tiers.filter((t) => !(noThukker && t === 'Thukker')).map((t) => ({ value: t, label: t }))]}
+            allowDeselect={false}
+            onChange={(v) => set(field, v && v !== SAME_AS_ME ? v : null)} />
+        ))}
+        <Select label="Invention cost rig (invention structure)" value={form.invention_rig_tier ?? 'No Rig'}
+          data={structureOptions.invention_rig_tiers ?? ['No Rig']} allowDeselect={false}
+          onChange={(v) => v && set('invention_rig_tier', v)} />
+      </SimpleGrid>
+
+      <TextInput label="Rig sheet link" value={form.rig_sheet_url ?? ''} maxLength={500}
+        placeholder="https://docs.google.com/spreadsheets/d/..."
+        description="Optional. A shared Google sheet that lists the rig tier per solar system and job category. It is used for a category's structure when its system is listed, after a tier saved on the Logistics page and before the structure name. Saving a new link loads it once; the Logistics page shows its state and reloads it."
+        onChange={(e) => set('rig_sheet_url', e.currentTarget.value)} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Invention Skills</Title>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
@@ -199,7 +233,7 @@ export default function ProductionSettings() {
 
       <ReactionCapacitySettingsSection form={form} set={set} />
 
-      <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
+      <Button mt="md" w={240} onClick={() => save.mutate(changedFields(data, form))} loading={save.isPending}>
         Save Settings
       </Button>
 

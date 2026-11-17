@@ -258,6 +258,8 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "jita_price_cache_interval_hours": (0, None),
     "portfolio_snapshot_interval_hours": (0, None),
     "asset_history_retention_days": (1, None),
+    "history_retention_days": (30, None),            # shortlist_snapshot only
+    "price_history_retention_days": (90, None),      # goonmetrics_history (the Trading price chart shows it all)
     "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
     "alerts_mail_poll_minutes": (1, None),            # SchedulerOperatorConfig (operator-only)
     "alerts_contract_poll_minutes": (5, None),        # SchedulerOperatorConfig (operator-only)
@@ -389,6 +391,16 @@ DATA_DIR.mkdir(exist_ok=True)
 WALLET_DIVISION_IDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
 
 
+# ESI contract version sent as `X-Compatibility-Date`. None keeps today's
+# behaviour: the `/latest` base URL and no header. To pin a date, set it here
+# (only after diffing the public spec for that date against the paths
+# esi_client.py uses): the default base URL then drops `/latest` as well.
+ESI_COMPATIBILITY_DATE: Optional[str] = None
+ESI_BASE_DEFAULT = (
+    "https://esi.evetech.net" if ESI_COMPATIBILITY_DATE else "https://esi.evetech.net/latest"
+)
+
+
 @dataclass
 class TradingConfig:
     # -- Regions / structure --
@@ -432,32 +444,18 @@ class TradingConfig:
     # hub without an entry uses that tool's own single freight value.
     hub_freight_cost_per_m3: dict[str, float] = field(default_factory=dict)
     # Multiplier applied to the C-J structure sell price (shortlist and
-    # backtest margins, Ore & Minerals pricing). Confirmed against the in-game sell-order breakdown: Broker's
-    # fee 1.5% + Sales tax 3.37% = 4.87% total -> 1 - 0.0487 = 0.9513... -
-    # historically derived as 0.9463 (including an extra "SCC surcharge
-    # 0.5%" term) before T1-01 (2026-09-25) confirmed with the user that SCC
-    # surcharge applies only to industry jobs, never to a market sell - kept
-    # at its original 0.9463 default rather than silently reinterpreted,
-    # since this is a live-configurable value a tenant may already have
-    # tuned to their own real skills/standing; revisit only with the user.
+    # backtest margins, Ore & Minerals pricing). A structure sell pays the
+    # broker's fee 1.5% + SCC surcharge 0.5% + sales tax 3.375% = 5.375%,
+    # so the retention is 0.9463 (rounded; 0.0537 as a fee). The wallet
+    # journal carries a separate SCC surcharge entry on market orders, so an
+    # earlier reading that SCC applies only to industry jobs (which gave
+    # 0.9513) is wrong. The value is unchanged and tenants may override it.
     #
-    # "Sales tax 3.37%" (and the near-identical 3.375% T1-01 (2026-09-25)
-    # live-verified directly from 2396 real ESI wallet-journal entries) is
-    # not EVE's base
-    # sales tax rate - base is 8% (0.08) at Accounting level 0. The
-    # reduction to ~3.37-3.375% assumes the selling character has the
-    # Accounting skill trained to (or near) level 5 ("Accounting V", the
-    # skill's max), which is what actually lowers the sales-tax percentage
-    # a character pays on a sell order; it is not affected by standings or
-    # by Broker Relations (those only affect the broker's-fee side, i.e.
-    # jita_buy_broker_fee below, not this figure). A
-    # tenant whose selling character has a lower Accounting level would see
-    # a real tax rate closer to 8% and should override structure_sell_
-    # haircut (and, if configured, station_trading's own sales_tax_rate,
-    # which documents this same base-rate-vs-skill-reduced split
-    # separately) to match - this default does not re-derive or verify
-    # CCP's exact per-level Accounting reduction formula, it only records
-    # the one rate this tenant's own live data already confirmed.
+    # The base sales tax is 7.5% at Accounting 0; each Accounting level
+    # lowers it by 11% of that (7.5% x (1 - 0.11 x 5) = 3.375% at level 5).
+    # Standings and Broker Relations only affect the broker's fee side. A
+    # tenant with a lower Accounting level pays more and should override
+    # this value (and station_trading's own sales_tax_rate).
     structure_sell_haircut: float = 0.9463
     # Broker's fee when buying (placing/filling a buy order) in Jita, confirmed
     # against the in-game buy screen (1.47%) - applied to landed_cost, since
@@ -579,7 +577,7 @@ class TradingConfig:
     lookback_days: int = 30
 
     # -- API endpoints --
-    esi_base: str = "https://esi.evetech.net/latest"
+    esi_base: str = ESI_BASE_DEFAULT
     goonmetrics_history_base: str = "https://goonmetrics.apps.gnf.lt/api/price_history/"
 
     # Market-group top-level path prefixes to hard-exclude from candidate
@@ -630,6 +628,14 @@ class TradingConfig:
     # Asset Manager daily quantity history (docs/ASSET_MANAGER_PLAN.md phase 6):
     # days kept before the daily snapshot job prunes them.
     asset_history_retention_days: float = 90.0
+    # Operator value (config.yaml / tenant_settings, not on the Settings page):
+    # days of shortlist_snapshot runs kept by the daily retention job (only
+    # the newest run is read, so 30 is a safe floor).
+    history_retention_days: float = 90.0
+    # days of goonmetrics_history kept by the global retention job; longer
+    # because the Trading price chart shows the whole stored history. The
+    # floor sits above the longest trend window (30 d).
+    price_history_retention_days: float = 365.0
 
 
 @dataclass
@@ -647,6 +653,8 @@ class OAuthConfig:
     session_secret_key: str = field(default_factory=lambda: os.getenv("SESSION_SECRET_KEY", ""))
     authorize_url: str = "https://login.eveonline.com/v2/oauth/authorize"
     token_url: str = "https://login.eveonline.com/v2/oauth/token"
+    # Refresh-token revocation (public PKCE client: token + client_id only).
+    revoke_url: str = "https://login.eveonline.com/v2/oauth/revoke"
     jwks_url: str = "https://login.eveonline.com/oauth/jwks"
     issuer: str = "login.eveonline.com"
     token_store_path: Path = field(default_factory=lambda: DATA_DIR / "tokens.json")
@@ -749,6 +757,8 @@ class SchedulerOperatorConfig:
     - backup_job_enabled / jita_price_cache_job_enabled: the two global jobs.
       Defaults keep today's behaviour (both run whenever the scheduler
       thread runs).
+    - sde_check_job_enabled: the daily SDE freshness check (one HEAD request,
+      scheduler job sde_freshness_check).
     - alerts_job_enabled: the Discord alerts job (CLAUDE.md "Discord alerts"),
       runs independently of every tenant's scheduler_enabled.
     - alerts_mail_poll_minutes: how often an opted-in character's mail headers
@@ -759,6 +769,7 @@ class SchedulerOperatorConfig:
     inactive_tenant_days: float = 14.0
     backup_job_enabled: bool = True
     jita_price_cache_job_enabled: bool = True
+    sde_check_job_enabled: bool = True
     alerts_job_enabled: bool = False
     alerts_mail_poll_minutes: float = 10.0
     alerts_contract_poll_minutes: float = 15.0

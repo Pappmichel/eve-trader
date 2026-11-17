@@ -21,7 +21,9 @@ from typing import Optional
 import requests
 
 from .. import sde_equivalence, storage, wealth_cache
+from ..esi_client import USER_AGENT
 from ..pi import constants as pi_constants
+from . import constant_drift
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
 
@@ -34,7 +36,6 @@ log = logging.getLogger("eve_trader.production.sde")
 # (check_for_newer_sde) without downloading the ~19MB CSV body.
 _FRESHNESS_FILE = "invTypes.csv"
 
-USER_AGENT = "eve-trader-python"
 # Copying (5) has no material rows (confirmed via wiki.eveuniversity.org/
 # Blueprint_copying: "no materials are consumed", just time) - included here
 # only for the blueprint_time fetch below, not material_rows/product_rows.
@@ -83,6 +84,69 @@ _SDE_CSV_FILES = (
 )
 
 
+class SdeDumpInvalid(RuntimeError):
+    """A fetched dump file is empty, truncated, malformed or implausibly small.
+    Raised while fetching so a bad download fails the preview instead of
+    reaching Apply."""
+
+
+# Columns fetch_sde() reads from each file and the fewest rows a healthy dump
+# has. The minimums are about half of the real size (invTypes holds about
+# 53,000 rows), low enough that a normal patch never trips them and high
+# enough that an empty, HTML or cut-off download does.
+_CSV_SPEC: dict[str, tuple[tuple[str, ...], int]] = {
+    "invTypes.csv": (("typeID", "groupID", "typeName", "volume", "published", "marketGroupID",
+                      "metaLevel", "portionSize"), 26000),
+    "invGroups.csv": (("groupID", "categoryID", "groupName"), 700),
+    "invCategories.csv": (("categoryID", "categoryName"), 25),
+    "invMarketGroups.csv": (("marketGroupID", "parentGroupID", "marketGroupName"), 1000),
+    "invMetaTypes.csv": (("typeID", "metaGroupID"), 2000),
+    "industryActivity.csv": (("typeID", "activityID", "time"), 5000),
+    "industryActivityMaterials.csv": (("typeID", "activityID", "materialTypeID", "quantity"), 20000),
+    "industryActivityProducts.csv": (("typeID", "activityID", "productTypeID", "quantity"), 5000),
+    "industryActivityProbabilities.csv": (("typeID", "activityID", "productTypeID", "probability"), 1000),
+    "mapSolarSystems.csv": (("solarSystemID", "solarSystemName", "security"), 4000),
+    "mapRegions.csv": (("regionID", "regionName"), 50),
+    "staStations.csv": (("stationID", "solarSystemID"), 2000),
+    "dgmTypeEffects.csv": (("typeID", "effectID"), 10000),
+    "invTypeMaterials.csv": (("typeID", "materialTypeID", "quantity"), 2000),
+    "industryActivitySkills.csv": (("typeID", "activityID", "skillID", "level"), 3000),
+    "planetSchematics.csv": (("schematicID", "schematicName", "cycleTime"), 30),
+    "planetSchematicsTypeMap.csv": (("schematicID", "typeID", "quantity", "isInput"), 100),
+    "planetSchematicsPinMap.csv": (("schematicID", "pinTypeID"), 200),
+}
+
+# Fewest rows kept after filtering the two streamed files (see fetch_sde).
+_MIN_STREAM_ROWS = {
+    "dgmTypeAttributes.csv (skills)": 200,
+    "dgmTypeAttributes.csv (PI attributes)": 500,
+    "mapDenormalize.csv (PI planets)": 30000,
+}
+
+
+def _checked_rows(filename: str, reader: csv.DictReader, required: tuple[str, ...]):
+    """Yields the reader's rows after checking the header and every row: a
+    missing required column, a row with fewer fields than the header (cut
+    off mid-line) or more (a stray delimiter) is an error."""
+    fields = reader.fieldnames
+    if not fields:
+        raise SdeDumpInvalid(f"{filename}: the file is empty")
+    missing = [c for c in required if c not in fields]
+    if missing:
+        raise SdeDumpInvalid(f"{filename}: missing column(s) {', '.join(missing)} "
+                             "(not a CSV dump, or its layout changed)")
+    for row in reader:
+        if None in row or any(v is None for v in row.values()):
+            raise SdeDumpInvalid(f"{filename}: malformed row {reader.line_num} "
+                                 "(wrong number of fields, probably a cut-off download)")
+        yield row
+
+
+def _require_min_rows(label: str, count: int, minimum: int) -> None:
+    if count < minimum:
+        raise SdeDumpInvalid(f"{label}: only {count} rows, expected at least {minimum}")
+
+
 def _fetch_csv(session: requests.Session, base_url: str, filename: str) -> list[dict]:
     """Confirmed real gap: this used to be a bare session.get() with no
     retry at all, unlike every other network client in this codebase
@@ -105,7 +169,10 @@ def _fetch_csv(session: requests.Session, base_url: str, filename: str) -> list[
     else:
         raise last_exc
     text = resp.content.decode("utf-8-sig")
-    return list(csv.DictReader(io.StringIO(text)))
+    required, minimum = _CSV_SPEC.get(filename, ((), 0))
+    rows = list(_checked_rows(filename, csv.DictReader(io.StringIO(text)), required))
+    _require_min_rows(filename, len(rows), minimum)
+    return rows
 
 
 # Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md R7): the skill
@@ -144,6 +211,7 @@ def _attr_value(row: dict) -> Optional[float]:
 def _fetch_skill_attributes(
     session: requests.Session, base_url: str, pi_type_ids: frozenset[int] = frozenset(),
     equivalence_type_ids: frozenset[int] = frozenset(),
+    drift_attribute_ids: frozenset[int] = frozenset(), drift_sink: Optional[dict] = None,
 ) -> tuple[dict[int, dict[int, float]], dict[int, dict[int, float]], dict[int, dict[int, float]]]:
     """({typeID: {attributeID: value}} for `_KEPT_SKILL_ATTRS`, the same shape
     for the PI attributes of `pi_type_ids`, and every attribute of
@@ -153,16 +221,25 @@ def _fetch_skill_attributes(
     cpuLoad/powerLoad exist on thousands of ships and modules (P-08).
     Same retry policy as _fetch_csv, wrapped around the *whole* stream - a
     connection reset half-way through restarts the download rather than
-    yielding a silently truncated table."""
+    yielding a silently truncated table.
+
+    `drift_sink`, when given, is filled with {typeID: {attributeID: value}}
+    for the types of the hard-coded constants and `drift_attribute_ids` (see
+    constant_drift); it is cleared first so a retried stream starts clean."""
     last_exc: Optional[requests.RequestException] = None
     pi_attrs = pi_constants.PI_ATTRIBUTE_IDS
     for attempt in range(1, 4):
         try:
             with session.get(f"{base_url}{_SKILL_ATTRIBUTES_FILE}", timeout=120, stream=True) as resp:
                 resp.raise_for_status()
+                if drift_sink is not None:
+                    drift_sink.clear()
                 return split_attribute_rows(
-                    csv.DictReader(_decode_lines(resp.iter_lines())), pi_type_ids, pi_attrs,
-                    equivalence_type_ids,
+                    _checked_rows(_SKILL_ATTRIBUTES_FILE, csv.DictReader(_decode_lines(resp.iter_lines())),
+                                  ("typeID", "attributeID")),
+                    pi_type_ids, pi_attrs, equivalence_type_ids,
+                    drift_type_ids=constant_drift.wanted_type_ids() if drift_sink is not None else frozenset(),
+                    drift_attribute_ids=drift_attribute_ids, drift_sink=drift_sink,
                 )
         except requests.RequestException as e:
             last_exc = e
@@ -172,9 +249,13 @@ def _fetch_skill_attributes(
 
 
 def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[int],
-                         equivalence_type_ids: frozenset[int] = frozenset()):
+                         equivalence_type_ids: frozenset[int] = frozenset(),
+                         drift_type_ids: frozenset[int] = frozenset(),
+                         drift_attribute_ids: frozenset[int] = frozenset(),
+                         drift_sink: Optional[dict] = None):
     """dgmTypeAttributes rows -> (skill attribute map, PI attribute map,
-    full attribute map of `equivalence_type_ids`)."""
+    full attribute map of `equivalence_type_ids`). Rows of a constant-drift
+    type and attribute also go into `drift_sink` when one is given."""
     kept: dict[int, dict[int, float]] = {}
     pi_kept: dict[int, dict[int, float]] = {}
     equiv_kept: dict[int, dict[int, float]] = {}
@@ -184,11 +265,15 @@ def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[
         is_equiv = type_id in equivalence_type_ids
         is_skill = attr_id in _KEPT_SKILL_ATTRS
         is_pi = attr_id in pi_attrs and type_id in pi_type_ids
-        if not is_skill and not is_pi and not is_equiv:
+        is_drift = (drift_sink is not None and type_id in drift_type_ids
+                    and attr_id in drift_attribute_ids)
+        if not is_skill and not is_pi and not is_equiv and not is_drift:
             continue
         value = _attr_value(row)
         if value is None:
             continue
+        if is_drift:
+            drift_sink.setdefault(type_id, {})[attr_id] = value
         if is_skill:
             kept.setdefault(type_id, {})[attr_id] = value
         if is_pi:
@@ -196,6 +281,24 @@ def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[
         if is_equiv:
             equiv_kept.setdefault(type_id, {})[attr_id] = value
     return kept, pi_kept, equiv_kept
+
+
+def _fetch_attribute_ids(session: requests.Session, base_url: str) -> dict[str, int]:
+    """{attributeName: attributeID} for the dogma attributes the constant
+    drift check needs, out of dgmAttributeTypes.csv. Advisory: a failed or
+    malformed download returns {} (the drift check then reports everything
+    as not compared) and never fails the preview."""
+    wanted = constant_drift.wanted_attribute_names()
+    try:
+        resp = session.get(f"{base_url}dgmAttributeTypes.csv", timeout=60)
+        resp.raise_for_status()
+        text = resp.content.decode("utf-8-sig")
+        rows = _checked_rows("dgmAttributeTypes.csv", csv.DictReader(io.StringIO(text)),
+                             ("attributeID", "attributeName"))
+        return {r["attributeName"]: int(r["attributeID"]) for r in rows if r["attributeName"] in wanted}
+    except (requests.RequestException, SdeDumpInvalid, ValueError) as e:
+        log.warning("Constant drift check skipped: attribute names unavailable (%s)", e)
+        return {}
 
 
 def _fetch_pi_planets(session: requests.Session, base_url: str) -> list[tuple]:
@@ -206,7 +309,9 @@ def _fetch_pi_planets(session: requests.Session, base_url: str) -> list[tuple]:
         try:
             with session.get(f"{base_url}{_MAP_DENORMALIZE_FILE}", timeout=180, stream=True) as resp:
                 resp.raise_for_status()
-                return pi_planet_rows(csv.DictReader(_decode_lines(resp.iter_lines())))
+                return pi_planet_rows(_checked_rows(
+                    _MAP_DENORMALIZE_FILE, csv.DictReader(_decode_lines(resp.iter_lines())),
+                    ("itemID", "typeID", "groupID")))
         except requests.RequestException as e:
             last_exc = e
             if attempt < 3:
@@ -397,6 +502,10 @@ class FetchedSde:
     pi_schematic_pins: list[tuple] = field(default_factory=list)
     pi_type_attributes: list[tuple] = field(default_factory=list)
     pi_planets: list[tuple] = field(default_factory=list)
+    # Only for the preview's constant drift comparison, never written to the
+    # SDE tables: attribute name -> id, and {typeID: {attributeID: value}}.
+    drift_attribute_ids: dict = field(default_factory=dict)
+    drift_values: dict = field(default_factory=dict)
     dump_etag: Optional[str] = None
 
 
@@ -433,9 +542,14 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         "total_batches": total,
         "message": f"Fetching {_SKILL_ATTRIBUTES_FILE} (filtered to skill, PI and module attributes)",
     })
+    drift_attribute_ids = _fetch_attribute_ids(session, base)
+    drift_values: dict[int, dict[int, float]] = {}
     skill_attrs, pi_attrs, equivalence_attrs = _fetch_skill_attributes(
-        session, base, pi_type_ids, equivalence_type_ids)
+        session, base, pi_type_ids, equivalence_type_ids,
+        drift_attribute_ids=frozenset(drift_attribute_ids.values()), drift_sink=drift_values)
     skill_requirement_rows, skill_meta_rows = skill_rows_from_attributes(skill_attrs)
+    _require_min_rows("dgmTypeAttributes.csv (skills)", len(skill_meta_rows),
+                      _MIN_STREAM_ROWS["dgmTypeAttributes.csv (skills)"])
     _emit_progress(progress_callback, {
         "phase": "run",
         "batch": total,
@@ -443,10 +557,14 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         "message": f"Fetching {_MAP_DENORMALIZE_FILE} (filtered to PI planets)",
     })
     pi_planets = _fetch_pi_planets(session, base)
+    _require_min_rows("mapDenormalize.csv (PI planets)", len(pi_planets),
+                      _MIN_STREAM_ROWS["mapDenormalize.csv (PI planets)"])
     pi_schematic_rows, pi_schematic_type_rows, pi_schematic_pin_rows, pi_attribute_rows = pi_rows_from_csv(
         fetched["planetSchematics.csv"], fetched["planetSchematicsTypeMap.csv"],
         fetched["planetSchematicsPinMap.csv"], pi_attrs, fetched["invTypes.csv"], pi_type_ids,
     )
+    _require_min_rows("dgmTypeAttributes.csv (PI attributes)", len(pi_attribute_rows),
+                      _MIN_STREAM_ROWS["dgmTypeAttributes.csv (PI attributes)"])
 
     inv_types = fetched["invTypes.csv"]
     inv_groups = fetched["invGroups.csv"]
@@ -574,6 +692,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         pi_schematics=pi_schematic_rows, pi_schematic_types=pi_schematic_type_rows,
         pi_schematic_pins=pi_schematic_pin_rows, pi_type_attributes=pi_attribute_rows,
         pi_planets=pi_planets,
+        drift_attribute_ids=drift_attribute_ids, drift_values=drift_values,
         dump_etag=dump_etag,
     )
 
@@ -657,9 +776,32 @@ def check_for_newer_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     state = storage.get_sde_refresh_state()
     local_refreshed_at, local_etag = state if state else (None, None)
     remote_etag = _dump_etag(session, cfg.fuzzwork_csv_base)
+    checked_at = None
+    if remote_etag is None:
+        # The live HEAD failed: fall back to what the daily check job saw.
+        try:
+            stored = storage.get_sde_remote_check()
+        except Exception:  # noqa: BLE001 - advisory only
+            stored = None
+        if stored:
+            remote_etag, checked_at = stored
     newer_available = bool(remote_etag and local_etag and remote_etag != local_etag)
     return {
         "local_refreshed_at": local_refreshed_at,
         "remote_check_succeeded": remote_etag is not None,
         "newer_sde_available": newer_available,
+        "remote_checked_at": checked_at,
     }
+
+
+def record_remote_sde_check(cfg: ProductionConfig = PRODUCTION_CONFIG) -> None:
+    """The scheduler's daily SDE freshness check: one HEAD request, the
+    remote ETag and the time stored in sde_refresh_state. Raises when the
+    ETag cannot be read, so the scheduler records the failure and backs off
+    instead of marking a check done that never happened."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    remote_etag = _dump_etag(session, cfg.fuzzwork_csv_base)
+    if remote_etag is None:
+        raise RuntimeError("SDE freshness check failed: the remote ETag could not be read")
+    storage.set_sde_remote_check(remote_etag, datetime.now(timezone.utc).isoformat())

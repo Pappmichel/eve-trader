@@ -130,7 +130,13 @@ chmod +x deploy/setup.sh
 Installs Python/Node/nginx/certbot/Postgres, builds the venv and the
 frontend, writes `.env`/`config.yaml` from the `.example` files (only if
 they don't already exist - never overwrites a real config), and installs
-(but does not yet fully configure) the systemd service and nginx site. See
+(but does not yet fully configure) the systemd service and nginx site.
+On a fresh install the service runs as a dedicated system user
+(`eve-trader`, no shell, no home, no sudo; `APP_USER=<name>` overrides it)
+while the repository stays owned by the deploy user; the script grants the
+service user read access and write access to `data/` through ACLs. On an
+existing install the `User=` of the installed unit is kept. Node.js 22 is
+required (an older major version is replaced). See
 the script itself for exactly what each step does - it's meant to be read,
 not just trusted.
 
@@ -237,9 +243,10 @@ history/Total Wealth snapshots, `docs/PORTFOLIO_REWORK_PLAN.md`) - skipping
 it leaves `/api/portfolio/overview`/`/api/portfolio/history` 500ing with
 `relation "portfolio_snapshots" does not exist`.
 
-`phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
-dev password** (`app_devpassword`) - fine for local dev, not for a real
-deployment. Overwrite it with a real generated secret immediately after:
+`phase1_schema.sql` creates the `eve_trader_app` role **without a password**
+(an existing role keeps its own). Setting one is required - the app has no
+default DSN and will not start without `EVE_TRADER_PG_DSN`. Generate a real
+secret and set it right after the schema run:
 ```bash
 APP_PASSWORD=$(openssl rand -hex 24)
 sudo -u postgres psql -c "ALTER ROLE eve_trader_app WITH PASSWORD '$APP_PASSWORD';"
@@ -282,7 +289,11 @@ EVE_SSO_CALLBACK_HOST=<public-ip>
 FRONTEND_ORIGIN=http://<public-ip>
 EVE_SSO_REDIRECT_URI=http://<public-ip>/api/auth/callback
 SESSION_SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
+TOKEN_ENCRYPTION_KEY=<generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
 ```
+`TOKEN_ENCRYPTION_KEY` encrypts the stored SSO tokens; the service refuses to start without it and
+`deploy.sh` aborts before stopping anything if it is missing. Store a copy in a password manager:
+backups never contain it (see docs/RUNBOOK.md, Token key).
 Easy to hand-edit `.env` in `nano` and accidentally skip a line (confirmed
 real, 2026-08-16 - `SESSION_SECRET_KEY` got missed this way, which doesn't
 fail until the *first* login attempt, with a raw Internal Server Error and
@@ -349,9 +360,9 @@ migration (data in `data/eve_trader.db`, `config.yaml`'s old
 
 1. **Back up first** - copy `data/eve_trader.db`, `data/tokens.json`,
    `config.yaml`, and `.env` off the VM before touching anything. There is
-   no automated rollback path once you start - a plain file copy is the
-   whole safety net (`git checkout <old-commit>` gets the *code* back, it
-   doesn't restore data).
+   no automated data rollback once you start - a plain file copy is the
+   whole safety net (`./deploy/deploy.sh rollback` gets the *code* back, it
+   doesn't restore data; see `docs/RUNBOOK.md` for restoring a backup).
 2. `sudo systemctl stop eve-trader`.
 3. Follow steps 1-2b above (pull the new code, install/tune Postgres, apply
    the schema).
@@ -385,8 +396,14 @@ Once you have a domain pointed at the VM's public IP (an A record):
    `FRONTEND_ORIGIN=https://your-domain`,
    `EVE_SSO_REDIRECT_URI=https://your-domain/api/auth/callback`.
 3. `sudo systemctl restart eve-trader`
-4. `sudo certbot --nginx -d your-domain` (adds HTTPS + the http->https
-   redirect - also rewrites the nginx site config in place).
+4. `sudo certbot certonly --nginx -d your-domain`, then re-run
+   `./deploy/setup.sh your-domain`: with a certificate under
+   `/etc/letsencrypt/live/your-domain/` it renders
+   `nginx-eve-trader-ssl.conf.template` (redirect, HTTPS block, HSTS without
+   `includeSubDomains`) instead of the HTTP template. Do not use
+   `certbot --nginx` to rewrite the file in place any more. On a server whose
+   nginx file was changed by hand, compare first with `diff` against the
+   rendered template, run `sudo nginx -t`, and only then reload.
 
 `access_gate.py`'s session cookie automatically becomes `Secure` (HTTPS-only)
 the moment `FRONTEND_ORIGIN` starts with `https://` - no other change needed
@@ -398,15 +415,61 @@ for that part.
 cd eve-trader
 ./deploy/deploy.sh
 ```
-Bundles the sequence below into one idempotent script (git pull, every
-schema file, backend deps, frontend build, restart, then a verification
-check) - safe to re-run even when a given update didn't touch the schema or
-the frontend. It deliberately does **not** run one-time data migrations;
-the ESI access cutover needs one, see the section right below.
-Equivalent to running by hand:
+Bundles the sequence below into one idempotent script and ends with a
+real health check (it polls `GET /api/health` and checks the service is
+still active) - safe to re-run even when a given update didn't touch the
+schema or the frontend. It deliberately does **not** run one-time data
+migrations; the ESI access cutover needs one, see the section right below.
+
+What a run does, in order:
+
+1. `git fetch --tags origin`, then abort if a *tracked* file has local
+   changes. It moves the checkout to `DEPLOY_REF` (default
+   `origin/$DEPLOY_BRANCH`, branch default: the currently checked-out branch, or the one recorded in `data/deploy-state/branch` when detached after a rollback, else `main`) with `git merge
+   --ff-only` only - a diverged clone stops the deploy, nothing is merged.
+   After a rollback the checkout is detached; the next deploy checks the
+   branch out again first.
+2. Records the previous and the new commit under `data/deploy-state/`
+   (untracked, directory mode 0700) and prints both at the end.
+3. If a `docs/*.sql` file changed between the two commits (or
+   `DEPLOY_BACKUP=1`), takes a **pre-deploy backup** with
+   `eve-trader backup create --pre-deploy` (the same `create_backup()` the
+   Admin tool uses; zip under `data/backups/`, mode 0600, own retention of
+   the last 5, not shown in the Admin list). If the backup fails the deploy
+   stops *before* the first migration. It needs the same `.env` the service
+   uses and works under the deploy user.
+4. Applies every schema file in **one transaction** (`psql -1`), so a
+   failing file leaves the database as it was.
+5. Installs backend dependencies (a failure stops here, before the frontend
+   is touched), builds the frontend into `frontend/dist.new` and swaps it
+   in (`dist` becomes `dist.prev`); a failed build leaves `dist` untouched.
+6. Restarts the service and polls `http://127.0.0.1:8000/api/health` (up to
+   about 30 s), then re-checks `systemctl is-active`.
+7. Tags the deployed commit `deploy-<UTC timestamp>` in this clone
+   (`DEPLOY_NO_TAG=1` skips it). The tag is local only and is **not
+   pushed**: the deploy key is read-only.
+
+There is no automatic rollback. If the health check fails the script prints
+the last journal lines and the exact command.
+
+### Rollback
+
+```bash
+./deploy/deploy.sh rollback          # back to the previous deploy
+./deploy/deploy.sh rollback <sha>    # or any commit
+```
+Detached checkout of that commit, backend dependencies of that version,
+`frontend/dist.prev` swapped back in (rebuilt when it does not belong to that
+commit), restart, health check. **A rollback does not undo database
+changes.** Schema files are additive, so an older version runs against the
+newer schema; if data itself must go back, restore the pre-deploy backup
+(`docs/RUNBOOK.md`). The rollback prints the command that returns to the
+newer commit. See `docs/RUNBOOK.md` for backups, restore and secret rotation.
+
+Equivalent to running by hand (without the safety steps above):
 ```bash
 cd eve-trader
-git pull                      # or re-rsync
+git fetch --tags origin && git merge --ff-only origin/main
 sudo -u postgres psql -d eve_trader -f docs/phase1_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase3_schema.sql
@@ -433,6 +496,7 @@ sudo -u postgres psql -d eve_trader -f docs/location_registry_schema.sql
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..
 sudo systemctl restart eve-trader
+curl -fsS http://127.0.0.1:8000/api/health
 ```
 **Always re-run every schema file on every update, not just ones that look
 "new"** - confirmed real 2026-08-22: `docs/phase1_schema.sql` (an
@@ -505,3 +569,39 @@ to miss because `deploy.sh` does not do it for you.
 ```bash
 sudo journalctl -u eve-trader -f
 ```
+
+
+## systemd hardening
+
+The unit template carries the sandboxing directives (`UMask=0027`,
+`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, kernel/cgroup
+protection, `RestrictSUIDSGID`, `LockPersonality`). Side effects to know:
+`PrivateTmp=yes` hides the service's temp files from deploy scripts, and
+`ProtectSystem=full` makes `/etc` read-only for the service (the app writes
+only below its own directory). `ProtectHome` is not set because the repository
+lives in the deploy user's home. A server that already has a hardening drop-in
+(`/etc/systemd/system/eve-trader.service.d/hardening.conf`) behaves the same
+after the template is re-applied; the drop-in may then be removed, it does not
+have to be.
+
+## nginx limits
+
+Both nginx templates set `server_tokens off`, a 1 MiB request body cap, a
+timing log (`eve_trader_timing`: `rt`, `urt`, request id `rid`, also sent to
+the backend as `X-Request-ID`) and rate limits (proposals, not measured):
+10 requests/s per address with burst 40 for `/api/`, and 6 requests/minute with
+burst 3 for the solver and rebuild POST endpoints. Over the limit nginx answers
+429.
+
+## Dedicated service user (existing installation)
+
+Only after the operator agrees. Checklist, with the old unit kept as the way back:
+
+1. Create the user: `sudo useradd --system --no-create-home --shell /usr/sbin/nologin eve-trader` (no sudo group).
+2. Install `acl`. Let the user traverse the parent directories of the repository (`setfacl -m u:eve-trader:x <dir>` for each), read the repository, `.venv` and `frontend/dist` (`setfacl -R -m u:eve-trader:rX`), and write `data/` (`setfacl -R -m u:eve-trader:rwX` plus the same with `-d`; add the deploy user too).
+3. `.env` and `config.yaml`: `setfacl -m u:eve-trader:r <file>` and make sure others have no access. Use `setfacl` only; `chmod`/`chown`/`sed -i` on these files can lose the ACL.
+4. Optional backup role instead of a `postgres` password on the service host (run as the database owner):
+   `CREATE ROLE eve_trader_backup LOGIN NOSUPERUSER BYPASSRLS PASSWORD '<password>'; GRANT pg_read_all_data TO eve_trader_backup;`
+   Store the password in that user's `~/.pgpass`, and set `EVE_TRADER_PG_BACKUP_USER=eve_trader_backup` in `.env`. With Docker the backup keeps using `docker exec ... -U postgres`.
+5. Change `User=` in the unit (or re-run `APP_USER=eve-trader ./deploy/setup.sh <domain>`), `sudo systemctl daemon-reload && sudo systemctl restart eve-trader`, check `GET /api/health` and the journal.
+6. Rollback: set `User=` back to the previous value and restart. Deploys keep using the deploy user's `sudo systemctl`.

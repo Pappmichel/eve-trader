@@ -11,7 +11,7 @@ import math
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from .. import storage
 from ..actions import ActionError
@@ -201,7 +201,36 @@ def _prices(static: StaticData, cfg: PiConfig, with_history: bool = True) -> eco
         region = JITA_REGION_ID if int(cfg.hub_region_id) == ALL_HUBS else int(cfg.hub_region_id)
         trends = _trends(static, region)
     daily = {t: (tr or {}).get("avg_daily_volume") for t, tr in trends.items()}
-    return econ.Prices(sell=sell, buy=buy, hub_by_type=dict(hp.hub_by_type), daily_volume=daily, trend=trends)
+    outputs: dict = {}
+    if int(cfg.hub_region_id) == ALL_HUBS and getattr(hp, "stats_by_hub", None):
+        # Inputs are bought at the cheapest hub; outputs are sold where they
+        # earn the most.
+        o_sell, o_buy, o_hub = econ.best_output_hubs(
+            hp.stats_by_hub, ids, cfg.pi_valuation, cfg.pi_broker_fee_rate, cfg.pi_sales_tax_rate)
+        outputs = {"output_sell": o_sell, "output_buy": o_buy, "output_hub_by_type": o_hub}
+    return econ.Prices(sell=sell, buy=buy, hub_by_type=dict(hp.hub_by_type), daily_volume=daily, trend=trends,
+                       **outputs)
+
+
+def _price_rows(prices: econ.Prices, imports: Iterable[int], exports: Iterable[int]) -> dict:
+    """Per type in the colony: the input-side quote and hub for imports, the
+    output-side quote and hub for exports (they differ only with All hubs)."""
+    from ..hubs import hub_name
+
+    def hub(region_id: Optional[int]) -> Optional[str]:
+        return hub_name(int(region_id)) if region_id else None
+
+    out_sell = prices.output_sell if prices.output_sell is not None else prices.sell
+    out_buy = prices.output_buy if prices.output_buy is not None else prices.buy
+    out_hub = prices.output_hub_by_type if prices.output_hub_by_type is not None else prices.hub_by_type
+    rows: dict = {}
+    for t in imports:
+        rows[t] = {"sell": prices.sell.get(t), "buy": prices.buy.get(t),
+                   "side": "input", "hub": hub(prices.hub_by_type.get(t))}
+    for t in exports:
+        rows[t] = {"sell": out_sell.get(t), "buy": out_buy.get(t),
+                   "side": "output", "hub": hub(out_hub.get(t))}
+    return rows
 
 
 def _planet_from(static: StaticData, planet_id: Optional[int], planet_type_id: Optional[int],
@@ -484,8 +513,7 @@ def do_planner(chain: str, product_type_id: int, planet_id: Optional[int] = None
                         "market_label": market_label(cfg), **_tax_parts(cfg, z, owner_tax_rate)},
         "evaluation": evaluation_dict(static, ev),
         "economics": _economics_dict(e, static),
-        "prices": {t["type_id"]: {"sell": prices.sell.get(t["type_id"]), "buy": prices.buy.get(t["type_id"])}
-                   for t in _named_rates(static, {**ev.imports, **ev.exports})},
+        "prices": _price_rows(prices, ev.imports, ev.exports),
         "trend": prices.trend.get(int(product_type_id)),
     }
 
@@ -579,6 +607,9 @@ def do_save_plan(plan: dict, plan_id: Optional[int] = None) -> dict:
         v = plan.get(key)
         if v is not None and not (lo <= float(v) <= hi):
             raise ActionError(f"{key} out of range")
+    notes = plan.get("notes")
+    if notes is not None and len(str(notes)) > 2000:
+        raise ActionError("Notes are limited to 2,000 characters")
     row = {
         "name": name, "planet_id": plan.get("planet_id"), "planet_type_id": planet_type_id,
         "radius_km": float(plan.get("radius_km") or 0) or 5000.0,

@@ -22,5 +22,27 @@ ExecStart=__APP_DIR__/.venv/bin/uvicorn eve_trader.api.main:app --host 127.0.0.1
 Restart=on-failure
 RestartSec=5
 
+# Sandboxing. Each line has a side effect worth knowing before removing it.
+# Files the service creates are group-readable at most, never world-readable
+# (backups and exports are written with 0600 explicitly anyway).
+UMask=0027
+# No setuid/setgid escalation from inside the service.
+NoNewPrivileges=yes
+# The service gets a private /tmp and /var/tmp. Side effect: temp files it
+# writes are invisible to deploy scripts and to other users.
+PrivateTmp=yes
+# /usr, /boot and /etc become read-only for the service. The app writes only
+# below its own directory (data/, logs), so nothing here needs /etc.
+# ProtectHome is deliberately NOT set: the repository usually lives in the
+# deploy user's home directory.
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# No MemoryMax/CPUQuota on purpose: the mineral solver runs in a child
+# process on a 1-CPU host and no measurement justifies a limit yet.
+
 [Install]
 WantedBy=multi-user.target

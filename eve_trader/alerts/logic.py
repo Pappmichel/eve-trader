@@ -2,6 +2,7 @@
 feeds these stored data and sends whatever they return."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, Sequence
@@ -18,6 +19,19 @@ DEFAULT_LEAD_HOURS = 12
 MIN_LEAD_HOURS, MAX_LEAD_HOURS = 1, 168
 MAX_SUBJECT_CHARS = 100
 MAX_MAILS_LISTED = 5
+
+
+_MD_SPECIAL = re.compile(r"([\\*_~`|>#\[\]()])")
+_MD_LINE_START_DASH = re.compile(r"(?m)^(\s*)-")
+
+
+def md_escape(text) -> str:
+    """Escapes Discord markdown in text that a third party wrote (names,
+    subjects, titles, mail text), so it cannot render links or formatting in
+    our message. Shorten BEFORE escaping, never after: cutting an escaped
+    string can split an escape pair."""
+    out = _MD_SPECIAL.sub(r"\\\1", str(text if text is not None else ""))
+    return _MD_LINE_START_DASH.sub(r"\1\\-", out)
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,7 @@ def skillqueue_decision(
     """`finish_dates` is one entry per queue row (None = paused row). Empty
     sequence = an empty queue. Returns None while the queue is comfortably
     long or this exact situation was already announced (`last_key`)."""
+    character_name = md_escape(character_name)
     if not finish_dates:
         decision = Decision("empty", f"{character_name}: the skill queue is empty.")
     elif any(f is None or parse_iso(f) is None for f in finish_dates):
@@ -96,14 +111,15 @@ def mail_decision(
         # Read mails still advance the cursor so they never come back as new.
         return MailDecision(newest, None)
     n = len(fresh)
+    character_name = md_escape(character_name)
     lines = []
     fresh.sort(key=lambda h: int(h["mail_id"]))
     for h in fresh[:MAX_MAILS_LISTED]:
         sender = (senders or {}).get(int(h.get("from") or 0)) or "unknown sender"
         subject = str(h.get("subject") or "(no subject)")[:MAX_SUBJECT_CHARS]
-        line = f"- {sender[:MAX_SUBJECT_CHARS]}: {subject}"
+        line = f"- {md_escape(sender[:MAX_SUBJECT_CHARS])}: {md_escape(subject)}"
         body = (bodies or {}).get(int(h["mail_id"])) if include_content else None
-        lines.append(line + (f"\n  {body}" if body else ""))
+        lines.append(line + (f"\n  {md_escape(body)}" if body else ""))
     if n > MAX_MAILS_LISTED:
         lines.append(f"... and {n - MAX_MAILS_LISTED} more")
     text = f"{character_name}: {n} new EVE mail" + ("s" if n != 1 else "") + ".\n" + "\n".join(lines)
@@ -213,6 +229,7 @@ def contract_message(events: Sequence[tuple[int, str, dict]], character_name: st
     location id to its name, `acceptors` an acceptor id (character or
     corporation) to its name; all are optional. `sold_out` names Doctrine
     fittings these sales left without any contract."""
+    character_name = md_escape(character_name)
     finished = sum(1 for _i, e, _c in events if e == CONTRACT_FINISHED)
     expired = len(events) - finished
     parts = [f"{n} contract{'s' if n != 1 else ''} {what}"
@@ -220,19 +237,20 @@ def contract_message(events: Sequence[tuple[int, str, dict]], character_name: st
     lines = []
     for contract_id, event, c in sorted(events, key=lambda e: e[0])[:MAX_CONTRACTS_LISTED]:
         kind = CONTRACT_TYPE_LABELS.get(c.get("type"), "Contract")
-        what = str(c.get("title") or "").strip()[:MAX_SUBJECT_CHARS] or (items or {}).get(contract_id)
+        what = md_escape(str(c.get("title") or "").strip()[:MAX_SUBJECT_CHARS]) or md_escape(
+            (items or {}).get(contract_id) or "")
         value = float((c.get("reward") if c.get("type") == "courier" else c.get("price")) or 0)
-        place = (places or {}).get(int(c.get("start_location_id") or 0))
+        place = md_escape((places or {}).get(int(c.get("start_location_id") or 0)) or "")
         line = f"- {event.capitalize()}: {kind}" + (f" \"{what}\"" if what else "")
         line += (f", {_isk(value)}" if value else "") + (f" at {place}" if place else "")
         acceptor = (acceptors or {}).get(int(c.get("acceptor_id") or 0)) if event == CONTRACT_FINISHED else None
         if acceptor:
-            line += f", {CONTRACT_ACCEPTOR_VERBS.get(c.get('type'), 'accepted by')} {acceptor[:MAX_SUBJECT_CHARS]}"
+            line += f", {CONTRACT_ACCEPTOR_VERBS.get(c.get('type'), 'accepted by')} {md_escape(acceptor[:MAX_SUBJECT_CHARS])}"
         lines.append(line)
     if len(events) > MAX_CONTRACTS_LISTED:
         lines.append(f"... and {len(events) - MAX_CONTRACTS_LISTED} more")
     for name in sold_out:
-        lines.append(f"- Sold out: fitting \"{str(name)[:MAX_SUBJECT_CHARS]}\" has no contract left")
+        lines.append(f"- Sold out: fitting \"{md_escape(str(name)[:MAX_SUBJECT_CHARS])}\" has no contract left")
     return f"{character_name}: " + ", ".join(parts) + ".\n" + "\n".join(lines)
 
 
@@ -267,9 +285,10 @@ def pi_decisions(
     Pad-full and inputs-empty are estimates from the colony state at
     `last_update` (ESI does not give the live state), and say so."""
     out: list[PiDecision] = []
+    character_name = md_escape(character_name)
     for c in colonies:
         pid = int(c["planet_id"])
-        label = c.get("planet_name") or f"planet {pid}"
+        label = md_escape(c.get("planet_name") or f"planet {pid}")
         proj = c.get("projection") or {}
         key = message = None
         if alert_type == PI_EXTRACTOR_EXPIRY:
@@ -285,7 +304,7 @@ def pi_decisions(
                 due.sort(key=lambda d: d[1])
                 key = "|".join(f"expiry:{pin}:{exp.isoformat()}" for pin, exp, _h, _p in due)
                 lines = [
-                    f"- {product or 'extractor'}: " + ("expired" if h <= 0 else f"expires {_in_hours(h)}")
+                    f"- {md_escape(product) if product else 'extractor'}: " + ("expired" if h <= 0 else f"expires {_in_hours(h)}")
                     for _pin, _exp, h, product in due
                 ]
                 message = f"{character_name}: extractors on {label} need attention.\n" + "\n".join(lines)
@@ -296,10 +315,10 @@ def pi_decisions(
                 key = f"{'padfull' if full else 'inputs'}:{pid}:{_floor_hour(at)}"
                 what = "storage is estimated to be full" if full else "imported inputs are estimated to run out"
                 if not full and proj.get("inputs_empty_type"):
-                    what += f" ({proj['inputs_empty_type']})"
+                    what += f" ({md_escape(proj['inputs_empty_type'])})"
                 when = _in_hours((at - now).total_seconds() / 3600)
                 message = (f"{character_name}: on {label} {what} {when}. "
-                           f"Estimate from the colony state of {proj.get('last_update') or 'unknown'}.")
+                           f"Estimate from the colony state of {md_escape(proj.get('last_update') or 'unknown')}.")
         if key is not None and key != last_keys.get((pid, alert_type)):
             out.append(PiDecision(pid, alert_type, key, message))
     return out

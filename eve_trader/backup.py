@@ -83,6 +83,12 @@ BACKUP_NAME_PREFIX = "eve_trader_backup_"
 # background process can't grow this without bound" reasoning as
 # logging_setup.py's RotatingFileHandler.
 MAX_BACKUPS = 14
+# Backups taken by deploy/deploy.sh before a schema migration. Own prefix and
+# own retention so several deploys on one day do not push the regular daily
+# backups out of MAX_BACKUPS; list_backups() (the Admin list) does not show
+# them on purpose.
+PREDEPLOY_BACKUP_PREFIX = "eve_trader_predeploy_"
+MAX_PREDEPLOY_BACKUPS = 5
 
 log = logging.getLogger(__name__)
 _backup_lock = threading.Lock()
@@ -97,21 +103,40 @@ DOCKER_BIN = os.getenv("EVE_TRADER_DOCKER_BIN", "docker")
 PG_DB_NAME = "eve_trader"
 
 
-def create_backup() -> dict:
+def _bare_pg_backup_user() -> str:
+    """Database role for `pg_dump` on a bare (non-Docker) host. Defaults to
+    the owner role `postgres`; `EVE_TRADER_PG_BACKUP_USER` names a dedicated
+    read-only backup role instead (LOGIN, BYPASSRLS, member of
+    pg_read_all_data - see deploy/README.md), so a service running as an
+    unprivileged OS user needs no password for the owner role. Docker mode
+    keeps `docker exec ... -U postgres` unchanged."""
+    return os.getenv("EVE_TRADER_PG_BACKUP_USER", "").strip() or "postgres"
+
+
+def create_backup(prefix: str = BACKUP_NAME_PREFIX) -> dict:
     """Creates one timestamped .zip under BACKUP_DIR containing a pg_dump
     (`-Fc`) of the whole Postgres database plus config.yaml (if present),
     then prunes anything beyond MAX_BACKUPS. Returns the same shape as one
     entry of list_backups(). Serialized so parallel callers cannot collide
-    on a filename or race the retention prune."""
+    on a filename or race the retention prune.
+
+    ``prefix`` selects the file-name family and with it the retention: the
+    default is the regular daily family (MAX_BACKUPS); PREDEPLOY_BACKUP_PREFIX
+    keeps the last MAX_PREDEPLOY_BACKUPS, counted separately."""
+    if prefix not in _KNOWN_PREFIXES:
+        raise ValueError(f"unknown backup prefix {prefix!r}")
     with _backup_lock:
-        return _create_backup_locked()
+        return _create_backup_locked(prefix)
 
 
-def _create_backup_locked() -> dict:
+def _create_backup_locked(prefix: str = BACKUP_NAME_PREFIX) -> dict:
     BACKUP_DIR.mkdir(exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
     unique = uuid.uuid4().hex[:8]
-    backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}_{unique}.zip"
+    backup_path = BACKUP_DIR / f"{prefix}{ts}_{unique}.zip"
+    # Written under a name that matches no "*.zip" glob, so list_backups() and
+    # the prune never see a half-written file; renamed only once verified.
+    partial_path = backup_path.with_suffix(".zip.partial")
     tmp_dump_path = BACKUP_DIR / f".tmp_{ts}_{unique}.dump"
 
     if PG_CONTAINER:
@@ -124,7 +149,7 @@ def _create_backup_locked() -> dict:
         # (standard libpq convention, no password ever needs to live in this
         # process's own env/command line). See deploy/README.md's Postgres
         # section for setting up ~/.pgpass for the owner role.
-        pg_dump_cmd = ["pg_dump", "-h", "127.0.0.1", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
+        pg_dump_cmd = ["pg_dump", "-h", "127.0.0.1", "-U", _bare_pg_backup_user(), "-d", PG_DB_NAME, "-Fc"]
 
     try:
         # T1-05 regression (found in Plan 2's independent challenge pass,
@@ -160,18 +185,27 @@ def _create_backup_locked() -> dict:
             log.error("pg_dump failed (exit %s): %s", result.returncode, stderr_text)
             raise BackupError("Database backup failed.")
 
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            os.chmod(backup_path, 0o600)
+        with zipfile.ZipFile(partial_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            os.chmod(partial_path, 0o600)
             zf.write(tmp_dump_path, arcname="eve_trader.dump")
             if DEFAULT_CONFIG_PATH.exists():
                 zf.write(DEFAULT_CONFIG_PATH, arcname="config.yaml")
-    except Exception:
+        with zipfile.ZipFile(partial_path) as check:
+            bad_member = check.testzip()
+        if bad_member is not None:
+            log.error("backup archive failed verification at member %s", bad_member)
+            raise BackupError("Database backup failed.")
+        with open(partial_path, "r+b") as fh:
+            os.fsync(fh.fileno())
+        os.replace(partial_path, backup_path)
+    except BaseException:
         # A failure partway through (pg_dump not reachable, a full disk, ...)
         # used to leave a partial/corrupt .zip behind - it matches
         # BACKUP_NAME_PREFIX, so _prune_old_backups counts it against the
         # rotation and list_backups() (Portfolio page, scheduler) shows it
         # looking like a normal, complete backup. Clean it up before
         # re-raising instead.
+        partial_path.unlink(missing_ok=True)
         backup_path.unlink(missing_ok=True)
         raise
     finally:
@@ -182,7 +216,7 @@ def _create_backup_locked() -> dict:
         # match BACKUP_NAME_PREFIX, so nothing else here ever notices it).
         tmp_dump_path.unlink(missing_ok=True)
 
-    _prune_old_backups()
+    _prune_old_backups(prefix)
     info = _backup_info(backup_path)
     # T1-06 (2026-09-26): _run_job only ever logs a scheduled backup's
     # FAILURE, never its success - manual (Admin "Create Backup") and
@@ -193,10 +227,41 @@ def _create_backup_locked() -> dict:
     return info
 
 
-def _prune_old_backups() -> None:
-    backups = sorted(BACKUP_DIR.glob(f"{BACKUP_NAME_PREFIX}*.zip"), key=lambda p: p.name)
-    for old in backups[:-MAX_BACKUPS]:
+_KNOWN_PREFIXES = (BACKUP_NAME_PREFIX, PREDEPLOY_BACKUP_PREFIX)
+
+
+def _retention(prefix: str) -> int:
+    # Read at call time so the limits stay patchable.
+    return MAX_PREDEPLOY_BACKUPS if prefix == PREDEPLOY_BACKUP_PREFIX else MAX_BACKUPS
+
+
+def _prune_old_backups(prefix: str = BACKUP_NAME_PREFIX) -> None:
+    keep = _retention(prefix)
+    backups = sorted(BACKUP_DIR.glob(f"{prefix}*.zip"), key=lambda p: p.name)
+    for old in backups[:-keep]:
         old.unlink()
+
+
+PARTIAL_MAX_AGE_SECONDS = 600   # pg_dump times out at 300 s; a CLI backup in another process may be running
+
+
+def cleanup_partial_files(max_age_seconds: float = PARTIAL_MAX_AGE_SECONDS) -> int:
+    """Delete leftover `.tmp_*` dumps and `*.partial` archives of a backup that
+    was killed mid-write. Only files older than `max_age_seconds` go, so a
+    backup running in another process is never touched. Returns the count."""
+    if not BACKUP_DIR.exists():
+        return 0
+    cutoff = datetime.now(timezone.utc).timestamp() - max_age_seconds
+    removed = 0
+    for pattern in (".tmp_*", "*.partial"):
+        for path in BACKUP_DIR.glob(pattern):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                log.warning("could not remove leftover backup file %s", path.name)
+    return removed
 
 
 def _backup_info(path: Path) -> dict:

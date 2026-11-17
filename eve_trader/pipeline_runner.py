@@ -268,7 +268,7 @@ def _execute(tenant_id: str, run_id: str, work: Worker) -> None:
     target is already wrapped in with_current_tenant: that wrapper only
     restores storage's ambient tenant_id, not TRADING_CONFIG's per-tenant
     instance (see tenant_scope.enter_tenant / CLAUDE.md)."""
-    with tenant_scope.enter_tenant(tenant_id):
+    with tenant_scope.enter_tenant(tenant_id), storage.long_running():
         def progress_cb(progress: dict) -> None:
             try:
                 storage.update_pipeline_run_progress(run_id, progress)

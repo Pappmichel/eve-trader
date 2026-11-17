@@ -50,6 +50,10 @@ ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS wealth_escrow DOUBLE PR
 -- Inputs of running industry jobs (Total Wealth "In production"); NULL on
 -- rows written before it existed.
 ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS wealth_in_production_value DOUBLE PRECISION;
+-- The 20 largest priced types (one row per type: type_id, quantity,
+-- unit_price, value, component), so a later price jump can be traced to a
+-- type. NULL on rows written before it existed.
+ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS top_positions JSONB;
 
 -- Manual item prices (plan section 7) - used only to value items
 -- Goonmetrics has no quote for in Total Wealth. One price per type_id,

@@ -8,6 +8,7 @@ import { refiningApi } from '../../api/client'
 import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
 import { dateTime } from '../../format'
 import { ToolHeader } from '../../components/ToolHeader'
+import CcpNotice from '../../components/CcpNotice'
 
 const TABS = [
   { path: '/ore', label: 'Overview' },
@@ -87,10 +88,7 @@ export default function OreLayout() {
 
           <Divider />
 
-          <Text size="xs" c="dimmed">
-            Unofficial third-party tool, not affiliated with or endorsed by CCP hf. EVE, EVE Online, CCP, and
-            all related logos/trademarks are property of CCP hf.
-          </Text>
+          <CcpNotice />
         </Stack>
       </AppShell.Navbar>
 

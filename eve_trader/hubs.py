@@ -57,6 +57,10 @@ class HubPricing:
     stats: dict[int, OrderStats] = field(default_factory=dict)
     hub_by_type: dict[int, int] = field(default_factory=dict)
     freight_by_type: dict[int, float] = field(default_factory=dict)
+    # ALL_HUBS only: every hub's stats (region_id -> type_id -> stats), for a
+    # caller that also sells and wants the hub paying the most. Empty for a
+    # single hub.
+    stats_by_hub: dict[int, dict[int, OrderStats]] = field(default_factory=dict)
 
     def landed(self, type_id: int, volume_m3: float, broker_fee: float) -> Optional[float]:
         s = self.stats.get(type_id)
@@ -95,7 +99,9 @@ def hub_pricing(client, hub_region_id: int, type_ids: Iterable[int],
     for region_id in TRADE_HUBS:
         freight = (float(freight_override) if freight_override is not None
                    else hub_freight_per_m3(region_id, freight_fallback, cfg))
-        for type_id, s in client.region_order_stats_bulk(region_id, ids).items():
+        hub_stats = dict(client.region_order_stats_bulk(region_id, ids))
+        result.stats_by_hub[region_id] = hub_stats
+        for type_id, s in hub_stats.items():
             if s.sell_percentile is None:
                 if type_id not in result.stats:
                     result.stats[type_id] = s

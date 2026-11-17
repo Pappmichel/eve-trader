@@ -213,7 +213,7 @@ def test_optimize_combines_ore_and_modules_in_one_plan(sde, candidates, esi, cfg
     """Veldspar is the only Tritanium source; the autocannon (60 ISK for
     floor(100 x 50%) = 50 Mexallon, 1.2 ISK/unit) beats buying Mexallon at
     100 ISK - so the plan has to use both kinds at once."""
-    plan = _optimize(cfgs, [{"type_id": TRIT, "name": "Tritanium", "required_qty": 41_500},
+    plan = _optimize(cfgs, [{"type_id": TRIT, "name": "Tritanium", "required_qty": 41_000},
                             {"type_id": MEX, "name": "Mexallon", "required_qty": 500}])
 
     by_category = {p["category"]: p for p in plan["reprocess_purchases"]}

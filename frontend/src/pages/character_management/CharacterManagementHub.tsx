@@ -7,6 +7,7 @@ import { charSkillsApi, gateApi } from '../../api/client'
 import { ToolCard } from '../../components/ToolCard'
 import { CHARACTER_MANAGEMENT_TOOL_KEYS, hasAnyToolGrant } from '../../toolKeys'
 import { warningSummary } from './skills/queueWarning'
+import CcpNotice from '../../components/CcpNotice'
 
 // docs/CHARACTER_MANAGEMENT_PLAN.md. The hub has no grant of its own: it lists
 // whichever sub-tools the session holds. Later phases add cards here (Info,
@@ -55,6 +56,7 @@ export default function CharacterManagementHub() {
             description="Get a Discord DM when a skill queue is about to run empty or new mail arrives. Every alert is opt-in." />
         </SimpleGrid>
       )}
+      <CcpNotice ta="center" mt="xl" />
     </Container>
   )
 }

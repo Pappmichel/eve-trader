@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import hubs, storage
+from ..industry_activity import normalize_activity_id
 from ..production import config as production_config
 from ..production.engine import _haul_volume
 from . import db, inputs
@@ -31,6 +32,10 @@ _COURIER = "courier"
 # How far back each ESI list reaches, and the row caps Phase 0 found
 # (plan section 13a). A gap can only exist where one of these was exceeded.
 JOURNAL_ENTRY_CAP = 10_000        # proven: newest 10,000 entries only
+# Wallet transactions are paged by from_id, 2,500 per page (the fetchers'
+# WALLET_TRANSACTIONS_PAGE_SIZE). Whether ESI caps the total is not known;
+# a full page whose oldest row is newer than the archive is treated as a gap.
+WALLET_TRANSACTIONS_PAGE_SIZE = 2_500
 INDUSTRY_JOBS_ROW_CAP = 2_000     # assumed hard cap (user decision 2026-10-17)
 WALLET_WINDOW_DAYS = 30
 CONTRACTS_WINDOW_DAYS = 30
@@ -191,12 +196,19 @@ class _TxnEnricher:
 def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],
                       enricher: _TxnEnricher) -> int:
     """Insert only rows new to the archive, then retry region resolution
-    for archived rows that are still unresolved. Returns rows inserted."""
+    for archived rows that are still unresolved. Returns rows inserted.
+
+    A row may carry ESI's `client_id` as a tenth field. Rows archived before
+    that column existed get it filled once while ESI still lists them."""
     known = db.archived_transaction_keys(owner_type, owner_id, [r[1] for r in txn_rows])
     ledger_txns: list[tuple] = []
+    known_clients: dict[tuple[int, int], int] = {}
     for r in txn_rows:
-        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r
+        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r[:9]
+        client_id = r[9] if len(r) > 9 and r[9] is not None else None
         if (int(division), int(txn_id)) in known:
+            if client_id is not None:
+                known_clients[(int(division), int(txn_id))] = int(client_id)
             continue
         region_id = enricher.region(location_id)
         rate, m3 = enricher.freight(region_id, location_id, type_id, quantity, is_buy)
@@ -204,8 +216,18 @@ def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],
             owner_type, int(owner_id), int(division), int(txn_id), date,
             int(type_id), int(location_id), float(unit_price), int(quantity),
             bool(is_buy), int(journal_ref_id), region_id, rate, m3,
+            None if client_id is None else int(client_id),
         ))
     db.upsert_ledger_wallet_transactions(ledger_txns)
+
+    if known_clients:
+        missing = db.transactions_missing_client(
+            owner_type, owner_id, [txn_id for _division, txn_id in known_clients],
+        )
+        db.set_transaction_client([
+            (known_clients[key], owner_type, int(owner_id), key[0], key[1])
+            for key in sorted(missing) if key in known_clients
+        ])
 
     updates: list[tuple] = []
     for division, txn_id, location_id, type_id, quantity, is_buy in db.transactions_missing_region(
@@ -255,6 +277,19 @@ def _archive_journal(owner_type: str, owner_id: int, division: int,
     return len(rows)
 
 
+def _check_txn_gap(owner_type: str, owner_id: int, division: int,
+                   txn_rows: list[tuple], now: datetime) -> None:
+    """Window and cap check for one wallet's transactions, before they are
+    written. `txn_rows` are this wallet's (one division's) rows."""
+    dates = [d for d in (_parse_esi_time(r[2]) for r in txn_rows) if d is not None]
+    _check_gap(
+        owner_type=owner_type, owner_id=owner_id, data_kind="wallet_transactions",
+        now=now, division=division, window_days=WALLET_WINDOW_DAYS,
+        cap=WALLET_TRANSACTIONS_PAGE_SIZE, row_count=len(txn_rows), sync_dates=dates,
+        table="ledger_wallet_transactions", date_column="date",
+    )
+
+
 def archive_wallet(
     *,
     owner_type: str,
@@ -267,17 +302,15 @@ def archive_wallet(
 ) -> dict:
     """Archive wallet transactions + journal after the snapshot write.
 
-    `txn_rows` is the same shape as `storage.replace_wallet_transactions`
+    `txn_rows` is the shape of `storage.replace_wallet_transactions`
     ((division, transaction_id, date, type_id, location_id, unit_price,
-    quantity, is_buy, journal_ref_id), ...). Journal is the raw ESI list
-    (needs context_id etc.).
+    quantity, is_buy, journal_ref_id), ...) plus ESI's client_id as an
+    optional tenth field (the snapshot keeps nine). Journal is the raw ESI
+    list (needs context_id etc.).
     """
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     now = _now(now)
-    _check_gap(
-        owner_type=owner_type, owner_id=owner_id, data_kind="wallet_transactions",
-        now=now, division=journal_division, window_days=WALLET_WINDOW_DAYS,
-    )
+    _check_txn_gap(owner_type, owner_id, journal_division, txn_rows, now)
     inserted = _archive_txn_rows(owner_type, owner_id, txn_rows, _TxnEnricher(cfg))
     _stamp(owner_type, owner_id, "wallet_transactions", now, journal_division)
     journal = _archive_journal(owner_type, owner_id, journal_division, journal_raw, now)
@@ -297,9 +330,9 @@ def archive_corp_wallet(
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     now = _now(now)
     for division in sorted(journal_entries_by_division):
-        _check_gap(
-            owner_type="corporation", owner_id=owner_id, data_kind="wallet_transactions",
-            now=now, division=division, window_days=WALLET_WINDOW_DAYS,
+        _check_txn_gap(
+            "corporation", owner_id, division,
+            [r for r in txn_rows if int(r[0]) == int(division)], now,
         )
     inserted = _archive_txn_rows("corporation", owner_id, txn_rows, _TxnEnricher(cfg))
     for division in sorted(journal_entries_by_division):
@@ -345,10 +378,8 @@ def archive_industry_jobs(
         jid = j.get("job_id")
         if jid is None:
             continue
-        activity_id = int(j["activity_id"])
-        # Normalize live reaction id 9 -> SDE 11 (same as snapshot fetcher).
-        if activity_id == 9:
-            activity_id = 11
+        # Live reaction id 9 -> SDE 11 (same as the snapshot fetcher).
+        activity_id = normalize_activity_id(j["activity_id"])
         start = j.get("start_date")
         rows.append((
             owner_type, int(owner_id), int(jid), activity_id,

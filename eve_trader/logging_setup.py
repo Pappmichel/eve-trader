@@ -18,9 +18,20 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from .config import DATA_DIR
+from .request_context import request_id_var
 
 LOG_PATH = DATA_DIR / "eve_trader.log"
 _configured = False
+
+
+class RequestIdFilter(logging.Filter):
+    """Adds `record.request_id` (the current request's id, or "-" outside a
+    request) so the format string can always use %(request_id)s. Attached to
+    the handlers, not the logger, so records from child loggers get it too."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get()
+        return True
 
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -32,7 +43,7 @@ def configure_logging(level: int = logging.INFO) -> None:
         return
     _configured = True
 
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    formatter = logging.Formatter("%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s")
 
     console = logging.StreamHandler()
     console.setFormatter(formatter)
@@ -42,6 +53,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     # file without bound over weeks of uptime.
     file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
     file_handler.setFormatter(formatter)
+
+    request_id_filter = RequestIdFilter()
+    console.addFilter(request_id_filter)
+    file_handler.addFilter(request_id_filter)
 
     logger = logging.getLogger("eve_trader")
     logger.setLevel(level)

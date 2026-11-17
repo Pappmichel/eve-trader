@@ -1323,7 +1323,7 @@ def test_ingest_freight_follows_the_hub_table(monkeypatch):
 
 # ------------------------------------------------------- courier freight (F1-F5)
 AMARR = 60008494
-HAULER = 92267134
+HAULER = 1234567894
 
 
 def courier(contract_id, issued, *, start=JITA, end=HOME, volume=100.0, reward=80_000.0,
@@ -1704,3 +1704,249 @@ def test_fees_missing_sales_do_not_emit_a_tax_missing_run_warning_per_sale():
     assert all("tax_missing" in r.warnings for r in result.realized_results)
     assert sum(1 for w in result.warnings if w.startswith("fees_missing:")) == 1
     assert not any(w.startswith("tax_missing:") for w in result.warnings)
+
+
+# ------------------------------------------------- market trades between own owners
+TRANSFER_TYPE = 8800
+OUTSIDE_BUYER = 4242
+
+
+def _with_client(tx: WalletTransaction, client_id) -> WalletTransaction:
+    from dataclasses import replace
+    return replace(tx, client_id=client_id)
+
+
+def _internal_trade_ledger(*, client_ids: bool = True, buyer_side: bool = True, **kw):
+    """CHAR buys 10 at 10, sells them to OTHER_CHAR at 100 (tax 30, broker
+    fee 5), OTHER_CHAR sells them outside at 120 (tax 40)."""
+    bought = buy(TRANSFER_TYPE, 10, 10.0, at(1, 9), tx_id=8801)
+    to_b = sell(TRANSFER_TYPE, 10, 100.0, at(2, 10), tx_id=8802)
+    b_buys = buy(TRANSFER_TYPE, 10, 100.0, at(2, 10), owner=OTHER_CHAR, tx_id=8802)
+    outside = sell(TRANSFER_TYPE, 10, 120.0, at(3, 10), owner=OTHER_CHAR, tx_id=8803)
+    if client_ids:
+        to_b = _with_client(to_b, OTHER_CHAR)
+        b_buys = _with_client(b_buys, CHAR)
+        outside = _with_client(outside, OUTSIDE_BUYER)
+    txs = [bought, to_b, outside] + ([b_buys] if buyer_side else [])
+    kw.setdefault("wallet_transactions", txs)
+    kw.setdefault("journal_entries", [
+        *tax_pair(to_b, 100, 30.0),
+        JournalEntry("character", CHAR, 200, at(2, 10), "brokers_fee", -5.0),
+        *tax_pair(outside, 300, 40.0),
+    ])
+    kw.setdefault("market_orders", [MarketOrder("character", CHAR, 1, TRANSFER_TYPE, HOME, False, 100.0)])
+    return snapshot(**kw)
+
+
+def test_market_trade_between_own_owners_is_a_transfer_not_a_result():
+    result = rebuild_costing(_internal_trade_ledger())
+    # One result: the outside sale. Its cost is what CHAR paid (100) plus the
+    # transfer's real fees to third parties (tax 30 + broker fee 5).
+    assert [r.sale_ref for r in result.realized_results] == [f"tx:character:{OTHER_CHAR}:0:8803"]
+    (sale,) = result.realized_results
+    assert sale.cost == pytest.approx(135.0)
+    assert sale.components.materials_bought == pytest.approx(100.0)
+    assert sale.components.fees == pytest.approx(35.0)
+    assert sale.revenue == pytest.approx(1160.0)
+    assert sale.profit == pytest.approx(1025.0)
+    transfer = [l for l in result.all_layers if l.source == c.SOURCE_TRANSFER]
+    assert [(l.origin, l.quantity, l.source_ref) for l in transfer] == [
+        (c.ORIGIN_BOUGHT, 10.0, f"tx:character:{OTHER_CHAR}:0:8802"),
+    ]
+    assert not has_warning(result, c.INTERNAL_TRADE_UNMATCHED)
+    assert remaining(result, TRANSFER_TYPE) == []
+
+
+def test_internal_sale_without_the_buyers_purchase_stays_a_sale_and_warns():
+    result = rebuild_costing(_internal_trade_ledger(buyer_side=False))
+    by_ref = {r.sale_ref: r for r in result.realized_results}
+    internal = by_ref[f"tx:character:{CHAR}:0:8802"]
+    assert c.INTERNAL_TRADE_UNMATCHED in internal.warnings
+    # Booked like any sale: gross 1000 less its 30 tax, broker fee 5 in cost.
+    assert internal.revenue == pytest.approx(970.0)
+    assert internal.broker_fee == pytest.approx(5.0)
+    assert has_warning(result, f"{c.INTERNAL_TRADE_UNMATCHED}: tx:character:{CHAR}:0:8802")
+
+
+def test_rows_without_client_id_are_booked_as_before():
+    result = rebuild_costing(_internal_trade_ledger(client_ids=False))
+    by_ref = {r.sale_ref: r for r in result.realized_results}
+    assert set(by_ref) == {f"tx:character:{CHAR}:0:8802", f"tx:character:{OTHER_CHAR}:0:8803"}
+    # CHAR earns 1000 - 30 tax - 5 fee - 100 cost; OTHER_CHAR's layer is the
+    # 1000 purchase.
+    assert by_ref[f"tx:character:{CHAR}:0:8802"].profit == pytest.approx(865.0)
+    assert by_ref[f"tx:character:{OTHER_CHAR}:0:8803"].cost == pytest.approx(1000.0)
+    assert not any(l.source == c.SOURCE_TRANSFER for l in result.all_layers)
+
+
+def test_internal_trade_pairing_needs_the_same_fill_and_skips_freight():
+    """The buyer's purchase must be the same fill (second, type, location,
+    price, quantity) by the sale's client. A transferred buy is not
+    freighted: the units keep the seller's cost, freight included."""
+    bought = buy(TRANSFER_TYPE, 10, 10.0, at(1, 9), location=JITA, rate=100.0, m3=10.0, tx_id=8901)
+    to_b = _with_client(sell(TRANSFER_TYPE, 10, 100.0, at(2, 10), location=JITA, tx_id=8902), OTHER_CHAR)
+    b_buys = _with_client(buy(TRANSFER_TYPE, 10, 100.0, at(2, 10), location=JITA, rate=100.0, m3=10.0,
+                              owner=OTHER_CHAR, tx_id=8903), CHAR)
+    other_fill = buy(TRANSFER_TYPE, 10, 100.0, at(2, 10, 1), location=JITA, owner=OTHER_CHAR, tx_id=8904)
+    ledger = snapshot(wallet_transactions=[bought, to_b, b_buys, other_fill])
+    pairs, unmatched = c.internal_trade_pairs(ledger)
+    assert pairs == {to_b.key: b_buys} and unmatched == frozenset()
+    assert {p.ref for p in c.freight_purchases(ledger)} == {bought.ref}
+    result = rebuild_costing(ledger)
+    transfer = [l for l in result.all_layers if l.source == c.SOURCE_TRANSFER]
+    # 100 materials + the seller's 1000 freight (100 ISK/m3 x 10 m3), once.
+    assert [l.unit_cost * l.quantity for l in transfer] == [pytest.approx(1100.0)]
+
+
+def test_sale_to_an_own_corporation_pairs_with_the_corporation_purchase():
+    bought = buy(TRANSFER_TYPE, 5, 10.0, at(1, 9), tx_id=9001)
+    to_corp = _with_client(sell(TRANSFER_TYPE, 5, 50.0, at(2, 10), tx_id=9002), OTHER_CHAR)
+    corp_buys = WalletTransaction(
+        owner_type="corporation", owner_id=CORP, division=1, transaction_id=9002, date=at(2, 10),
+        type_id=TRANSFER_TYPE, location_id=HOME, unit_price=50.0, quantity=5, is_buy=True,
+        client_id=CHAR,
+    )
+    # ESI names a character as the client of a corp transaction: the sale's
+    # client here is OTHER_CHAR, who placed the corp's buy order.
+    ledger = snapshot(wallet_transactions=[bought, to_corp, corp_buys],
+                      tenant_corporation_ids={CORP})
+    pairs, _unmatched = c.internal_trade_pairs(ledger)
+    assert pairs == {to_corp.key: corp_buys}
+    assert rebuild_costing(ledger).realized_results == []
+
+
+# ------------------------------------------------- blueprint-copy run values
+def test_invention_bpc_shortfall_uses_frozen_run_value():
+    # Same job as the shortfall test above, now with a per-run copy value:
+    # 2 T1 runs x 15 = 30 estimated, so the T2 runs are 13 + 30/20 = 14.5.
+    inv = job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 2, at(2), at(3), 60.0,
+              [(DATACORE, 4, "probability_decryptor"), (T1_BP, 2, "probability_decryptor")],
+              licensed_runs=ESI_INVENTION_LICENSED_RUNS, successful_runs=2, runs_per_success=10)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(DATACORE, 4, 50.0, at(1))],
+        industry_jobs=[inv],
+        bpc_run_reference_prices={(T1_BP, at(2).date()): 15.0},
+    ))
+    [layer] = [l for l in result.layers if l.type_id == T2_BP]
+    assert layer.unit_cost == pytest.approx(14.5)
+    assert not layer.price_missing
+    [unknown] = [l for l in result.all_layers if l.type_id == T1_BP and l.unit == c.UNIT_BPC_RUN]
+    assert unknown.origin == "unknown" and unknown.estimated_origin and not unknown.price_missing
+    assert unknown.unit_cost == pytest.approx(15.0)
+    assert not has_warning(result, "missing_reference_price")
+    assert "bpc_run_estimated: type 300 2 runs valued at copy/invention cost" in result.warnings
+    assert result.price_requests == frozenset()
+
+
+def test_manufacturing_on_unrecorded_bpc_costs_frozen_run_value():
+    # 5 runs on a copy with no layer at 20/run = 100 estimated, plus minerals
+    # 50 and job 50: 200 for 5 units. The sale is estimated, not price_missing.
+    build = job(1, BP, PRODUCT, 5, at(1, 10), at(2), 50.0, [(MINERAL, 5, "esi_blueprint")],
+                output_quantity=5, uses_bpc=True)
+    sale = sell(PRODUCT, 5, 100.0, at(3))
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(MINERAL, 5, 10.0, at(1, 8)), sale],
+        journal_entries=tax_pair(sale, 4000, 10.0),
+        industry_jobs=[build],
+        production_type_ids={PRODUCT},
+        bpc_run_reference_prices={(BP, at(1).date()): 20.0},
+    ))
+    [r] = result.realized_results
+    assert r.cost == pytest.approx(200.0)
+    assert r.components.materials_estimated == pytest.approx(100.0)
+    assert r.estimated and not r.price_missing
+    assert "price_missing" not in r.warnings
+    assert "bpc_run_estimated: type 701 5 runs valued at copy/invention cost" in result.warnings
+
+
+def test_bpc_without_run_value_stays_price_missing():
+    # A faction copy has no per-run value: the run stays a 0 and flagged.
+    build = job(1, BP, PRODUCT, 2, at(1, 10), at(2), 10.0, [], output_quantity=2, uses_bpc=True)
+    result = rebuild_costing(snapshot(industry_jobs=[build], production_type_ids={PRODUCT}))
+    [layer] = [l for l in result.layers if l.type_id == PRODUCT]
+    assert layer.price_missing
+    assert not has_warning(result, "bpc_run_estimated")
+    assert (BP, c.UNIT_BPC_RUN, at(1).date()) in result.price_requests
+
+
+# ------------------------------------- blueprint share of a contract price
+def test_pure_blueprint_contract_warns_about_the_unbooked_price():
+    sold = exchange(30, at(2), [item_line(BP, 1, blueprint=True, runs=10, singleton=True)],
+                    issuer=CHAR, acceptor=7001, price=50_000_000.0, start=HOME)
+    result = rebuild_costing(snapshot(contracts=[sold]))
+    assert result.realized_results == []
+    assert "contract_blueprint_share_unbooked: contract:30 type 701 50000000" in result.warnings
+
+
+def test_mixed_contract_warns_about_the_blueprint_share():
+    # 1 copy + 1 item: no per-run price, so the split is by quantity (50/50).
+    sold = exchange(31, at(2), [
+        item_line(BP, 1, blueprint=True, runs=10, singleton=True, record=1),
+        item_line(MINERAL, 1, record=2),
+    ], issuer=CHAR, acceptor=7001, price=100_000_000.0, start=HOME)
+    result = rebuild_costing(snapshot(contracts=[sold], esi_stock_by_type={}))
+    assert "contract_blueprint_share_unbooked: contract:31 type 701 50000000" in result.warnings
+    [r] = result.realized_results
+    assert r.type_id == MINERAL and r.gross == pytest.approx(50_000_000.0)
+
+
+def test_free_blueprint_contract_has_no_unbooked_warning():
+    gift = exchange(32, at(2), [item_line(BP, 1, blueprint=True, runs=10, singleton=True)],
+                    issuer=CHAR, acceptor=7001, price=0.0, start=HOME)
+    result = rebuild_costing(snapshot(contracts=[gift]))
+    assert not has_warning(result, "contract_blueprint_share_unbooked")
+
+
+# ---------------------------------------------------------------- UTC day / fee sign
+def test_day_uses_utc_for_aware_timestamps():
+    pst = timezone(timedelta(hours=-8))
+    assert c._day(datetime(2026, 10, 2, 20, 0, tzinfo=pst)) == datetime(2026, 10, 3).date()
+    assert c._day(datetime(2026, 10, 2, 20, 0)) == datetime(2026, 10, 2).date()  # naive: already UTC
+
+
+def _fee_share_ledger(tz):
+    def shift(when):
+        return when.astimezone(tz)
+    p_sale = sell(PRODUCT, 3, 100.0, shift(at(3, 2)), tx_id=7001)
+    return snapshot(
+        wallet_transactions=[p_sale],
+        market_orders=[MarketOrder("character", CHAR, 1, PRODUCT, HOME, False, 95.0)],
+        # 02:30 UTC on day 3 is the previous evening in -08:00.
+        journal_entries=[JournalEntry("character", CHAR, 1, shift(at(3, 2, 30)), "brokers_fee", -45.0)],
+        esi_stock_by_type={PRODUCT: 7},
+        reference_prices={(PRODUCT, T0.date()): 60.0},
+        production_type_ids={PRODUCT},
+    )
+
+
+def test_fee_share_is_the_same_in_any_timezone():
+    base = rebuild_costing(_fee_share_ledger(timezone.utc))
+    shifted = rebuild_costing(_fee_share_ledger(timezone(timedelta(hours=-8))))
+    [a] = base.realized_results
+    [b] = shifted.realized_results
+    assert a.broker_fee == pytest.approx(45.0)
+    assert b.broker_fee == pytest.approx(a.broker_fee)
+
+
+def test_positive_fee_entries_are_income_not_cost():
+    def run(amount):
+        p_sale = sell(PRODUCT, 3, 100.0, at(2, 12), tx_id=7001)
+        return rebuild_costing(snapshot(
+            wallet_transactions=[p_sale],
+            market_orders=[MarketOrder("character", CHAR, 1, PRODUCT, HOME, False, 95.0)],
+            journal_entries=[
+                JournalEntry("character", CHAR, 1, at(2, 9), "brokers_fee", -45.0),
+                JournalEntry("character", CHAR, 2, at(2, 9), "brokers_fee", amount),
+            ] if amount else [JournalEntry("character", CHAR, 1, at(2, 9), "brokers_fee", -45.0)],
+            esi_stock_by_type={PRODUCT: 7},
+            reference_prices={(PRODUCT, T0.date()): 60.0},
+            production_type_ids={PRODUCT},
+        ))
+
+    plain = run(0)
+    with_income = run(500.0)
+    assert with_income.realized_results[0].broker_fee == pytest.approx(45.0)
+    assert plain.realized_results[0].broker_fee == pytest.approx(45.0)
+    assert any(w.startswith("fee_income_ignored: brokers_fee character:9001 500")
+               for w in with_income.warnings)
+    assert not any(w.startswith("fee_income_ignored") for w in plain.warnings)

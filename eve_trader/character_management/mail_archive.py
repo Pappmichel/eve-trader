@@ -182,7 +182,7 @@ def _run_in_tenant(tenant_id: str, character_id: int) -> None:
     # Local import, same reason as the orchestrator: tenant_scope pulls the
     # tool config modules, which the package import path must not load.
     from .. import tenant_scope
-    with tenant_scope.enter_tenant(tenant_id):
+    with tenant_scope.enter_tenant(tenant_id), storage.long_running():
         backfill_character(character_id)
 
 
