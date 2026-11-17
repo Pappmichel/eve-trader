@@ -2137,6 +2137,21 @@ def production_excluded_location_ids(cfg: ProductionConfig = PRODUCTION_CONFIG) 
     return ids
 
 
+def production_excluded_kwargs(cfg: Optional[ProductionConfig] = None) -> dict:
+    """`{"exclude_location_ids": ids}` for a storage reader whose filter is
+    optional (manual stock, manual blueprints, manual jobs), or `{}` when no
+    system is excluded, so those calls stay exactly as before then."""
+    ids = production_excluded_location_ids() if cfg is None else production_excluded_location_ids(cfg)
+    return {"exclude_location_ids": ids} if ids else {}
+
+
+def _excluded_reads_key(cfg: ProductionConfig = PRODUCTION_CONFIG) -> tuple:
+    """The excluded systems as a memo key: planner_reads bags that hold
+    filtered values carry it, so a value read under one set of excluded
+    systems is never served under another."""
+    return tuple(sorted({int(s) for s in (cfg.excluded_system_ids or ()) if s}))
+
+
 def production_excluded_hangar():
     """The Doctrine strategic reserve hangar, or None: its contents do not exist
     for Production (GitHub issue #418, doctrine/reserve.py). Lazy import:
@@ -2186,9 +2201,11 @@ class _PlannerReads:
 
     def __init__(self) -> None:
         self.tenant_id = storage.get_current_tenant()
-        self.bpo_me_te: dict[int, Optional[tuple[int, int]]] = {}
-        self.esi_incoming: dict[int, dict[str, float]] = {}
-        self.manual_incoming: dict[int, float] = {}
+        # Keyed (excluded systems, type_id): every value below is read with
+        # Production's excluded-system filter (_excluded_reads_key).
+        self.bpo_me_te: dict[tuple, Optional[tuple[int, int]]] = {}
+        self.esi_incoming: dict[tuple, dict[str, float]] = {}
+        self.manual_incoming: dict[tuple, float] = {}
         self.haul_volume: dict[int, Optional[float]] = {}
         self.bpc_cost: dict[int, Optional[float]] = {}
         # (allowed_flags_tuple_or_None, exclude_intake_or_None) -> {type_id: qty}
@@ -2221,30 +2238,31 @@ class _PlannerReads:
 
         char_bp, corp_bp = shared_production_owner_ids("blueprints")
         excluded = production_excluded_location_ids()
+        ex_key = _excluded_reads_key()
         hangar = production_excluded_hangar()
-        need_bp = [t for t in bp_ids if t not in self.bpo_me_te]
+        need_bp = [t for t in bp_ids if (ex_key, t) not in self.bpo_me_te]
         if need_bp:
             esi_map = storage.get_owned_bpo_best_me_te_bulk(
                 need_bp, owner_character_ids=char_bp, owner_corporation_ids=corp_bp,
                 exclude_location_ids=excluded, exclude_hangar=hangar)
-            manual_map = storage.manual_bpo_best_me_te_bulk(need_bp)
+            manual_map = storage.manual_bpo_best_me_te_bulk(need_bp, **production_excluded_kwargs())
             for tid in need_bp:
                 esi = esi_map.get(tid)
                 manual = manual_map.get(tid)
                 if esi is None and manual is None:
-                    self.bpo_me_te[tid] = None
+                    self.bpo_me_te[(ex_key, tid)] = None
                 else:
                     esi_me, esi_te = esi or (0, 0)
                     man_me, man_te = manual or (0, 0)
-                    self.bpo_me_te[tid] = (max(esi_me, man_me), max(esi_te, man_te))
+                    self.bpo_me_te[(ex_key, tid)] = (max(esi_me, man_me), max(esi_te, man_te))
 
         char_jobs, corp_jobs = shared_production_owner_ids("industry_jobs")
         for tid, val in storage.esi_incoming_industry_qty_bulk(
                 ids, owner_character_ids=char_jobs, owner_corporation_ids=corp_jobs,
                 exclude_location_ids=excluded).items():
-            self.esi_incoming.setdefault(tid, val)
-        for tid, val in storage.manual_incoming_qty_bulk(ids).items():
-            self.manual_incoming.setdefault(tid, val)
+            self.esi_incoming.setdefault((ex_key, tid), val)
+        for tid, val in storage.manual_incoming_qty_bulk(ids, **production_excluded_kwargs()).items():
+            self.manual_incoming.setdefault((ex_key, tid), val)
 
         char_assets, corp_assets = shared_production_owner_ids("assets")
         flags = tuple(cfg.stock_hangar_flags) if cfg.stock_hangar_flags else None
@@ -2432,13 +2450,15 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
     (decision 1) - not a max of the *pair*, so a manual ME10 entry still
     lifts ME even if the ESI-owned BPO's own TE happens to be higher."""
     scope = _active_planner_reads()
-    if scope is not None and blueprint_type_id in scope.bpo_me_te:
-        return scope.bpo_me_te[blueprint_type_id]
+    memo_key = (_excluded_reads_key(), blueprint_type_id)
+    if scope is not None and memo_key in scope.bpo_me_te:
+        return scope.bpo_me_te[memo_key]
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    excluded = production_excluded_location_ids()
     esi = storage.get_owned_bpo_best_me_te(
         blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
-    manual = storage.manual_bpo_best_me_te(blueprint_type_id)
+        exclude_location_ids=excluded, exclude_hangar=production_excluded_hangar())
+    manual = storage.manual_bpo_best_me_te(blueprint_type_id, **production_excluded_kwargs())
     if esi is None and manual is None:
         result = None
     else:
@@ -2446,16 +2466,17 @@ def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
         manual_me, manual_te = manual or (0, 0)
         result = (max(esi_me, manual_me), max(esi_te, manual_te))
     if scope is not None:
-        scope.bpo_me_te[blueprint_type_id] = result
+        scope.bpo_me_te[memo_key] = result
     return result
 
 
 def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    excluded = production_excluded_location_ids()
     esi_copies = storage.available_blueprint_copies(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
-        exclude_location_ids=production_excluded_location_ids(), exclude_hangar=production_excluded_hangar())
-    return esi_copies + storage.manual_bpc_runs(type_id, location_id)
+        exclude_location_ids=excluded, exclude_hangar=production_excluded_hangar())
+    return esi_copies + storage.manual_bpc_runs(type_id, location_id, **production_excluded_kwargs())
 
 
 def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
@@ -2474,15 +2495,19 @@ def _invention_bpc_runs_in_progress(t2_blueprint_id: int, chosen: InventionResul
     user 2026-10-04 - inferring it from the probability is ambiguous:
     Symmetry and no decryptor share the same x1.0 chance)."""
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
+    # Copies delivered into an excluded system do not exist for Production.
+    excluded = production_excluded_location_ids()
     successes = storage.esi_expected_invention_successes(
         t2_blueprint_id, chosen.probability,
-        owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+        exclude_location_ids=excluded)
     # Delivered inventions whose copies the (rarely synced) blueprint
     # snapshot does not show yet still count; their successes are known.
     lag_chars, lag_corps = _owners_sharing_both("industry_jobs", "blueprints")
     if lag_chars or lag_corps:
         successes += storage.delivered_inventions_after_blueprints(
-            t2_blueprint_id, owner_character_ids=lag_chars, owner_corporation_ids=lag_corps)
+            t2_blueprint_id, owner_character_ids=lag_chars, owner_corporation_ids=lag_corps,
+            exclude_location_ids=excluded)
     return int(round(successes * chosen.output_runs))
 
 
@@ -2562,24 +2587,26 @@ def _asset_lag_delta(type_id: int, location_id: Optional[int] = None) -> float:
 
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
     scope = _active_planner_reads()
-    if scope is not None and type_id in scope.esi_incoming:
-        return scope.esi_incoming[type_id]
+    memo_key = (_excluded_reads_key(), type_id)
+    if scope is not None and memo_key in scope.esi_incoming:
+        return scope.esi_incoming[memo_key]
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
     result = storage.esi_incoming_industry_qty(
         type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
         exclude_location_ids=production_excluded_location_ids())
     if scope is not None:
-        scope.esi_incoming[type_id] = result
+        scope.esi_incoming[memo_key] = result
     return result
 
 
 def _manual_incoming_qty(type_id: int) -> float:
     scope = _active_planner_reads()
-    if scope is not None and type_id in scope.manual_incoming:
-        return scope.manual_incoming[type_id]
-    result = storage.manual_incoming_qty(type_id)
+    memo_key = (_excluded_reads_key(), type_id)
+    if scope is not None and memo_key in scope.manual_incoming:
+        return scope.manual_incoming[memo_key]
+    result = storage.manual_incoming_qty(type_id, **production_excluded_kwargs())
     if scope is not None:
-        scope.manual_incoming[type_id] = result
+        scope.manual_incoming[memo_key] = result
     return result
 
 
@@ -3056,7 +3083,7 @@ def market_listing_shortfall_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) 
     yet, so they must not shrink listing demand here the way they
     legitimately shrink "how many more runs to plan" on the Buy/Build
     lists."""
-    manual_stock = storage.load_manual_stock()
+    manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
     wanted: dict[int, float] = {}
     for type_id, _name, backup_stock, home_market_stock, jita_market_stock in dynamic_targets.effective_stock_targets(cfg):
         if not home_market_stock and not jita_market_stock:
@@ -3109,7 +3136,7 @@ class _PlanContext:
         from ..esi_client import ESIClient
 
         self.stock_targets = storage.load_stock_targets()
-        self.manual_stock = storage.load_manual_stock()
+        self.manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
         self.manual_overrides = storage.load_manual_build_buy()
         self.selected_decryptors = storage.load_selected_decryptors()
 
@@ -5535,7 +5562,7 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
     home_market_stock=0, jita_market_stock=NULL and still showed up when
     only NULL was checked - a 0 target is never a real, deliberately-set
     market target in practice)."""
-    manual_stock = storage.load_manual_stock()
+    manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
     rows = []
     # Dynamic rows stay listed even at an effective 0 (E-09): the #33 rule
     # below would otherwise make a row vanish exactly when the page should
@@ -5573,7 +5600,7 @@ def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     doesn't silently understate the total."""
     # Lazy import: portfolio imports this module.
     from .. import portfolio
-    manual_stock = storage.load_manual_stock()
+    manual_stock = storage.load_manual_stock(**production_excluded_kwargs())
     stock_targets = storage.load_stock_targets()
     # Only the stock targets' own type_ids need pricing here (this KPI never
     # recurses into materials).

@@ -1659,8 +1659,13 @@ structures without a known system whose name starts with "<system> - ",
 global structure names, and Offices/containers parented there
 (`storage.location_ids_in_systems`). Production's asset, blueprint, formula
 and running-job readers pass it as `exclude_location_ids`; a new Production
-stock or blueprint reader must pass it too. Valuation, the Asset Manager and
-other tools are not affected.
+stock or blueprint reader must pass it too. That includes manual stock,
+manual blueprints and manual jobs (`engine.production_excluded_kwargs()`;
+`location_id = 0` is in no system and always counts), invention jobs by output
+location, and the reaction window: a reaction job delivering into an excluded
+system still takes its slot but adds no stock or incoming. The storage
+parameter defaults to unfiltered, so the manual-stock page, the ledger,
+valuation, the Asset Manager and other tools are not affected.
 
 ## Job-time character-skill bonus (confirmed real gap, fixed 2026-09-27)
 

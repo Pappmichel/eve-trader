@@ -354,6 +354,8 @@ def window_state(
 
     Jobs whose installer is excluded from planning never count as busy
     (finding 1.4.5). Without a window date every slot is free (D12).
+    A job whose output lands in one of Production's excluded systems still
+    takes its slot, but its output is not counted as stock or incoming.
     """
     rows = character_rows if character_rows is not None else jobs_mod.character_slot_overview()
     total, _free_now = reaction_slot_totals(cfg, character_rows=rows)
@@ -369,6 +371,8 @@ def window_state(
 
     w2_dt = window_dt + timedelta(days=float(cfg.reaction_window_interval_days))
     excluded = _excluded_installer_names(rows)
+    from .engine import production_excluded_location_ids
+    excluded_locations = {int(i) for i in (production_excluded_location_ids(cfg) or ())}
 
     if industry_jobs is None:
         from ..esi_data.access import shared_owner_ids
@@ -384,7 +388,7 @@ def window_state(
     incoming1: dict[int, float] = {}
     incoming2: dict[int, float] = {}
     for (_job_id, activity_id, blueprint_type_id, product_type_id, _name, runs,
-         _loc, status, end_date, _start, installer) in industry_jobs:
+         output_location, status, end_date, _start, installer) in industry_jobs:
         if status not in ("active", "paused", "ready"):
             continue
         if ACTIVITY_SLOT_CATEGORY.get(activity_id) != "reaction":
@@ -393,7 +397,9 @@ def window_state(
             continue
         end_dt = _parse_window_dt(end_date)
         qty = 0.0
-        if product_type_id is not None and runs:
+        in_excluded_system = (
+            output_location is not None and int(output_location) in excluded_locations)
+        if product_type_id is not None and runs and not in_excluded_system:
             per_run = storage.get_product_quantity(
                 blueprint_type_id, activity_id, product_type_id)
             if per_run is not None:
@@ -2085,7 +2091,9 @@ def build_window(
     ``reaction_stock_carry_value`` is on.
     """
     from . import pricing
-    from .engine import _current_stock, _haul_volume, _stock_on_hand, classify_activity
+    from .engine import (
+        _current_stock, _haul_volume, _manual_incoming_qty, _stock_on_hand, classify_activity,
+    )
 
     state = window_state(
         cfg, character_rows=character_rows, industry_jobs=industry_jobs)
@@ -2117,7 +2125,7 @@ def build_window(
             total = float(_current_stock(mid, dict(manual_stock), cfg, bp))
             extra = max(0.0, total - hangar)
         else:
-            extra = float(storage.manual_incoming_qty(mid))
+            extra = float(_manual_incoming_qty(mid))
         if extra > _EPS:
             incoming1[mid] = incoming1.get(mid, 0.0) + extra
 
