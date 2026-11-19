@@ -29,7 +29,7 @@ dependencies = [
     "uvicorn[standard]>=0.30,<1",
     # uvicorn[standard] otherwise pulls websockets 17.x, which requires
     # Python >=3.11 and breaks Ubuntu 22.04 / Python 3.10 (P5-01).
-    "websockets>=13,<17",
+    "websockets>=13,<18",
     # Session cookies (access_gate.py) use URLSafeTimedSerializer.loads
     # return_timestamp=True, present in 2.2. Pin exact — a major bump is a
     # session-security review, not a silent resolver move. Lockfile repeats
