@@ -255,6 +255,14 @@ export default function AssetPlanList() {
         <StalePlanAlert stale={plan.stale} />
         <PriceDataAlert flags={plan} />
         <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+        <Tooltip label={refreshAssetPlan.tooltip} disabled={!refreshAssetPlan.tooltip} multiline w={280}>
+          <Button
+            variant="default" style={{ alignSelf: 'flex-start' }} leftSection={refreshAssetPlan.tierIcon}
+            onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}
+          >
+            Recompute
+          </Button>
+        </Tooltip>
       </Stack>
     )
   }
