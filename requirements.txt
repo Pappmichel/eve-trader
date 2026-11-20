@@ -63,7 +63,7 @@ requests==2.34.2
 ruamel.yaml==0.19.1
 scipy==1.15.3
 six==1.17.0
-starlette==1.7.0
+starlette==1.10.0
 typing-inspection==0.4.5
 typing_extensions==4.16.0
 tzdata==2026.6
