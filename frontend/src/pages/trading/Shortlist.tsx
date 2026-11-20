@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Button, Checkbox, Group, MultiSelect, Select, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as ChartTooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
-import type { ColumnDef } from '@tanstack/react-table'
+import type { CellContext, ColumnDef } from '@tanstack/react-table'
 
 import { tradingApi } from '../../api/client'
 import type { ShortlistRow, SparklineSeries } from '../../api/types'
@@ -158,6 +158,23 @@ export default function Shortlist() {
       .slice(0, 15)
   }, [filtered])
 
+  // Clicking the badge filters the table to that status; clicking it again
+  // (when it is the only one selected) shows every status again. Kept out of
+  // the `columns` memo on purpose: flexRender renders a cell function as a
+  // component type, so a new function (columns rebuild when trends or
+  // sparklines arrive) remounts the cell and a click in flight is lost.
+  const statusCell = useCallback((i: CellContext<ShortlistRow, unknown>) => {
+    const decision = i.getValue() as string
+    return (
+      <UnstyledButton
+        aria-label={`Filter by status ${decision}`}
+        onClick={() => setSelDecisions((prev) => (prev.length === 1 && prev[0] === decision ? ALL_DECISIONS : [decision]))}
+      >
+        <Badge color={DECISION_COLOR[decision] ?? 'gray'} variant="light" style={{ cursor: 'pointer' }}>{decision}</Badge>
+      </UnstyledButton>
+    )
+  }, [])
+
   const columns = useMemo<ColumnDef<ShortlistRow, any>[]>(() => [
     // Widened from 220 (user feedback, 2026-10-01): long item names were truncated already at
     // the default width. Pin the column from the Columns menu to keep it visible while scrolling.
@@ -178,22 +195,7 @@ export default function Shortlist() {
     },
     { header: 'Category', accessorKey: 'category', size: 110, meta: { filterable: true } },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
-    {
-      header: 'Status', accessorKey: 'decision', size: 170, meta: { trackChanges: true },
-      // Clicking the badge filters the table to that status; clicking it again
-      // (when it is the only one selected) shows every status again.
-      cell: (i) => {
-        const decision = i.getValue() as string
-        return (
-          <UnstyledButton
-            aria-label={`Filter by status ${decision}`}
-            onClick={() => setSelDecisions((prev) => (prev.length === 1 && prev[0] === decision ? ALL_DECISIONS : [decision]))}
-          >
-            <Badge color={DECISION_COLOR[decision] ?? 'gray'} variant="light" style={{ cursor: 'pointer' }}>{decision}</Badge>
-          </UnstyledButton>
-        )
-      },
-    },
+    { header: 'Status', accessorKey: 'decision', size: 170, meta: { trackChanges: true }, cell: statusCell },
     {
       header: 'Days Until Auto-Deactivation', accessorKey: 'days_until_deactivation', size: 150,
       cell: (i) => {
@@ -286,7 +288,7 @@ ${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()) },
-  ], [trends, sparkCache, hub])
+  ], [trends, sparkCache, hub, statusCell])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
