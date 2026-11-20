@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 # require Python >=3.12).
 dependencies = [
     "requests>=2.31,<3",
-    "numpy>=1.26,<2.3",
+    "numpy>=1.26,<2.5",
     "pandas>=2.0,<3",
     # Ore & Minerals' Mineral Shopping List (GitHub issue #93) solves a real
     # mixed-integer program (scipy.optimize.linprog/HiGHS, using the
