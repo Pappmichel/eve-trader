@@ -61,7 +61,7 @@ pytz==2026.6
 PyYAML==6.0.3
 requests==2.34.2
 ruamel.yaml==0.19.1
-scipy==1.15.3
+scipy==1.17.1
 six==1.17.0
 starlette==1.7.0
 typing-inspection==0.4.5
