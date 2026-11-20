@@ -33,13 +33,21 @@ function blueprintText(bp: MaxBuildableBlueprint): string {
   return 'not owned'
 }
 
+// The blueprint a row's shortfall comes from, or null when materials are short.
+// Shown by name, so "Naga Navy Issue Blueprint" is never read as needing the hull.
+function missingBlueprint(row: MaxBuildableRow): MaxBuildableBlueprint | null {
+  return row.reason === 'no_blueprint' || row.reason === 'blueprint_runs' ? row.blueprint : null
+}
+
 function reasonText(row: MaxBuildableRow): string {
   if (!row.reason) return ''
-  const base = REASON_TEXT[row.reason]
-  if (row.reason === 'blueprint_runs' && row.blueprint?.copy_runs != null) {
-    return `${base} (${qty(row.blueprint.copy_runs)} available)`
+  const bp = missingBlueprint(row)
+  if (bp && row.reason === 'no_blueprint') return `${bp.blueprint_name} not owned`
+  if (bp && row.reason === 'blueprint_runs') {
+    const available = bp.copy_runs != null ? ` (${qty(bp.copy_runs)} available)` : ''
+    return `not enough runs on ${bp.blueprint_name}${available}`
   }
-  return base
+  return REASON_TEXT[row.reason]
 }
 
 function RequirementsTable({ rows }: { rows: MaxBuildableRow[] }) {
@@ -81,7 +89,7 @@ function ResultView({ result }: { result: MaxBuildableResult }) {
         <Title order={2}>{qty(result.max_quantity)}</Title>
         <Text size="lg">× {result.type_name}</Text>
         <Badge variant="light" color={result.blueprint.source === 'none' ? 'danger' : 'gray'}>
-          Blueprint: {blueprintText(result.blueprint)}
+          {result.blueprint.blueprint_name}: {blueprintText(result.blueprint)}
         </Badge>
         <Badge variant="outline" color="gray">{result.mode === 'full' ? 'full tree' : 'direct inputs'}</Badge>
       </Group>
@@ -97,13 +105,27 @@ function ResultView({ result }: { result: MaxBuildableResult }) {
       {result.bottlenecks.length > 0 && (
         <Alert color="danger" variant="light" title={`Bottleneck - what stops unit ${qty(result.bottleneck_quantity)}`}>
           <Stack gap={4}>
-            {result.bottlenecks.map((row) => (
-              <Text size="sm" key={row.type_id}>
-                <b>{row.type_name}</b>: {qty(row.short)} short of {qty(row.needed)}
-                {row.depth > 0 && <> (on hand {qty(row.on_hand)})</>}
-                {row.reason && <Text span c="dimmed" size="sm"> - {reasonText(row)}</Text>}
-              </Text>
-            ))}
+            {result.bottlenecks.map((row) => {
+              const bp = missingBlueprint(row)
+              if (bp) {
+                return (
+                  <Text size="sm" key={row.type_id}>
+                    <b>{bp.blueprint_name}</b>: {row.reason === 'no_blueprint' ? 'not owned' : 'not enough runs'}
+                    {row.reason === 'blueprint_runs' && bp.copy_runs != null && <> ({qty(bp.copy_runs)} available)</>}
+                    <Text span c="dimmed" size="sm">
+                      {' '}- {qty(row.short)} of {qty(row.needed)} {row.type_name} cannot be built
+                    </Text>
+                  </Text>
+                )
+              }
+              return (
+                <Text size="sm" key={row.type_id}>
+                  <b>{row.type_name}</b>: {qty(row.short)} short of {qty(row.needed)}
+                  {row.depth > 0 && <> (on hand {qty(row.on_hand)})</>}
+                  {row.reason && <Text span c="dimmed" size="sm"> - {reasonText(row)}</Text>}
+                </Text>
+              )
+            })}
           </Stack>
         </Alert>
       )}
