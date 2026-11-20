@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31,<3",
     "numpy>=1.26,<2.3",
-    "pandas>=2.0,<3",
+    "pandas>=2.0,<4",
     # Ore & Minerals' Mineral Shopping List (GitHub issue #93) solves a real
     # mixed-integer program (scipy.optimize.linprog/HiGHS, using the
     # `integrality` param added in scipy 1.9 - already covered by this pin)
