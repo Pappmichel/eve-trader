@@ -99,6 +99,24 @@ copies delivered after the blueprint snapshot still count as BPC runs in
 progress. `_current_stock` / `_stock_on_hand` apply it; a new stock reader
 should go through them.
 
+**Items moved between owners (2026-11-22).** Each owner's assets and
+blueprints are a snapshot of their own time, so an item moved from A to B in
+one tenant sat in both snapshots until A synced again: Total Wealth and the
+Asset Manager counted it twice (seen live: two freighters moved from
+characters into a corp hangar), and in the blueprint tables, whose PK is
+`(tenant_id, item_id)`, the insert failed and two stale snapshots holding
+each other's items blocked both owners for good. `replace_assets` and
+`replace_blueprints` now remove the other owners' rows for an incoming item,
+across the character and corp table (`storage._remove_moved_items`; within
+one blueprint table always, since the PK requires it). Same item = same
+item_id and type_id, and a singleton (ship, fitted module, blueprint
+original/copy) or the same quantity (a stack moved whole, e.g. a moved
+ship's cargo). Stacks with one item_id but different quantities stay, the
+case c25e265 widened the asset PK for. The displaced owner is then synced at
+the next tick (`scheduler.md`). The other direction cannot be detected: when
+the old owner syncs first the item is missing until the new owner syncs, and
+looks the same as one sold or destroyed.
+
 **Ready at the build location (Asset-Optimized list, 2026-11-04).**
 `ProductionConfig.asset_plan_ready_at_build_location` (switch on that page)
 makes "Ready Now" count only stock at the structure set for the job's
