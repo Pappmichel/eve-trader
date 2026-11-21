@@ -167,6 +167,15 @@ them):
   sets that owner's `esi_freshness.refresh_requested_at`. While it is newer
   than `last_attempt_at`, `_kind_is_due` calls the pair due regardless of tier
   interval and backoff; `Expires` still applies. The next attempt clears it.
+- **Owners of a tenant run together (2026-11-22).** Each (owner, kind) used
+  to be due on its own clock, so a tenant's snapshots drifted hours apart and
+  an item moved between owners counted twice or not at all. When a freshness
+  tier is regularly due for one pair, `pending_due` adds every candidate of the
+  same tier that is at least `ALIGN_MIN_AGE_SHARE` (0.5) of its interval old
+  (`orchestrator._aligned_with`). After one such pass the tier stays together;
+  the cost is at most one early fetch per pair. `Expires` and the failure
+  backoff still apply, and a refresh request alone pulls nothing along.
+  Manual syncs are unchanged.
 - **Idle ticks are free.** `esi_data_sync` starts a job thread (and writes
   `last_run_status`) only when `orchestrator.pending_due()` is non-empty;
   `do_sync_due` uses the same list. Due-ness is one `list_esi_freshness()` read;

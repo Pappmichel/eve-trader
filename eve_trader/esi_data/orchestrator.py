@@ -980,10 +980,53 @@ def pending_due(
     if not candidates:
         return []
     freshness = _freshness_map()
-    return [
+    due = [
         row for row in candidates
         if _kind_is_due(row[0], row[1], row[2], now=now, freshness=freshness)
     ]
+    return due + _aligned_with(due, candidates, freshness, now)
+
+
+# Owners of one tenant drift apart: each (owner, kind) is due on its own
+# clock, and an item moved between two owners then sits in two snapshots of
+# different times (counted twice) or in neither. When a tier comes due for
+# one owner, every pair of that tier that is at least this share of its
+# interval old is fetched in the same pass. After one such pass the tier runs
+# together; the cost is at most one early fetch per pair. ESI `Expires` and
+# the failure backoff still apply.
+ALIGN_MIN_AGE_SHARE = 0.5
+
+
+def _aligned_with(due, candidates, freshness, now) -> list:
+    """Candidates that are not due yet but are pulled into this pass because
+    a pair of the same freshness tier is regularly due (a refresh request
+    alone does not pull others along)."""
+    def _requested(row) -> bool:
+        entry = freshness.get((row[0], row[1], row[2]), ())
+        return bool(entry[4]) if len(entry) > 4 else False
+
+    tiers = {_KIND_TIER[row[2]] for row in due if not _requested(row)}
+    if not tiers:
+        return []
+    taken = set(map(tuple, due))
+    pulled = []
+    for row in candidates:
+        if tuple(row) in taken or _KIND_TIER[row[2]] not in tiers:
+            continue
+        entry = freshness.get((row[0], row[1], row[2]))
+        if entry is None:
+            continue
+        success, attempt = entry[0], entry[1]
+        expires = entry[3] if len(entry) > 3 else None
+        if success is None or _expires_floor(expires, now) is not None:
+            continue
+        # A failure since the last success keeps its own backoff.
+        if attempt is not None and _hours_since_success(attempt, now) < _hours_since_success(success, now):
+            continue
+        if _hours_since_success(success, now) < ALIGN_MIN_AGE_SHARE * _tier_hours(row[2]):
+            continue
+        pulled.append(row)
+    return pulled
 
 
 def do_sync_due(
