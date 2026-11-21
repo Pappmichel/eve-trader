@@ -298,3 +298,52 @@ def test_list_blueprint_copies_groups_esi_copies_and_skips_bpos_and_asset_safety
     ])
 
     assert sorted(storage.list_blueprint_copies(TYPE_ID)) == [(3, 2, 1), (4, 1, 1)]
+
+
+def _owners_by_item(table="character_blueprints"):
+    with storage.connect() as conn:
+        return dict(conn.execute(
+            f"SELECT item_id, owner_character_id FROM {table} ORDER BY item_id").fetchall())
+
+
+def test_replace_blueprints_takes_over_a_blueprint_moved_from_another_owner(tenant):
+    # Item 2 moved from character 10 to character 20; 10's snapshot is older
+    # and still holds it. The PK is (tenant_id, item_id), so 20's sync used to
+    # fail with a duplicate key error.
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1),
+        _bp_row(2, TYPE_ID, me=10, te=20, runs=-1),
+    ], owner_character_id=10)
+
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(2, TYPE_ID, me=10, te=20, runs=-1),
+        _bp_row(3, TYPE_ID, me=10, te=20, runs=-1),
+    ], owner_character_id=20)
+
+    assert _owners_by_item() == {1: 10, 2: 20, 3: 20}
+
+
+def test_replace_blueprints_two_stale_snapshots_holding_each_others_items(tenant):
+    # 10 holds A, 20 holds B in the DB; in game they swapped. Each sync must
+    # succeed on its own instead of both blocking each other.
+    storage.replace_blueprints("character_blueprints", [_bp_row(1, TYPE_ID, 0, 0, -1)],
+                               owner_character_id=10)
+    storage.replace_blueprints("character_blueprints", [_bp_row(2, TYPE_ID, 0, 0, -1)],
+                               owner_character_id=20)
+
+    storage.replace_blueprints("character_blueprints", [_bp_row(2, TYPE_ID, 0, 0, -1)],
+                               owner_character_id=10)
+    storage.replace_blueprints("character_blueprints", [_bp_row(1, TYPE_ID, 0, 0, -1)],
+                               owner_character_id=20)
+
+    assert _owners_by_item() == {1: 20, 2: 10}
+
+
+def test_replace_blueprints_dedupes_an_item_repeated_in_one_esi_read(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=-1),
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1),
+    ], owner_character_id=10)
+
+    assert _owners_by_item() == {1: 10}
+    assert storage.get_owned_bpo_best_me_te(TYPE_ID) == (10, 20)
