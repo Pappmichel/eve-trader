@@ -77,6 +77,13 @@ ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER 
 -- which a manual sync skips the pair. NULL = ESI sent no usable header.
 ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS next_fetch_after TIMESTAMPTZ;
 
+-- Set when another owner's newer sync took over items from this owner's
+-- snapshot (an item moved between two owners of the tenant), so this
+-- snapshot is known to be stale. While it is newer than `last_attempt_at`
+-- the pair is due regardless of tier interval and backoff; `Expires` still
+-- applies (storage._request_owner_refresh, orchestrator._kind_is_due).
+ALTER TABLE esi_freshness ADD COLUMN IF NOT EXISTS refresh_requested_at TIMESTAMPTZ;
+
 -- ====================================================== per-tenant: group-3 capabilities
 -- On/off per character, no tool_key. Presence of a row means the
 -- capability is ticked. Not a sharing row.

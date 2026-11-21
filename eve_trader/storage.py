@@ -3601,6 +3601,54 @@ def _int_in_clause(ids: list[int]) -> tuple[str, list[int]]:
     return "(" + ",".join("?" * len(ids)) + ")", list(ids)
 
 
+def _remove_moved_items(conn, table: str, items: list[tuple]) -> list[tuple]:
+    """Delete rows of `table` that are the same physical item as one of
+    `items` `(item_id, type_id, quantity, singleton)` and return their
+    `(owner_character_id, owner_corporation_id)`.
+
+    Call it after the syncing owner's own partition is gone, so every match
+    belongs to another owner whose snapshot is older than this ESI read.
+    Same item = same item_id and type_id, and either a singleton (a ship, a
+    fitted module, a blueprint original or copy) or the same quantity (a
+    stack moved whole, e.g. a moved ship's cargo). A stack with another
+    quantity is left alone: c25e265 saw two owners' stacks share one item_id
+    with different quantities (docs/phase1_schema.sql, character_assets)."""
+    removed: list[tuple] = []
+    chunk = 2000
+    for start in range(0, len(items), chunk):
+        part = items[start:start + chunk]
+        values = ",".join("(?::bigint, ?::integer, ?::bigint, ?::boolean)" for _ in part)
+        params: list = []
+        for item_id, type_id, quantity, singleton in part:
+            params += [int(item_id), type_id, quantity, bool(singleton)]
+        removed += conn.execute(
+            f"DELETE FROM {table} t USING (VALUES {values}) AS v(item_id, type_id, quantity, singleton) "
+            "WHERE t.item_id = v.item_id AND t.type_id = v.type_id "
+            "AND (v.singleton OR t.quantity = v.quantity) "
+            "RETURNING t.owner_character_id, t.owner_corporation_id",
+            params,
+        ).fetchall()
+    return removed
+
+
+def _request_owner_refresh(conn, owners: list[tuple], data_kind: str) -> None:
+    """Mark `data_kind` due for the owners whose rows a newer sync took over:
+    their snapshot is known to be stale, so the scheduler fetches it at the
+    next tick instead of after the tier interval (esi_data/orchestrator.py
+    `_kind_is_due`). Legacy rows without an owner id are skipped."""
+    keys = {
+        ("character", int(char_id)) if char_id is not None else ("corporation", int(corp_id))
+        for char_id, corp_id in owners
+        if char_id is not None or corp_id is not None
+    }
+    for owner_type, owner_id in sorted(keys):
+        conn.execute(
+            "UPDATE esi_freshness SET refresh_requested_at = now() "
+            "WHERE owner_type = ? AND owner_id = ? AND data_kind = ?",
+            (owner_type, owner_id, data_kind),
+        )
+
+
 def _delete_owner_partition(
     conn,
     table: str,
@@ -3865,6 +3913,17 @@ def _replace_assets_one(
             conn, table, id_column=id_column, owner_id=owner_id,
             name_column="owner_name", owner_name=owner_name,
         )
+        # An item moved here from another owner of the tenant is still in
+        # that owner's older snapshot until it syncs again, and would count
+        # twice (valuation, Asset Manager). This read is the newest.
+        moved = [
+            (int(row[0]), row[1], row[4], singleton)
+            for row, singleton in zip(rows, singletons)
+        ]
+        displaced: list[tuple] = []
+        for other_table in ("character_assets", "corp_assets"):
+            displaced += _remove_moved_items(conn, other_table, moved)
+        _request_owner_refresh(conn, displaced, "assets")
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
             "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
@@ -4084,9 +4143,20 @@ def replace_blueprints(
         # column, so the insert would fail - and two stale snapshots holding
         # each other's items would then block both owners for good. This
         # sync's ESI read is the newest, so the item belongs to this owner.
+        displaced: list[tuple] = []
         for start in range(0, len(incoming_ids), 5000):
             in_sql, in_params = _int_in_clause(incoming_ids[start:start + 5000])
-            conn.execute(f"DELETE FROM {table} WHERE item_id IN {in_sql}", in_params)
+            displaced += conn.execute(
+                f"DELETE FROM {table} WHERE item_id IN {in_sql} "
+                "RETURNING owner_character_id, owner_corporation_id", in_params,
+            ).fetchall()
+        # A move between a character and a corporation crosses tables.
+        # quantity -1 / -2 is an original / copy, i.e. one physical item.
+        other_table = "corp_blueprints" if is_character else "character_blueprints"
+        displaced += _remove_moved_items(conn, other_table, [
+            (int(r[0]), r[1], r[4], r[4] is not None and int(r[4]) < 0) for r in rows
+        ])
+        _request_owner_refresh(conn, displaced, "blueprints")
         resolved_rows = []
         for row in rows:
             root = row[2]  # location_id
@@ -4229,6 +4299,18 @@ def list_esi_next_fetch_after() -> dict[tuple[str, int, str], datetime]:
         rows = conn.execute(
             "SELECT owner_type, owner_id, data_kind, next_fetch_after "
             "FROM esi_freshness WHERE next_fetch_after IS NOT NULL"
+        ).fetchall()
+    return {(r[0], int(r[1]), r[2]): r[3] for r in rows}
+
+
+def list_esi_refresh_requests() -> dict[tuple[str, int, str], datetime]:
+    """`{(owner_type, owner_id, data_kind): refresh_requested_at}` (aware UTC)
+    for pairs whose request is newer than their last attempt."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, refresh_requested_at "
+            "FROM esi_freshness WHERE refresh_requested_at IS NOT NULL "
+            "AND (last_attempt_at IS NULL OR refresh_requested_at > last_attempt_at)"
         ).fetchall()
     return {(r[0], int(r[1]), r[2]): r[3] for r in rows}
 

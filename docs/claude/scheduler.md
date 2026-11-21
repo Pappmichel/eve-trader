@@ -161,6 +161,12 @@ them):
   `live_only` kinds and the Contract Market scan do not use it. The Character
   Management overview responses carry `sync_max_age_hours` (the tenant's normal
   tier), which `useSyncWhenStale` uses instead of a fixed 6 h.
+- **Refresh request after a moved item (2026-11-22).** When an asset or
+  blueprint sync removes another owner's row for an item it now holds (see
+  `production.md` "Items moved between owners"), `storage._request_owner_refresh`
+  sets that owner's `esi_freshness.refresh_requested_at`. While it is newer
+  than `last_attempt_at`, `_kind_is_due` calls the pair due regardless of tier
+  interval and backoff; `Expires` still applies. The next attempt clears it.
 - **Idle ticks are free.** `esi_data_sync` starts a job thread (and writes
   `last_run_status`) only when `orchestrator.pending_due()` is non-empty;
   `do_sync_due` uses the same list. Due-ness is one `list_esi_freshness()` read;

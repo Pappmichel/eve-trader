@@ -140,14 +140,19 @@ def _is_transient_error(error: BaseException) -> bool:
 
 def _freshness_map() -> dict[tuple[str, int, str], tuple]:
     """`{(owner_type, owner_id, kind): (last_success_at, last_attempt_at,
-    consecutive_failures, next_fetch_after)}` in three small queries -
-    due-ness used to cost one query per sharing row per tick.
-    `next_fetch_after` is the stored ESI `Expires` (None = unknown)."""
+    consecutive_failures, next_fetch_after, refresh_requested)}` in four small
+    queries - due-ness used to cost one query per sharing row per tick.
+    `next_fetch_after` is the stored ESI `Expires` (None = unknown).
+    `refresh_requested` is True while a newer sync of another owner took over
+    items from this snapshot and no attempt has run since
+    (storage._request_owner_refresh)."""
     failures = storage.list_esi_failure_counts()
     expires = storage.list_esi_next_fetch_after()
+    requested = storage.list_esi_refresh_requests()
     return {
         (ot, oid, kind): (
             success, attempt, failures.get((ot, oid, kind), 0), expires.get((ot, oid, kind)),
+            (ot, oid, kind) in requested,
         )
         for ot, oid, kind, success, attempt, _err, _as_of in storage.list_esi_freshness()
     }
@@ -181,10 +186,15 @@ def _kind_is_due(
     success, attempt = entry[0], entry[1]
     failures = entry[2] if len(entry) > 2 else 0
     expires = entry[3] if len(entry) > 3 else None
+    refresh_requested = bool(entry[4]) if len(entry) > 4 else False
     # ESI serves its cache until `Expires`: a fetch before it returns the same
     # data. A lower bound only - the tier interval below still applies.
     if _expires_floor(expires, now) is not None:
         return False
+    # Another owner's newer snapshot proved this one stale (an item moved
+    # between them): fetch it now, not after the tier interval.
+    if refresh_requested:
+        return True
     if _hours_since_success(success, now) < _tier_hours(data_kind):
         return False
     if attempt is not None and _hours_since_success(attempt, now) < _backoff_hours_for(
