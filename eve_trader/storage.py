@@ -4068,13 +4068,25 @@ def replace_blueprints(
     owner_id = owner_character_id if is_character else owner_corporation_id
     insert_char = owner_character_id if is_character else None
     insert_corp = owner_corporation_id if not is_character else None
+    # ESI can repeat an item at a page boundary; the PK is (tenant_id,
+    # item_id), so keep the last copy of each.
+    rows = list({int(r[0]): r for r in rows}.values())
+    incoming_ids = [int(r[0]) for r in rows]
     with connect() as conn:
         parent_of = dict(conn.execute(f"SELECT item_id, location_id FROM {asset_table}").fetchall())
         _delete_owner_partition(
             conn, table, id_column=id_column, owner_id=owner_id,
             null_pk_column="item_id",
-            null_pk_values=[int(r[0]) for r in rows],
+            null_pk_values=incoming_ids,
         )
+        # A blueprint moved to this owner from another owner of the same
+        # tenant is still in that owner's older snapshot. The PK has no owner
+        # column, so the insert would fail - and two stale snapshots holding
+        # each other's items would then block both owners for good. This
+        # sync's ESI read is the newest, so the item belongs to this owner.
+        for start in range(0, len(incoming_ids), 5000):
+            in_sql, in_params = _int_in_clause(incoming_ids[start:start + 5000])
+            conn.execute(f"DELETE FROM {table} WHERE item_id IN {in_sql}", in_params)
         resolved_rows = []
         for row in rows:
             root = row[2]  # location_id
