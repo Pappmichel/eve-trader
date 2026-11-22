@@ -74,7 +74,12 @@ has stored it, plus **In production**: the frozen inputs
 before the owner's asset snapshot and are still running or were delivered
 after it (`realized.db.in_production_input_lines`), priced like assets so a
 job start leaves the total flat; a consumed blueprint copy is priced like a
-copy (see the price matrix), never at its original's quote. A Portfolio-only `industry_jobs` share
+copy (see the price matrix), never at its original's quote. An owner
+sharing assets without blueprints has no blueprint rows, so its blueprints
+stay in the asset list: originals are priced as assets, copies
+(`is_blueprint_copy`) go to the Blueprints line with unknown runs, valued
+only by a manual price and otherwise unpriced, and the attention list asks
+for the Blueprints share. A Portfolio-only `industry_jobs` share
 is archived for this. ESI's asset list omits listed and contracted items, and
 the wallet balance is already net of escrow, so those lines are added
 and never subtracted from assets. An unknown escrow is omitted, not

@@ -114,6 +114,23 @@ def test_attention_wallet_scope_line_names_five_characters_then_counts_the_rest(
     )
 
 
+def test_attention_names_owners_whose_copies_have_no_run_data(monkeypatch):
+    copies = [
+        {"owner_type": "corporation", "owner_id": 98000001, "copies": 12254},
+        {"owner_type": "character", "owner_id": 7, "copies": 3},
+    ]
+    _quiet(monkeypatch, wealth=_wealth(blueprint_copies_without_runs=copies), targets=[(34,)])
+    monkeypatch.setattr("eve_trader.realized.names.owner_names", lambda ids: {98000001: "Builders Corp"})
+
+    item = {item["key"]: item for item in portfolio.attention([])["items"]}["copies_without_runs"]
+
+    assert item["text"] == (
+        "12,257 blueprint copies of Builders Corp, 7 are known only from assets and left out of "
+        "Total Wealth. Share Blueprints with Portfolio to value them by runs."
+    )
+    assert item["link"] == "/character-management/characters"
+
+
 def test_attention_wallet_scope_line_lists_exactly_five_without_a_tail(monkeypatch):
     missing = [{"character_id": i, "character_name": f"Pilot {i}"} for i in range(1, 6)]
     _quiet(monkeypatch, wealth=_wealth(characters_missing_wallet_scope=missing), targets=[(34,)])

@@ -114,7 +114,7 @@ class TestStockReaders:
         self._seed()
         assert storage.esi_stock_at_location_bulk([MODULE], location_id=None)[MODULE] == 132
         grouped = storage.load_assets_grouped(None, [CORP])
-        assert sum(row[-1] for row in grouped) == 128   # every row of this corp, the reserve included
+        assert sum(row[4] for row in grouped) == 128   # every row of this corp, the reserve included
 
 
 # ------------------------------------------------------------------ live rows
