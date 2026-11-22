@@ -504,7 +504,7 @@ def test_characters_missing_wallet_scope_takes_names_from_stored_sync_data(monke
 
 def test_total_wealth_scoped_to_portfolio_sharing_only(monkeypatch):
     _stub_sharing(monkeypatch, assets_character=[1], wallet_balance_character=[1])
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [("character", 1, 10, 34, 100)] if char_ids == [1] else [])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [("character", 1, 10, 34, 100, False)] if char_ids == [1] else [])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [("character", 1, 500.0)] if char_ids == [1] else [])
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {34: 5.0})
@@ -539,7 +539,7 @@ def test_total_wealth_flags_asset_sharer_missing_wallet_scope_even_if_never_shar
     # has never ticked wallet_balance at all is (correctly) absent from
     # wallet_char_ids in the first place.
     _stub_sharing(monkeypatch, assets_character=[1])  # only assets shared, never wallet_balance
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [("character", 1, 10, 34, 100)])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda char_ids, corp_ids: [("character", 1, 10, 34, 100, False)])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {34: 5.0})

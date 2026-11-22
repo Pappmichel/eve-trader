@@ -418,6 +418,25 @@ def attention(tool_keys, cfg: TradingConfig = TRADING_CONFIG, now: Optional[date
             ),
             "link": "/character-management/characters",
         })
+    copies = wealth.get("blueprint_copies_without_runs") or []
+    if copies:
+        from .realized.names import owner_names
+        names = owner_names(row["owner_id"] for row in copies)
+        shown = [names.get(row["owner_id"], str(row["owner_id"])) for row in copies[:_WALLET_SCOPE_NAMES_SHOWN]]
+        if len(copies) > len(shown):
+            shown.append(f"... and {len(copies) - len(shown)} more")
+        total = sum(row["copies"] for row in copies)
+        noun, verb, pronoun = (
+            ("blueprint copy", "is", "it") if total == 1 else ("blueprint copies", "are", "them")
+        )
+        items.append({
+            "key": "copies_without_runs",
+            "text": (
+                f"{total:,} {noun} of {', '.join(shown)} {verb} known only from assets and left "
+                f"out of Total Wealth. Share Blueprints with Portfolio to value {pronoun} by runs."
+            ),
+            "link": "/character-management/characters",
+        })
     for tool, reader in _card_readers(tool_keys):
         data = reader(**_realized_window("30"))
         status = data.get("status") or {}
@@ -852,6 +871,7 @@ _EMPTY_WEALTH = {
     "wealth_priced_items": 0,
     "wealth_unpriced_items": 0,
     "characters_missing_wallet_scope": [],
+    "blueprint_copies_without_runs": [],
     "sync": dict(_EMPTY_SYNC),
     "top_positions": None,
 }
@@ -945,7 +965,17 @@ def _collect_wealth(cfg: TradingConfig = TRADING_CONFIG):
         escrow_known = escrow_rows is not None
 
     items = []
-    for owner_type, owner_id, location_id, type_id, quantity in assets:
+    for owner_type, owner_id, location_id, type_id, quantity, is_copy in assets:
+        if is_copy:
+            # A copy known only from the asset list (its owner shares assets
+            # without blueprints): a copy, never its original's quote. Runs
+            # are unknown, so only a manual price values it.
+            items.append({
+                "component": "blueprints", "owner_type": owner_type, "owner_id": owner_id,
+                "location_id": location_id, "type_id": type_id, "quantity": quantity,
+                "manual_only": True, "runs": 0, "runs_unknown": True,
+            })
+            continue
         items.append({
             "component": "assets", "owner_type": owner_type, "owner_id": owner_id,
             "location_id": location_id, "type_id": type_id, "quantity": quantity,
@@ -1041,7 +1071,8 @@ def price_items(items: list[dict]) -> list[dict]:
     `type_id`, `manual_only` (a blueprint copy: only a manual price or its
     invention cost counts) and, for copies, `runs`. Market items use
     `_priced`; copies without a manual price are valued at their invention
-    cost per run x remaining runs, copies of a BPO stay unpriced."""
+    cost per run x remaining runs, copies of a BPO stay unpriced, and so
+    does a copy with unknown runs (`runs` 0) without a manual price."""
     market_ids = {item["type_id"] for item in items if not item["manual_only"]}
     manual_ids = {item["type_id"] for item in items if item["manual_only"]}
     prices = _priced(market_ids)
@@ -1057,6 +1088,21 @@ def price_items(items: list[dict]) -> list[dict]:
             if value is not None:
                 item["price"] = value * item["runs"]
     return items
+
+
+def _copies_without_runs(items: list[dict]) -> list[dict]:
+    """Per owner, the unpriced blueprint copies known only from the asset
+    list (blueprints not shared): {owner_type, owner_id, copies}, most
+    copies first. Sharing Blueprints for that owner values them by runs."""
+    counts: dict[tuple[str, int], float] = {}
+    for item in items:
+        if item.get("runs_unknown") and item.get("price") is None:
+            key = (item["owner_type"], int(item["owner_id"]))
+            counts[key] = counts.get(key, 0.0) + float(item["quantity"] or 0)
+    return [
+        {"owner_type": owner_type, "owner_id": owner_id, "copies": int(copies)}
+        for (owner_type, owner_id), copies in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 def _wealth_from(collected: dict) -> dict:
@@ -1080,6 +1126,7 @@ def _wealth_from(collected: dict) -> dict:
         "wealth_priced_items": built["priced_items"],
         "wealth_unpriced_items": built["unpriced_items"],
         "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_characters),
+        "blueprint_copies_without_runs": _copies_without_runs(collected["items"]),
         "sync": _sync_times(collected["shares"], collected["escrow_known"]),
         "top_positions": top_types(collected["items"]),
         "_built": built,
@@ -1119,16 +1166,14 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     until a manual price is set for it specifically - see
     _manual_only_priced).
 
-    Sharing scope note (working as designed, not a bug, but easy to
-    misread): a character who shares assets but not blueprints with
-    Portfolio contributes their non-blueprint assets to wealth_assets_value
-    but their BPOs/BPCs do not appear anywhere in Total Wealth at all
-    (neither counted as assets - load_all_assets always excludes blueprint
-    item_ids - nor as blueprints, since that requires its own separate
-    opt-in). Each data kind's sharing is independent by design (section 4);
-    this is just that design's visible edge case for blueprints
-    specifically, since (unlike assets/wallet) there's no partial-credit
-    fallback for them.
+    Sharing scope note: an owner who shares assets but not blueprints has
+    no blueprint rows, so the asset list still holds its blueprints. Its
+    originals stay assets at their market quote. Its copies (the asset's
+    `is_blueprint_copy`) become Blueprints-line copies with unknown runs:
+    a manual price values them, otherwise they are unpriced, and the
+    attention list asks for the Blueprints share
+    (`blueprint_copies_without_runs`). Pricing them as assets once put a
+    corp's thousands of copies at their originals' quotes.
 
     The priced rows are shared for 120 s per tenant (`_collect_wealth_cached`).
     Every path that writes the result anywhere must call this inside

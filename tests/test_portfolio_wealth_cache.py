@@ -48,7 +48,7 @@ class _World:
         if self.delay:
             time.sleep(self.delay)
         tenant = storage.get_current_tenant()
-        return [("character", 1, 10, 34, self.quantity[tenant])]
+        return [("character", 1, 10, 34, self.quantity[tenant], False)]
 
 
 @pytest.fixture
