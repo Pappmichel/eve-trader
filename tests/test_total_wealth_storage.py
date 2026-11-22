@@ -80,6 +80,33 @@ def test_load_all_assets_empty_owner_list_excludes_everyone(tenant):
     assert storage.load_all_assets([], []) == []
 
 
+def test_load_assets_grouped_flags_copies_without_blueprint_rows(tenant):
+    # An owner sharing assets but not blueprints: no blueprint rows, so the
+    # item_id exclusion keeps its blueprints; copies come back flagged so
+    # Portfolio does not price them at their original's quote.
+    storage.replace_assets("corp_assets", [
+        (1, TYPE_ID, 60003760, "Hangar", 100, 0, "Test Corp"),
+        (2, 11567, 60003760, "Hangar", 1, 1, "Test Corp"),  # a BPC, no blueprint row
+        (3, 11568, 60003760, "Hangar", 1, 0, "Test Corp"),  # a BPO, no blueprint row
+    ], owner_corporation_id=CORP_ID)
+
+    rows = sorted(storage.load_assets_grouped([], [CORP_ID]), key=lambda r: r[3])
+    assert [(r[3], r[4], r[5]) for r in rows] == [(TYPE_ID, 100, False), (11567, 1, True), (11568, 1, False)]
+
+
+def test_load_assets_grouped_still_excludes_synced_blueprints(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, 60003760, "Hangar", 100, 0, "Alice"),
+        (2, 11567, 60003760, "Hangar", 1, 1, "Alice"),
+    ], owner_character_id=CHAR_ID)
+    storage.replace_blueprints("character_blueprints", [
+        (2, 11567, 60003760, "Hangar", -2, 10, 20, 100),
+    ], owner_character_id=CHAR_ID)
+
+    rows = storage.load_assets_grouped([CHAR_ID], [])
+    assert [(r[3], r[4], r[5]) for r in rows] == [(TYPE_ID, 100, False)]
+
+
 def test_sum_wallet_balances_character_and_corp(tenant):
     storage.upsert_character_wallet_balance(CHAR_ID, 1000.0)
     storage.replace_corp_wallet_balances(CORP_ID, {1: 500.0, 2: 250.0})

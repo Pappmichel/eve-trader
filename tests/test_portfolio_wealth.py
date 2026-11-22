@@ -129,7 +129,7 @@ def test_orders_not_shared_with_portfolio_add_nothing(monkeypatch):
     import eve_trader.storage as storage
 
     _stub_sharing(monkeypatch, assets_character=[1])
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10, False)])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
     monkeypatch.setattr(portfolio, "_priced", lambda ids: {34: 2.0})
@@ -157,7 +157,7 @@ def test_listed_quantity_is_added_to_assets_for_portfolio_owners_only(monkeypatc
     import eve_trader.storage as storage
 
     _stub_sharing(monkeypatch, assets_character=[1], market_orders_character=[1])
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10, False)])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
     seen = {}
@@ -187,7 +187,7 @@ def test_open_buys_without_escrow_leave_the_component_empty(monkeypatch):
     import eve_trader.storage as storage
 
     _stub_sharing(monkeypatch, assets_character=[1], market_orders_character=[1])
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10, False)])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
     monkeypatch.setattr(storage, "load_sell_orders_grouped", lambda c, o: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
@@ -211,7 +211,7 @@ def test_running_job_inputs_are_their_own_line(monkeypatch):
     import eve_trader.storage as storage
 
     _stub_sharing(monkeypatch, assets_character=[1], industry_jobs_character=[1])
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10, False)])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
     seen = {}
@@ -243,7 +243,7 @@ def test_running_jobs_not_shared_with_portfolio_add_nothing(monkeypatch):
     import eve_trader.storage as storage
 
     _stub_sharing(monkeypatch, assets_character=[1])
-    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10)])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [("character", 1, 10, 34, 10, False)])
     monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
     monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
 
@@ -258,3 +258,49 @@ def test_running_jobs_not_shared_with_portfolio_add_nothing(monkeypatch):
 
     assert result["wealth_in_production_value"] == 0.0
     assert result["total_wealth"] == 20.0
+
+
+def _assets_only_copies(monkeypatch, manual):
+    from tests.test_portfolio import _FakeTokenManager, _stub_sharing
+    import eve_trader.auth as auth_module
+    import eve_trader.storage as storage
+
+    # The corp shares assets but not blueprints: its copies (type 36, whose
+    # original has a market quote) arrive only through the asset list.
+    _stub_sharing(monkeypatch, assets_corporation=[5])
+    monkeypatch.setattr(storage, "load_assets_grouped", lambda c, o: [
+        ("corporation", 5, 10, 34, 10, False),
+        ("corporation", 5, 10, 36, 1, True),
+        ("corporation", 5, 10, 36, 1, True),
+        ("corporation", 5, 10, 37, 1, False),  # an original: keeps its quote
+    ])
+    monkeypatch.setattr(storage, "load_blueprints_grouped", lambda c, o: [])
+    monkeypatch.setattr(storage, "wallet_balances_by_owner", lambda c, o: [])
+    monkeypatch.setattr(portfolio, "_priced", lambda ids: {34: 2.0, 36: 750_000_000.0, 37: 100.0})
+    monkeypatch.setattr(portfolio, "_manual_only_priced", lambda ids: {36: manual} if manual and 36 in ids else {})
+
+    # A per-run value exists, but with unknown runs it cannot apply.
+    monkeypatch.setattr(portfolio, "_bpc_run_values", lambda ids: {36: 1_000_000.0})
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([]))
+    return portfolio.total_wealth(TradingConfig())
+
+
+def test_copies_known_only_from_assets_never_take_their_originals_quote(monkeypatch):
+    result = _assets_only_copies(monkeypatch, manual=None)
+
+    assert result["wealth_assets_value"] == 120.0
+    assert result["wealth_blueprints_value"] == 0.0
+    assert result["total_wealth"] == 120.0
+    assert result["wealth_unpriced_items"] == 2
+    assert result["blueprint_copies_without_runs"] == [
+        {"owner_type": "corporation", "owner_id": 5, "copies": 2},
+    ]
+
+
+def test_copies_known_only_from_assets_take_a_manual_price(monkeypatch):
+    result = _assets_only_copies(monkeypatch, manual=5_000.0)
+
+    assert result["wealth_blueprints_value"] == 10_000.0
+    assert result["total_wealth"] == 10_120.0
+    assert result["wealth_unpriced_items"] == 0
+    assert result["blueprint_copies_without_runs"] == []

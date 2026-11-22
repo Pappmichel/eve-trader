@@ -6733,7 +6733,10 @@ def load_all_assets(owner_character_ids: Optional[list[int]] = None,
     A blueprint's item_id is always also present in its asset table's row
     (ESI's assets endpoint lists blueprints too; `replace_blueprints`
     already relies on this same overlap to resolve a blueprint's location),
-    so the exclusion is exact for both BPOs and BPCs."""
+    so the exclusion is exact for both BPOs and BPCs - as long as the
+    owner's blueprints are synced. An owner sharing assets without
+    blueprints has no blueprint rows, so its blueprints stay in here
+    (load_assets_grouped flags their copies for that case)."""
     with connect() as conn:
         rows = []
         for asset_table, bp_table in (
@@ -6832,10 +6835,14 @@ def load_owned_blueprints(owner_character_ids: Optional[list[int]] = None,
 
 def load_assets_grouped(owner_character_ids: Optional[list[int]] = None,
                         owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
-    """(owner_type, owner_id, location_id, type_id, quantity). Blueprints
-    are excluded the same way as load_all_assets. Location is the resolved
-    station or structure. Assembled ships stay: valuation still counts them.
-    Both owner lists empty returns [] and does not query."""
+    """(owner_type, owner_id, location_id, type_id, quantity,
+    is_blueprint_copy). Blueprints are excluded the same way as
+    load_all_assets. That exclusion needs the owner's blueprint rows: an
+    owner sharing assets without blueprints keeps its blueprints here, and
+    `is_blueprint_copy` (ESI sets it only on copies) lets the caller keep
+    those copies away from their original's market quote. Location is the
+    resolved station or structure. Assembled ships stay: valuation still
+    counts them. Both owner lists empty returns [] and does not query."""
     if not owner_character_ids and not owner_corporation_ids:
         return []
     rows: list[tuple] = []
@@ -6843,26 +6850,28 @@ def load_assets_grouped(owner_character_ids: Optional[list[int]] = None,
         if owner_character_ids:
             fetched = conn.execute(
                 "SELECT owner_character_id, COALESCE(resolved_location_id, location_id), "
-                "type_id, quantity FROM character_assets "
+                "type_id, quantity, is_blueprint_copy FROM character_assets "
                 "WHERE owner_character_id = ANY(?) "
                 "AND item_id NOT IN (SELECT item_id FROM character_blueprints)",
                 ([int(c) for c in owner_character_ids],),
             ).fetchall()
             rows.extend(
-                ("character", int(owner), int(loc) if loc is not None else None, int(type_id), int(qty or 0))
-                for owner, loc, type_id, qty in fetched
+                ("character", int(owner), int(loc) if loc is not None else None, int(type_id), int(qty or 0),
+                 bool(copy))
+                for owner, loc, type_id, qty, copy in fetched
             )
         if owner_corporation_ids:
             fetched = conn.execute(
                 "SELECT owner_corporation_id, COALESCE(resolved_location_id, location_id), "
-                "type_id, quantity FROM corp_assets "
+                "type_id, quantity, is_blueprint_copy FROM corp_assets "
                 "WHERE owner_corporation_id = ANY(?) "
                 "AND item_id NOT IN (SELECT item_id FROM corp_blueprints)",
                 ([int(c) for c in owner_corporation_ids],),
             ).fetchall()
             rows.extend(
-                ("corporation", int(owner), int(loc) if loc is not None else None, int(type_id), int(qty or 0))
-                for owner, loc, type_id, qty in fetched
+                ("corporation", int(owner), int(loc) if loc is not None else None, int(type_id), int(qty or 0),
+                 bool(copy))
+                for owner, loc, type_id, qty, copy in fetched
             )
     return rows
 
