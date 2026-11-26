@@ -19,6 +19,6 @@ pytest==9.2.0
 pytest-xdist==3.8.0
 # Linter run by CI (pyproject.toml [tool.ruff.lint]). Pinned: a new release
 # can add findings to the selected rules.
-ruff==0.17.5
+ruff==0.17.6
 # pytest on Python <3.11. Not installed on 3.11+.
 tomli==2.5.0; python_version < "3.11"
